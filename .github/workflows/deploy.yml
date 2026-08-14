@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      # OWASP A03:2025 Software Supply Chain — a known-vulnerable production
+      # dependency blocks the deploy rather than shipping to the gate.
+      - run: npm audit --omit=dev --audit-level=high
+
+      # tsc --noEmit && vite build. CI catches what the dev server does not:
+      # the dev server transpiles without type-checking.
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+
+      # Last line of defence: the publishable key is public by design, but a
+      # service_role key or an API key in the bundle is a total compromise.
+      # Catch it here, not in a postmortem.
+      # dist/assets is deliberately NOT excluded: that is the one directory a
+      # leaked key would actually be in. `sb_secret_` is matched only when real
+      # key characters follow it, because supabase-js itself ships the bare
+      # literal in its key-format check and would otherwise fail every build.
+      - name: Bundle secret scan
+        run: |
+          if grep -rIlE 'service_role|SUPABASE_SERVICE_ROLE|sk-ant-[A-Za-z0-9]|sb_secret_[A-Za-z0-9_-]{10,}|BEGIN [A-Z ]*PRIVATE KEY' dist 2>/dev/null; then
+            echo "::error::dist/ içinde gizli anahtar deseni bulundu"; exit 1
+          fi
+          echo "dist/ temiz."
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

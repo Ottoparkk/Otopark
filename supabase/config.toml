@@ -1,0 +1,19 @@
+project_id = "otopark"
+
+# ---------------------------------------------------------------- functions
+
+# Reads a plate for a signed-in operator. JWT stays ON — only authenticated,
+# active staff may spend API tokens.
+[functions.plaka-oku]
+verify_jwt = true
+
+# Camera hardware cannot present a JWT, so verification is OFF and a shared
+# secret is the boundary instead (header, HTTP Basic, or URL path segment).
+# Deploy with:  supabase functions deploy kamera-webhook --no-verify-jwt
+[functions.kamera-webhook]
+verify_jwt = false
+
+# Driven by a database webhook, which also cannot present a JWT. Guarded by
+# the x-push-secret header.
+[functions.send-push]
+verify_jwt = false

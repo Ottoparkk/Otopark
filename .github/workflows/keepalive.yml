@@ -1,0 +1,25 @@
+name: Supabase keepalive
+
+# The Supabase free tier pauses a project after 7 idle days, and a paused
+# database means the gate stops working. Ping every 6 days.
+#
+# The query returns zero rows through RLS (anon has no policy on tarifeler);
+# the round trip itself is what counts as activity.
+
+on:
+  schedule:
+    - cron: '23 8 */6 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping database
+        run: |
+          curl --fail --silent --show-error \
+            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/tarifeler?select=id&limit=1" \
+            -H "apikey: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" \
+            > /dev/null
+          echo "Supabase pinged."
