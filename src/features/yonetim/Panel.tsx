@@ -1,8 +1,10 @@
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { BrandPanel, ScreenHeader } from '../../components/ui/primitives'
 import { DolulukRozeti } from '../gise/components'
 import { useGunlukOzet } from '../gise/api'
-import { MenuKart } from './components'
+import { MenuKart, donemAralik } from './components'
+import { Sparkline } from './charts'
+import { useRaporGunluk } from './api'
 import { formatTL } from '../../lib/money'
 import {
   IconAbonman,
@@ -22,6 +24,13 @@ export default function Panel() {
   const { data: ozet } = useGunlukOzet()
   const { data: okunmamis = 0 } = useOkunmamisSayisi(true)
 
+  // The same RPC Raporlar uses, over a fixed trailing week. Cheap enough to
+  // sit on the home screen, and it shares the query cache with the 7-day
+  // period on Raporlar, so opening that screen next costs nothing.
+  const hafta = useMemo(() => donemAralik('HAFTA'), [])
+  const { data: gunluk } = useRaporGunluk(hafta.bas, hafta.bit)
+  const sonYedi = useMemo(() => (gunluk ?? []).map((g) => g.ciro_kurus), [gunluk])
+
   return (
     <div>
       <ScreenHeader
@@ -40,6 +49,16 @@ export default function Panel() {
             <p className="mt-1.5 text-hero font-semibold tnum">
               {formatTL(ozet.toplam_kurus, { decimals: 0 })}
             </p>
+
+            {/* Last week's shape, so today's figure has something to be
+                compared against without opening Raporlar. */}
+            {sonYedi.length > 1 && (
+              <div className="mt-3 text-on-brand">
+                <Sparkline veri={sonYedi} />
+                <p className="mt-1 text-micro text-on-brand-soft">son 7 gün</p>
+              </div>
+            )}
+
             <div className="mt-4 flex gap-6 border-t border-white/15 pt-3.5">
               <div>
                 <p className="text-lead font-semibold tnum">{ozet.arac_sayisi}</p>

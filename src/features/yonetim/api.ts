@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import { gunEkle, istanbulGun, istanbulSaat } from '../../lib/dates'
+import { dakikaFarki } from '../../lib/sure'
 import type {
   AracTipi,
   Bilet,
@@ -27,6 +29,103 @@ export function useRaporOzet(bas: string, bit: string) {
       const { data, error } = await supabase.rpc('rapor_ozet', { p_bas: bas, p_bit: bit })
       if (error) throw error
       return ((data ?? [])[0] as RaporOzet) ?? null
+    },
+  })
+}
+
+/* ------------------------------------------------- client-side breakdowns */
+
+export interface RaporDetay {
+  /** Entry counts per Istanbul hour, index 0–23. */
+  saatlik: number[]
+  tipler: { tip: AracTipi; sayi: number }[]
+  sureler: { etiket: string; sayi: number }[]
+  girisSayisi: number
+  cikanSayisi: number
+  /** True when the row cap was hit, so the charts are a partial view. */
+  kesildi: boolean
+}
+
+const SURE_KOVALARI: { etiket: string; max: number }[] = [
+  { etiket: '0–1 saat', max: 60 },
+  { etiket: '1–3 saat', max: 180 },
+  { etiket: '3–6 saat', max: 360 },
+  { etiket: '6–12 saat', max: 720 },
+  { etiket: '12 saat+', max: Infinity },
+]
+
+const DETAY_LIMIT = 10000
+
+/**
+ * The breakdowns that `rapor_gunluk` / `rapor_ozet` do not return: arrivals by
+ * hour, vehicle mix, and how long cars stayed.
+ *
+ * Computed on the client from `biletler` rather than in a new RPC, because
+ * Yönetici already has full SELECT on that table (`biletler_select`), so this
+ * adds no migration, no grant, and no new security surface. Personel cannot
+ * reach it: RLS hands them only open tickets and their own shift, and Raporlar
+ * is a Yönetici-only route on top of that.
+ *
+ * EVERY figure here is keyed off `giris_at` — one basis, deliberately. The
+ * duration chart therefore reads "of the cars that ARRIVED in this period, how
+ * long did the ones that have left stay", which is a coherent question. Mixing
+ * in exits that belong to earlier arrivals would put two different
+ * denominators in one card, and nobody reading it would know which was which.
+ */
+export function useRaporDetay(bas: string, bit: string) {
+  return useQuery({
+    queryKey: ['rapor_detay', bas, bit],
+    queryFn: async (): Promise<RaporDetay> => {
+      // Widened by a day on each side because these bounds are UTC instants
+      // while `bas`/`bit` are ISTANBUL calendar days. The exact day test
+      // happens below with the same Intl-based helper the rest of the app
+      // uses, so this only has to be a superset — no offset is assumed here.
+      const { data, error } = await supabase
+        .from('biletler')
+        .select('arac_tipi,giris_at,cikis_at,durum')
+        .gte('giris_at', `${gunEkle(-1, bas)}T00:00:00Z`)
+        .lte('giris_at', `${gunEkle(1, bit)}T23:59:59Z`)
+        .limit(DETAY_LIMIT)
+
+      if (error) throw error
+      const satirlar = (data ?? []) as Pick<
+        Bilet,
+        'arac_tipi' | 'giris_at' | 'cikis_at' | 'durum'
+      >[]
+
+      const saatlik = Array.from({ length: 24 }, () => 0)
+      const tipSayac = new Map<AracTipi, number>()
+      const sureSayac = SURE_KOVALARI.map(() => 0)
+      let girisSayisi = 0
+      let cikanSayisi = 0
+
+      for (const b of satirlar) {
+        // A cancelled ticket is not an arrival that happened — counting it
+        // would inflate the hourly peaks the staffing decision is read from.
+        if (b.durum === 'IPTAL') continue
+        const gun = istanbulGun(new Date(b.giris_at))
+        if (gun < bas || gun > bit) continue
+
+        girisSayisi++
+        saatlik[istanbulSaat(b.giris_at)]!++
+        tipSayac.set(b.arac_tipi, (tipSayac.get(b.arac_tipi) ?? 0) + 1)
+
+        if (b.cikis_at) {
+          cikanSayisi++
+          const dk = dakikaFarki(b.giris_at, b.cikis_at)
+          const i = SURE_KOVALARI.findIndex((k) => dk < k.max)
+          sureSayac[i === -1 ? SURE_KOVALARI.length - 1 : i]!++
+        }
+      }
+
+      return {
+        saatlik,
+        tipler: [...tipSayac.entries()].map(([tip, sayi]) => ({ tip, sayi })),
+        sureler: SURE_KOVALARI.map((k, i) => ({ etiket: k.etiket, sayi: sureSayac[i]! })),
+        girisSayisi,
+        cikanSayisi,
+        kesildi: satirlar.length >= DETAY_LIMIT,
+      }
     },
   })
 }

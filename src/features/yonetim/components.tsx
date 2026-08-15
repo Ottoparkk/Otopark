@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { IconTile } from '../../components/ui/primitives'
 import { gunEkle, istanbulGun } from '../../lib/dates'
-import { formatTL } from '../../lib/money'
 
 /* ------------------------------------------------------------- MenuKart */
 
@@ -114,37 +113,4 @@ export function IstatKutu({
   )
 }
 
-/* -------------------------------------------------------------- SutunGrafik */
-
-/**
- * Daily revenue bars. Deliberately plain SVG-free markup: a charting library
- * would be a dependency in the supply chain for something that is a handful
- * of divs, and the whole point of this chart is the SHAPE of the week, not
- * precise readings — the exact figures are one tap away in the table.
- */
-export function SutunGrafik({ veri }: { veri: { gun: string; kurus: number }[] }) {
-  const max = Math.max(1, ...veri.map((v) => v.kurus))
-  return (
-    <div>
-      <div className="flex h-32 items-end gap-1">
-        {veri.map((v) => {
-          const oran = v.kurus / max
-          return (
-            <div key={v.gun} className="flex flex-1 flex-col justify-end" title={`${v.gun}: ${formatTL(v.kurus)}`}>
-              <div
-                className={`w-full rounded-t-[4px] ${v.kurus > 0 ? 'bg-accent' : 'bg-field'}`}
-                style={{ height: `${Math.max(oran * 100, 2)}%` }}
-              />
-            </div>
-          )
-        })}
-      </div>
-      {veri.length > 0 && (
-        <div className="mt-1.5 flex justify-between text-micro text-faint tnum">
-          <span>{veri[0]?.gun.slice(8)}</span>
-          <span>{veri[veri.length - 1]?.gun.slice(8)}</span>
-        </div>
-      )}
-    </div>
-  )
-}
+/* Charts live in ./charts.tsx — this file is layout components only. */

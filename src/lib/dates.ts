@@ -51,6 +51,25 @@ export function istanbulGun(d: Date = new Date()): string {
 }
 
 /**
+ * Istanbul hour of day as 0–23, for bucketing entries into an hourly chart.
+ *
+ * `hourCycle: 'h23'` is load-bearing, not decoration. The default cycle for
+ * many locales is h24, which formats midnight as "24" — that would push every
+ * midnight arrival into a 25th bucket that no chart draws, silently losing the
+ * quietest hour of the night. h23 gives "00".."23", which is what an array
+ * index needs.
+ */
+const saatNoFmt = new Intl.DateTimeFormat('en-GB', {
+  timeZone: TZ,
+  hour: '2-digit',
+  hourCycle: 'h23',
+})
+
+export function istanbulSaat(iso: string | Date): number {
+  return Number(saatNoFmt.format(typeof iso === 'string' ? new Date(iso) : iso))
+}
+
+/**
  * "Bugün 14:35" / "Dün 09:10" / "8 Ağustos 14:35"
  * Relative to the ISTANBUL calendar day, not the device's — a phone left on
  * another timezone must not label this morning's entry as yesterday.
