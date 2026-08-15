@@ -116,6 +116,13 @@ export const IconGeri = (p: IconProps) => (
   </Icon>
 )
 
+/** Trailing chevron on a tappable row — the affordance that says "this opens". */
+export const IconIleri = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m9.5 5 7 7-7 7" />
+  </Icon>
+)
+
 export const IconArti = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 5v14M5 12h14" />

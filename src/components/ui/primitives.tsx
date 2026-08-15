@@ -23,8 +23,10 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANT: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-accent-ink active:brightness-95',
-  secondary: 'bg-field text-ink active:brightness-95',
+  // Only the primary button is elevated. A screen where every button floats
+  // has no primary action — the lift is the hierarchy.
+  primary: 'bg-accent text-accent-ink shadow-raised active:brightness-95',
+  secondary: 'bg-field text-ink border border-border active:brightness-95',
   ghost: 'bg-transparent text-soft active:bg-field',
   danger: 'bg-danger-soft text-danger active:brightness-95',
 }
@@ -45,7 +47,12 @@ export function Button({
       disabled={disabled || loading}
       className={[
         'inline-flex items-center justify-center gap-2 rounded-field font-medium',
-        'transition-[filter,opacity] disabled:opacity-45',
+        // The press is confirmed by the button shrinking slightly. At a barrier
+        // in gloves that tactile-looking feedback is worth more than a colour
+        // change, which is easy to miss in sunlight.
+        'transition-[filter,opacity,transform] duration-100 active:scale-[0.98]',
+        // A disabled button must not float — elevation reads as "pressable".
+        'disabled:opacity-45 disabled:shadow-none disabled:active:scale-100',
         size === 'lg' ? 'min-h-[56px] px-6 text-lead' : 'min-h-[44px] px-4 text-body',
         block ? 'w-full' : '',
         VARIANT[variant],
@@ -60,6 +67,15 @@ export function Button({
 
 /* -------------------------------------------------------------------- Card */
 
+/**
+ * The surface almost everything in the app sits on.
+ *
+ * The hairline border is doing more work here than the shadow. A white card on
+ * a near-white page separated only by colour measured 1.04:1 before this
+ * change — invisible, which is most of why the app read as unfinished. The
+ * border draws the edge, the shadow supplies the lift, and neither alone is
+ * enough on a phone held at an angle in daylight.
+ */
 export function Card({
   children,
   className = '',
@@ -69,7 +85,114 @@ export function Card({
   className?: string
   as?: 'div' | 'section' | 'li'
 }) {
-  return <Tag className={`rounded-card bg-surface p-4 ${className}`}>{children}</Tag>
+  return (
+    <Tag className={`rounded-card border border-border bg-surface p-4 shadow-card ${className}`}>
+      {children}
+    </Tag>
+  )
+}
+
+/* -------------------------------------------------------------- BrandPanel */
+
+/**
+ * The one branded surface. Reserved for the single most important number on a
+ * screen — occupancy on Araçlar, the fee on Çıkış, today's takings on Yönetim.
+ *
+ * Deliberately scarce: if this appears three times on one screen it has
+ * stopped meaning anything, and "emphasise by de-emphasising" is exactly the
+ * rule it would be breaking. White text clears AA at both ends of the
+ * gradient, which is what lets `text-on-brand-soft` exist as a second, quieter
+ * voice on top of it.
+ */
+export function BrandPanel({
+  children,
+  className = '',
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div className={`rounded-card bg-brand p-5 text-on-brand shadow-card ${className}`}>
+      {children}
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------------- IconTile */
+
+type TileTone = 'accent' | 'success' | 'warn' | 'danger' | 'neutral'
+
+const TILE: Record<TileTone, string> = {
+  accent: 'bg-accent-soft text-accent',
+  success: 'bg-success-soft text-success',
+  warn: 'bg-warn-soft text-warn',
+  danger: 'bg-danger-soft text-danger',
+  neutral: 'bg-field text-soft',
+}
+
+/**
+ * A rounded tinted square holding an icon. Gives a row something to anchor on,
+ * which is what stops a long menu reading as undifferentiated text.
+ */
+export function IconTile({
+  children,
+  tone = 'neutral',
+  size = 'md',
+}: {
+  children: ReactNode
+  tone?: TileTone
+  size?: 'md' | 'lg'
+}) {
+  return (
+    <span
+      className={[
+        'flex shrink-0 items-center justify-center rounded-field',
+        size === 'lg' ? 'size-12' : 'size-11',
+        TILE[tone],
+      ].join(' ')}
+    >
+      {children}
+    </span>
+  )
+}
+
+/* ------------------------------------------------------------- OranCubugu */
+
+/**
+ * A capacity bar. `yuzde` is clamped rather than trusted: occupancy can exceed
+ * capacity in real life (a mis-set kapasite, a car that never exited), and a
+ * bar rendering at 140% width would break the layout it sits in.
+ *
+ * NaN is folded to 0 for the same reason. A caller dividing by a zero capacity
+ * produces NaN, `width: NaN%` is an invalid declaration the browser drops, and
+ * the bar would silently render empty — which looks like an empty car park
+ * rather than a broken number.
+ */
+export function OranCubugu({
+  yuzde,
+  tone = 'brand',
+  label = 'Doluluk oranı',
+}: {
+  yuzde: number
+  tone?: 'brand' | 'accent'
+  label?: string
+}) {
+  const kirpilmis = Number.isFinite(yuzde) ? Math.max(0, Math.min(100, Math.round(yuzde))) : 0
+  return (
+    <div
+      className={`h-2 w-full overflow-hidden rounded-chip ${tone === 'brand' ? 'bg-white/25' : 'bg-field'}`}
+      role="progressbar"
+      aria-label={label}
+      aria-valuenow={kirpilmis}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
+      <div
+        className={`h-full rounded-chip transition-[width] duration-300 ${tone === 'brand' ? 'bg-white' : 'bg-accent'}`}
+        style={{ width: `${kirpilmis}%` }}
+      />
+    </div>
+  )
 }
 
 /** Small uppercase label above a value. The lowest rung of the type ramp. */
@@ -124,8 +247,16 @@ export function Input({
         aria-label={ariaLabel ?? (hideLabel ? label : undefined)}
         aria-invalid={error ? true : undefined}
         className={[
-          'w-full rounded-field bg-field px-4 py-3 text-body text-ink',
+          'w-full rounded-field border border-border bg-field px-4 py-3 text-body text-ink',
           'min-h-[52px] outline-none',
+          // The well is already darker than every surface it sits on; the
+          // border is what gives it a crisp edge in daylight.
+          //
+          // Deliberately NOT animated. A colour transition here buys nothing —
+          // the focus border reads fine switching instantly — and it makes the
+          // field lag behind the rest of the screen when the theme flips,
+          // which is the one moment every surface should change together.
+          'focus:border-accent',
           // A disabled field must LOOK unavailable, or the operator keeps
           // tapping it and assumes the app is broken.
           'disabled:cursor-not-allowed disabled:opacity-55',
@@ -246,8 +377,9 @@ export function SegmentedControl<T extends string>({
               aria-selected={active}
               onClick={() => onChange(o.value)}
               className={[
-                'min-h-[44px] flex-1 rounded-[10px] px-2 text-body font-medium transition-colors',
-                active ? 'bg-surface text-ink shadow-sm' : 'text-soft',
+                'min-h-[44px] flex-1 rounded-[12px] px-2 text-body font-medium transition-colors',
+                // The thumb has to look like it sits ON the track, not in it.
+                active ? 'bg-surface text-ink shadow-raised' : 'text-soft',
               ].join(' ')}
             >
               {o.label}
@@ -328,8 +460,15 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center px-8 py-14 text-center">
-      {icon && <div className="mb-3 text-faint opacity-60">{icon}</div>}
-      <p className="text-lead font-medium text-soft">{title}</p>
+      {/* The icon sits in a tinted disc rather than floating grey-on-grey.
+          An empty screen is one an operator sees every morning; it should look
+          designed, not like something failed to load. */}
+      {icon && (
+        <div className="mb-4 flex size-20 items-center justify-center rounded-chip bg-field text-faint">
+          {icon}
+        </div>
+      )}
+      <p className="text-lead font-medium text-ink">{title}</p>
       {hint && <p className="mt-1.5 max-w-[36ch] text-body text-faint">{hint}</p>}
       {action && <div className="mt-5">{action}</div>}
     </div>

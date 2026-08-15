@@ -16,7 +16,9 @@ export function AuthLayout({
     <div className="flex min-h-dvh flex-col bg-bg">
       <div className="safe-top mx-auto flex w-full max-w-[420px] flex-1 flex-col justify-center px-6 py-10">
         <div className="mb-8">
-          <div className="mb-6 flex size-14 items-center justify-center rounded-card bg-ink text-[26px] font-bold text-bg">
+          {/* The first screen anyone sees, so it carries the brand rather than
+              a neutral near-black tile. */}
+          <div className="mb-6 flex size-14 items-center justify-center rounded-card bg-brand text-[26px] font-bold text-on-brand shadow-raised">
             P
           </div>
           <h1 className="text-title font-semibold text-ink">{title}</h1>

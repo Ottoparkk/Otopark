@@ -25,8 +25,10 @@ export default defineConfig({
         scope: '/Otopark/',
         display: 'standalone',
         orientation: 'portrait',
-        theme_color: '#14161A',
-        background_color: '#F5F6F8',
+        // Brand indigo + the app background. Keep in sync with the
+        // theme-color meta in index.html and --brand-from / --color-bg.
+        theme_color: '#33257E',
+        background_color: '#EEF1F6',
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },

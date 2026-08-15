@@ -168,8 +168,14 @@ excluded by `.gitignore`.
 git commit -m "Otopark: database layer, Edge Functions and UI"
 ```
 
+> ⚠ **Replace `YOUR-USERNAME` before running the next line.** Pasted verbatim it
+> is accepted without complaint — `git remote add` never contacts GitHub — and
+> the placeholder only surfaces at `git push` as an unhelpful
+> `The requested URL returned error: 404`. If that happens, fix it with
+> `git remote set-url origin …` rather than adding a second remote.
+
 ```bash
-git remote add origin https://github.com/<user>/Otopark.git
+git remote add origin https://github.com/YOUR-USERNAME/Otopark.git
 ```
 
 ```bash
@@ -178,7 +184,7 @@ git push -u origin main
 
 ### 5d. Repo settings
 
-**Settings → Secrets and variables → Actions**:
+**Settings → Secrets and variables → Actions → New repository secret**:
 
 | Secret | Value |
 |---|---|
@@ -186,12 +192,29 @@ git push -u origin main
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | publishable key from step 1 |
 | `VITE_VAPID_PUBLIC_KEY` | after step 9 — may stay empty for now |
 
+> **Repository secrets, not environment secrets.** The page offers both. These
+> are read by the `build` job, which declares no `environment:` — only `deploy`
+> does (`github-pages`), and it reads no secrets at all. An environment secret
+> is invisible to `build`, so `${{ secrets.VITE_SUPABASE_URL }}` resolves to an
+> empty string: green build, successful deploy, blank site.
+
 **Settings → Pages → Source: GitHub Actions**.
 
 > ⚠ **With the secrets missing, the build goes green and the site loads blank.**
-> They are read at runtime, so `tsc` and `vite build` both complete fine and the
-> app throws on boot. A successful deploy with an empty page is this, not a bug
-> in the code.
+> They are compiled INTO the bundle, so `tsc` and `vite build` both complete
+> fine and the app throws on boot. A successful deploy serving an empty page is
+> this, not a bug in the code.
+
+> ⚠ **Adding the secrets afterwards is not enough on its own — you must
+> REBUILD.** "Re-run failed jobs" only re-runs `deploy`, which redeploys the
+> artifact the earlier `build` produced without them. Use **Re-run all jobs**,
+> or push a commit.
+>
+> Quickest way to tell which bundle is live: `primitives-*.js` is about
+> **277 kB** when the secrets were present and about **73 kB** when they were
+> not. `supabase.ts` throws unconditionally on missing env vars, so the
+> bundler drops all of supabase-js as unreachable — the size is a reliable
+> fingerprint.
 
 ### 5e. What runs on push
 
@@ -210,16 +233,34 @@ Deep links are already handled: `public/404.html` plus the restore script in
 
 ## 6. Auth URLs
 
-**Authentication → URL Configuration**:
+**Authentication → URL Configuration**. Two separate settings on that page:
 
-- Site URL: `https://<your-username>.github.io/Otopark/`
-- Add all three to the redirect allowlist:
-  - `https://<your-username>.github.io/Otopark/`
-  - `http://localhost:5173/Otopark/` — `npm run dev`
-  - `http://localhost:5175/Otopark/` — in-editor preview
+**Site URL** — one plain address, no wildcard:
 
-> ⚠ **Write the addresses in lowercase.** A case mismatch breaks matching
-> silently and password-reset links stop working.
+```
+https://your-username.github.io/Otopark/
+```
+
+**Redirect URLs** — a list, not a text box. Each entry goes in through the
+**Add URL** button, one at a time. Add these three:
+
+```
+https://your-username.github.io/Otopark/**
+http://localhost:5173/Otopark/**
+http://localhost:5175/Otopark/**
+```
+
+> ⚠ **The `/**` matters.** The allowlist compares the WHOLE URL, and the only
+> redirect the app sends is `…/Otopark/sifre-sifirla` — the password-reset
+> return address. An entry of `…/Otopark/` alone does not cover it, so reset
+> links would be refused while everything else kept working. The wildcard also
+> covers any route added later.
+
+> ⚠ **Lowercase.** A case mismatch breaks matching silently. A capitalised
+> username here cost hours on a sister project.
+
+This section only affects **password reset**. Signup confirmation and normal
+sign-in use the Site URL, so you can finish step 7 before coming back to it.
 
 **Email:** Supabase's built-in sender is rate-limited hourly with no delivery
 guarantee. Configure your own SMTP under **Project Settings → Auth → SMTP**
@@ -284,7 +325,7 @@ Secrets (**Edge Functions → Secrets**):
 | Secret | Used by | Note |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | plaka-oku, kamera-webhook | Only if plate OCR is enabled |
-| `ALLOWED_ORIGINS` | both | `https://<user>.github.io` — `*` if empty |
+| `ALLOWED_ORIGINS` | both | `https://YOUR-USERNAME.github.io` — `*` if empty |
 | `KAMERA_WEBHOOK_SECRET` | kamera-webhook | **At least 16 characters**, random |
 | `KAMERA_WEBHOOK_SECRET_ESKI` | kamera-webhook | Only during rotation |
 | `PUSH_SECRET` | send-push | At least 16 characters, random |

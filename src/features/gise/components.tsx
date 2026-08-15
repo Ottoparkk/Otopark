@@ -1,9 +1,9 @@
-import { Label } from '../../components/ui/primitives'
+import { IconTile, Label } from '../../components/ui/primitives'
 import { formatPlaka } from '../../lib/plaka'
 import { formatGoreceli } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
 import { ARAC_TIPI_ETIKET, type AcikBilet, type AracTipi } from '../../lib/types'
-import { IconAraba, IconKamera, IconUyari } from '../../components/ui/icons'
+import { IconAraba, IconIleri, IconKamera, IconUyari } from '../../components/ui/icons'
 
 const TIPLER: AracTipi[] = ['OTOMOBIL', 'MOTOSIKLET', 'MINIBUS', 'KAMYONET']
 
@@ -35,8 +35,11 @@ export function AracTipiSecici({
               aria-checked={active}
               onClick={() => onChange(t)}
               className={[
-                'min-h-[56px] rounded-field px-3 text-body font-medium transition-colors',
-                active ? 'bg-accent text-accent-ink' : 'bg-field text-soft',
+                'min-h-[56px] rounded-field border px-3 text-body font-medium',
+                'transition-[background-color,color,transform] duration-100 active:scale-[0.98]',
+                active
+                  ? 'border-accent bg-accent text-accent-ink shadow-raised'
+                  : 'border-border bg-field text-soft',
               ].join(' ')}
             >
               {ARAC_TIPI_ETIKET[t]}
@@ -57,12 +60,21 @@ export function AracTipiSecici({
  * looks like a duration.
  */
 export function BiletKart({ bilet, onClick }: { bilet: AcikBilet; onClick: () => void }) {
+  // The tile colour carries the row's state, so a scanning eye sorts the list
+  // before reading a single word. "Kapıda" wins over "Abonman": a car waiting
+  // at the barrier is the one that needs attention right now.
+  const tone = bilet.cikis_bekliyor_at ? 'accent' : bilet.abonman_id ? 'success' : 'neutral'
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-card bg-surface p-4 text-left active:brightness-[0.97]"
+      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 active:scale-[0.99] active:brightness-[0.97]"
     >
+      <IconTile tone={tone}>
+        <IconAraba size={21} />
+      </IconTile>
+
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-lead font-semibold tracking-wide text-ink tnum">
@@ -79,23 +91,40 @@ export function BiletKart({ bilet, onClick }: { bilet: AcikBilet; onClick: () =>
             </span>
           )}
         </div>
-        <p className="mt-1 truncate text-label text-faint">
+        <p className="mt-0.5 truncate text-label text-faint">
           {formatGoreceli(bilet.giris_at)} · {ARAC_TIPI_ETIKET[bilet.arac_tipi]}
           {bilet.gecikmeli_kayit && ' · kameradan'}
         </p>
       </div>
 
       {/* The one number worth reading at arm's length in this row. */}
-      <span className="shrink-0 text-body font-medium text-soft tnum">
+      <span className="shrink-0 text-body font-semibold text-ink tnum">
         {sureMetni(bilet.giris_at)}
       </span>
+      <IconIleri size={17} className="-mr-0.5 shrink-0 text-faint" />
     </button>
   )
 }
 
+/**
+ * Occupancy as a whole percent.
+ *
+ * One definition, because this number is rendered three ways on two screens —
+ * the header badge, the headline figure, and the width of the capacity bar. If
+ * the bar were fed the unrounded value and the label the rounded one they
+ * could disagree, which is the sort of tiny inconsistency that makes an
+ * interface feel untrustworthy on the screen where trust matters most.
+ *
+ * A zero or missing capacity yields 0 rather than NaN or Infinity.
+ */
+export function dolulukYuzde(dolu: number, kapasite: number): number {
+  if (!kapasite || kapasite <= 0) return 0
+  return Math.round((dolu / kapasite) * 100)
+}
+
 /** Occupancy, sized to sit quietly in a header. Amber past 90%. */
 export function DolulukRozeti({ dolu, kapasite }: { dolu: number; kapasite: number }) {
-  const yuzde = kapasite > 0 ? Math.round((dolu / kapasite) * 100) : 0
+  const yuzde = dolulukYuzde(dolu, kapasite)
   const dolmak = yuzde >= 90
   return (
     <span

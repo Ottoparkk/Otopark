@@ -18,26 +18,34 @@
    colour is only ever used on a tinted chip. */
 
 @theme {
-  /* --- surfaces ------------------------------------------------------- */
-  --color-bg: #f5f6f8; /* app background */
-  --color-surface: #ffffff; /* cards, sheets */
-  --color-field: #eff1f4; /* inset inputs, wells */
-  --color-border: #e2e5ea;
-  --color-divider: #ecedf2;
+  /* --- surfaces -------------------------------------------------------
+     The three greys are a LADDER, and the order matters more than the
+     values: `field` is an inset well and must be darker than BOTH `bg` and
+     `surface`, because the search input on Araçlar sits directly on the page
+     background. An earlier draft made `field` lighter than `bg` and measured
+     1.03:1 against it — the input silently disappeared. */
+  --color-bg: #eef1f6; /* app background */
+  --color-surface: #ffffff; /* cards, sheets — 1.13:1 against bg */
+  --color-field: #e4e9f1; /* inset inputs, wells — 1.08 on bg, 1.22 in a card */
+  --color-border: #dbe1ea; /* 1.31:1 hairline on surface */
+  --color-divider: #e7ebf2;
 
   /* --- text ----------------------------------------------------------- */
   --color-ink: #14161a; /* primary — 18.1:1 on surface */
-  --color-soft: #4a5058; /* secondary — 8.1:1 on surface, 7.2:1 on field */
-  /* Labels. Measured against `field`, its WORST background — 4.6:1 there,
-     4.8:1 on bg, 5.2:1 on surface. The obvious #6b727c fails on field (4.3). */
-  --color-faint: #666d77;
+  --color-soft: #474d56; /* secondary — 8.5:1 on surface, 7.0:1 on field */
+  /* Labels. Measured against `field`, its WORST background — 4.76:1 there,
+     5.13:1 on bg, 5.81:1 on surface. Darkened alongside `field`: the old
+     #666d77 lands at 4.41 on this darker well and would have failed AA. */
+  --color-faint: #5f666f;
 
-  /* --- accent --------------------------------------------------------- */
-  /* 4.9:1 as text on accent-soft (its tightest pairing, used by chips and
-     banners), 5.7:1 on surface, and 5.7:1 for white on the filled button. */
-  --color-accent: #1d5ce0;
+  /* --- accent ---------------------------------------------------------
+     Indigo, and used boldly — the old #1d5ce0 was a default blue that only
+     ever appeared on small chips, which is most of why the app read as
+     generic. 7.77:1 BOTH directions: as text on white, and as white on the
+     filled button. */
+  --color-accent: #5334c9;
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #e6edfd;
+  --color-accent-soft: #ece7fb; /* accent on it: 6.43:1 */
 
   /* --- semantic -------------------------------------------------------
      Each pair is quoted on its OWN soft background, which is where these
@@ -51,18 +59,32 @@
 
   /* --- payment methods, used as chips across the app -------------------
      Also used FILLED in the method picker, so both directions matter:
-     text-on-soft and white-on-fill. */
+     text-on-soft and white-on-fill.
+
+     `kart` deliberately KEEPS the old blue. It used to be identical to the
+     accent; moving the brand to indigo makes it more distinct, not less.
+
+     `havale` MOVED from #6d28d9, which is nearly the new accent — a Havale
+     chip would have read as "primary". Magenta was picked over teal because
+     it measured better on contrast AND kept a wider hue gap to every other
+     semantic colour (40° to its nearest neighbour, vs 29° for teal). */
   --color-nakit: #0f7050; /* 5.3:1 on soft · 6.1:1 white on fill */
   --color-nakit-soft: #e2f4ec;
   --color-kart: #1d5ce0; /* 4.9:1 on soft · 5.7:1 white on fill */
   --color-kart-soft: #e6edfd;
-  --color-havale: #6d28d9; /* 5.9:1 on soft · 7.0:1 white on fill */
-  --color-havale-soft: #ede7fb;
+  --color-havale: #a3186e; /* 6.0:1 on soft · 7.2:1 white on fill */
+  --color-havale-soft: #fce4f1;
 
   /* --- type ramp ------------------------------------------------------
-     Deliberately short. The fee on the exit screen is `text-hero` and
-     nothing else in the app is allowed to be. */
-  --text-hero: 2.75rem; /* 44px — the amount being collected */
+     Deliberately short.
+
+     `text-hero` is ONE PER SCREEN, and only for the number that screen exists
+     to show: the fee on Çıkış, the amount on its receipt, occupancy on
+     Araçlar, today's takings on Yönetim. If a second number on a screen wants
+     to be hero, that screen has two subjects and the fix is the layout, not
+     the type ramp. (Mostly it sits on the brand panel; the receipt is the one
+     place it does not, because that screen is nothing but the number.) */
+  --text-hero: 2.75rem; /* 44px — the number a screen exists to show */
   --text-hero--line-height: 1.05;
   --text-hero--letter-spacing: -0.02em;
   --text-title: 1.375rem; /* 22px — screen titles */
@@ -77,12 +99,13 @@
   --text-micro--line-height: 1.3;
 
   /* --- radii ---------------------------------------------------------- */
-  --radius-card: 18px;
-  --radius-field: 14px;
+  --radius-card: 20px;
+  --radius-field: 16px;
   --radius-chip: 999px;
 
-  /* Elevation is deliberately NOT defined here — see the block below the
-     dark-mode tokens for why `@theme` cannot express a theme-varying shadow. */
+  /* Elevation and the brand gradient are deliberately NOT defined here —
+     see the block below the dark-mode tokens for why `@theme` cannot express
+     either one. */
 
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
@@ -98,70 +121,99 @@
 
 .dark {
   --color-bg: #0f1013;
-  --color-surface: #191b20;
+  --color-surface: #191b20; /* 1.10:1 against bg */
   --color-field: #21242b;
-  --color-border: #2c3037;
+  --color-border: #2c3037; /* 1.30:1 hairline on surface */
   --color-divider: #24272e;
 
-  --color-ink: #ecedef; /* 15.2:1 on surface */
+  --color-ink: #ecedef; /* 14.7:1 on surface */
   --color-soft: #a7adb6; /* 7.6:1 */
-  --color-faint: #8a919b; /* 5.3:1 — lightened from the light-mode value,
-                             which would have been 4.4:1 here and failed */
+  --color-faint: #8a919b; /* 4.9:1 on field — its worst background */
 
-  --color-accent: #5b8def; /* 5.9:1 on bg */
-  --color-accent-ink: #0f1013;
-  --color-accent-soft: #1b2740;
+  --color-accent: #9d86f5; /* 5.9:1 on surface */
+  --color-accent-ink: #0f1013; /* 6.5:1 on the filled button */
+  --color-accent-soft: #241d42; /* accent on it: 5.4:1 */
 
-  --color-success: #4ade9b; /* 9.4:1 on success-soft */
+  --color-success: #4ade9b; /* 9.0:1 on success-soft */
   --color-success-soft: #12291f;
-  --color-danger: #ff8a80; /* 7.3:1 — the light-mode red is 2.9:1 here */
+  --color-danger: #ff8a80; /* 7.1:1 — the light-mode red is 2.9:1 here */
   --color-danger-soft: #2e1b1a;
-  --color-warn: #f5b759;
+  --color-warn: #f5b759; /* 8.6:1 on warn-soft */
   --color-warn-soft: #2e2415;
 
   --color-nakit: #4ade9b;
   --color-nakit-soft: #12291f;
   --color-kart: #5b8def;
   --color-kart-soft: #1b2740;
-  --color-havale: #b79bf5;
-  --color-havale-soft: #241b3a;
+  --color-havale: #f472b6; /* 6.0:1 on soft · 7.2:1 on the fill */
+  --color-havale-soft: #3a1528;
 }
 
-/* ========================================================== elevation ===
-   Reserved for things that genuinely float: modals and the action bar.
-   Cards separate by spacing and surface colour, not by shadow.
-
-   Two layers, one light source (above): a tight shadow for the object's own
-   lift, and a wide diffuse one for ambient occlusion. A single blurred shadow
-   reads as fog; two read as an object lifted off the page.
-
+/* ================================================ elevation + brand ===
    ⚠ WHY THESE ARE NOT `@theme` TOKENS, measured in the browser:
    Tailwind v4 does not emit `--shadow-*` to :root — it BAKES the value into
    the utility at build time and rewrites each layer's colour to a hex literal
-   (`.shadow-modal{--tw-shadow:0 2px 6px var(--tw-shadow-color,#00000012)…}`).
-   So re-declaring `--shadow-modal` under `.dark` sets a variable nothing ever
-   reads: it compiles, it looks right in the source, and dark-mode modals
-   silently keep the light shadow — which is nearly invisible against #0f1013.
+   (`.shadow-card{--tw-shadow:0 1px 2px var(--tw-shadow-color,#0000000a)…}`).
+   So re-declaring `--shadow-card` under `.dark` sets a variable nothing ever
+   reads: it compiles, it looks right in the source, and dark-mode shadows
+   silently keep the light values — which are invisible against #0f1013.
    `--tw-shadow-color` cannot fix it either, since one colour cannot express
    two layers at different alphas.
 
-   Owning the utility keeps a single definition per theme and makes the
+   The brand gradient is here for the same reason: it varies by theme and has
+   to survive as a real `var()` reference at runtime.
+
+   Owning the utilities keeps a single definition per theme and makes the
    override actually apply. The one thing given up is composing with Tailwind's
    ring/inset shadow layers, which nothing here does. */
 
 :root {
+  /* Cards. Two layers, one light source (above): a tight shadow for the
+     object's own lift, and a wide diffuse one for ambient occlusion. Kept
+     gentle — 44 cards all shouting is worse than none. What actually makes a
+     card read as an object is this PLUS the hairline border. */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.04), 0 4px 14px -2px rgb(16 24 40 / 0.06);
+  /* Buttons and the segmented-control thumb: things you can press. */
+  --shadow-raised: 0 1px 2px rgb(16 24 40 / 0.06), 0 6px 16px -6px rgb(16 24 40 / 0.24);
   --shadow-modal: 0 2px 6px rgb(0 0 0 / 0.07), 0 18px 44px rgb(0 0 0 / 0.2);
-  /* The action bar is bottom-anchored, so its shadow has to fall UPWARD onto
-     the content sliding beneath it. A deliberate exception to the light-source
-     rule — obeying it would put the shadow off the bottom edge, invisible. */
+  /* The action bar and bottom nav are bottom-anchored, so their shadow has to
+     fall UPWARD onto the content sliding beneath. A deliberate exception to
+     the light-source rule — obeying it would put the shadow off the bottom
+     edge, invisible. */
   --shadow-sheet: 0 -1px 3px rgb(0 0 0 / 0.05), 0 -10px 28px rgb(0 0 0 / 0.09);
+  --shadow-nav: 0 -1px 3px rgb(16 24 40 / 0.04), 0 -8px 24px -8px rgb(16 24 40 / 0.1);
+
+  /* Brand surface. White clears AA at BOTH ends (12.3:1 and 6.8:1), which is
+     what allows a second, quieter text level on top of it — the light end was
+     deliberately darkened from a brighter indigo, because at #6d4ae0 no tint
+     of white reached 4.5:1 and the panel could only ever have had one voice. */
+  --brand-from: #33257e;
+  --brand-to: #5f3fd0;
+  --on-brand: #ffffff;
+  --on-brand-soft: #e9e3fc; /* 5.4:1 on the lightest end of the gradient */
 }
 
 .dark {
   /* Shadows have to work harder in dark mode: there is far less contrast
      between a raised surface and the ground behind it. */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 14px -2px rgb(0 0 0 / 0.4);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.35), 0 6px 16px -6px rgb(0 0 0 / 0.55);
   --shadow-modal: 0 2px 6px rgb(0 0 0 / 0.4), 0 18px 44px rgb(0 0 0 / 0.6);
   --shadow-sheet: 0 -1px 3px rgb(0 0 0 / 0.3), 0 -10px 28px rgb(0 0 0 / 0.45);
+  --shadow-nav: 0 -1px 3px rgb(0 0 0 / 0.3), 0 -8px 24px -8px rgb(0 0 0 / 0.45);
+
+  --brand-from: #241a5c;
+  --brand-to: #3d2b96;
+  --on-brand: #ffffff; /* 15.3:1 / 10.6:1 */
+  --on-brand-soft: #cfc4f5; /* 6.5:1 */
+}
+
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+@utility shadow-raised {
+  box-shadow: var(--shadow-raised);
 }
 
 @utility shadow-modal {
@@ -170,6 +222,25 @@
 
 @utility shadow-sheet {
   box-shadow: var(--shadow-sheet);
+}
+
+@utility shadow-nav {
+  box-shadow: var(--shadow-nav);
+}
+
+/* The one branded surface in the app. Reserved for the single most important
+   number on a screen — occupancy on Araçlar, the fee on Çıkış. If it shows up
+   three times on one screen it has stopped meaning anything. */
+@utility bg-brand {
+  background-image: linear-gradient(135deg, var(--brand-from) 0%, var(--brand-to) 100%);
+}
+
+@utility text-on-brand {
+  color: var(--on-brand);
+}
+
+@utility text-on-brand-soft {
+  color: var(--on-brand-soft);
 }
 
 /* ============================================================== base =====*/
@@ -193,7 +264,7 @@
 
   /* Grey placeholder-on-grey is banned for anything load-bearing; this is the
      one place it is allowed. `faint` was picked against `field` precisely
-     because that is where placeholders live — 4.6:1, still AA. */
+     because that is where placeholders live — 4.76:1, still AA. */
   ::placeholder {
     color: var(--color-faint);
     opacity: 1;

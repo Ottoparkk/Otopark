@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  BrandPanel,
   Button,
-  Card,
   EmptyState,
   FloatingBar,
   Input,
@@ -188,27 +188,30 @@ function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => void })
 
       <div className="flex-1 space-y-5 px-5">
         {/* ---- the one thing at full contrast -------------------------- */}
-        <Card className="text-center">
-          <p className="text-lead font-medium tracking-wide text-soft tnum">
+        {/* The amount being collected is the single most important number in
+            the whole app, so it gets the one branded surface. Everything on
+            this panel is either the fee or an explanation of the fee. */}
+        <BrandPanel className="text-center">
+          <p className="text-lead font-medium tracking-wide text-on-brand-soft tnum">
             {formatPlaka(bilet.plaka)}
           </p>
 
           <div className="mt-3 mb-1 no-select">
             {ucretYukleniyor && !override ? (
               <div className="py-3">
-                <Spinner label="Ücret hesaplanıyor" görünürEtiket />
+                <Spinner label="Ücret hesaplanıyor" görünürEtiket tone="inherit" />
               </div>
             ) : (
-              <p className="text-hero font-semibold text-ink tnum">
+              <p className="text-hero font-semibold tnum">
                 {formatTutar(netKurus)}
-                <span className="ml-1 text-title font-medium text-faint">₺</span>
+                <span className="ml-1 text-title font-medium text-on-brand-soft">₺</span>
               </p>
             )}
           </div>
 
           {/* Everything else steps down. No labels — a duration looks like a
               duration and an entry time looks like an entry time. */}
-          <p className="text-label text-faint">
+          <p className="text-label text-on-brand-soft">
             {sureMetni(bilet.giris_at)} · {formatGoreceli(bilet.giris_at)} ·{' '}
             {ARAC_TIPI_ETIKET[bilet.arac_tipi]}
           </p>
@@ -219,13 +222,15 @@ function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => void })
             </p>
           )}
 
+          {/* on-brand-soft, not text-accent: indigo on the indigo panel would
+              be all but unreadable. */}
           {bilet.indirim_kurus > 0 && (
-            <p className="mt-3 flex items-center justify-center gap-2 text-label text-accent">
+            <p className="mt-3 flex items-center justify-center gap-2 text-label text-on-brand-soft">
               {bilet.puan_kullanilan} puan kullanıldı · −{formatTL(bilet.indirim_kurus)}
               <button
                 type="button"
                 onClick={() => void puanGeriAl.mutateAsync(bilet.id)}
-                className="min-h-[44px] font-medium underline"
+                className="min-h-[44px] font-medium text-on-brand underline"
               >
                 geri al
               </button>
@@ -238,7 +243,7 @@ function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => void })
               Yönetici bilgilendirilecek.
             </p>
           )}
-        </Card>
+        </BrandPanel>
 
         {/* ---- points ------------------------------------------------- */}
         {!abonman && puan?.hesap_var && bilet.indirim_kurus === 0 && maxPuan > 0 && (

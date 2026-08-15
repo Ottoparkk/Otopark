@@ -43,7 +43,12 @@ export function AppShell() {
       {/* ------------------------------------------------ desktop top bar */}
       <header className="sticky top-0 z-20 hidden border-b border-divider bg-surface md:block">
         <div className="mx-auto flex h-16 max-w-[1100px] items-center gap-2 px-6">
-          <span className="mr-4 text-lead font-semibold text-ink">Otopark</span>
+          <span className="mr-4 flex items-center gap-2.5">
+            <span className="flex size-8 items-center justify-center rounded-[10px] bg-brand text-[17px] font-bold text-on-brand">
+              P
+            </span>
+            <span className="text-lead font-semibold text-ink">Otopark</span>
+          </span>
           <nav className="flex flex-1 items-center gap-1">
             {items.map(({ to, label, Icon, end }) => (
               <NavLink
@@ -86,8 +91,8 @@ export function AppShell() {
       </main>
 
       {/* ---------------------------------------------- mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-divider bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
-        <div className="flex">
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/90 pb-[env(safe-area-inset-bottom)] shadow-nav backdrop-blur-lg md:hidden">
+        <div className="flex px-1 pt-1.5 pb-0.5">
           {items.map(({ to, label, Icon, end }) => (
             <NavLink
               key={to}
@@ -95,13 +100,28 @@ export function AppShell() {
               end={end}
               className={({ isActive }) =>
                 [
-                  'flex min-h-[60px] flex-1 flex-col items-center justify-center gap-1 transition-colors',
+                  'flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1',
                   isActive ? 'text-accent' : 'text-faint',
                 ].join(' ')
               }
             >
-              <Icon size={22} />
-              <span className="text-micro font-medium">{label}</span>
+              {({ isActive }) => (
+                <>
+                  {/* The tinted pill behind the icon — not just a colour
+                      change. Which tab you are on has to survive a glance in
+                      sunlight, and a tinted shape reads far faster than a hue
+                      shift on a 22px stroke icon. */}
+                  <span
+                    className={[
+                      'flex h-7 w-12 items-center justify-center rounded-chip transition-colors',
+                      isActive ? 'bg-accent-soft' : 'bg-transparent',
+                    ].join(' ')}
+                  >
+                    <Icon size={21} />
+                  </span>
+                  <span className="text-micro font-medium">{label}</span>
+                </>
+              )}
             </NavLink>
           ))}
         </div>

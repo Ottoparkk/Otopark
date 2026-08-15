@@ -1,32 +1,44 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
+import { IconTile } from '../../components/ui/primitives'
 import { gunEkle, istanbulGun } from '../../lib/dates'
 import { formatTL } from '../../lib/money'
 
 /* ------------------------------------------------------------- MenuKart */
 
+/**
+ * One tile in the Yönetim menu.
+ *
+ * A stack rather than a row, because the menu is a 2-column grid: twelve
+ * identical full-width rows of grey text was the single dullest surface in the
+ * app, and nothing in it helped you find anything. The tile colour groups the
+ * destinations — money, operations, administration — so the eye can skip a
+ * whole category instead of reading twelve labels.
+ */
 export function MenuKart({
   to,
   icon,
   baslik,
   aciklama,
+  tone = 'neutral',
 }: {
   to: string
   icon: ReactNode
   baslik: string
   aciklama: string
+  tone?: 'accent' | 'success' | 'warn' | 'danger' | 'neutral'
 }) {
   return (
     <Link
       to={to}
-      className="flex items-center gap-3.5 rounded-card bg-surface p-4 active:brightness-[0.97]"
+      className="flex flex-col gap-3 rounded-card border border-border bg-surface p-4 shadow-card transition-[filter,transform] duration-100 active:scale-[0.99] active:brightness-[0.97]"
     >
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-field bg-field text-soft">
+      <IconTile tone={tone} size="lg">
         {icon}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-body font-medium text-ink">{baslik}</span>
-        <span className="mt-0.5 block truncate text-label text-faint">{aciklama}</span>
+      </IconTile>
+      <span className="min-w-0">
+        <span className="block text-body font-semibold text-ink">{baslik}</span>
+        <span className="mt-0.5 block text-label text-faint">{aciklama}</span>
       </span>
     </Link>
   )

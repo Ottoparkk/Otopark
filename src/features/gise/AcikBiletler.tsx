@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
-  Card,
+  BrandPanel,
   EmptyState,
   Input,
   ListeDurumu,
+  OranCubugu,
   ScreenHeader,
 } from '../../components/ui/primitives'
-import { BiletKart, DolulukRozeti } from './components'
+import { BiletKart, DolulukRozeti, dolulukYuzde } from './components'
 import { useAcikBiletler, useGunlukOzet } from './api'
 import { useAcikIstisnaSayisi } from '../istisna/api'
 import { formatTL } from '../../lib/money'
@@ -42,27 +43,47 @@ export default function AcikBiletler() {
       />
 
       <div className="space-y-4 px-5">
-        {/* Today at a glance. Numbers at full contrast, their captions faint —
-            the figure is what gets read, the word only explains it. */}
+        {/* Today at a glance.
+            Occupancy is the headline because it is the question an operator
+            actually has — "can I let another car in?" — and the two money/count
+            figures step down to a quieter row beneath it rather than competing
+            as three equal numbers. */}
         {ozet && (
-          <Card>
-            <div className="grid grid-cols-3 gap-3 text-center">
+          <BrandPanel>
+            <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-title font-semibold text-ink tnum">{ozet.doluluk}</p>
-                <p className="mt-0.5 text-label text-faint">içeride</p>
+                <p className="text-label font-medium tracking-wide text-on-brand-soft uppercase">
+                  Doluluk
+                </p>
+                <p className="mt-1 text-hero font-semibold tnum">
+                  {ozet.doluluk}
+                  <span className="ml-1 text-title font-medium text-on-brand-soft">
+                    / {ozet.kapasite}
+                  </span>
+                </p>
+              </div>
+              <p className="pb-1.5 text-title font-semibold tnum">
+                %{dolulukYuzde(ozet.doluluk, ozet.kapasite)}
+              </p>
+            </div>
+
+            <div className="mt-3">
+              <OranCubugu yuzde={dolulukYuzde(ozet.doluluk, ozet.kapasite)} />
+            </div>
+
+            <div className="mt-4 flex gap-6 border-t border-white/15 pt-3.5">
+              <div>
+                <p className="text-lead font-semibold tnum">{ozet.arac_sayisi}</p>
+                <p className="text-label text-on-brand-soft">bugün giren</p>
               </div>
               <div>
-                <p className="text-title font-semibold text-ink tnum">{ozet.arac_sayisi}</p>
-                <p className="mt-0.5 text-label text-faint">bugün giren</p>
-              </div>
-              <div>
-                <p className="text-title font-semibold text-ink tnum">
+                <p className="text-lead font-semibold tnum">
                   {formatTL(ozet.toplam_kurus, { decimals: 0 })}
                 </p>
-                <p className="mt-0.5 text-label text-faint">bugün tahsilat</p>
+                <p className="text-label text-on-brand-soft">bugün tahsilat</p>
               </div>
             </div>
-          </Card>
+          </BrandPanel>
         )}
 
         {kapidakiler > 0 && (
