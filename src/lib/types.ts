@@ -34,8 +34,13 @@ export type BildirimTur =
   | 'KAMERA'
   | 'KAMERA_HAREKET'
   | 'ISTISNA'
+  | 'VARDIYA_ACIK'
+  | 'ONAY_BEKLIYOR'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
+
+/** Who closed a shift: the operator, a Yönetici, or the recovery job. */
+export type VardiyaKapanisKaynak = 'ELLE' | 'YONETICI' | 'OTOMATIK'
 
 /* --------------------------------------------------- display label tables */
 
@@ -103,6 +108,8 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   KAMERA: 'Kamera arızası',
   KAMERA_HAREKET: 'Kameradan giriş/çıkış',
   ISTISNA: 'Çözülmemiş kayıt',
+  VARDIYA_ACIK: 'Açık kalan vardiya',
+  ONAY_BEKLIYOR: 'Onay bekleyen tahsilat',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -130,6 +137,7 @@ export interface OtoparkAyarlari {
   kamera_aktif: boolean
   terk_esik_saat: number
   doluluk_uyari_yuzde: number
+  vardiya_esik_saat: number
   kamera_kalp_atisi: string | null
   kamera_kalp_esik_dk: number
   guncelleyen: string | null
@@ -195,6 +203,8 @@ export interface Vardiya {
   sayilan_nakit_kurus: number | null
   fark_kurus: number | null
   notlar: string | null
+  /** NULL only while the shift is open — 025 makes the two inseparable. */
+  kapanis_kaynak: VardiyaKapanisKaynak | null
 }
 
 export interface Abonman {

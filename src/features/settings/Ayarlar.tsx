@@ -15,6 +15,8 @@ import { IconAy, IconGunes, IconIleri, IconZil } from '../../components/ui/icons
 const TERCIH_TURLERI: BildirimTur[] = [
   'YENI_UYELIK',
   'VARDIYA_FARK',
+  'VARDIYA_ACIK',
+  'ONAY_BEKLIYOR',
   'UCRET_DEGISIKLIGI',
   'BILET_IPTAL',
   'ABONMAN_BITIYOR',

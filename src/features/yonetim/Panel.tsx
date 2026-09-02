@@ -23,8 +23,10 @@ import {
  *    to each area.
  *  - Tarifeler moved to Finans. Prices are the single biggest determinant of
  *    revenue, so that is where someone goes looking for them.
- *  - Puan hesapları appears only when the points feature is actually ON. It
- *    ships off, and a tile leading to an inert screen is worse than no tile.
+ *  - Puan hesapları is always listed, and says so when the feature is off.
+ *    It used to be hidden while off — but the switch that turns it on now
+ *    lives on that screen, and a tile you must already have enabled the
+ *    feature to see is a door locked from the inside.
  *
  * What is left is one column of full-width rows, short enough to need no
  * group headings.
@@ -36,9 +38,9 @@ import {
 export default function Panel() {
   const { data: ayarlar } = useAyarlar()
 
-  // `=== true`, not a truthy check: this is undefined while the settings row is
-  // still loading, and points ship OFF, so the common case renders its final
-  // layout immediately instead of showing a tile and snatching it back.
+  // `=== true`, not a truthy check: this is undefined while the settings row
+  // is still loading, and points ship OFF — so the caption starts at the
+  // common case rather than promising a feature that is not on.
   const puanAcik = ayarlar?.puan_aktif === true
 
   return (
@@ -67,16 +69,17 @@ export default function Panel() {
               of text. Money stays green, people teal, points amber, the lot's
               own settings magenta — Profil keeps neutral, because it belongs
               to the utility row below rather than to this menu. */}
-          {puanAcik && (
-            <MenuKart
-              satir
-              to="/yonetim/hesaplar"
-              tone="warn"
-              icon={<IconPuan size={22} />}
-              baslik="Puan hesapları"
-              aciklama="Hesaplar ve bakiyeler"
-            />
-          )}
+          {/* Always listed, even with the feature off: the switch that turns
+              it on now lives INSIDE this screen, so hiding the tile would
+              make the setting unreachable. */}
+          <MenuKart
+            satir
+            to="/yonetim/hesaplar"
+            tone="warn"
+            icon={<IconPuan size={22} />}
+            baslik="Puan hesapları"
+            aciklama={puanAcik ? 'Hesaplar, bakiyeler ve kural' : 'Kapalı — açmak için dokunun'}
+          />
           <MenuKart
             satir
             to="/yonetim/personel"
@@ -91,7 +94,7 @@ export default function Panel() {
             tone="mor"
             icon={<IconAyar size={22} />}
             baslik="Otopark ayarları"
-            aciklama="Kapasite, kamera, plaka okuma, puan"
+            aciklama="Kapasite, park yerleri, kamera, plaka okuma"
           />
         </div>
 

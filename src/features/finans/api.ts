@@ -498,6 +498,43 @@ export function useTumVardiyalar() {
   })
 }
 
+/**
+ * Yönetici closes a shift that its owner cannot.
+ *
+ * `sayilan` is optional and that is the whole point: an operator who never
+ * came back never counted the drawer, and writing a number nobody counted
+ * would turn a real shortfall into a permanent "tutuyor". Null in, null
+ * stored, question stays visible.
+ */
+export function useVardiyaZorlaKapat() {
+  const qc = useQueryClient()
+  return useMutation({
+    // Closing decides money and can raise a discrepancy alert. A blind retry
+    // would re-run that against a shift that is already closed.
+    retry: false,
+    mutationFn: async ({
+      id,
+      sayilan,
+      notlar,
+    }: {
+      id: string
+      sayilan: number | null
+      notlar: string | null
+    }) => {
+      const { error } = await supabase.rpc('vardiya_zorla_kapat', {
+        p_vardiya_id: id,
+        p_sayilan_nakit_kurus: sayilan,
+        p_notlar: notlar,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['tum_vardiyalar'] })
+      void qc.invalidateQueries({ queryKey: ['vardiya_ozetim'] })
+    },
+  })
+}
+
 /* ================================================================= onay === */
 
 export interface OnayKayit {

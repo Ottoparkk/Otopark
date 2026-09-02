@@ -86,6 +86,7 @@ declare
   v_tarife_yeni  uuid;
   v_hesap        uuid;
   v_vardiya      uuid;
+  v_eski_vardiya uuid;
   v_yer          uuid;
   v_abonman      uuid;
   v_islem        uuid;
@@ -1773,7 +1774,11 @@ foreach v_txt in array array[
   'public.yer_mesgul(uuid)', 'public.yer_listesi()', 'public.bos_park_yeri()',
   'public.vardiya_yeniden_hesapla(uuid)', 'public.cop_yaz()',
   'public.tahsilat_durum_ata()', 'public.kamera_giris_bildirimi()',
-  'public.kamera_cikis_bildirimi()'
+  'public.kamera_cikis_bildirimi()',
+  -- Rol kontrolü YOK ve olamaz: cron'da auth.uid() null'dır, guard her
+  -- çalıştırmada patlardı. Açık kalsaydı personel kendi vardiyasını
+  -- istediği anda "otomatik" kapattırabilirdi.
+  'public.run_vardiya_kurtarma()'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -2300,6 +2305,139 @@ end;
 perform pg_temp.logout();
 
 raise notice 'PASS 47: maaş kolonları istemciye kapalı, liste yalnızca Yöneticiye açık';
+
+-- ---------------------------------------------------------------------------
+-- 48. Fotoğraf saklama süresi 1-30 gün (024)
+--
+-- Ekrandaki doğrulama yalnızca UI'dır; asıl sınır CHECK'tir. 0 ("hiç silme")
+-- bilerek reddedilir: plaka kişisel veridir ve sınırsız saklama hem kotayı
+-- hem KVKK'yı zorlar.
+-- ---------------------------------------------------------------------------
+begin
+  update public.otopark_ayarlari set foto_saklama_gun = 0 where id = 1;
+  raise exception 'FAIL 48a: saklama süresi 0 kabul edildi';
+exception when check_violation then null;
+end;
+
+begin
+  update public.otopark_ayarlari set foto_saklama_gun = 31 where id = 1;
+  raise exception 'FAIL 48b: saklama süresi 31 kabul edildi';
+exception when check_violation then null;
+end;
+
+update public.otopark_ayarlari set foto_saklama_gun = 30 where id = 1;
+if (select foto_saklama_gun from public.otopark_ayarlari where id = 1) <> 30 then
+  raise exception 'FAIL 48c: aralık içindeki değer yazılamadı';
+end if;
+
+raise notice 'PASS 48: fotoğraf saklama süresi 1-30 gün ile sınırlı';
+
+-- ---------------------------------------------------------------------------
+-- 49. Kendini toparlama (025)
+--
+-- Açık kalan vardiya, sahibi kapatamadığı için o kişiyi kalıcı olarak
+-- kilitliyordu (`vardiya_ac` ikinci açık vardiyayı reddeder). İki çıkış yolu
+-- var ve ikisi de burada sınanır: gece değil 15 dakikada bir koşan kurtarma
+-- işi, ve Yönetici'nin elle kapatması.
+-- ---------------------------------------------------------------------------
+-- Temiz başlangıç: u_personel2'nin açık vardiyası varsa tekil indeks insert'i
+-- reddederdi.
+update public.vardiyalar
+   set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where personel_id = u_personel2 and kapanis_at is null;
+
+update public.otopark_ayarlari set vardiya_esik_saat = 16 where id = 1;
+
+insert into public.vardiyalar (personel_id, acilis_at, acilis_nakit_kurus)
+values (u_personel2, now() - interval '30 hours', 5000)
+returning id into v_vardiya;
+
+-- (a) Personel başkasının vardiyasını kapatamaz.
+perform pg_temp.login(u_personel);
+begin
+  perform * from public.vardiya_zorla_kapat(v_vardiya, null, null);
+  raise exception 'FAIL 49a: Personel başkasının vardiyasını kapattı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yalnızca Yönetici%' then
+    raise exception 'FAIL 49a: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (b) Kurtarma işi eşiği aşan vardiyayı kapatır — SAYMADAN.
+perform public.run_vardiya_kurtarma();
+
+if not exists (select 1 from public.vardiyalar
+                where id = v_vardiya
+                  and kapanis_at is not null
+                  and kapanis_kaynak = 'OTOMATIK'
+                  and sayilan_nakit_kurus is null
+                  and fark_kurus is null) then
+  raise exception 'FAIL 49b: açık kalan vardiya otomatik kapatılmadı ya da sayım uyduruldu';
+end if;
+
+-- Beklenen YAZILIR: açılış nakdi + o vardiyanın nakit tahsilatı (burada yok).
+if (select beklenen_nakit_kurus from public.vardiyalar where id = v_vardiya) <> 5000 then
+  raise exception 'FAIL 49c: otomatik kapanışta beklenen nakit yanlış';
+end if;
+
+select count(*) into v_n from public.notifications
+ where tur = 'VARDIYA_ACIK' and profile_id = u_yonetici;
+if v_n = 0 then
+  raise exception 'FAIL 49d: otomatik kapanış Yöneticiye bildirilmedi';
+end if;
+
+-- (e) Otomatik kapanan bir vardiyaya sonradan sayım yazılamaz. Bu kısıt
+--     olmasaydı "sayılan = beklenen" yazan bir yol farkı sonsuza dek sıfır
+--     gösterir ve eksik kasa görünmez olurdu.
+begin
+  update public.vardiyalar set sayilan_nakit_kurus = 5000 where id = v_vardiya;
+  raise exception 'FAIL 49e: otomatik kapanışa sayım yazılabildi';
+exception when check_violation then null;
+end;
+
+v_eski_vardiya := v_vardiya;   -- (h) otomatik kapanan satıra geri dönecek
+
+-- (f) Yönetici elle kapatır ve sayım verirse fark normal kapanış gibi çıkar.
+insert into public.vardiyalar (personel_id, acilis_at, acilis_nakit_kurus)
+values (u_personel2, now() - interval '2 hours', 5000)
+returning id into v_vardiya;
+
+perform pg_temp.login(u_yonetici);
+perform * from public.vardiya_zorla_kapat(v_vardiya, 7000, 'sayıldı');
+perform pg_temp.logout();
+
+if not exists (select 1 from public.vardiyalar
+                where id = v_vardiya and kapanis_kaynak = 'YONETICI'
+                  and sayilan_nakit_kurus = 7000 and fark_kurus = 2000) then
+  raise exception 'FAIL 49f: Yönetici kapanışında fark yanlış';
+end if;
+
+-- (g) Kurtarma işi istemciye kapalı olmalı: açık olsaydı personel kendi
+--     vardiyasını istediği anda "otomatik" kapattırabilirdi.
+if has_function_privilege('authenticated', 'public.run_vardiya_kurtarma()', 'execute')
+   or has_function_privilege('anon', 'public.run_vardiya_kurtarma()', 'execute') then
+  raise exception 'FAIL 49g: kurtarma işi istemciye açık';
+end if;
+
+-- (h) Yeniden hesap NULL sayımı 0 sanmamalı. 007'nin eski hâli otomatik
+--     kapanmış bir vardiyada `0 - beklenen` diye uydurma bir fark yazar,
+--     kısıt da bunu reddeder — yani o vardiyanın bileti hiç silinemezdi.
+-- Beklenen bilerek YANLIŞ yazılıyor: yeniden hesap ancak bir şey değiştiğinde
+-- yazar, aynı değerlerle çağrılsa hiç yazmaz ve test boşa geçerdi.
+update public.vardiyalar
+   set beklenen_nakit_kurus = 999
+ where id = v_eski_vardiya;
+perform public.vardiya_yeniden_hesapla(v_eski_vardiya);
+if (select fark_kurus from public.vardiyalar where id = v_eski_vardiya) is not null then
+  raise exception 'FAIL 49h: sayılmamış vardiyaya yeniden hesapla fark uydurdu';
+end if;
+if (select beklenen_nakit_kurus from public.vardiyalar where id = v_eski_vardiya) <> 5000 then
+  raise exception 'FAIL 49h: yeniden hesap beklenen nakdi düzeltmedi';
+end if;
+
+raise notice 'PASS 49: açık kalan vardiya kurtarılıyor, uydurma sayım engelleniyor';
 
 perform pg_temp.logout();
 raise notice '';

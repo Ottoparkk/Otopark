@@ -73,6 +73,8 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/021_cop_bayragi.sql` | The restore flag now silences the bin for that one record instead of everything after it |
 | `supabase/migrations/022_cop_anon_kapat.sql` | Revokes anon's default privileges on the bin table, which 007 never did |
 | `supabase/migrations/023_push_tetikleyici.sql` | Sends push from our own trigger via `pg_net`, instead of a dashboard webhook |
+| `supabase/migrations/024_foto_saklama_siniri.sql` | Caps plate-photo retention at 1-30 days (storage quota + KVKK) |
+| `supabase/migrations/025_kendini_toparlama.sql` | Auto-closes shifts left open, Yönetici force-close, nudges for forgotten queues |
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,
@@ -437,11 +439,25 @@ screen**; they do not work in a browser tab.
 The app works completely without plate OCR. To enable it, go to **Yönetim →
 Ayarlar**:
 
-- `plaka_saglayici`: `VLM` (Claude) or `ALPR` (Plate Recognizer)
+Flip **Plaka okuma açık**. That is the whole switch: on = Claude reads the
+photo, off = the camera only takes a picture. One photo can only go to one
+reader, so there is no "all providers at once" setting to make.
+
+The two columns behind that toggle are still there and are changed with SQL,
+not from the screen — they are an escape hatch, not an operator decision:
+
+- `plaka_saglayici`: `KAPALI` / `VLM` (Claude, what the toggle writes) /
+  `ALPR` (Plate Recognizer — needs `PLATE_RECOGNIZER_TOKEN`, and their
+  published country list does not include Turkey, so it is unverified here).
 - `plaka_model`: `claude-haiku-4-5` (default). This field is deliberately free
   text so switching provider needs no migration; the Edge Function validates the
   value against its own allowlist and falls back to the default if it does not
   recognise it.
+
+```sql
+update public.otopark_ayarlari
+   set plaka_saglayici = 'ALPR' where id = 1;
+```
 
 To measure the real hit rate after a month:
 

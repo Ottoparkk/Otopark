@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Card, Input, LoadError, ScreenHeader } from '../../components/ui/primitives'
-import { SegmentedControl } from '../../components/ui/primitives'
 import { Toggle } from '../../components/ui/Toggle'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Spinner } from '../../components/ui/Spinner'
 import { useAyarlar } from '../gise/api'
 import { useTumParkYerleri, useYerDuzeniUret, type YerDuzeniSonuc } from '../yerler/api'
-import { useAyarGuncelle, usePuanKurali, usePuanKuralGuncelle } from './api'
-import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
+import { useAyarGuncelle } from './api'
+import { digitsOnly } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
 import { YER_GRUPLARI, kodAraligi, yerDegisimi, yerDuzeni } from '../../lib/yerkodu'
 import type { YerGrup } from '../../lib/yerkodu'
@@ -22,6 +22,11 @@ function degisimMetni(d: { eklenecek: number; kapanacak: number }): string {
     ? `${p.join(' · ')} — kapatılan yer silinmez, kapasiteyi büyütünce geri gelir.`
     : p.join(' · ')
 }
+
+/** Settings read back as words, so the confirmation lists a change, not a number. */
+// 0 is out of range since 024, but a row written before it can still hold one.
+const gunMetni = (g: number) => (g > 0 ? `${g} gün` : 'kapalı')
+const acikKapali = (v: boolean) => (v ? 'açık' : 'kapalı')
 
 /**
  * What it actually did. Reported even when nothing changed, so a no-op run
@@ -39,8 +44,6 @@ function sonucMetni(s: YerDuzeniSonuc): string {
 export default function OtoparkAyarlari() {
   const { data: ayar, isPending, error, refetch } = useAyarlar()
   const guncelle = useAyarGuncelle()
-  const { data: kural } = usePuanKurali()
-  const kuralGuncelle = usePuanKuralGuncelle()
   // The spot rows themselves are the record of the current layout — there is
   // no second copy of "how many engelli bays are there" to drift from them.
   const { data: yerler, isPending: yerPending, error: yerError } = useTumParkYerleri()
@@ -55,14 +58,12 @@ export default function OtoparkAyarlari() {
   const [saklama, setSaklama] = useState('')
   const [terk, setTerk] = useState('')
   const [dolulukUyari, setDolulukUyari] = useState('')
+  const [vardiyaEsik, setVardiyaEsik] = useState('')
   const [saglayici, setSaglayici] = useState<PlakaSaglayici>('KAPALI')
   const [model, setModel] = useState('')
   const [kameraAktif, setKameraAktif] = useState(false)
   const [gecikme, setGecikme] = useState('')
-  const [puanAktif, setPuanAktif] = useState(false)
-  const [kazanim, setKazanim] = useState('')
-  const [puanDeger, setPuanDeger] = useState('')
-  const [bekleme, setBekleme] = useState('')
+  const [onayAcik, setOnayAcik] = useState(false)
   const [hata, setHata] = useState<string | null>(null)
   const [kaydedildi, setKaydedildi] = useState(false)
 
@@ -75,11 +76,13 @@ export default function OtoparkAyarlari() {
     setSaklama(String(ayar.foto_saklama_gun))
     setTerk(String(ayar.terk_esik_saat))
     setDolulukUyari(String(ayar.doluluk_uyari_yuzde))
+    // ?? : the column arrives with 025. Reading it before the migration has
+    // run must not put the string "undefined" into the field.
+    setVardiyaEsik(String(ayar.vardiya_esik_saat ?? 16))
     setSaglayici(ayar.plaka_saglayici)
     setModel(ayar.plaka_model ?? '')
     setKameraAktif(ayar.kamera_aktif)
     setGecikme(String(ayar.kamera_gecikme_limiti_dk))
-    setPuanAktif(ayar.puan_aktif)
   }, [ayar])
 
   /**
@@ -123,13 +126,6 @@ export default function OtoparkAyarlari() {
     [yerler, normalSayi, engelliSayi, rezerveSayi],
   )
 
-  useEffect(() => {
-    if (!kural) return
-    setKazanim(String(kural.kazanim_puan))
-    setPuanDeger(kurusToInput(kural.kurus_per_puan))
-    setBekleme(String(kural.bekleme_saat))
-  }, [kural])
-
   /**
    * ⚠ Never render the form over a failed load.
    *
@@ -154,37 +150,105 @@ export default function OtoparkAyarlari() {
     )
   }
 
-  async function kaydet() {
-    setHata(null)
-    setYerSonuc(null)
-    const kap = Number(kapasite)
-    if (!Number.isFinite(kap) || kap < 1) {
-      setHata('Kapasite en az 1 olmalı.')
-      return
-    }
+  /**
+   * Everything Kaydet is about to write, in ONE object.
+   *
+   * Built here rather than inside kaydet() so the confirmation screen and the
+   * mutation read the same values. A dialog that lists one thing while the
+   * save writes another is worse than no dialog at all.
+   */
+  const yeniAyar = {
+    ad: ad.trim() || 'Otopark',
+    kapasite: kapasiteSayi,
+    foto_saklama_gun: Number(saklama) || 0,
+    terk_esik_saat: Number(terk) || 48,
+    doluluk_uyari_yuzde: Number(dolulukUyari) || 90,
+    vardiya_esik_saat: Number(vardiyaEsik) || 16,
+    plaka_saglayici: saglayici,
+    plaka_model: model.trim() || null,
+    kamera_aktif: kameraAktif,
+    kamera_gecikme_limiti_dk: Number(gecikme) || 720,
+  }
+
+  // The only irreversible-feeling part of this screen: bays leaving service.
+  const kapanacakYer = yerlerHazir
+    ? degisim.kapanacak + (digerKapat ? mevcutDuzen.digerleri.length : 0)
+    : 0
+
+  /**
+   * The diff, in the operator's words.
+   *
+   * Only rows that actually change are listed — a confirmation that repeats
+   * every setting is one nobody reads, and an unread warning is the same as
+   * no warning.
+   */
+  const degisimListesi: string[] = []
+  const fark = (etiket: string, eski: string | number, yeni: string | number) => {
+    if (String(eski) !== String(yeni)) degisimListesi.push(`${etiket}: ${eski} → ${yeni}`)
+  }
+  fark('Ad', ayar.ad, yeniAyar.ad)
+  fark('Kapasite', ayar.kapasite, yeniAyar.kapasite)
+  fark('Doluluk uyarısı', `%${ayar.doluluk_uyari_yuzde}`, `%${yeniAyar.doluluk_uyari_yuzde}`)
+  fark('Terk süresi', `${ayar.terk_esik_saat} saat`, `${yeniAyar.terk_esik_saat} saat`)
+  fark(
+    'Vardiya kapanma eşiği',
+    `${ayar.vardiya_esik_saat} saat`,
+    `${yeniAyar.vardiya_esik_saat} saat`,
+  )
+  fark('Fotoğraf saklama', gunMetni(ayar.foto_saklama_gun), gunMetni(yeniAyar.foto_saklama_gun))
+  fark(
+    'Plaka okuma',
+    acikKapali(ayar.plaka_saglayici !== 'KAPALI'),
+    acikKapali(yeniAyar.plaka_saglayici !== 'KAPALI'),
+  )
+  fark('Kamera girişi', acikKapali(ayar.kamera_aktif), acikKapali(yeniAyar.kamera_aktif))
+  if (yeniAyar.kamera_aktif) {
+    fark(
+      'Kamera gecikme sınırı',
+      `${ayar.kamera_gecikme_limiti_dk} dk`,
+      `${yeniAyar.kamera_gecikme_limiti_dk} dk`,
+    )
+  }
+  if (yerlerHazir && (degisim.eklenecek > 0 || degisim.kapanacak > 0)) {
+    degisimListesi.push(degisimMetni(degisim))
+  }
+  if (yerlerHazir && digerKapat && mevcutDuzen.digerleri.length > 0) {
+    degisimListesi.push(`Düzen dışı ${mevcutDuzen.digerleri.length} yer kapatılacak`)
+  }
+
+  /** The single validation site: the dialog never promises a save that cannot happen. */
+  function dogrula(): string | null {
+    if (kapasiteSayi < 1) return 'Kapasite en az 1 olmalı.'
     // Mirrors the RPC's own ceiling, so the limit is explained here instead of
     // arriving as a rejection after the settings have already been written.
-    if (kap > 2000) {
-      setHata('Kapasite en fazla 2000 olabilir — yerler bu sayıdan üretiliyor.')
-      return
+    if (kapasiteSayi > 2000) {
+      return 'Kapasite en fazla 2000 olabilir — yerler bu sayıdan üretiliyor.'
     }
-    if (ozelSayi > kap) {
-      setHata('Engelli ve rezerve yer sayısı kapasiteyi aşamaz.')
-      return
-    }
+    if (ozelSayi > kapasiteSayi) return 'Engelli ve rezerve yer sayısı kapasiteyi aşamaz.'
+    // Mirrors the CHECK added in 024. Storage is finite and a plate photo is
+    // personal data, so "keep forever" is not an option the screen offers.
+    const gun = Number(saklama) || 0
+    if (gun < 1 || gun > 30) return 'Fotoğraf saklama süresi 1-30 gün arasında olmalı.'
+    // Mirrors the CHECK in 025. Below 4 hours a normal shift would be closed
+    // out from under an operator who is still working.
+    const esik = Number(vardiyaEsik) || 0
+    if (esik < 4 || esik > 72) return 'Vardiya kapanma eşiği 4-72 saat arasında olmalı.'
+    return null
+  }
+
+  function kaydetOnayla() {
+    setYerSonuc(null)
+    const sorun = dogrula()
+    setHata(sorun)
+    if (sorun) return
+    setOnayAcik(true)
+  }
+
+  /** Runs only from the confirmation dialog — dogrula() has already passed. */
+  async function kaydet() {
+    setHata(null)
     try {
-      await guncelle.mutateAsync({
-        ad: ad.trim() || 'Otopark',
-        kapasite: kap,
-        foto_saklama_gun: Number(saklama) || 0,
-        terk_esik_saat: Number(terk) || 48,
-        doluluk_uyari_yuzde: Number(dolulukUyari) || 90,
-        plaka_saglayici: saglayici,
-        plaka_model: model.trim() || null,
-        kamera_aktif: kameraAktif,
-        kamera_gecikme_limiti_dk: Number(gecikme) || 720,
-        puan_aktif: puanAktif,
-      })
+      await guncelle.mutateAsync(yeniAyar)
     } catch (err) {
       setHata(rpcErrorText(err, 'Ayarlar kaydedilemedi.'))
       return
@@ -227,29 +291,9 @@ export default function OtoparkAyarlari() {
       return
     }
 
+    setOnayAcik(false)
     setKaydedildi(true)
     setTimeout(() => setKaydedildi(false), 2500)
-  }
-
-  async function puanKaydet() {
-    setHata(null)
-    const deger = parseTLToKurus(puanDeger || '0')
-    if (deger === null) {
-      setHata('Puan değerini geçerli girin.')
-      return
-    }
-    try {
-      await kuralGuncelle.mutateAsync({
-        kazanim_puan: Number(kazanim) || 0,
-        kurus_per_puan: deger,
-        bekleme_saat: Number(bekleme) || 0,
-        puan_gecerlilik_gun: kural?.puan_gecerlilik_gun ?? 0,
-      })
-      setKaydedildi(true)
-      setTimeout(() => setKaydedildi(false), 2500)
-    } catch (err) {
-      setHata(rpcErrorText(err, 'Puan kuralı kaydedilemedi.'))
-    }
   }
 
   return (
@@ -272,6 +316,13 @@ export default function OtoparkAyarlari() {
             value={terk}
             onChange={(e) => setTerk(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
+          />
+          <Input
+            label="Vardiya kapanma eşiği (saat)"
+            value={vardiyaEsik}
+            onChange={(e) => setVardiyaEsik(digitsOnly(e.target.value, 2))}
+            inputMode="numeric"
+            hint="Bu kadar süredir açık kalan vardiya otomatik kapatılır — nakit sayılmadan, fark boş bırakılarak. Yoksa personel bir daha vardiya açamaz."
           />
         </Card>
 
@@ -380,33 +431,20 @@ export default function OtoparkAyarlari() {
           <Input
             label="Saklama süresi (gün)"
             value={saklama}
-            onChange={(e) => setSaklama(digitsOnly(e.target.value, 4))}
+            onChange={(e) => setSaklama(digitsOnly(e.target.value, 2))}
             inputMode="numeric"
-            hint="Plaka fotoğrafları bu süre sonunda gece işiyle silinir. 0 = silme kapalı."
+            hint="Plaka fotoğrafları bu süre sonunda gece işiyle silinir. 1-30 gün — depolama alanı sınırlı."
           />
         </Card>
 
         <Card className="space-y-4">
           <p className="text-label font-medium tracking-wide text-faint uppercase">Plaka okuma</p>
-          <SegmentedControl
-            label="Sağlayıcı"
-            value={saglayici}
-            onChange={(v) => setSaglayici(v)}
-            options={[
-              { value: 'KAPALI', label: 'Kapalı' },
-              { value: 'VLM', label: 'Claude' },
-              { value: 'ALPR', label: 'ALPR' },
-            ]}
+          <Toggle
+            checked={saglayici !== 'KAPALI'}
+            onChange={(v) => setSaglayici(v ? 'VLM' : 'KAPALI')}
+            label="Plaka okuma açık"
+            hint="Fotoğraftan plaka önerilir. Kapalıyken kamera yalnızca fotoğraf çeker."
           />
-          {saglayici !== 'KAPALI' && (
-            <Input
-              label="Model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="claude-haiku-4-5"
-              hint="Tanınmayan bir değer varsayılana düşer; adres her zaman sabittir."
-            />
-          )}
           <p className="text-label text-faint">
             Okuma her zaman bir <strong className="text-soft">öneridir</strong> — operatör
             onaylamadan hiçbir kayıt oluşmaz.
@@ -438,52 +476,11 @@ export default function OtoparkAyarlari() {
           )}
         </Card>
 
-        <Card className="space-y-4">
-          <p className="text-label font-medium tracking-wide text-faint uppercase">Puan</p>
-          <Toggle
-            checked={puanAktif}
-            onChange={setPuanAktif}
-            label="Puan sistemi açık"
-            hint="Kapalıyken hiçbir puan kazanılmaz ve kullanılamaz."
-          />
-          {puanAktif && (
-            <>
-              <Input
-                label="Giriş başına kazanım (puan)"
-                value={kazanim}
-                onChange={(e) => setKazanim(digitsOnly(e.target.value, 5))}
-                inputMode="numeric"
-              />
-              <Input
-                label="1 puanın değeri (₺)"
-                value={puanDeger}
-                onChange={(e) => setPuanDeger(e.target.value)}
-                inputMode="decimal"
-              />
-              <Input
-                label="Aynı plaka için bekleme (saat)"
-                value={bekleme}
-                onChange={(e) => setBekleme(digitsOnly(e.target.value, 3))}
-                inputMode="numeric"
-                hint="Girip çıkarak puan biriktirmeyi engeller."
-              />
-              {kazanim && puanDeger && (
-                <p className="text-label text-faint">
-                  Her giriş yaklaşık{' '}
-                  <strong className="text-soft">
-                    {formatTL((Number(kazanim) || 0) * (parseTLToKurus(puanDeger) ?? 0))}
-                  </strong>{' '}
-                  değerinde borç yaratır.
-                </p>
-              )}
-              <Button variant="secondary" onClick={() => void puanKaydet()} loading={kuralGuncelle.isPending}>
-                Puan kuralını kaydet
-              </Button>
-            </>
-          )}
-        </Card>
 
-        {hata && (
+        {/* While a dialog is open the same message is shown INSIDE it, next to
+            the button that failed. Repeating it behind the overlay would just
+            be a second copy the user cannot see. */}
+        {hata && !onayAcik && (
           <p role="alert" className="rounded-card bg-danger-soft px-4 py-3 text-body text-danger">
             {hata}
           </p>
@@ -496,7 +493,7 @@ export default function OtoparkAyarlari() {
           <Button
             size="lg"
             block
-            onClick={() => void kaydet()}
+            onClick={kaydetOnayla}
             loading={guncelle.isPending || yerUret.isPending}
             disabled={ozelSayi > kapasiteSayi}
           >
@@ -505,6 +502,43 @@ export default function OtoparkAyarlari() {
         </div>
         {kaydedildi && <p className="pb-4 text-center text-label text-success">Kaydedildi</p>}
       </div>
+
+      {/* The confirmation is a diff, not a rhetorical question. "Emin misiniz?"
+          trains people to tap through; a list of what is about to change is
+          the only version that can actually catch a mistyped capacity. It
+          stays open on a server refusal so the Turkish message is read. */}
+      <ConfirmDialog
+        open={onayAcik}
+        onOpenChange={setOnayAcik}
+        title="Değişiklikleri kaydet"
+        description={
+          degisimListesi.length === 0
+            ? 'Kaydedilecek bir değişiklik görünmüyor.'
+            : 'Kaydedince şunlar uygulanacak:'
+        }
+        confirmLabel={degisimListesi.length === 0 ? 'Yine de kaydet' : 'Kaydet'}
+        tone={kapanacakYer > 0 ? 'danger' : 'primary'}
+        loading={guncelle.isPending || yerUret.isPending}
+        error={hata}
+        onConfirm={() => void kaydet()}
+      >
+        {degisimListesi.length > 0 && (
+          <ul className="space-y-2 rounded-field bg-field px-3.5 py-3">
+            {degisimListesi.map((d) => (
+              <li key={d} className="text-body text-ink">
+                {d}
+              </li>
+            ))}
+          </ul>
+        )}
+        {kapanacakYer > 0 && (
+          <p className="mt-3 rounded-field bg-warn-soft px-3.5 py-3 text-label text-warn">
+            {kapanacakYer} park yeri kullanım dışına alınacak. Silinmez — kapasiteyi
+            büyütünce geri gelir.
+          </p>
+        )}
+      </ConfirmDialog>
+
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   Card,
@@ -9,14 +9,15 @@ import {
   ScreenHeader,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
+import { Toggle } from '../../components/ui/Toggle'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { useHesapEkle, useHesapOzetleri } from './api'
-import { usePuanKurali } from '../yonetim/api'
+import { useAyarGuncelle, usePuanKurali, usePuanKuralGuncelle } from '../yonetim/api'
 import { useAyarlar } from '../gise/api'
-import { formatTL } from '../../lib/money'
+import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
 import { normalizePlaka } from '../../lib/plaka'
-import { IconAra, IconArti, IconPuan } from '../../components/ui/icons'
+import { IconAra, IconArti, IconAyar, IconPuan } from '../../components/ui/icons'
 
 export default function Hesaplar() {
   const navigate = useNavigate()
@@ -24,6 +25,8 @@ export default function Hesaplar() {
   const { data: kural } = usePuanKurali()
   const { data: ayar } = useAyarlar()
   const ekle = useHesapEkle()
+  const ayarGuncelle = useAyarGuncelle()
+  const kuralGuncelle = usePuanKuralGuncelle()
 
   const [q, setQ] = useState('')
   const [acik, setAcik] = useState(false)
@@ -33,7 +36,61 @@ export default function Hesaplar() {
   const [notlar, setNotlar] = useState('')
   const [hata, setHata] = useState<string | null>(null)
 
+  // The rule lives on THIS screen now: the settings for a feature belong with
+  // the feature, and the Yönetim tile is the only door to either.
+  const [ayarAcik, setAyarAcik] = useState(false)
+  const [puanAktif, setPuanAktif] = useState(false)
+  const [kazanim, setKazanim] = useState('')
+  const [puanDeger, setPuanDeger] = useState('')
+  const [bekleme, setBekleme] = useState('')
+  const [ayarHata, setAyarHata] = useState<string | null>(null)
+
   const kurusPerPuan = kural?.kurus_per_puan ?? 0
+
+  useEffect(() => {
+    if (kural) {
+      setKazanim(String(kural.kazanim_puan))
+      setPuanDeger(kurusToInput(kural.kurus_per_puan))
+      setBekleme(String(kural.bekleme_saat))
+    }
+  }, [kural])
+  useEffect(() => {
+    if (ayar) setPuanAktif(ayar.puan_aktif)
+  }, [ayar])
+
+  async function ayarKaydet() {
+    const deger = parseTLToKurus(puanDeger || '0')
+    if (deger === null) {
+      setAyarHata('Puan değerini geçerli girin.')
+      return
+    }
+    const yeniKazanim = Number(kazanim) || 0
+    const yeniBekleme = Number(bekleme) || 0
+    try {
+      if (ayar && ayar.puan_aktif !== puanAktif) {
+        await ayarGuncelle.mutateAsync({ puan_aktif: puanAktif })
+      }
+      // Only when something actually moved: every call closes the current
+      // version and opens a new one, so saving an unchanged rule would fill
+      // the history with versions that changed nothing.
+      if (
+        !kural ||
+        kural.kazanim_puan !== yeniKazanim ||
+        kural.kurus_per_puan !== deger ||
+        kural.bekleme_saat !== yeniBekleme
+      ) {
+        await kuralGuncelle.mutateAsync({
+          kazanim_puan: yeniKazanim,
+          kurus_per_puan: deger,
+          bekleme_saat: yeniBekleme,
+          puan_gecerlilik_gun: kural?.puan_gecerlilik_gun ?? 0,
+        })
+      }
+      setAyarAcik(false)
+    } catch (e) {
+      setAyarHata(rpcErrorText(e, 'Puan ayarları kaydedilemedi.'))
+    }
+  }
 
   const gorunen = useMemo(() => {
     const s = q.trim().toLocaleLowerCase('tr-TR')
@@ -69,7 +126,7 @@ export default function Hesaplar() {
         {ayar && !ayar.puan_aktif && (
           <p className="rounded-card bg-warn-soft px-4 py-3 text-label text-warn">
             Puan sistemi kapalı. Hesaplar tanımlanabilir ancak girişlerde puan
-            kazanılmaz — açmak için Otopark Ayarları.
+            kazanılmaz — açmak için Puan ayarları.
           </p>
         )}
 
@@ -79,7 +136,24 @@ export default function Hesaplar() {
             person who can spend it, and every row below already carries its
             own. The outstanding liability across the lot is a Finans
             question, not a list header. */}
-        <p className="text-label text-faint tnum">{hesaplar.length} hesap</p>
+        {/* The settings button carries its label rather than a bare gear, and
+            sits here rather than in the header: "Puan ayarları" beside a title
+            reading "Puan hesapları" needs room the header does not have — the
+            title would truncate to make space for it. */}
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-label text-faint tnum">{hesaplar.length} hesap</p>
+          <button
+            type="button"
+            onClick={() => {
+              setAyarHata(null)
+              setAyarAcik(true)
+            }}
+            className="flex shrink-0 items-center gap-1.5 rounded-chip bg-field px-3 py-2 text-label font-medium text-soft active:bg-border"
+          >
+            <IconAyar size={16} />
+            Puan ayarları
+          </button>
+        </div>
 
         <div className="relative">
           <IconAra
@@ -202,6 +276,52 @@ export default function Hesaplar() {
           onChange={(e) => setNotlar(e.target.value)}
           maxLength={200}
         />
+      </FormModal>
+
+      <FormModal
+        open={ayarAcik}
+        onOpenChange={setAyarAcik}
+        title="Puan ayarları"
+        loading={ayarGuncelle.isPending || kuralGuncelle.isPending}
+        error={ayarHata}
+        onSubmit={() => void ayarKaydet()}
+      >
+        <Toggle
+          checked={puanAktif}
+          onChange={setPuanAktif}
+          label="Puan sistemi açık"
+          hint="Kapalıyken hiçbir puan kazanılmaz ve kullanılamaz."
+        />
+        {/* The rule stays editable while the system is off — the rate is what
+            you want to settle BEFORE opening the tap, not after. */}
+        <Input
+          label="Giriş başına kazanım (puan)"
+          value={kazanim}
+          onChange={(e) => setKazanim(digitsOnly(e.target.value, 5))}
+          inputMode="numeric"
+        />
+        <Input
+          label="1 puanın değeri (₺)"
+          value={puanDeger}
+          onChange={(e) => setPuanDeger(e.target.value)}
+          inputMode="decimal"
+        />
+        <Input
+          label="Aynı plaka için bekleme (saat)"
+          value={bekleme}
+          onChange={(e) => setBekleme(digitsOnly(e.target.value, 3))}
+          inputMode="numeric"
+          hint="Girip çıkarak puan biriktirmeyi engeller."
+        />
+        {kazanim && puanDeger && (
+          <p className="text-label text-faint">
+            Her giriş yaklaşık{' '}
+            <strong className="text-soft">
+              {formatTL((Number(kazanim) || 0) * (parseTLToKurus(puanDeger) ?? 0))}
+            </strong>{' '}
+            değerinde borç yaratır.
+          </p>
+        )}
       </FormModal>
     </div>
   )

@@ -26,6 +26,8 @@ const TON: Record<BildirimTur, string> = {
   // not make the list look like a hundred alarms.
   KAMERA_HAREKET: 'bg-field text-soft',
   ISTISNA: 'bg-warn-soft text-warn',
+  VARDIYA_ACIK: 'bg-warn-soft text-warn',
+  ONAY_BEKLIYOR: 'bg-warn-soft text-warn',
 }
 
 export default function Bildirimler() {
