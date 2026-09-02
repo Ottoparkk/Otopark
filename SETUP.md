@@ -75,6 +75,7 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/023_push_tetikleyici.sql` | Sends push from our own trigger via `pg_net`, instead of a dashboard webhook |
 | `supabase/migrations/024_foto_saklama_siniri.sql` | Caps plate-photo retention at 1-30 days (storage quota + KVKK) |
 | `supabase/migrations/025_kendini_toparlama.sql` | Auto-closes shifts left open, Yönetici force-close, nudges for forgotten queues |
+| `supabase/migrations/026_odeme_yontemi_her_yerde.sql` | Every payment carries a method; automatic salary and recurring rules default to Nakit |
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,

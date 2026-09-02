@@ -157,6 +157,12 @@ export default function Kasa() {
               setTutar('')
               setAciklama('')
               setKategori('')
+              // Both of these used to survive the close and arrive already
+              // filled on the next entry. The method carrying over is a
+              // wrong bucket; the recurrence day carrying over is worse —
+              // it silently turns the next one-off into a standing rule.
+              setYontem('NAKIT')
+              setTekrarGun('')
               setHata(null)
               setAcik(true)
             }}
@@ -387,7 +393,7 @@ export default function Kasa() {
           placeholder="Elektrik, temizlik, bakım…"
           maxLength={60}
         />
-        <YontemSecici value={yontem} onChange={setYontem} label="Ödeme yöntemi (isteğe bağlı)" />
+        <YontemSecici value={yontem} onChange={setYontem} />
         {/* Last, because it changes what Ekle MEANS: with a day chosen this
             stops being one entry and becomes a standing one. Capped at 28 —
             a rule set to the 31st would skip February entirely. */}

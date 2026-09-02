@@ -59,13 +59,16 @@ export default function PersonelDetay() {
   const [maas, setMaas] = useState<string | null>(null)
   /** '' = no automatic payment. Otherwise the day of the month. */
   const [maasGun, setMaasGun] = useState('')
-  const [maasYontem, setMaasYontem] = useState<OdemeYontemi | null>(null)
+  const [maasYontem, setMaasYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [maasHata, setMaasHata] = useState<string | null>(null)
 
   const [islem, setIslem] = useState<Islem>(null)
   const [tutar, setTutar] = useState('')
   const [aciklama, setAciklama] = useState('')
-  const [yontem, setYontem] = useState<OdemeYontemi | null>(null)
+  // Every payment carries a method, and Nakit is the one to beat — it is
+  // most of them, and a preselected default means the operator changes it
+  // only when it is actually something else.
+  const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [hata, setHata] = useState<string | null>(null)
 
   const borc = ozet.data?.borc_kurus ?? 0
@@ -78,7 +81,7 @@ export default function PersonelDetay() {
     setIslem(t)
     setTutar('')
     setAciklama('')
-    setYontem(null)
+    setYontem('NAKIT')
     setHata(null)
   }
 
@@ -139,7 +142,10 @@ export default function PersonelDetay() {
                   onClick={() => {
                     setMaas(kurusToInput(maasKurus))
                     setMaasGun(ozet.data?.odeme_gunu ? String(ozet.data.odeme_gunu) : '')
-                    setMaasYontem(ozet.data?.maas_yontemi ?? null)
+                    // Nakit when nothing is stored: the night job copies this
+                    // onto the payment it writes, and a NULL there produces a
+                    // salary that moves the kasa total but lands in no bucket.
+                    setMaasYontem(ozet.data?.maas_yontemi ?? 'NAKIT')
                     setMaasHata(null)
                   }}
                   // A tinted pill, not bare accent text. At 13px on white the
@@ -292,7 +298,7 @@ export default function PersonelDetay() {
         <YontemSecici
           value={maasYontem}
           onChange={setMaasYontem}
-          label="Otomatik ödeme yöntemi (isteğe bağlı)"
+          label="Otomatik ödeme yöntemi"
         />
       </FormModal>
 
@@ -330,7 +336,7 @@ export default function PersonelDetay() {
           onChange={(e) => setAciklama(e.target.value)}
           maxLength={120}
         />
-        <YontemSecici value={yontem} onChange={setYontem} label="Ödeme yöntemi (isteğe bağlı)" />
+        <YontemSecici value={yontem} onChange={setYontem} />
       </FormModal>
     </div>
   )

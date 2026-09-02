@@ -2439,6 +2439,63 @@ end if;
 
 raise notice 'PASS 49: açık kalan vardiya kurtarılıyor, uydurma sayım engelleniyor';
 
+-- ---------------------------------------------------------------------------
+-- 50. Her ödemenin bir yöntemi var (026)
+--
+-- Elle yapılan ödemelerde seçici artık Nakit ile açılıyor, ama OTOMATİK
+-- yollar kimseye soramaz: yöntemi tanımdan okurlar. Tanımda NULL kalırsa
+-- kasa toplamını oynatan ama hiçbir kovaya girmeyen bir satır doğar.
+-- ---------------------------------------------------------------------------
+perform pg_temp.login(u_yonetici);
+
+-- Maaş kolonları 018'den beri `authenticated`'a KAPALI (kolon bazlı grant),
+-- yani buradan `profiles`'e doğrudan bakılamaz — Yönetici bile bakamaz, ve
+-- bakabilmesi de istenmez. Okuma, ekranın kullandığı yoldan yapılır.
+-- (a) Gün varsa yöntem yazılmasa da Nakit'e düşer.
+perform public.maas_guncelle(u_personel2, 500000, 5::smallint, null);
+select o.maas_yontemi::text into v_txt from public.personel_ozet(u_personel2) o;
+if v_txt is distinct from 'NAKIT' then
+  raise exception 'FAIL 50a: otomatik maaş yöntemsiz kaldı';
+end if;
+
+-- (b) 016'nın kaçış yolu duruyor: gün temizlenirken yöntem de temizlenebilir.
+--     Bu olmasaydı bir kez kurulan otomatik ödeme bir daha kapatılamazdı.
+perform public.maas_guncelle(u_personel2, 500000, null, null);
+select o.maas_yontemi::text, o.odeme_gunu into v_txt, v_n
+  from public.personel_ozet(u_personel2) o;
+if v_n is not null or v_txt is not null then
+  raise exception 'FAIL 50b: otomatik ödeme kapatılamadı';
+end if;
+
+-- (c) Düzenli kasa kuralı da yöntemsiz kurulamaz; ilk kayda da kopyalanır.
+select public.kasa_tekrar_ekle('GIDER'::public.kasa_tur, 25000, 7::smallint,
+                               'test', 'yöntemsiz kural', null, true) into v_id;
+if (select yontem from public.kasa_tekrar_kurallari where id = v_id)
+     is distinct from 'NAKIT' then
+  raise exception 'FAIL 50c: düzenli kayıt kuralı yöntemsiz kuruldu';
+end if;
+if (select yontem from public.kasa_hareketleri where tekrar_kural_id = v_id)
+     is distinct from 'NAKIT' then
+  raise exception 'FAIL 50c: kuralın ilk kaydı yöntemsiz yazıldı';
+end if;
+perform pg_temp.logout();
+
+-- (d) Asıl sınır kısıttır, RPC değil: doğrudan yazma da reddedilmeli.
+begin
+  update public.profiles set odeme_gunu = 5, maas_yontemi = null where id = u_personel2;
+  raise exception 'FAIL 50d: yöntemsiz otomatik ödeme günü yazılabildi';
+exception when check_violation then null;
+end;
+
+-- (e) Kural yöntemi artık NULL olamaz.
+if exists (select 1 from information_schema.columns
+            where table_schema = 'public' and table_name = 'kasa_tekrar_kurallari'
+              and column_name = 'yontem' and is_nullable = 'YES') then
+  raise exception 'FAIL 50e: kural yöntemi hâlâ NULL olabiliyor';
+end if;
+
+raise notice 'PASS 50: otomatik ödemeler yöntemsiz doğamıyor';
+
 perform pg_temp.logout();
 raise notice '';
 raise notice 'ALL TESTS PASSED (rolled back)';
