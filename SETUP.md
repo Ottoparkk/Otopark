@@ -66,6 +66,9 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/017_tahsilat_onayi.sql` | Approval gate: bilet and abonman collections reach Finans only once the Yönetici accepts them |
 | `supabase/migrations/018_maas_gizli.sql` | Takes SELECT off the salary columns and moves the roster behind a Yönetici-only RPC |
 | `supabase/migrations/019_kamera_bildirimleri.sql` | A notification per camera entry and per camera exit-arrival, on their own preference toggle |
+| `supabase/migrations/020_cop_tahsilat_anlik.sql` | Fixes the bin snapshot: a deleted ticket now keeps its collections, so restoring it restores the money |
+| `supabase/migrations/021_cop_bayragi.sql` | The restore flag now silences the bin for that one record instead of everything after it |
+| `supabase/migrations/022_cop_anon_kapat.sql` | Revokes anons default privileges on the bin table, which 007 never did |
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,

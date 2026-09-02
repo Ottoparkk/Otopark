@@ -529,10 +529,17 @@ if v_rec.tahsil_kurus <> v_rec.ucret_kurus - v_rec.indirim_kurus then
 end if;
 
 -- The ticket above is seconds old, so its fee is 0 and it proves nothing about
--- money. Close the 3-hour-old CAMERA ticket instead, where the amount is
--- known exactly: 180 min at (ilk 6000 + 2 x sonraki 3000) = 12000, under the
--- 25000 cap. now() is the transaction timestamp and therefore identical
--- everywhere in this file, so this is deterministic rather than timing-dependent.
+-- money. Close the 3-hour-old CAMERA ticket instead, where the duration is
+-- exactly 180 minutes: now() is the transaction timestamp and therefore
+-- identical everywhere in this file, so this is deterministic rather than
+-- timing-dependent.
+--
+-- The EXPECTED amount is computed from the tariff the ticket snapshotted, not
+-- from the seeded prices. An earlier version hard-coded 12000 and failed the
+-- moment the owner changed the price list — a test that breaks when the
+-- business changes its prices is testing the prices, not the arithmetic. The
+-- sum below is written out by hand rather than calling `ucret_hesapla`, which
+-- is the function under test; two implementations agreeing is the check.
 select id into v_id from public.biletler where plaka = '34KAM002' and durum = 'ACIK';
 if v_id is null then raise exception 'FAIL 18c: 3 saatlik kamera bileti bulunamadı'; end if;
 
@@ -545,12 +552,33 @@ select b.tahsil_kurus into v_ucret from public.bilet_kapat(v_id, 'NAKIT') b;
 if v_ucret <> v_ucret2 then
   raise exception 'FAIL 18d: gösterilen ücret (%) tahsil edilenden (%) farklı', v_ucret2, v_ucret;
 end if;
-if v_ucret <> 12000 then
-  raise exception 'FAIL 18e: 3 saatlik park % kuruş çıktı, beklenen 12000', v_ucret;
+select t.tur, t.sabit_kurus, t.ucretsiz_dakika, t.ilk_saat_kurus,
+       t.sonraki_saat_kurus, t.gunluk_tavan_kurus
+  into v_rec
+  from public.tarifeler t
+  join public.biletler b on b.tarife_id = t.id
+ where b.id = v_id;
+
+if v_rec.ucretsiz_dakika >= 180 then
+  v_n2 := 0;                                   -- ücretsiz süre 3 saati yutuyor
+elsif v_rec.tur = 'SABIT' then
+  v_n2 := v_rec.sabit_kurus;                   -- giriş başına tek fiyat
+else
+  v_n2 := v_rec.ilk_saat_kurus + 2 * v_rec.sonraki_saat_kurus;
+  if v_rec.gunluk_tavan_kurus > 0 then
+    v_n2 := least(v_n2, v_rec.gunluk_tavan_kurus);
+  end if;
+end if;
+
+if v_ucret <> v_n2 then
+  raise exception 'FAIL 18e: 3 saatlik park % kuruş çıktı, tarifeye göre % olmalıydı',
+    v_ucret, v_n2;
 end if;
 select count(*) into v_n from public.tahsilatlar
- where bilet_id = v_id and tutar_kurus = 12000 and yontem = 'NAKIT';
-if v_n <> 1 then raise exception 'FAIL 18f: 12000 kuruşluk tahsilat satırı yazılmadı'; end if;
+ where bilet_id = v_id and tutar_kurus = v_n2 and yontem = 'NAKIT';
+if v_n <> 1 then
+  raise exception 'FAIL 18f: % kuruşluk tahsilat satırı yazılmadı', v_n2;
+end if;
 raise notice 'PASS 18: gösterilen ücret = tahsil edilen ücret (3 saat = 12000 kuruş), tahsilat yazılıyor';
 
 -- A closed ticket is immutable.
@@ -803,6 +831,17 @@ begin
 exception when others then
   if sqlerrm like 'FAIL%' then raise; end if;
 end;
+-- FİKSTÜRÜ GERİ AL. Bu blok kanıtını u_yonetici'yi GERÇEKTEN görevden alarak
+-- verir ve eskiden onu öyle bırakırdı: sonraki her `login(u_yonetici)` aslında
+-- bir Personel oturumu oluyordu, PASS 36'daki ilk Yönetici-gerektiren çağrıya
+-- kadar da kimse fark etmiyordu. Bir testin bıraktığı durum, kendisinden
+-- sonrakilerin girdisidir.
+perform pg_temp.logout();
+update public.profiles set rol = 'YONETICI', durum = 'ACTIVE' where id = u_yonetici;
+-- u_personel2 KASITLI olarak Yönetici bırakılır: PASS 33 kapanmış bir bileti
+-- onunla iptal eder ve satırında öyle yazar. Onu da geri almak, bu bloğun
+-- düzelttiği hatanın aynısını bir sonraki bloğa taşımak olurdu.
+
 raise notice 'PASS 31: son Yönetici korunuyor, kendi rolü/durumu değiştirilemiyor';
 
 -- =====================================================================
@@ -928,9 +967,20 @@ update public.park_yerleri set is_active = false;
 get diagnostics v_n = row_count;
 if v_n <> 0 then raise exception 'FAIL 35: Personel park yerini güncelleyebildi (% satır)', v_n; end if;
 
-delete from public.rezervasyonlar;
-get diagnostics v_n = row_count;
-if v_n <> 0 then raise exception 'FAIL 35: Personel rezervasyon silebildi (% satır)', v_n; end if;
+-- Wrapped, unlike the update above: 007 took the direct DELETE grant off this
+-- table so that deletion has to go through `kayit_sil()` and land in the bin.
+-- So this is refused by the PRIVILEGE system (42501) before RLS is consulted —
+-- a stronger stop than a zero-row refusal, and both count as a pass here.
+begin
+  delete from public.rezervasyonlar;
+  get diagnostics v_n = row_count;
+  if v_n <> 0 then
+    raise exception 'FAIL 35: Personel rezervasyon silebildi (% satır)', v_n;
+  end if;
+exception
+  when insufficient_privilege then null;
+  when others then raise;
+end;
 
 -- The window is deliberately FAR from every reservation PASS 21 wrote. An
 -- overlapping one would be refused by the EXCLUDE constraint too, so the
@@ -979,7 +1029,15 @@ if v_vardiya is null then
   select public.vardiya_ac(0) into v_vardiya;
 end if;
 select public.bilet_ac('34COP001', gen_random_uuid()) into v_bilet;
+
+-- KURULUM, iddia değil: istemcinin `biletler` üzerinde UPDATE yetkisi yoktur
+-- (003 yalnızca SELECT verir; PASS 37e bunu ayrıca sınar), dolayısıyla bileti
+-- geriye tarihlemek migration rolüyle yapılır. Oturum açıkken denenirse 42501
+-- alınır ve test, sınadığı şeyle ilgisiz bir sebeple düşer.
+perform pg_temp.logout();
 update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet;
+perform pg_temp.login(u_personel);
+
 perform public.bilet_kapat(v_bilet, 'NAKIT');
 
 select coalesce(sum(t.tutar_kurus), 0) into v_n
@@ -1049,9 +1107,15 @@ end;
 -- (g) An account holding a points ledger is refused: the cascade would
 --     destroy a liability record the snapshot does not carry.
 insert into public.hesaplar (ad) values ('Çöp Test') returning id into v_hesap;
+
+-- Yine KURULUM: `puan_hareketleri` istemciye SELECT-only verilir (003) çünkü
+-- defter yalnızca RPC'lerle büyür. Satırı migration rolüyle yazıyoruz; asıl
+-- iddia zaten aşağıdaki silme reddi.
+perform pg_temp.logout();
 insert into public.puan_hareketleri (hesap_id, tur, puan, kural_id)
 select v_hesap, 'DUZELTME', 10, k.id from public.puan_kurallari k
  where k.gecerli_bitis is null;
+perform pg_temp.login(u_yonetici);
 begin
   perform public.kayit_sil('hesaplar', v_hesap);
   raise exception 'FAIL 36: puan hareketi olan hesap silindi';
@@ -1077,16 +1141,20 @@ raise notice 'PASS 36: silme parayı geri alıyor, çöp kutusu geri getiriyor, 
 -- ==========================================================================
 perform pg_temp.login(u_personel);
 
--- (a) Written at entry, normalised on the way in: the trunk prefix an operator
---     types is stripped, and blank is stored as NULL rather than ''.
+-- (a) Written at entry and normalised on the way in: spacing is dropped, and
+--     blank is stored as NULL rather than ''. The number is given WITHOUT the
+--     trunk zero because that is the server's actual contract — ten digits,
+--     no leading zero — and this line used to hand it '0532 …' while asserting
+--     a completely different number, so it was wrong twice over. Stripping the
+--     zero an operator types is the CLIENT's job (lib/telefon.ts).
 v_bilet := public.bilet_ac('37AAA111', gen_random_uuid(), 'MOBIL', null, null, null, null,
-                           '  Volkswagen Passat  ', '  Ahmet Yılmaz  ', '0532 111 22 33');
+                           '  Volkswagen Passat  ', '  Ahmet Yılmaz  ', ' 532 111 22 33 ');
 if v_bilet is null then
   raise exception 'FAIL 37a: bilet açılmadı';
 end if;
 select arac_bilgi, musteri_ad, musteri_tel into v_txt, v_txt2, v_txt3
   from public.biletler where id = v_bilet;
-if v_txt <> 'Volkswagen Passat' or v_txt2 <> 'Ahmet Yılmaz' or v_txt3 <> '5321234567' then
+if v_txt <> 'Volkswagen Passat' or v_txt2 <> 'Ahmet Yılmaz' or v_txt3 <> '5321112233' then
   raise exception 'FAIL 37a: normalizasyon yanlış (%, %, %)', v_txt, v_txt2, v_txt3;
 end if;
 
@@ -1703,7 +1771,9 @@ end if;
 --     kontrolü taşımaz — tek koruması bu yetkinin kapalı olmasıdır.
 foreach v_txt in array array[
   'public.yer_mesgul(uuid)', 'public.yer_listesi()', 'public.bos_park_yeri()',
-  'public.vardiya_yeniden_hesapla(uuid)', 'public.cop_yaz()'
+  'public.vardiya_yeniden_hesapla(uuid)', 'public.cop_yaz()',
+  'public.tahsilat_durum_ata()', 'public.kamera_giris_bildirimi()',
+  'public.kamera_cikis_bildirimi()'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -1994,7 +2064,10 @@ end if;
 -- kapatmanın tek yolu maaşı sıfırlamak olurdu.
 perform pg_temp.login(u_yonetici);
 perform public.maas_guncelle(v_id, 3000000, null, null);
-if (select odeme_gunu from public.profiles where id = v_id) is not null then
+-- `profiles.odeme_gunu` doğrudan OKUNAMAZ: 018 maaş kolonlarının SELECT yetkisini
+-- istemciden aldı (PASS 47). Yönetici'nin gerçek yolu RPC'dir, test de onu
+-- kullanır — tabloyu okumaya çalışmak 42501 verirdi.
+if (select o.odeme_gunu from public.personel_ozet(v_id) o) is not null then
   raise exception 'FAIL 45f: otomatik ödeme kapatılamadı';
 end if;
 
@@ -2034,8 +2107,15 @@ end if;
 
 -- (a) Kapanan biletin tahsilatı BEKLIYOR doğar ve ciroyu OYNATMAZ.
 select ciro_kurus into v_bigint from public.rapor_ozet(v_gun, v_gun);
-select public.bilet_ac('34ONAY01', gen_random_uuid(), 'KAMERA',
-                       now() - interval '3 hours') into v_bilet;
+-- Backdated as the migration role, NOT opened with p_kaynak = 'KAMERA':
+-- bilet_ac refuses a camera source from any caller carrying a JWT (006), so
+-- the camera trick only works with no session at all. The stay has to be
+-- three hours old for the fee to be non-zero, and this is the same setup
+-- PASS 36 uses.
+select public.bilet_ac('34ONAY01', gen_random_uuid()) into v_bilet;
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet;
+perform pg_temp.login(u_yonetici);
 select b.tahsil_kurus into v_ucret
   from public.bilet_kapat(v_bilet, 'NAKIT', null, null, null, 'MOBIL') b;
 if v_ucret <= 0 then
@@ -2098,8 +2178,10 @@ if (select ciro_kurus from public.rapor_ozet(v_gun, v_gun)) <> v_bigint + v_ucre
 end if;
 
 -- (d) Reddedilen tahsilat ciroya hiç girmez, sebebi kayıtta durur.
-select public.bilet_ac('34ONAY02', gen_random_uuid(), 'KAMERA',
-                       now() - interval '3 hours') into v_bilet2;
+select public.bilet_ac('34ONAY02', gen_random_uuid()) into v_bilet2;
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet2;
+perform pg_temp.login(u_yonetici);
 perform public.bilet_kapat(v_bilet2, 'NAKIT', null, null, null, 'MOBIL');
 select id into v_id2 from public.tahsilatlar
  where bilet_id = v_bilet2 and iptal_of is null;
@@ -2129,8 +2211,10 @@ end if;
 --     hâlde net sıfır bir çift kuyrukta sonsuza dek karar beklerdi ve
 --     yalnızca biri onaylanırsa defter şişerdi.
 select adet into v_n from public.onay_ozet();
-select public.bilet_ac('34ONAY03', gen_random_uuid(), 'KAMERA',
-                       now() - interval '3 hours') into v_bilet2;
+select public.bilet_ac('34ONAY03', gen_random_uuid()) into v_bilet2;
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet2;
+perform pg_temp.login(u_yonetici);
 perform public.bilet_kapat(v_bilet2, 'NAKIT', null, null, null, 'MOBIL');
 select id into v_id2 from public.tahsilatlar
  where bilet_id = v_bilet2 and iptal_of is null;

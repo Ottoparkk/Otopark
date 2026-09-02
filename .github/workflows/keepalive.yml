@@ -3,8 +3,14 @@ name: Supabase keepalive
 # The Supabase free tier pauses a project after 7 idle days, and a paused
 # database means the gate stops working. Ping every 6 days.
 #
-# The query returns zero rows through RLS (anon has no policy on tarifeler);
-# the round trip itself is what counts as activity.
+# The ping calls `is_yonetici()`, which is one of the few functions anon may
+# execute (003) and which reads `profiles` — so it is a real database round
+# trip, and it returns `false` for anon rather than any data.
+#
+# It does NOT read a table. An earlier version selected from `tarifeler` and
+# failed on every run: 003 revokes anon's privileges on every table, so
+# PostgREST answered 401 instead of the empty list the query expected. A
+# keepalive that fails is worse than none — it looks like it is working.
 
 on:
   schedule:
@@ -16,10 +22,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping database
+        env:
+          URL: ${{ secrets.VITE_SUPABASE_URL }}
+          KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |
-          curl --fail --silent --show-error \
-            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/tarifeler?select=id&limit=1" \
-            -H "apikey: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" \
-            > /dev/null
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
+            echo "VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY secrets are not set."
+            exit 1
+          fi
+
+          # Status and body captured rather than `--fail`, which exits 22 with
+          # nothing in the log — the reason this was failing silently for weeks.
+          kod=$(curl --silent --show-error --output cevap.txt --write-out '%{http_code}' \
+            -X POST "$URL/rest/v1/rpc/is_yonetici" \
+            -H "apikey: $KEY" \
+            -H "Authorization: Bearer $KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+
+          echo "HTTP $kod"
+          if [ "$kod" != "200" ]; then
+            cat cevap.txt
+            exit 1
+          fi
           echo "Supabase pinged."

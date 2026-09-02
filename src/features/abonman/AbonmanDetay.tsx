@@ -25,6 +25,7 @@ import { useAbonmanSil } from '../cop/api'
 import { useParkYerleri } from '../gise/api'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
+import { normalizeTel } from '../../lib/telefon'
 import { formatTam, formatTarih, gunEkle, gunFarki, istanbulGun } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop } from '../../components/ui/icons'
@@ -415,7 +416,9 @@ export default function AbonmanDetay() {
             .mutateAsync({
               id: a.id,
               musteri_ad: ad.trim(),
-              musteri_tel: tel.replace(/\D/g, '') || null,
+              // normalizeTel, not a bare digit strip: an operator types the
+              // trunk zero and the server refuses eleven digits outright.
+              musteri_tel: normalizeTel(tel) || null,
               baslangic: bas,
               bitis: bit,
               ucret_kurus: kurus,

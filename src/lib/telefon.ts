@@ -1,44 +1,30 @@
 /**
- * Turkish customer phone numbers.
+ * Turkish mobile numbers, as typed and as stored.
  *
- * Stored as the bare national ten digits, no country code and no leading zero
- * — the shape `abonmanlar.musteri_tel` and `biletler.musteri_tel` both CHECK
- * (`^[1-9][0-9]{9}$`). Keeping the rule in one file is what stops the entry
- * form and the correction form disagreeing about what a valid number is; the
- * database holds the same rule again, because a client check is convenience,
- * never the boundary.
+ * STORED form is the national ten digits with no leading zero — that is what
+ * the `^[1-9][0-9]{9}$` check on `abonmanlar.musteri_tel` and
+ * `biletler.musteri_tel` accepts, and the server refuses anything else.
+ *
+ * TYPED form is whatever an operator writes, and in Turkey that is almost
+ * always `0532 111 22 33`. Sending that raw got a Turkish refusal at the gate,
+ * because stripping non-digits leaves eleven of them. So the trunk zero and a
+ * +90 country code come off here, before the value is ever sent.
  */
-
-/**
- * What we store: the bare national ten.
- *
- * The trunk prefixes are stripped rather than rejected, because people write
- * them — "0532 111 22 33" and "+90 532 111 22 33" are how a Turkish number is
- * actually dictated, and an operator who types one of those at a barrier
- * should not be told their entry is invalid. Every form of the same number
- * therefore stores identically.
- *
- * The `length > 10` guard on the country code is what keeps a genuine
- * ten-digit number beginning 90 intact; only a longer string can have had +90
- * prepended.
- */
-export function normalizeTel(ham: string): string {
-  let d = ham.replace(/\D/g, '')
-  if (d.startsWith('90') && d.length > 10) d = d.slice(2)
-  if (d.startsWith('0')) d = d.slice(1)
-  return d.slice(0, 10)
+export function normalizeTel(raw: string): string {
+  const d = raw.replace(/\D/g, '')
+  // Order matters: +90 first, since "+90 0532…" would otherwise leave a zero
+  // in the middle of the result.
+  const ulusal = d.startsWith('90') && d.length > 10 ? d.slice(2) : d
+  return ulusal.startsWith('0') ? ulusal.slice(1) : ulusal
 }
 
-/** Empty is allowed everywhere these fields appear — they are all optional. */
+/** True when the value is storable — ten digits, first one not a zero. */
 export function telGecerli(tel: string): boolean {
-  const t = normalizeTel(tel)
-  return t === '' || /^[1-9][0-9]{9}$/.test(t)
+  return /^[1-9][0-9]{9}$/.test(tel)
 }
 
-/** `0532 123 45 67` — grouped the way a Turkish number is read aloud. */
-export function formatTel(tel: string | null): string {
-  if (!tel) return ''
-  const t = normalizeTel(tel)
-  if (t.length !== 10) return t
-  return `0${t.slice(0, 3)} ${t.slice(3, 6)} ${t.slice(6, 8)} ${t.slice(8)}`
+/** "0532 111 22 33" from the stored "5321112233". */
+export function formatTel(tel: string): string {
+  if (!telGecerli(tel)) return tel
+  return `0${tel.slice(0, 3)} ${tel.slice(3, 6)} ${tel.slice(6, 8)} ${tel.slice(8)}`
 }
