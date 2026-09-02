@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { Card, EmptyState, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { RolBilgisi } from './RolBilgisi'
 import { SegmentedControl } from '../../components/ui/primitives'
 import {
   useApproveSignup,
@@ -32,6 +33,7 @@ export default function Personel() {
   const [rolHedef, setRolHedef] = useState<PersonelSatiri | null>(null)
   const [durumHedef, setDurumHedef] = useState<PersonelSatiri | null>(null)
   const [hata, setHata] = useState<string | null>(null)
+  const [rolBilgisi, setRolBilgisi] = useState(false)
 
   const { bekleyen, aktif, kapali } = useMemo(
     () => ({
@@ -53,7 +55,21 @@ export default function Personel() {
 
   return (
     <div>
-      <ScreenHeader title="Personel" back="/yonetim" />
+      {/* Reference, not an action, so it stays quiet — but labelled, because
+          a lone icon here would be a guess about what it opens. */}
+      <ScreenHeader
+        title="Personel"
+        back="/yonetim"
+        right={
+          <button
+            type="button"
+            onClick={() => setRolBilgisi(true)}
+            className="rounded-chip bg-field px-3 py-2 text-label font-medium text-soft active:bg-border"
+          >
+            Rol bilgisi
+          </button>
+        }
+      />
 
       <div className="space-y-5 px-5">
         {/* The failed-load case already returned above, so this is only the
@@ -210,6 +226,8 @@ export default function Personel() {
             .catch((e) => setHata(rpcErrorText(e, 'Durum değiştirilemedi.')))
         }}
       />
+
+      <RolBilgisi open={rolBilgisi} onOpenChange={setRolBilgisi} />
     </div>
   )
 }
