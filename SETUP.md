@@ -30,6 +30,9 @@ Run through it once, start to finish, skipping nothing.
    - `btree_gist` — the overlapping reservation/subscription constraints **will
      not install** without it
    - `pg_cron` — nightly jobs and the camera watchdog
+   - `pg_net` — Database Webhooks. Without it the `supabase_functions` schema
+     does not exist and step 9's webhook cannot be created at all: the push
+     notification chain has no way to reach the Edge Function
 3. From **Project Settings → API**, note:
    - `Project URL` → `VITE_SUPABASE_URL`
    - `publishable` key → `VITE_SUPABASE_PUBLISHABLE_KEY`
@@ -68,7 +71,8 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/019_kamera_bildirimleri.sql` | A notification per camera entry and per camera exit-arrival, on their own preference toggle |
 | `supabase/migrations/020_cop_tahsilat_anlik.sql` | Fixes the bin snapshot: a deleted ticket now keeps its collections, so restoring it restores the money |
 | `supabase/migrations/021_cop_bayragi.sql` | The restore flag now silences the bin for that one record instead of everything after it |
-| `supabase/migrations/022_cop_anon_kapat.sql` | Revokes anons default privileges on the bin table, which 007 never did |
+| `supabase/migrations/022_cop_anon_kapat.sql` | Revokes anon's default privileges on the bin table, which 007 never did |
+| `supabase/migrations/023_push_tetikleyici.sql` | Sends push from our own trigger via `pg_net`, instead of a dashboard webhook |
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,
@@ -407,11 +411,23 @@ After adding the GitHub secret you must **redeploy** — the key is baked into t
 bundle at build time. Without it, push reports "unsupported" rather than
 throwing.
 
-Then create a webhook under **Database → Webhooks**:
+Then point the trigger at the function. Migration `023` installs it; the URL
+and the secret are inserted once, by hand, so neither ends up in git:
 
-- Table: `public.notifications`, event: **Insert**
-- Type: HTTP Request → POST → `https://<project-ref>.supabase.co/functions/v1/send-push`
-- Header: `x-push-secret: <PUSH_SECRET value>`
+```sql
+insert into public.push_ayar (id, url, gizli)
+values (1,
+  'https://<project-ref>.supabase.co/functions/v1/send-push',
+  '<PUSH_SECRET>')
+on conflict (id) do update
+  set url = excluded.url, gizli = excluded.gizli, updated_at = now();
+```
+
+> The dashboard's **Database → Webhooks** feature does the same job, but it
+> needs the `supabase_functions` schema, which some projects never got —
+> enabling `pg_net` does not create it. `023` uses `net.http_post` directly and
+> avoids the dependency; it also keeps the wiring in the repo rather than in
+> dashboard state nobody can review.
 
 On iOS, notifications need **16.4+** and the app installed to the **home
 screen**; they do not work in a browser tab.
