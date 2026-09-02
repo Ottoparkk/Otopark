@@ -14,3 +14,6 @@ npm-debug.log*
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Kamera köprüsü başlatıcısı: webhook gizli anahtarını taşır.
+tools/kamera-koprusu/baslat.ps1

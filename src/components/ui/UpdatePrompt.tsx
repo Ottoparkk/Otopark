@@ -16,8 +16,15 @@ export function UpdatePrompt() {
 
   if (!needRefresh) return null
 
+  // Positioned AROUND the Giriş FAB on Gişe, which shares this corner and the
+  // same z-index. It was landing exactly on top of "Güncelle", so the update
+  // was unreachable and the tap opened Yeni Kayıt instead.
+  //
+  // Mobile: the banner is full width and cannot dodge sideways, so it sits
+  // above the FAB, which ends 140px up. Desktop: it moves to the left corner,
+  // which is empty and is where a toast belongs anyway.
   return (
-    <div className="fixed inset-x-3 bottom-[calc(76px+env(safe-area-inset-bottom))] z-30 flex items-center gap-3 rounded-card bg-surface p-4 shadow-modal md:inset-x-auto md:right-6 md:bottom-6 md:w-[360px]">
+    <div className="fixed inset-x-3 bottom-[calc(152px+env(safe-area-inset-bottom))] z-30 flex items-center gap-3 rounded-card bg-surface p-4 shadow-modal md:right-auto md:bottom-6 md:left-6 md:w-[360px]">
       <div className="min-w-0 flex-1">
         <p className="text-body font-medium text-ink">Yeni sürüm hazır</p>
         <p className="mt-0.5 text-label text-faint">
