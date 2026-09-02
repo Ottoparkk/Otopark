@@ -176,16 +176,24 @@ export default function PersonelDetay() {
                 </p>
               )}
 
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                <Button onClick={() => ac('MAAS')} disabled={maasKurus <= 0}>
+              {/* Three across only from md. At 375px each button is 95px wide
+                  with 32px of that padding, so "Maaş Öde" and "Avans Ver" both
+                  broke across two lines. The primary action takes the full
+                  width on a phone and the two secondary ones share the row
+                  below; `md:contents` dissolves that wrapper so the desktop
+                  layout stays the three-column row it was. */}
+              <div className="mt-4 space-y-2 md:grid md:grid-cols-3 md:gap-2 md:space-y-0">
+                <Button block onClick={() => ac('MAAS')} disabled={maasKurus <= 0}>
                   Maaş Öde
                 </Button>
-                <Button variant="secondary" onClick={() => ac('AVANS')}>
-                  Avans Ver
-                </Button>
-                <Button variant="secondary" onClick={() => ac('PRIM')}>
-                  Prim Ver
-                </Button>
+                <div className="grid grid-cols-2 gap-2 md:contents">
+                  <Button block variant="secondary" onClick={() => ac('AVANS')}>
+                    Avans Ver
+                  </Button>
+                  <Button block variant="secondary" onClick={() => ac('PRIM')}>
+                    Prim Ver
+                  </Button>
+                </div>
               </div>
             </Card>
 

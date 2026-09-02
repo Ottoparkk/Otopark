@@ -101,22 +101,9 @@ export default function Vardiyalar() {
                   </div>
 
                   {acik ? (
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="rounded-chip bg-accent-soft px-2.5 py-1 text-label font-medium text-accent">
-                        Açık
-                      </span>
-                      {/* The operator's own close is the good path; this is for
-                          the shift whose owner cannot close it — they left, or
-                          their account was disabled. Without it they can never
-                          open another shift. */}
-                      <button
-                        type="button"
-                        onClick={() => kapatmayiAc(v)}
-                        className="rounded-chip bg-field px-3 py-1.5 text-label font-medium text-soft active:bg-border"
-                      >
-                        Kapat
-                      </button>
-                    </div>
+                    <span className="shrink-0 rounded-chip bg-accent-soft px-2.5 py-1 text-label font-medium text-accent">
+                      Açık
+                    </span>
                   ) : fark === null ? (
                     <span className="shrink-0 rounded-chip bg-warn-soft px-2.5 py-1 text-label font-medium text-warn">
                       Sayım yok
@@ -136,6 +123,27 @@ export default function Vardiyalar() {
                     </span>
                   )}
                 </div>
+
+                {/* Its own row, not beside the status chip. At 375px a name, a
+                    chip and a button in one line squeezed the date column
+                    until it wrapped mid-phrase — and this is the wider tap
+                    target anyway.
+
+                    The operator's own close is the good path; this is for the
+                    shift whose owner cannot close it — they left, or their
+                    account was disabled. Without it they can never open
+                    another shift. */}
+                {acik && (
+                  <div className="mt-3 flex justify-end border-t border-divider pt-3">
+                    <button
+                      type="button"
+                      onClick={() => kapatmayiAc(v)}
+                      className="min-h-[40px] rounded-chip bg-field px-4 text-label font-medium text-soft active:bg-border"
+                    >
+                      Vardiyayı kapat
+                    </button>
+                  </div>
+                )}
 
                 {!acik && v.beklenen_nakit_kurus !== null && (
                   <div className="mt-3 flex gap-4 border-t border-divider pt-3 text-label">

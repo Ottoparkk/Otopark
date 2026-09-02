@@ -290,7 +290,14 @@ export function IstatKutu({
   }
   return (
     <div>
-      <p className={`text-title font-semibold tnum ${tones[tone]}`}>{deger}</p>
+      {/* Smaller on a phone, and that is a fitting decision, not a taste one.
+          These tiles sit three to a row, so a 375px screen gives each about
+          93px — and at 22px a seven-figure lira amount needs 108px. It has no
+          spaces to wrap at, so it overflowed INTO the next tile: the three
+          numbers ran together and a minus sign ended up orphaned on the tile
+          before it. Measured at 17px the same amount fits on one line with
+          room to spare; md: restores the full size, where the row is wide. */}
+      <p className={`text-lead font-semibold tnum md:text-title ${tones[tone]}`}>{deger}</p>
       <p className="mt-0.5 text-label text-faint">{etiket}</p>
     </div>
   )
