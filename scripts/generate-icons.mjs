@@ -18,7 +18,7 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icons
 // The brand mark. BG must match --brand-from in src/styles/index.css and the
 // theme-color in index.html; FG is --on-brand. A home-screen icon is the first
 // impression of the app, and a neutral near-black tile gave it none.
-const BG = [0x33, 0x25, 0x7e]
+const BG = [0x09, 0x31, 0x40]
 const FG = [0xff, 0xff, 0xff]
 const SS = 3 // supersampling factor per axis (9 samples/pixel)
 

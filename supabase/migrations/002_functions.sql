@@ -794,7 +794,7 @@ begin
     perform public.notify_yonetici('UCRET_DEGISIKLIGI', 'Ücret değiştirildi',
       v_b.plaka || ' — hesaplanan ' || (v_hesaplanan / 100.0)::numeric(12,2)
         || ' ₺, uygulanan ' || (v_ucret / 100.0)::numeric(12,2) || ' ₺',
-      -- The ticket-detail route is /gise/bilet/:id; /yonetim/biletler is the
+      -- The ticket-detail route is /gise/bilet/:id; /finans/biletler is the
       -- list and has no :id child, so linking there would dead-end the tap.
       '/gise/bilet/' || p_bilet_id);
   end if;
@@ -905,7 +905,7 @@ begin
     jsonb_build_object('sebep', btrim(p_sebep), 'plaka', v_b.plaka,
                        'onceki_durum', v_b.durum, 'tahsil', v_b.tahsil_kurus));
   perform public.notify_yonetici('BILET_IPTAL', 'Bilet iptal edildi',
-    v_b.plaka || ' — ' || btrim(p_sebep), '/yonetim/biletler');
+    v_b.plaka || ' — ' || btrim(p_sebep), '/finans/biletler');
 end $$;
 
 /**
@@ -1136,7 +1136,7 @@ begin
     perform public.notify_yonetici('VARDIYA_FARK', 'Vardiya farkı',
       (select p.ad_soyad from public.profiles p where p.id = v_v.personel_id)
         || ' — fark ' || (v_fark / 100.0)::numeric(12,2) || ' ₺',
-      '/yonetim/vardiyalar');
+      '/finans/vardiyalar');
   end if;
 
   return query select v_beklenen, p_sayilan_nakit_kurus, v_fark;

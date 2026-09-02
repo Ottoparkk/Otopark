@@ -31,7 +31,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadProfile = useCallback(async (userId: string) => {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      // Explicit columns, not '*': 018 takes SELECT off the salary columns, and
+      // a star would ask for them and be refused outright.
+      .select('id,ad_soyad,rol,durum,notif_prefs,created_at')
       .eq('id', userId)
       .maybeSingle()
     setProfile(error || !data ? null : (data as Profile))

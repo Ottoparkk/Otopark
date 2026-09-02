@@ -68,7 +68,10 @@ export function PlakaKamera({
       />
       <Button
         type="button"
-        variant="secondary"
+        // `soft`, not `secondary`: bg-field made this button the same colour
+        // as the inputs it sits between, so the one optional action on the
+        // entry screen was the hardest thing on it to find.
+        variant="soft"
         size="lg"
         block
         loading={oku.isPending}

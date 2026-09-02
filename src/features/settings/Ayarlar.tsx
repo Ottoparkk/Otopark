@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Input, ScreenHeader } from '../../components/ui/primitives'
 import { Toggle } from '../../components/ui/Toggle'
-import { useProfilGuncelle } from './api'
+import { Link } from 'react-router'
+import { useOkunmamisSayisi, useProfilGuncelle } from './api'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isDarkMode, setDarkMode } from '../../lib/theme'
 import { disablePush, enablePush, getPushSubscription, pushSupported } from '../../lib/push'
 import { isYonetici } from '../../lib/rbac'
 import { rpcErrorText } from '../../lib/errors'
 import { BILDIRIM_ETIKET, type BildirimTur } from '../../lib/types'
-import { IconAy, IconGunes } from '../../components/ui/icons'
+import { IconAy, IconGunes, IconIleri, IconZil } from '../../components/ui/icons'
 
 /** Every type is Yönetici-only today, so Personel see no preference switches. */
 const TERCIH_TURLERI: BildirimTur[] = [
@@ -21,6 +22,7 @@ const TERCIH_TURLERI: BildirimTur[] = [
   'DOLULUK',
   'ISTISNA',
   'KAMERA',
+  'KAMERA_HAREKET',
   'PUAN_KULLANIM',
 ]
 
@@ -28,6 +30,7 @@ export default function Ayarlar() {
   const { profile, refreshProfile, signOut } = useAuth()
   const guncelle = useProfilGuncelle()
   const yonetici = isYonetici(profile)
+  const { data: okunmamis = 0 } = useOkunmamisSayisi(yonetici)
 
   const [ad, setAd] = useState(profile?.ad_soyad ?? '')
   const [karanlik, setKaranlik] = useState(isDarkMode())
@@ -89,7 +92,12 @@ export default function Ayarlar() {
 
   return (
     <div>
-      <ScreenHeader title="Ayarlar" back="/gise" />
+      {/* "Profil", not "Ayarlar": the car park's own settings are a
+          different screen (/yonetim/ayarlar), and two things called Ayarlar
+          is how someone ends up changing capacity when they meant to change
+          their name. Back goes where the screen was entered from — a
+          Yönetici arrives from the Yönetim menu, a Personel from Gişe. */}
+      <ScreenHeader title="Profil" back={yonetici ? '/yonetim' : '/gise'} />
 
       <div className="space-y-4 px-5">
         {/* ---- profile ------------------------------------------------ */}
@@ -155,6 +163,24 @@ export default function Ayarlar() {
                 />
               ))}
             </div>
+
+            {/* The feed itself, one tap from the switches that decide what
+                lands in it. It keeps its own screen — the bell in the desktop
+                bar still goes straight there — but it no longer needs a menu
+                row of its own. */}
+            <Link
+              to="/bildirimler"
+              className="mt-3 flex min-h-[44px] items-center gap-3 rounded-field bg-field px-3.5"
+            >
+              <IconZil size={18} className="shrink-0 text-soft" />
+              <span className="flex-1 text-body font-medium text-ink">Gelen bildirimler</span>
+              {okunmamis > 0 && (
+                <span className="rounded-chip bg-accent px-2 py-0.5 text-micro font-semibold text-accent-ink tnum">
+                  {okunmamis}
+                </span>
+              )}
+              <IconIleri size={16} className="shrink-0 text-faint" />
+            </Link>
           </Card>
         )}
 

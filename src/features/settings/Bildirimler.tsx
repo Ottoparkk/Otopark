@@ -22,6 +22,9 @@ const TON: Record<BildirimTur, string> = {
   UCRET_DEGISIKLIGI: 'bg-danger-soft text-danger',
   PUAN_KULLANIM: 'bg-accent-soft text-accent',
   KAMERA: 'bg-danger-soft text-danger',
+  // Routine traffic, not a problem: neutral, so a hundred of these a day do
+  // not make the list look like a hundred alarms.
+  KAMERA_HAREKET: 'bg-field text-soft',
   ISTISNA: 'bg-warn-soft text-warn',
 }
 
@@ -77,7 +80,7 @@ export default function Bildirimler() {
                     {BILDIRIM_ETIKET[b.tur]}
                   </span>
                   {!b.read_at && (
-                    <span className="mt-1.5 size-2 shrink-0 rounded-chip bg-accent" />
+                    <span className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
                   )}
                 </div>
                 <p className="mt-2 text-body font-medium text-ink">{b.baslik}</p>

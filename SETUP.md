@@ -52,9 +52,60 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/003_rls.sql` | RLS, column grants, function EXECUTE grants, photo bucket |
 | `supabase/migrations/004_cron.sql` | Nightly maintenance + camera watchdog |
 | `supabase/migrations/005_seed.sql` | Settings row, tariffs, sample parking spots |
+| `supabase/migrations/006_arac_tipi_kaldir.sql` | Removes vehicle types — one tariff for every vehicle |
+| `supabase/migrations/007_cop_kutusu.sql` | Delete + recycle bin; deleting a record reverses its collections |
+| `supabase/migrations/008_musteri_bilgisi.sql` | Vehicle / customer / phone / note on a ticket, editable until it closes |
+| `supabase/migrations/009_yer_duzeni.sql` | Spots are generated from the capacity — P-01 / E-01 / R-01 |
+| `supabase/migrations/010_yer_secimi.sql` | A bay is chosen at Giriş and validated; a camera entry takes the first free one |
+| `supabase/migrations/011_yer_degistir.sql` | A car already inside can be moved to another bay |
+| `supabase/migrations/012_grant_temizligi.sql` | Repairs the EXECUTE grants Supabase hands out by default to functions created by 006–008 |
+| `supabase/migrations/013_sabit_tarife.sql` | Fixed price per entry as an alternative to the hourly tariff |
+| `supabase/migrations/014_kasa_tekrar.sql` | Monthly recurring kasa entries, written by a nightly job |
+| `supabase/migrations/015_yontem_ozet.sql` | Nakit / Kredi Kartı / Havale split behind the Finans net panel |
+| `supabase/migrations/016_personel_odeme.sql` | Salary, advance and bonus; advance debt is deducted from the next salary |
+| `supabase/migrations/017_tahsilat_onayi.sql` | Approval gate: bilet and abonman collections reach Finans only once the Yönetici accepts them |
+| `supabase/migrations/018_maas_gizli.sql` | Takes SELECT off the salary columns and moves the roster behind a Yönetici-only RPC |
+| `supabase/migrations/019_kamera_bildirimleri.sql` | A notification per camera entry and per camera exit-arrival, on their own preference toggle |
 
-`003` and `004` end with self-verifying `DO` blocks: if a permission was left
-open, the migration **raises and stops**. It is not expected to pass quietly.
+`017` changes what "revenue" means, and the split is deliberate: **Ciro, the
+daily chart and the payment-method breakdown count approved collections only,
+while shift reconciliation counts every collection whatever its state.** The
+cash is in the drawer whether or not the owner has accepted it into the books,
+so filtering the shift count would invent a discrepancy on every unapproved
+shift. Collections written before `017` ran are marked approved — a queue
+holding the whole history would be unusable.
+
+**Order is not optional here.** `008` drops and recreates the `bilet_ac` that
+`006` creates, so running it first leaves the app unable to open a ticket, and
+`010` replaces `008`'s version in place.
+
+After `009`, park spots are produced from **Otopark Ayarları → Kapasite** rather
+than typed in one at a time. The sample bays `005` inserted (`A-01`, `B-01`,
+`S-01`) are outside the P/E/R scheme and are deliberately left alone; the
+settings screen offers a tick to retire them once, and they are never deleted.
+
+After `010`, the operator picks a park yeri while opening a ticket and one is
+proposed automatically — the same bay `bos_park_yeri()` would give an entry
+arriving from the camera. **`010` refuses to install** if two open tickets are
+already sitting on one bay; it names them, because a lot in that state has to be
+sorted out before "one car per bay" can be made true.
+
+Until `010` has been run the Park yeri field simply does not appear on the Giriş
+screen and entries carry on without a bay — the RPC it calls does not exist yet.
+Nothing breaks, but the frontend should not be deployed expecting it.
+
+`011` adds the move gesture on the spot grid: hold an occupied bay for three
+seconds (or double-click it on a desktop), then tap the empty one. It is
+`is_staff()` — **Personel can move a car**, deliberately, because they are the
+ones who choose the bay at Giriş and the ones who re-park a car when the barrier
+is blocked. Everything else on that screen — adding, editing, retiring or
+deleting a bay, and every reservation control — stays Yönetici-only in RLS.
+Before `011` is run the gesture answers "Bu özellik sunucuda henüz etkin değil."
+rather than moving anything.
+
+`003`, `004`, `009`, `010` and `011` end with self-verifying `DO` blocks: if a
+permission was left open, the migration **raises and stops**. It is not expected
+to pass quietly.
 
 `003` explicitly enables RLS on **19 of 19** tables. If the dashboard offers an
 "automatic RLS" option, leave it on: it changes nothing for these tables, but a

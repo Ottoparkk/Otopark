@@ -1,27 +1,64 @@
-import { useEffect, useRef, useState } from 'react'
-import { ScreenHeader, Button, FloatingBar } from '../../components/ui/primitives'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
+import { Button, FloatingBar, Select } from '../../components/ui/primitives'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKamera } from '../plaka/PlakaKamera'
 import { usePlakaKabul } from '../plaka/api'
-import { AracTipiSecici, DolulukRozeti, FotoOnizleme } from './components'
-import { fotoYukle, useAbonmanKontrol, useAyarlar, useBiletAc, useGunlukOzet, usePuanDurumu } from './api'
+import {
+  BOS_EK_BILGI,
+  FotoOnizleme,
+  EkBilgiFormu,
+  ekBilgiGonder,
+  type EkBilgiler,
+} from './components'
+import {
+  fotoYukle,
+  useAbonmanKontrol,
+  useAyarlar,
+  useBiletAc,
+  useParkYeriDurumu,
+  usePuanDurumu,
+} from './api'
+import { ilkBosYer, yerSecenekEtiketi } from '../../lib/yerkodu'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTarih } from '../../lib/dates'
 import { formatTL } from '../../lib/money'
+import { telGecerli } from '../../lib/telefon'
 import { rpcErrorText } from '../../lib/errors'
-import { IconTik, IconUyari } from '../../components/ui/icons'
-import type { AracTipi } from '../../lib/types'
+import { IconUyari } from '../../components/ui/icons'
 
-export default function Giris() {
+/**
+ * The Giriş half of the Gişe page.
+ *
+ * `autoFocus` is a prop rather than a constant: the plate field should grab
+ * the keyboard when an operator deliberately switches to Giriş, but NOT when
+ * the app merely opens on the Gişe page — popping the keyboard over someone
+ * who came to glance at the lot is the kind of small rudeness that makes an
+ * app feel wrong to use all day.
+ */
+export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
+  const navigate = useNavigate()
   const [plaka, setPlaka] = useState('')
-  const [aracTipi, setAracTipi] = useState<AracTipi>('OTOMOBIL')
+  const [musteri, setMusteri] = useState<EkBilgiler>(BOS_EK_BILGI)
+  const [telHata, setTelHata] = useState<string | null>(null)
   const [foto, setFoto] = useState<File | null>(null)
   const [fotoUrl, setFotoUrl] = useState<string | null>(null)
   const [ocrLogId, setOcrLogId] = useState<string | null>(null)
 
+  /**
+   * null means "follow the proposal", NOT "no bay" — '' is no bay.
+   *
+   * Stored as an override rather than seeded into state by an effect: the
+   * proposal has to stay live (the bay it names can be taken by another
+   * operator between two entries), and an effect that writes state from a
+   * query would either fight the operator's choice or go stale the one time a
+   * refetch happens to return an identical array.
+   */
+  const [yer, setYer] = useState<string | null>(null)
+
   const [hata, setHata] = useState<string | null>(null)
   const [uyari, setUyari] = useState<string | null>(null)
-  const [basari, setBasari] = useState<string | null>(null)
+
 
   /**
    * ONE idempotency key per form session, deliberately not per attempt.
@@ -33,12 +70,27 @@ export default function Giris() {
   const islemIdRef = useRef<string>(crypto.randomUUID())
 
   const { data: ayarlar } = useAyarlar()
-  const { data: ozet } = useGunlukOzet()
   const biletAc = useBiletAc()
   const plakaKabul = usePlakaKabul()
 
   const normalize = normalizePlaka(plaka)
   const gecerli = plakaGecerli(normalize)
+
+  /**
+   * No error branch on purpose: if this call fails — migration 010 not run
+   * yet, or a blip — the picker simply does not appear and entries carry on
+   * without a bay. A gate screen may lose an optional field; it may never
+   * lose the ticket.
+   */
+  const { data: yerler } = useParkYeriDurumu()
+  const oneri = useMemo(() => ilkBosYer(yerler ?? []), [yerler])
+  // The override wins while it names a bay that still exists; otherwise the
+  // proposal does. Falling back matters because a bay can be retired between
+  // the choice and the save, and a <select> whose value matches no option
+  // shows one thing while sending another.
+  const seciliYer = yer ?? oneri ?? ''
+  const yerGecerli = (yerler ?? []).some((d) => d.id === seciliYer) ? seciliYer : ''
+  const bosSayi = (yerler ?? []).filter((d) => !d.dolu_plaka).length
 
   const { data: abonman } = useAbonmanKontrol(normalize, gecerli)
   const { data: puan } = usePuanDurumu(normalize, gecerli && Boolean(ayarlar?.puan_aktif))
@@ -54,17 +106,15 @@ export default function Giris() {
     return () => URL.revokeObjectURL(url)
   }, [foto])
 
-  useEffect(() => {
-    if (!basari) return
-    const t = setTimeout(() => setBasari(null), 5000)
-    return () => clearTimeout(t)
-  }, [basari])
-
   function sifirla() {
     setPlaka('')
+    setMusteri(BOS_EK_BILGI)
+    setTelHata(null)
     setFoto(null)
     setOcrLogId(null)
-    setAracTipi('OTOMOBIL')
+    // Back to the proposal, which by then is the NEXT free bay: the ticket
+    // just saved has taken this one, and the save invalidates the list.
+    setYer(null)
     islemIdRef.current = crypto.randomUUID()
   }
 
@@ -74,6 +124,17 @@ export default function Giris() {
 
     if (!gecerli) {
       setHata('Geçerli bir plaka girin.')
+      return
+    }
+
+    // Checked here rather than by disabling the button. These fields are
+    // optional, and a half-typed phone number must never be the reason a car
+    // in the lot has no ticket — the operator sees exactly what is wrong and
+    // can either finish the number or clear it and carry on.
+    setTelHata(null)
+    if (!telGecerli(musteri.tel)) {
+      setTelHata('10 hane girin ya da alanı boş bırakın.')
+      setHata('Müşteri numarasını düzeltin veya boş bırakın.')
       return
     }
 
@@ -90,9 +151,10 @@ export default function Giris() {
     try {
       const id = await biletAc.mutateAsync({
         plaka: normalize,
-        arac_tipi: aracTipi,
         islem_id: islemIdRef.current,
         foto: fotoPath,
+        park_yeri_id: yerGecerli || null,
+        ...ekBilgiGonder(musteri),
       })
       if (!id) {
         setHata('Kayıt oluşturulamadı. Tekrar deneyin.')
@@ -100,8 +162,20 @@ export default function Giris() {
       }
       // Fire-and-forget: the accuracy log must never block a ticket.
       if (ocrLogId) plakaKabul.mutate({ log_id: ocrLogId, kabul: normalize })
-      setBasari(formatPlaka(normalize))
       sifirla()
+      // Back to the list, which is where the next thing an operator does
+      // always is. The confirmation travels with the navigation rather than
+      // being left behind on a screen nobody is looking at any more — the car
+      // being in the list is proof it was saved, but the BAY it was given is
+      // not visible there, and that is the part somebody has to be told.
+      navigate('/gise', {
+        state: {
+          girisBasari: {
+            plaka: formatPlaka(normalize),
+            yerKod: (yerler ?? []).find((d) => d.id === yerGecerli)?.kod ?? null,
+          },
+        },
+      })
     } catch (err) {
       setHata(
         rpcErrorText(
@@ -113,27 +187,15 @@ export default function Giris() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col md:min-h-0">
-      <ScreenHeader
-        title="Araç Girişi"
-        right={ozet ? <DolulukRozeti dolu={ozet.doluluk} kapasite={ozet.kapasite} /> : null}
-      />
-
+    <div className="flex flex-1 flex-col">
       <div className="flex-1 space-y-5 px-5">
-        {basari && (
-          <p className="flex items-center gap-2 rounded-card bg-success-soft px-4 py-3 text-body font-medium text-success">
-            <IconTik size={18} />
-            {basari} girişi kaydedildi
-          </p>
-        )}
-
         {/* No label: a giant tracked uppercase field with a plate-shaped
             placeholder already says what it is. */}
         <PlakaInput
           value={plaka}
           onChange={setPlaka}
           hideLabel
-          autoFocus
+          autoFocus={autoFocus}
           onEnter={() => void kaydet()}
         />
 
@@ -155,7 +217,31 @@ export default function Giris() {
           </p>
         )}
 
-        <AracTipiSecici value={aracTipi} onChange={setAracTipi} label={null} />
+        {/* The bay, between the plate and the camera: it is part of deciding
+            what this entry IS, while the camera and the customer fields are
+            things added to it. Pre-set to the first free ordinary bay — the
+            same one bos_park_yeri() would give a camera entry — so the fast
+            path stays plate → Kaydet and the operator only touches this when
+            the car goes somewhere else.
+
+            Occupied bays stay in the list, disabled and showing the plate on
+            them. A bay that simply vanished would read as a bug; this answers
+            "why can't I pick P-03" without anyone having to ask. */}
+        {(yerler?.length ?? 0) > 0 && (
+          <Select
+            label="Park yeri"
+            value={yerGecerli}
+            onChange={(e) => setYer(e.target.value)}
+            hint={bosSayi > 0 ? `${bosSayi} yer boş` : 'Boş yer kalmadı'}
+          >
+            <option value="">Yer atanmadı</option>
+            {(yerler ?? []).map((d) => (
+              <option key={d.id} value={d.id} disabled={Boolean(d.dolu_plaka)}>
+                {yerSecenekEtiketi(d)}
+              </option>
+            ))}
+          </Select>
+        )}
 
         <PlakaKamera
           aktif={(ayarlar?.plaka_saglayici ?? 'KAPALI') !== 'KAPALI'}
@@ -167,6 +253,18 @@ export default function Giris() {
         />
 
         {fotoUrl && <FotoOnizleme url={fotoUrl} onKaldir={() => setFoto(null)} />}
+
+        {/* Optional, and placed after the plate and the camera on purpose: the
+            fast path is plate → Girişi Kaydet, and "Girişi Kaydet" lives in the
+            floating bar, so nothing here can push the primary action off
+            screen. Editable again at Tahsilat while the car is inside. */}
+        <section>
+          <h3 className="mb-3 flex items-baseline gap-2 text-body font-semibold text-ink">
+            Müşteri ve not
+            <span className="text-label font-normal text-faint">(isteğe bağlı)</span>
+          </h3>
+          <EkBilgiFormu deger={musteri} onChange={setMusteri} telHatasi={telHata} />
+        </section>
 
         {uyari && (
           <p className="flex items-start gap-2 rounded-card bg-warn-soft px-4 py-3 text-body text-warn">

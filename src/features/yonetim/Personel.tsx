@@ -1,27 +1,36 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { Card, EmptyState, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { SegmentedControl } from '../../components/ui/primitives'
-import { useApproveSignup, useProfiller, useSetRole, useSetStatus } from './api'
+import {
+  useApproveSignup,
+  usePersonelListesi,
+  useSetRole,
+  useSetStatus,
+  type PersonelSatiri,
+} from './api'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { formatGoreceli } from '../../lib/dates'
+import { formatTL } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
 import { IconKisi } from '../../components/ui/icons'
-import type { Profile, Rol } from '../../lib/types'
+import type { Rol } from '../../lib/types'
 
 export default function Personel() {
+  const navigate = useNavigate()
   const { profile: ben } = useAuth()
-  const { data: liste = [], isPending, error, refetch } = useProfiller()
+  const { data: liste = [], isPending, error, refetch } = usePersonelListesi()
 
   const onayla = useApproveSignup()
   const rolDegistir = useSetRole()
   const durumDegistir = useSetStatus()
 
-  const [onaylanan, setOnaylanan] = useState<Profile | null>(null)
+  const [onaylanan, setOnaylanan] = useState<PersonelSatiri | null>(null)
   const [secilenRol, setSecilenRol] = useState<Rol>('PERSONEL')
-  const [rolHedef, setRolHedef] = useState<Profile | null>(null)
-  const [durumHedef, setDurumHedef] = useState<Profile | null>(null)
+  const [rolHedef, setRolHedef] = useState<PersonelSatiri | null>(null)
+  const [durumHedef, setDurumHedef] = useState<PersonelSatiri | null>(null)
   const [hata, setHata] = useState<string | null>(null)
 
   const { bekleyen, aktif, kapali } = useMemo(
@@ -93,6 +102,7 @@ export default function Personel() {
                       key={p.id}
                       p={p}
                       ben={ben?.id === p.id}
+                      onAc={() => navigate(`/yonetim/personel/${p.id}`)}
                       onRol={() => {
                         setSecilenRol(p.rol === 'YONETICI' ? 'PERSONEL' : 'YONETICI')
                         setHata(null)
@@ -110,13 +120,14 @@ export default function Personel() {
 
             {kapali.length > 0 && (
               <section>
-                <Baslik>Kapalı ({kapali.length})</Baslik>
+                <Baslik>Silinen ({kapali.length})</Baslik>
                 <div className="space-y-2">
                   {kapali.map((p) => (
                     <KisiKart
                       key={p.id}
                       p={p}
                       ben={ben?.id === p.id}
+                      onAc={() => navigate(`/yonetim/personel/${p.id}`)}
                       onDurum={() => {
                         setHata(null)
                         setDurumHedef(p)
@@ -175,13 +186,17 @@ export default function Personel() {
         open={durumHedef !== null}
         onOpenChange={() => setDurumHedef(null)}
         tone={durumHedef?.durum === 'ACTIVE' ? 'danger' : 'primary'}
-        title={durumHedef?.durum === 'ACTIVE' ? 'Hesabı kapat' : 'Hesabı aç'}
+        title={durumHedef?.durum === 'ACTIVE' ? 'Personeli sil' : 'Erişimi geri ver'}
+        // Says what is kept, not only what is taken away. The records are the
+        // whole point: tickets, shifts and payments stay exactly where they
+        // are, and the person keeps their name on them.
         description={
           durumHedef?.durum === 'ACTIVE'
-            ? 'Kullanıcı bir sonraki isteğinde tüm erişimini kaybeder.'
+            ? (durumHedef?.ad_soyad || 'Bu kişi') +
+              ' bir sonraki isteğinde tüm erişimini kaybeder. Geçmiş kayıtları — bilet, vardiya ve ödemeler — silinmez, listede Silinen altında kalır ve erişim geri verilebilir.'
             : 'Kullanıcı yeniden giriş yapabilir.'
         }
-        confirmLabel={durumHedef?.durum === 'ACTIVE' ? 'Kapat' : 'Aç'}
+        confirmLabel={durumHedef?.durum === 'ACTIVE' ? 'Sil' : 'Geri ver'}
         loading={durumDegistir.isPending}
         error={hata}
         onConfirm={() => {
@@ -223,41 +238,61 @@ function KisiKart({
   ben,
   onRol,
   onDurum,
+  onAc,
 }: {
-  p: Profile
+  p: PersonelSatiri
   ben: boolean
   onRol?: () => void
   onDurum?: () => void
+  /** Opens the pay screen. Absent for people who have no pay to show. */
+  onAc?: () => void
 }) {
   return (
     <Card>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-body font-medium text-ink">
+          <p className="truncate text-body font-semibold text-ink">
             {p.ad_soyad || 'İsimsiz'}
-            {ben && <span className="ml-2 text-label text-faint">(siz)</span>}
+            {ben && <span className="ml-2 text-label font-normal text-faint">(siz)</span>}
           </p>
-          <p className="mt-0.5 text-label text-faint">
+          {/* The role as a chip rather than a grey line: it is a label on a
+              person, and it reads as one. */}
+          <span className="mt-1.5 inline-block rounded-chip bg-field px-2 py-0.5 text-micro font-medium text-soft">
             {p.rol === 'YONETICI' ? 'Yönetici' : p.rol === 'PERSONEL' ? 'Personel' : 'Rol yok'}
-          </p>
+          </span>
         </div>
-        <span
-          className={`shrink-0 rounded-chip px-2.5 py-1 text-label font-medium ${
-            p.durum === 'ACTIVE'
-              ? 'bg-success-soft text-success'
-              : p.durum === 'PENDING'
-                ? 'bg-warn-soft text-warn'
-                : 'bg-danger-soft text-danger'
-          }`}
-        >
-          {p.durum === 'ACTIVE' ? 'Aktif' : p.durum === 'PENDING' ? 'Bekliyor' : 'Kapalı'}
-        </span>
+
+        {/* Pay on the right, captioned. The status chip that used to sit here
+            is gone: every row already lives under an Aktif / Kapalı / Onay
+            bekleyen heading, so it said the same thing twice. Shown only when
+            a salary is set — a row of ₺0 for staff who are paid another way
+            would read as an error. */}
+        {p.maas_kurus > 0 && (
+          <div className="shrink-0 text-right">
+            <p className="text-micro font-medium tracking-wide text-faint uppercase">Maaş</p>
+            <p className="text-body font-semibold text-ink tnum">{formatTL(p.maas_kurus)}</p>
+          </div>
+        )}
       </div>
 
       {/* Self-service is blocked server-side too — these buttons are hidden
           because they would only ever produce a Turkish refusal. */}
+      {/* Ödemeler is its own row above the role controls, and it is offered
+          for YOURSELF too: a Yönetici who pays themselves a salary still
+          needs the screen. Role and status are the ones that must not be
+          self-served, which is why only those sit behind `!ben`. */}
+      {onAc && (
+        <button
+          type="button"
+          onClick={onAc}
+          className="mt-3 min-h-[44px] w-full rounded-field bg-accent-soft text-body font-medium text-accent"
+        >
+          Ödemeler
+        </button>
+      )}
+
       {!ben && (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-2 flex gap-2">
           {onRol && (
             <button
               type="button"
@@ -275,7 +310,7 @@ function KisiKart({
                 p.durum === 'ACTIVE' ? 'bg-danger-soft text-danger' : 'bg-success-soft text-success'
               }`}
             >
-              {p.durum === 'ACTIVE' ? 'Hesabı kapat' : 'Hesabı aç'}
+              {p.durum === 'ACTIVE' ? 'Sil' : 'Geri ver'}
             </button>
           )}
         </div>

@@ -1,4 +1,10 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
+import { useId } from 'react'
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes,
+} from 'react'
 import { useNavigate } from 'react-router'
 import { IconGeri } from './icons'
 import { Spinner } from './Spinner'
@@ -11,7 +17,7 @@ import { Spinner } from './Spinner'
 
 /* ------------------------------------------------------------------ Button */
 
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
+type ButtonVariant = 'primary' | 'secondary' | 'soft' | 'ghost' | 'danger'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant
@@ -27,6 +33,18 @@ const VARIANT: Record<ButtonVariant, string> = {
   // has no primary action — the lift is the hierarchy.
   primary: 'bg-accent text-accent-ink shadow-raised active:brightness-95',
   secondary: 'bg-field text-ink border border-border active:brightness-95',
+  // Tinted, not filled and not elevated. For a real action that must still
+  // lose to the primary one: `secondary` is bg-field, which is also the colour
+  // of every input, so a secondary button sitting in a form reads as one more
+  // empty field. This one is unmistakably a button without competing with the
+  // filled accent in the floating bar.
+  // The tint alone is not enough in light mode: accent-soft and field sit at
+  // almost the same lightness (L 91 vs 92) and measure ΔE 8.3 apart, which is
+  // the same figure this palette already rejected as "nearly identical" when
+  // the chip colours were tuned. The accent border is the cue that does the
+  // work — a teal outline against neutral ones is unmissable at a glance,
+  // while the fill stays quiet enough to lose to the primary.
+  soft: 'bg-accent-soft text-accent border border-accent/40 active:brightness-95',
   ghost: 'bg-transparent text-soft active:bg-field',
   danger: 'bg-danger-soft text-danger active:brightness-95',
 }
@@ -120,7 +138,7 @@ export function BrandPanel({
 
 /* ---------------------------------------------------------------- IconTile */
 
-type TileTone = 'accent' | 'success' | 'warn' | 'danger' | 'neutral'
+type TileTone = 'accent' | 'success' | 'warn' | 'danger' | 'neutral' | 'mor'
 
 const TILE: Record<TileTone, string> = {
   accent: 'bg-accent-soft text-accent',
@@ -128,6 +146,13 @@ const TILE: Record<TileTone, string> = {
   warn: 'bg-warn-soft text-warn',
   danger: 'bg-danger-soft text-danger',
   neutral: 'bg-field text-soft',
+  // A sixth tile colour, for a row that must not be mistaken for either of
+  // the five meanings above. It borrows the havale tokens rather than adding
+  // a pair of its own: those are already measured (6.0:1 light, 6.0:1 dark)
+  // and already flip correctly in dark mode, and the payment chips they name
+  // never appear beside a tile. Their SOFTS are what settled it — accent-soft
+  // and kart-soft are both pale blues and would have read as the same tile.
+  mor: 'bg-havale-soft text-havale',
 }
 
 /**
@@ -141,13 +166,13 @@ export function IconTile({
 }: {
   children: ReactNode
   tone?: TileTone
-  size?: 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg'
 }) {
   return (
     <span
       className={[
         'flex shrink-0 items-center justify-center rounded-field',
-        size === 'lg' ? 'size-12' : 'size-11',
+        size === 'lg' ? 'size-12' : size === 'sm' ? 'size-9' : 'size-11',
         TILE[tone],
       ].join(' ')}
     >
@@ -180,7 +205,7 @@ export function OranCubugu({
   const kirpilmis = Number.isFinite(yuzde) ? Math.max(0, Math.min(100, Math.round(yuzde))) : 0
   return (
     <div
-      className={`h-2 w-full overflow-hidden rounded-chip ${tone === 'brand' ? 'bg-white/25' : 'bg-field'}`}
+      className={`h-2 w-full overflow-hidden rounded-full ${tone === 'brand' ? 'bg-white/25' : 'bg-field'}`}
       role="progressbar"
       aria-label={label}
       aria-valuenow={kirpilmis}
@@ -235,7 +260,13 @@ export function Input({
   'aria-label': ariaLabel,
   ...rest
 }: InputProps) {
-  const inputId = id ?? rest.name ?? undefined
+  // useId, not `undefined`: without a fallback a field with a VISIBLE label
+  // got no id at all, so the <label> had nothing to point at — the input had
+  // no accessible name (aria-label is only set on the hideLabel path) and
+  // tapping the label did not focus it. That was true of most forms in the
+  // app, since almost none of them pass an explicit id or name.
+  const otoId = useId()
+  const inputId = id ?? rest.name ?? otoId
   return (
     <div>
       {label && !hideLabel && <Label htmlFor={inputId}>{label}</Label>}
@@ -264,6 +295,66 @@ export function Input({
           className,
         ].join(' ')}
       />
+      {error ? (
+        <p className="mt-1.5 text-label text-danger">{error}</p>
+      ) : hint ? (
+        <p className="mt-1.5 text-label text-faint">{hint}</p>
+      ) : null}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- Select */
+
+interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
+  label?: string
+  hint?: string
+  error?: string | null
+  children: ReactNode
+}
+
+/**
+ * A native <select>, styled exactly like Input.
+ *
+ * Native on purpose: on a phone this opens the OS picker, which is scrollable,
+ * type-ahead searchable and already familiar — a hand-rolled dropdown would be
+ * worse at a barrier and would have to re-earn every accessibility behaviour
+ * the platform gives away.
+ *
+ * It exists because four screens had hand-copied the same field classes, and
+ * the copies had already drifted: the redesign gave Input a border and a focus
+ * ring, and the selects kept the older borderless well, so two controls in one
+ * form no longer looked like the same control.
+ */
+export function Select({
+  label,
+  hint,
+  error,
+  id,
+  className = '',
+  children,
+  ...rest
+}: SelectProps) {
+  const otoId = useId()
+  const selectId = id ?? rest.name ?? otoId
+  return (
+    <div>
+      {label && <Label htmlFor={selectId}>{label}</Label>}
+      <select
+        {...rest}
+        id={selectId}
+        aria-invalid={error ? true : undefined}
+        className={[
+          'w-full rounded-field border border-border bg-field px-4 py-3 text-body text-ink',
+          'min-h-[52px] outline-none',
+          'focus:border-accent',
+          'disabled:cursor-not-allowed disabled:opacity-55',
+          error ? 'ring-2 ring-danger' : '',
+          className,
+        ].join(' ')}
+      >
+        {children}
+      </select>
       {error ? (
         <p className="mt-1.5 text-label text-danger">{error}</p>
       ) : hint ? (
@@ -328,10 +419,14 @@ export function DataPoint({
 export function Chip({
   children,
   tone = 'neutral',
+  /** `sm` for chips inside a list row, where a full-size one competes with
+   *  the plate. The three list cards were each hand-rolling these classes. */
+  size = 'md',
   className = '',
 }: {
   children: ReactNode
   tone?: 'neutral' | 'accent' | 'success' | 'danger' | 'warn'
+  size?: 'sm' | 'md'
   className?: string
 }) {
   const tones = {
@@ -341,9 +436,13 @@ export function Chip({
     danger: 'bg-danger-soft text-danger',
     warn: 'bg-warn-soft text-warn',
   }
+  const sizes = {
+    sm: 'gap-1 px-2 py-0.5 text-micro',
+    md: 'gap-1 px-2.5 py-1 text-label',
+  }
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-chip px-2.5 py-1 text-label font-medium ${tones[tone]} ${className}`}
+      className={`inline-flex items-center rounded-chip font-medium ${sizes[size]} ${tones[tone]} ${className}`}
     >
       {children}
     </span>
@@ -377,9 +476,29 @@ export function SegmentedControl<T extends string>({
               aria-selected={active}
               onClick={() => onChange(o.value)}
               className={[
-                'min-h-[44px] flex-1 rounded-[12px] px-2 text-body font-medium transition-colors',
-                // The thumb has to look like it sits ON the track, not in it.
-                active ? 'bg-surface text-ink shadow-raised' : 'text-soft',
+                // 6px = --radius-field (10) minus the track's p-1 (4). This thumb
+                // sits INSIDE a rounded-field track, so matching the track outright
+                // would bulge past its corners. Retune with the radius scale.
+                'min-h-[44px] flex-1 rounded-[6px] px-2 text-body font-medium transition-colors',
+                // Three signals at once, because the white pill this replaces
+                // carried only one and it was weak: white on `field` separates
+                // by 1.22:1, enough to see a shape but not to answer "which
+                // one is selected?" — the only question this control exists to
+                // answer. Now the selected segment is tinted, its label turns
+                // accent, and an accent border draws around it, so the border
+                // visibly MOVES as you switch between options.
+                //
+                // Deliberately not a solid accent fill: that would make every
+                // selected segment the same block of colour as the primary
+                // button on the same form, and a form should have one loudest
+                // thing. Measured: accent on accent-soft is 6.2:1 light,
+                // 8.3:1 dark.
+                //
+                // An INSET ring, not a border: a border would add a pixel to
+                // the box and shift the label every time the selection moves.
+                active
+                  ? 'bg-accent-soft text-accent inset-ring-1 inset-ring-accent shadow-raised'
+                  : 'text-soft',
               ].join(' ')}
             >
               {o.label}
@@ -460,7 +579,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center px-8 py-14 text-center">
-      {/* The icon sits in a tinted disc rather than floating grey-on-grey.
+      {/* The icon sits in a tinted tile rather than floating grey-on-grey.
           An empty screen is one an operator sees every morning; it should look
           designed, not like something failed to load. */}
       {icon && (
@@ -549,11 +668,17 @@ export function ListeDurumu({
 
 /**
  * The primary action, pinned in the thumb zone with home-indicator clearance.
- * Shadow is earned here — this genuinely floats above scrolling content.
+ *
+ * No shadow. The bar's background is the page colour, so an upward shadow had
+ * nothing to cast onto — it read as a stray outlined rectangle sitting behind
+ * the button rather than as elevation, and on a screen short enough not to
+ * scroll there was nothing beneath it to lift away from in the first place.
+ * The tinted, blurred band is what actually says "content passes under this",
+ * and it does that whether or not anything is scrolling.
  */
 export function FloatingBar({ children }: { children: ReactNode }) {
   return (
-    <div className="safe-bottom sticky bottom-0 z-10 mt-6 bg-bg/85 px-5 pt-3 shadow-sheet backdrop-blur">
+    <div className="safe-bottom sticky bottom-0 z-10 mt-6 bg-bg/85 px-5 pt-3 backdrop-blur">
       {children}
     </div>
   )

@@ -39,13 +39,22 @@
   --color-faint: #5f666f;
 
   /* --- accent ---------------------------------------------------------
-     Indigo, and used boldly — the old #1d5ce0 was a default blue that only
-     ever appeared on small chips, which is most of why the app read as
-     generic. 7.77:1 BOTH directions: as text on white, and as white on the
-     filled button. */
-  --color-accent: #5334c9;
+     Teal, and used boldly. 7.77:1 BOTH directions: as text on white, and as
+     white on the filled button.
+
+     `accent-soft` is cooled deliberately rather than being a straight tint of
+     the accent. Teal sits only 30° from the success/nakit green — the tightest
+     gap in this palette — and `BiletKart` can render an "Abonman" chip
+     (success-soft) and a "Kapıda" chip (accent-soft) ON THE SAME ROW. A
+     natural tint measured ΔE 8 against success-soft, near enough to read as
+     one colour; cooling it to #cfe9fa lifts that to ΔE 13.6.
+
+     Pushing it further blue is bounded by the `kart` chip on the other side:
+     this lands ΔE 6.9 from kart-soft, which is still wider than the indigo it
+     replaces ever managed (4.8). */
+  --color-accent: #0b5a6e;
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #ece7fb; /* accent on it: 6.43:1 */
+  --color-accent-soft: #cfe9fa; /* accent on it: 6.18:1 · 1.26 sep from surface */
 
   /* --- semantic -------------------------------------------------------
      Each pair is quoted on its OWN soft background, which is where these
@@ -99,9 +108,21 @@
   --text-micro--line-height: 1.3;
 
   /* --- radii ---------------------------------------------------------- */
-  --radius-card: 20px;
-  --radius-field: 16px;
-  --radius-chip: 999px;
+  /* Softened, but still squarer than the original 20/16/pill scale — corners
+     read as rounded at a glance without the app looking inflated.
+
+     The card/field pair keeps its nesting relationship (inner < outer) so an
+     input inside a card still looks contained rather than bulging out of it.
+     Anything nested one level deeper — the SegmentedControl thumb — derives
+     its radius as `outer − padding`, so it has to move whenever these do.
+
+     `chip` is NOT a circle token. Anything that must stay perfectly round —
+     a toggle knob, an unread dot, a chart swatch, a progress bar — uses
+     Tailwind's built-in `rounded-full` instead, so those controls do not
+     silently turn into rounded squares whenever this scale is retuned. */
+  --radius-card: 12px;
+  --radius-field: 10px;
+  --radius-chip: 8px;
 
   /* Elevation and the brand gradient are deliberately NOT defined here —
      see the block below the dark-mode tokens for why `@theme` cannot express
@@ -130,9 +151,9 @@
   --color-soft: #a7adb6; /* 7.6:1 */
   --color-faint: #8a919b; /* 4.9:1 on field — its worst background */
 
-  --color-accent: #9d86f5; /* 5.9:1 on surface */
-  --color-accent-ink: #0f1013; /* 6.5:1 on the filled button */
-  --color-accent-soft: #241d42; /* accent on it: 5.4:1 */
+  --color-accent: #5ecfe8; /* 9.5:1 on surface */
+  --color-accent-ink: #0f1013; /* 10.5:1 on the filled button */
+  --color-accent-soft: #09293d; /* accent on it: 8.3:1 · ΔE 21.7 from success-soft */
 
   --color-success: #4ade9b; /* 9.0:1 on success-soft */
   --color-success-soft: #12291f;
@@ -176,21 +197,31 @@
   /* Buttons and the segmented-control thumb: things you can press. */
   --shadow-raised: 0 1px 2px rgb(16 24 40 / 0.06), 0 6px 16px -6px rgb(16 24 40 / 0.24);
   --shadow-modal: 0 2px 6px rgb(0 0 0 / 0.07), 0 18px 44px rgb(0 0 0 / 0.2);
-  /* The action bar and bottom nav are bottom-anchored, so their shadow has to
-     fall UPWARD onto the content sliding beneath. A deliberate exception to
-     the light-source rule — obeying it would put the shadow off the bottom
-     edge, invisible. */
-  --shadow-sheet: 0 -1px 3px rgb(0 0 0 / 0.05), 0 -10px 28px rgb(0 0 0 / 0.09);
+  /* The bottom nav is bottom-anchored, so its shadow has to fall UPWARD onto
+     the content sliding beneath. A deliberate exception to the light-source
+     rule — obeying it would put the shadow off the bottom edge, invisible.
+     The action bar deliberately has NO shadow; see FloatingBar. */
   --shadow-nav: 0 -1px 3px rgb(16 24 40 / 0.04), 0 -8px 24px -8px rgb(16 24 40 / 0.1);
 
-  /* Brand surface. White clears AA at BOTH ends (12.3:1 and 6.8:1), which is
-     what allows a second, quieter text level on top of it — the light end was
-     deliberately darkened from a brighter indigo, because at #6d4ae0 no tint
-     of white reached 4.5:1 and the panel could only ever have had one voice. */
-  --brand-from: #33257e;
-  --brand-to: #5f3fd0;
+  /* Brand surface. White clears AA at BOTH ends (13.8:1 and 6.9:1), which is
+     what allows a second, quieter text level on top of it. The light end is
+     deliberately kept deep: a brighter teal drops white toward 5:1 and the
+     `on-brand-soft` tint below 4.5, at which point the panel could only ever
+     have had one voice. */
+  --brand-from: #093140;
+  --brand-to: #0e6376;
   --on-brand: #ffffff;
-  --on-brand-soft: #e9e3fc; /* 5.4:1 on the lightest end of the gradient */
+  --on-brand-soft: #d6eef5; /* 5.7:1 on the lightest end of the gradient */
+
+  /* Green and red ON the brand panel. Both are pale on purpose: the panel is
+     a mid teal, so a saturated green or red drops under AA against its light
+     end — #4ade9b measures 3.98 there and #ff8a80 only 3.00. These clear it
+     on the worst of the FOUR ends (light and dark themes, both stops):
+     4.88 and 4.74. No `.dark` override: the two gradients are close enough
+     that the same pair clears both, measured — retune together if either
+     gradient moves. */
+  --on-brand-success: #86efac;
+  --on-brand-danger: #fecaca;
 }
 
 .dark {
@@ -199,13 +230,12 @@
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 14px -2px rgb(0 0 0 / 0.4);
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.35), 0 6px 16px -6px rgb(0 0 0 / 0.55);
   --shadow-modal: 0 2px 6px rgb(0 0 0 / 0.4), 0 18px 44px rgb(0 0 0 / 0.6);
-  --shadow-sheet: 0 -1px 3px rgb(0 0 0 / 0.3), 0 -10px 28px rgb(0 0 0 / 0.45);
   --shadow-nav: 0 -1px 3px rgb(0 0 0 / 0.3), 0 -8px 24px -8px rgb(0 0 0 / 0.45);
 
-  --brand-from: #241a5c;
-  --brand-to: #3d2b96;
-  --on-brand: #ffffff; /* 15.3:1 / 10.6:1 */
-  --on-brand-soft: #cfc4f5; /* 6.5:1 */
+  --brand-from: #092530;
+  --brand-to: #105063;
+  --on-brand: #ffffff; /* 15.9:1 / 8.9:1 */
+  --on-brand-soft: #b9e2ee; /* 6.5:1 */
 }
 
 @utility shadow-card {
@@ -218,10 +248,6 @@
 
 @utility shadow-modal {
   box-shadow: var(--shadow-modal);
-}
-
-@utility shadow-sheet {
-  box-shadow: var(--shadow-sheet);
 }
 
 @utility shadow-nav {
@@ -237,6 +263,14 @@
 
 @utility text-on-brand {
   color: var(--on-brand);
+}
+
+@utility text-on-brand-success {
+  color: var(--on-brand-success);
+}
+
+@utility text-on-brand-danger {
+  color: var(--on-brand-danger);
 }
 
 @utility text-on-brand-soft {
@@ -293,6 +327,10 @@
   .no-select {
     -webkit-user-select: none;
     user-select: none;
+    /* iOS pops a magnifier and a copy/paste callout on a long press, which is
+       exactly the gesture that picks a car up off its bay — and it would fire
+       two seconds before the hold completes. */
+    -webkit-touch-callout: none;
   }
 }
 
@@ -312,4 +350,23 @@
    unreadable and looks broken. */
 @utility tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* The three-second hold that picks a car up off its bay.
+   The bar IS the affordance: three seconds of nothing happening reads as a
+   dead tile, so this is what says the gesture exists and is working. scaleX
+   from a left origin so it runs on the compositor instead of re-laying out
+   the tile sixty times a second. */
+@keyframes yer-basili {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@utility basili-cubuk {
+  transform-origin: left;
+  animation: yer-basili 3s linear forwards;
 }

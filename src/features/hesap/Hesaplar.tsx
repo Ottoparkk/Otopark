@@ -9,12 +9,13 @@ import {
   ScreenHeader,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
+import { PlakaInput } from '../../components/ui/PlakaInput'
 import { useHesapEkle, useHesapOzetleri } from './api'
 import { usePuanKurali } from '../yonetim/api'
 import { useAyarlar } from '../gise/api'
-import { IstatKutu } from '../yonetim/components'
 import { formatTL } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
+import { normalizePlaka } from '../../lib/plaka'
 import { IconAra, IconArti, IconPuan } from '../../components/ui/icons'
 
 export default function Hesaplar() {
@@ -28,20 +29,11 @@ export default function Hesaplar() {
   const [acik, setAcik] = useState(false)
   const [ad, setAd] = useState('')
   const [tel, setTel] = useState('')
+  const [plaka, setPlaka] = useState('')
   const [notlar, setNotlar] = useState('')
   const [hata, setHata] = useState<string | null>(null)
 
   const kurusPerPuan = kural?.kurus_per_puan ?? 0
-
-  /**
-   * What the business owes its customers, in lira. A points balance is a real
-   * liability and it is invisible unless a screen shows it — so it sits at the
-   * top of this one, not buried in a report.
-   */
-  const toplam = useMemo(() => {
-    const puan = hesaplar.reduce((a, h) => a + h.bakiye, 0)
-    return { puan, kurus: puan * kurusPerPuan }
-  }, [hesaplar, kurusPerPuan])
 
   const gorunen = useMemo(() => {
     const s = q.trim().toLocaleLowerCase('tr-TR')
@@ -60,6 +52,7 @@ export default function Hesaplar() {
             onClick={() => {
               setAd('')
               setTel('')
+              setPlaka('')
               setNotlar('')
               setHata(null)
               setAcik(true)
@@ -80,17 +73,13 @@ export default function Hesaplar() {
           </p>
         )}
 
-        <Card>
-          <div className="grid grid-cols-3 gap-3">
-            <IstatKutu deger={String(hesaplar.length)} etiket="hesap" />
-            <IstatKutu deger={String(toplam.puan)} etiket="toplam puan" />
-            <IstatKutu
-              deger={formatTL(toplam.kurus, { decimals: 0 })}
-              etiket="müşteriye borç"
-              tone={toplam.kurus > 0 ? 'danger' : 'default'}
-            />
-          </div>
-        </Card>
+        {/* Only the count. The two figures that used to sit beside it — total
+            points and what they are worth — were sums across every customer,
+            and nobody acts on those: a balance is only meaningful against the
+            person who can spend it, and every row below already carries its
+            own. The outstanding liability across the lot is a Finans
+            question, not a list header. */}
+        <p className="text-label text-faint tnum">{hesaplar.length} hesap</p>
 
         <div className="relative">
           <IconAra
@@ -168,22 +157,37 @@ export default function Hesaplar() {
             setHata('Telefonu 10 hane olarak girin (örn. 5321234567).')
             return
           }
+          // The plate is what the system recognises at the barrier; an account
+          // without one cannot earn anything.
+          const p = normalizePlaka(plaka)
+          if (p.length < 4) {
+            setHata('Plaka girin.')
+            return
+          }
           void ekle
             .mutateAsync({
               ad: ad.trim(),
               telefon: t || null,
               notlar: notlar.trim() || null,
+              plaka: p,
             })
-            // Straight into the new account: the next thing to do is always
-            // add its vehicles, and that lives on the detail screen.
+            // Straight into the new account: more vehicles, if there are any,
+            // are added on the detail screen.
             .then((id) => {
               setAcik(false)
+              setAd('')
+              setTel('')
+              setNotlar('')
+              setPlaka('')
               navigate(`/yonetim/hesaplar/${id}`)
             })
             .catch((e) => setHata(rpcErrorText(e, 'Hesap eklenemedi.')))
         }}
       >
         <Input label="Ad" value={ad} onChange={(e) => setAd(e.target.value)} maxLength={80} />
+        {/* Required, and first after the name: this is the only field that
+            makes the account do anything. */}
+        <PlakaInput value={plaka} onChange={setPlaka} />
         <Input
           label="Telefon (isteğe bağlı)"
           value={tel}

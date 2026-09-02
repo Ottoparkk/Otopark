@@ -111,16 +111,54 @@ function useHesapInvalidate() {
   }
 }
 
+function useAracInvalidate() {
+  const qc = useQueryClient()
+  return () => void qc.invalidateQueries({ queryKey: ['hesap_araclari'] })
+}
+
+/**
+ * A new account and its first vehicle, together.
+ *
+ * The plate is not optional: entry recognises a customer BY plate, so an
+ * account with none earns nothing and is a row that does nothing until someone
+ * remembers to finish it.
+ *
+ * Two inserts, because there is no RPC for this and neither row is money. If
+ * the plate is refused — `hesap_araclari_plaka_ux` gives it to exactly one
+ * account — the account just created is deleted again, so a rejected plate
+ * cannot leave an empty account behind. The delete is best-effort: if IT
+ * fails the account survives with no vehicle, which the detail screen can fix,
+ * and the error the operator sees is still the real one.
+ */
 export function useHesapEkle() {
   const invalidate = useHesapInvalidate()
+  const aracInvalidate = useAracInvalidate()
   return useMutation({
     retry: false,
-    mutationFn: async (g: { ad: string; telefon: string | null; notlar: string | null }) => {
-      const { data, error } = await supabase.from('hesaplar').insert(g).select('id').single()
+    mutationFn: async (g: {
+      ad: string
+      telefon: string | null
+      notlar: string | null
+      plaka: string
+    }) => {
+      const { plaka, ...hesap } = g
+      const { data, error } = await supabase.from('hesaplar').insert(hesap).select('id').single()
       if (error) throw error
-      return (data as { id: string }).id
+      const id = (data as { id: string }).id
+
+      const { error: aracHata } = await supabase
+        .from('hesap_araclari')
+        .insert({ hesap_id: id, plaka })
+      if (aracHata) {
+        await supabase.from('hesaplar').delete().eq('id', id)
+        throw aracHata
+      }
+      return id
     },
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate()
+      aracInvalidate()
+    },
   })
 }
 
@@ -134,11 +172,6 @@ export function useHesapGuncelle() {
     },
     onSuccess: invalidate,
   })
-}
-
-function useAracInvalidate() {
-  const qc = useQueryClient()
-  return () => void qc.invalidateQueries({ queryKey: ['hesap_araclari'] })
 }
 
 /**
@@ -164,7 +197,10 @@ export function useAracSil() {
   return useMutation({
     retry: false,
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('hesap_araclari').delete().eq('id', id)
+      const { error } = await supabase.rpc('kayit_sil', {
+        p_tablo: 'hesap_araclari',
+        p_id: id,
+      })
       if (error) throw error
     },
     onSuccess: invalidate,

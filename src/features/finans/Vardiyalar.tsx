@@ -4,7 +4,8 @@ import {
   ListeDurumu,
   ScreenHeader,
 } from '../../components/ui/primitives'
-import { useTumVardiyalar, useProfiller } from './api'
+import { useTumVardiyalar } from './api'
+import { useProfiller } from '../yonetim/api'
 import { formatTL } from '../../lib/money'
 import { formatTam } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
@@ -25,7 +26,7 @@ export default function Vardiyalar() {
 
   return (
     <div>
-      <ScreenHeader title="Vardiyalar" back="/yonetim" subtitle="Son 100 vardiya" />
+      <ScreenHeader title="Vardiyalar" back="/finans" subtitle="Son 100 vardiya" />
 
       <div className="space-y-2 px-5">
         <ListeDurumu

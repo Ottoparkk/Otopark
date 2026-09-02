@@ -18,6 +18,14 @@ export default function SignUp() {
     e.preventDefault()
     setHata(null)
 
+    // `required` only rejects an EMPTY field, so a single space passes it and
+    // the trigger stores '' — the roster then shows "İsimsiz" for a person who
+    // thought they had given their name, and only a Yönetici can tell who they
+    // are. Checked here rather than left to the browser.
+    if (ad.trim().length < 3) {
+      setHata('Ad ve soyadınızı girin.')
+      return
+    }
     if (sifre !== sifre2) {
       setHata('Şifreler eşleşmiyor.')
       return

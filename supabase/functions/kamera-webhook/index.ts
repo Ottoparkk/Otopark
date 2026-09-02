@@ -275,7 +275,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: ayar } = await admin
       .from('otopark_ayarlari')
-      .select('kamera_aktif, kamera_varsayilan_arac_tipi, plaka_saglayici, plaka_model')
+      .select('kamera_aktif, plaka_saglayici, plaka_model')
       .eq('id', 1)
       .single()
 
@@ -371,10 +371,6 @@ Deno.serve(async (req: Request) => {
     if (yon === 'GIRIS') {
       const { data, error } = await admin.rpc('bilet_ac', {
         p_plaka: plaka,
-        // A camera cannot tell a Clio from a Transit, so the lot's default
-        // applies and an operator can correct it at exit while the ticket is
-        // still open (bilet_arac_tipi_duzelt re-snapshots the tariff).
-        p_arac_tipi: ayar.kamera_varsayilan_arac_tipi ?? 'OTOMOBIL',
         p_islem_id: islemId,
         p_kaynak: 'KAMERA',
         p_zaman: olay.zaman,

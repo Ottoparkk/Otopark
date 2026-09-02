@@ -10,7 +10,6 @@
 
 export type Rol = 'YONETICI' | 'PERSONEL'
 export type KullaniciDurum = 'PENDING' | 'ACTIVE' | 'DISABLED'
-export type AracTipi = 'MOTOSIKLET' | 'OTOMOBIL' | 'MINIBUS' | 'KAMYONET'
 export type BiletDurum = 'ACIK' | 'KAPALI' | 'IPTAL'
 export type OdemeYontemi = 'NAKIT' | 'KREDI_KARTI' | 'HAVALE'
 export type Kaynak = 'MOBIL' | 'KAMERA' | 'MANUEL'
@@ -21,6 +20,7 @@ export type HesapDurum = 'AKTIF' | 'PASIF'
 export type PuanHareketTur = 'KAZANIM' | 'KULLANIM' | 'IPTAL' | 'DUZELTME'
 export type KasaTur = 'GELIR' | 'GIDER'
 export type TahsilatTur = 'BILET' | 'ABONMAN'
+export type OnayDurum = 'BEKLIYOR' | 'ONAYLANDI' | 'REDDEDILDI'
 
 export type BildirimTur =
   | 'YENI_UYELIK'
@@ -32,17 +32,37 @@ export type BildirimTur =
   | 'UCRET_DEGISIKLIGI'
   | 'PUAN_KULLANIM'
   | 'KAMERA'
+  | 'KAMERA_HAREKET'
   | 'ISTISNA'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
 /* --------------------------------------------------- display label tables */
 
-export const ARAC_TIPI_ETIKET: Record<AracTipi, string> = {
-  MOTOSIKLET: 'Motosiklet',
-  OTOMOBIL: 'Otomobil',
-  MINIBUS: 'Minibüs',
-  KAMYONET: 'Kamyonet',
+export type OdemeTur = 'MAAS' | 'AVANS' | 'PRIM'
+
+export const ODEME_TUR_ETIKET: Record<OdemeTur, string> = {
+  MAAS: 'Maaş',
+  AVANS: 'Avans',
+  PRIM: 'Prim',
+}
+
+export interface PersonelOdeme {
+  id: string
+  tur: OdemeTur
+  tutar_kurus: number
+  aciklama: string
+  /** How much advance debt a salary payment absorbed. 0 on avans and prim. */
+  avans_dusulen: number
+  tarih: string
+}
+
+/** Badge wording. One vocabulary everywhere: a ticket row and an abonman
+ *  collection describe the same state, so they must not name it differently. */
+export const ONAY_ETIKET: Record<OnayDurum, string> = {
+  BEKLIYOR: 'Onaylanmadı',
+  ONAYLANDI: 'Onaylandı',
+  REDDEDILDI: 'Reddedildi',
 }
 
 export const ODEME_ETIKET: Record<OdemeYontemi, string> = {
@@ -80,7 +100,8 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   BILET_IPTAL: 'Bilet iptali',
   UCRET_DEGISIKLIGI: 'Ücret değişikliği',
   PUAN_KULLANIM: 'Puan kullanımı',
-  KAMERA: 'Kamera',
+  KAMERA: 'Kamera arızası',
+  KAMERA_HAREKET: 'Kameradan giriş/çıkış',
   ISTISNA: 'Çözülmemiş kayıt',
 }
 
@@ -107,7 +128,6 @@ export interface OtoparkAyarlari {
   kamera_gecikme_limiti_dk: number
   puan_aktif: boolean
   kamera_aktif: boolean
-  kamera_varsayilan_arac_tipi: AracTipi
   terk_esik_saat: number
   doluluk_uyari_yuzde: number
   kamera_kalp_atisi: string | null
@@ -125,9 +145,34 @@ export interface ParkYeri {
   created_at: string
 }
 
+/**
+ * park_yeri_durumu() — an active bay plus why it is or is not free (010).
+ *
+ * Not a `ParkYeri`: it carries no `is_active` (every row here is active by
+ * construction) and it carries the two derived columns the picker draws.
+ */
+export interface ParkYeriDurumu {
+  id: string
+  kod: string
+  tip: ParkYeriTip
+  rezerve: boolean
+  /** The plate standing on it, or null when nothing is. */
+  dolu_plaka: string | null
+  /** A reservation on this bay that has not run out yet. */
+  rezervasyonlu: boolean
+}
+
+/**
+ * SURELI  saate göre — ilk saat, sonraki saatler, günlük tavan
+ * SABIT   giriş başına tek fiyat; saatlik alanlar 0 yazılır ve hesaba girmez
+ */
+export type TarifeTur = 'SURELI' | 'SABIT'
+
 export interface Tarife {
   id: string
-  arac_tipi: AracTipi
+  tur: TarifeTur
+  /** Only meaningful when `tur` is SABIT; 0 otherwise. */
+  sabit_kurus: number
   ucretsiz_dakika: number
   ilk_saat_kurus: number
   sonraki_saat_kurus: number
@@ -213,7 +258,6 @@ export interface Bilet {
   id: string
   islem_id: string
   plaka: string
-  arac_tipi: AracTipi
   giris_at: string
   cikis_at: string | null
   tarife_id: string
@@ -237,9 +281,20 @@ export interface Bilet {
   kaynak_zaman: string | null
   alindi_zaman: string | null
   kayip_bilet: boolean
+  /**
+   * The collections written for this ticket, when the caller asked for them
+   * (`useBiletGecmisi` embeds them). Usually one row; a cancelled ticket also
+   * carries its reversal, which is the row with `iptal_of` set.
+   */
+  tahsilat?: { durum: OnayDurum; iptal_of: string | null }[]
   ucret_degistirildi: boolean
   ucret_sebep: string | null
   cikis_bekliyor_at: string | null
+  /** Optional, driver-supplied, all three nullable (migration 008). */
+  arac_bilgi: string | null
+  musteri_ad: string | null
+  musteri_tel: string | null
+  notlar: string | null
   iptal_sebep: string | null
   iptal_by: string | null
   iptal_at: string | null
@@ -270,6 +325,9 @@ export interface Tahsilat {
   aciklama: string | null
   created_by: string | null
   created_at: string
+  /** Yönetici onayı. Finans yalnızca ONAYLANDI satırları sayar. */
+  durum: OnayDurum
+  onay_notu: string | null
 }
 
 export interface KasaHareketi {
@@ -331,7 +389,6 @@ export interface Bildirim {
 export interface AcikBilet {
   id: string
   plaka: string
-  arac_tipi: AracTipi
   giris_at: string
   abonman_id: string | null
   park_yeri_id: string | null
@@ -340,6 +397,11 @@ export interface AcikBilet {
   puan_kullanilan: number
   tarife_id: string
   gecikmeli_kayit: boolean
+  /** Derived by acik_bilet_ara (008): whether a note exists, and the fee
+   *  accrued so far — priced server-side by the same `ucret_hesapla` that
+   *  bilet_kapat uses, so the list cannot quote a different number. */
+  notu_var: boolean
+  ucret_kurus: number
 }
 
 export interface GunlukOzet {

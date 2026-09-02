@@ -1,30 +1,63 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Card, Input, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { SegmentedControl } from '../../components/ui/primitives'
 import { Toggle } from '../../components/ui/Toggle'
 import { Spinner } from '../../components/ui/Spinner'
-import { AracTipiSecici } from '../gise/components'
 import { useAyarlar } from '../gise/api'
+import { useTumParkYerleri, useYerDuzeniUret, type YerDuzeniSonuc } from '../yerler/api'
 import { useAyarGuncelle, usePuanKurali, usePuanKuralGuncelle } from './api'
 import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
-import type { AracTipi, PlakaSaglayici } from '../../lib/types'
+import { YER_GRUPLARI, kodAraligi, yerDegisimi, yerDuzeni } from '../../lib/yerkodu'
+import type { YerGrup } from '../../lib/yerkodu'
+import type { PlakaSaglayici } from '../../lib/types'
+
+/** What pressing Kaydet will do to the layout, in one line. */
+function degisimMetni(d: { eklenecek: number; kapanacak: number }): string {
+  const p: string[] = []
+  if (d.eklenecek > 0) p.push(`${d.eklenecek} yer eklenecek`)
+  if (d.kapanacak > 0) p.push(`${d.kapanacak} yer kapatılacak`)
+  if (p.length === 0) return 'Yerler zaten bu düzende.'
+  return d.kapanacak > 0
+    ? `${p.join(' · ')} — kapatılan yer silinmez, kapasiteyi büyütünce geri gelir.`
+    : p.join(' · ')
+}
+
+/**
+ * What it actually did. Reported even when nothing changed, so a no-op run
+ * reads as "already correct" rather than as a button that did nothing.
+ */
+function sonucMetni(s: YerDuzeniSonuc): string {
+  const p: string[] = []
+  if (s.eklenen > 0) p.push(`${s.eklenen} yer eklendi`)
+  if (s.guncellenen > 0) p.push(`${s.guncellenen} yer düzeltildi`)
+  if (s.kapanan > 0) p.push(`${s.kapanan} yer kapatıldı`)
+  const bas = p.length > 0 ? p.join(' · ') : 'Yer düzeni zaten güncel'
+  return `${bas} — şu an ${s.aktif} aktif yer.`
+}
 
 export default function OtoparkAyarlari() {
   const { data: ayar, isPending, error, refetch } = useAyarlar()
   const guncelle = useAyarGuncelle()
   const { data: kural } = usePuanKurali()
   const kuralGuncelle = usePuanKuralGuncelle()
+  // The spot rows themselves are the record of the current layout — there is
+  // no second copy of "how many engelli bays are there" to drift from them.
+  const { data: yerler, isPending: yerPending, error: yerError } = useTumParkYerleri()
+  const yerUret = useYerDuzeniUret()
 
   const [ad, setAd] = useState('')
   const [kapasite, setKapasite] = useState('')
+  const [engelli, setEngelli] = useState('')
+  const [rezerve, setRezerve] = useState('')
+  const [digerKapat, setDigerKapat] = useState(false)
+  const [yerSonuc, setYerSonuc] = useState<YerDuzeniSonuc | null>(null)
   const [saklama, setSaklama] = useState('')
   const [terk, setTerk] = useState('')
   const [dolulukUyari, setDolulukUyari] = useState('')
   const [saglayici, setSaglayici] = useState<PlakaSaglayici>('KAPALI')
   const [model, setModel] = useState('')
   const [kameraAktif, setKameraAktif] = useState(false)
-  const [kameraTip, setKameraTip] = useState<AracTipi>('OTOMOBIL')
   const [gecikme, setGecikme] = useState('')
   const [puanAktif, setPuanAktif] = useState(false)
   const [kazanim, setKazanim] = useState('')
@@ -45,10 +78,50 @@ export default function OtoparkAyarlari() {
     setSaglayici(ayar.plaka_saglayici)
     setModel(ayar.plaka_model ?? '')
     setKameraAktif(ayar.kamera_aktif)
-    setKameraTip(ayar.kamera_varsayilan_arac_tipi)
     setGecikme(String(ayar.kamera_gecikme_limiti_dk))
     setPuanAktif(ayar.puan_aktif)
   }, [ayar])
+
+  /**
+   * Spot counts come from the spots, and are hydrated ONCE.
+   *
+   * Re-running on every refetch would overwrite whatever the user is typing
+   * the moment another query settled. The ref, not a `yerler`-keyed effect:
+   * after a save the rows change, and the numbers on screen are already the
+   * ones that produced them.
+   */
+  const yerlerHazir = !yerPending && !yerError && yerler !== undefined
+  const mevcutDuzen = useMemo(() => yerDuzeni(yerler ?? []), [yerler])
+  const yerHidrate = useRef(false)
+  useEffect(() => {
+    if (!yerlerHazir || yerHidrate.current) return
+    yerHidrate.current = true
+    setEngelli(String(mevcutDuzen.engelli))
+    setRezerve(String(mevcutDuzen.rezerve))
+  }, [yerlerHazir, mevcutDuzen])
+
+  // Normal is what is LEFT, not a fourth field: the three groups have to add up
+  // to the capacity occupancy is measured against, and asking for all three
+  // separately is asking for a total that disagrees with it.
+  const kapasiteSayi = Number(kapasite) || 0
+  const engelliSayi = Number(engelli) || 0
+  const rezerveSayi = Number(rezerve) || 0
+  const ozelSayi = engelliSayi + rezerveSayi
+  const normalSayi = Math.max(0, kapasiteSayi - ozelSayi)
+  const grupAdedi: Record<YerGrup, number> = {
+    NORMAL: normalSayi,
+    ENGELLI: engelliSayi,
+    REZERVE: rezerveSayi,
+  }
+  const degisim = useMemo(
+    () =>
+      yerDegisimi(yerler ?? [], {
+        normal: normalSayi,
+        engelli: engelliSayi,
+        rezerve: rezerveSayi,
+      }),
+    [yerler, normalSayi, engelliSayi, rezerveSayi],
+  )
 
   useEffect(() => {
     if (!kural) return
@@ -83,9 +156,20 @@ export default function OtoparkAyarlari() {
 
   async function kaydet() {
     setHata(null)
+    setYerSonuc(null)
     const kap = Number(kapasite)
     if (!Number.isFinite(kap) || kap < 1) {
       setHata('Kapasite en az 1 olmalı.')
+      return
+    }
+    // Mirrors the RPC's own ceiling, so the limit is explained here instead of
+    // arriving as a rejection after the settings have already been written.
+    if (kap > 2000) {
+      setHata('Kapasite en fazla 2000 olabilir — yerler bu sayıdan üretiliyor.')
+      return
+    }
+    if (ozelSayi > kap) {
+      setHata('Engelli ve rezerve yer sayısı kapasiteyi aşamaz.')
       return
     }
     try {
@@ -98,15 +182,53 @@ export default function OtoparkAyarlari() {
         plaka_saglayici: saglayici,
         plaka_model: model.trim() || null,
         kamera_aktif: kameraAktif,
-        kamera_varsayilan_arac_tipi: kameraTip,
         kamera_gecikme_limiti_dk: Number(gecikme) || 720,
         puan_aktif: puanAktif,
       })
-      setKaydedildi(true)
-      setTimeout(() => setKaydedildi(false), 2500)
     } catch (err) {
       setHata(rpcErrorText(err, 'Ayarlar kaydedilemedi.'))
+      return
     }
+
+    /**
+     * The layout runs SECOND, and only over spot data that actually loaded.
+     *
+     * If the spot query failed we would be reading zeroes for engelli and
+     * rezerve, and "apply zero" is a request to retire every E and R bay in
+     * the lot. Skipping is the safe half of the save; the settings above are
+     * already stored either way.
+     *
+     * A failure here is reported rather than retried: the RPC is idempotent,
+     * so pressing Kaydet again finishes the job with no risk of doing it
+     * twice — which is exactly why it is safe to bundle into this button.
+     */
+    if (yerlerHazir) {
+      try {
+        setYerSonuc(
+          await yerUret.mutateAsync({
+            normal: normalSayi,
+            engelli: engelliSayi,
+            rezerve: rezerveSayi,
+            digerlerini_kapat: digerKapat,
+          }),
+        )
+        setDigerKapat(false)
+      } catch (err) {
+        setHata(
+          rpcErrorText(
+            err,
+            "Ayarlar kaydedildi, park yerleri güncellenemedi. Kaydet'e tekrar basın.",
+          ),
+        )
+        return
+      }
+    } else if (yerError) {
+      setHata('Ayarlar kaydedildi. Park yerleri okunamadığı için düzen uygulanmadı.')
+      return
+    }
+
+    setKaydedildi(true)
+    setTimeout(() => setKaydedildi(false), 2500)
   }
 
   async function puanKaydet() {
@@ -139,12 +261,6 @@ export default function OtoparkAyarlari() {
           <p className="text-label font-medium tracking-wide text-faint uppercase">Otopark</p>
           <Input label="Ad" value={ad} onChange={(e) => setAd(e.target.value)} maxLength={80} />
           <Input
-            label="Kapasite"
-            value={kapasite}
-            onChange={(e) => setKapasite(digitsOnly(e.target.value, 5))}
-            inputMode="numeric"
-          />
-          <Input
             label="Doluluk uyarısı (%)"
             value={dolulukUyari}
             onChange={(e) => setDolulukUyari(digitsOnly(e.target.value, 3))}
@@ -157,6 +273,104 @@ export default function OtoparkAyarlari() {
             onChange={(e) => setTerk(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
           />
+        </Card>
+
+        {/* Capacity lives here, not with the name, because it is no longer just
+            a number occupancy is divided by — it is the input the bays are
+            generated from, and the preview underneath is what it produces. */}
+        <Card className="space-y-4">
+          <p className="text-label font-medium tracking-wide text-faint uppercase">
+            Park yerleri
+          </p>
+          <Input
+            label="Kapasite"
+            value={kapasite}
+            onChange={(e) => setKapasite(digitsOnly(e.target.value, 4))}
+            inputMode="numeric"
+            hint="Yerler bu sayıdan üretilir. Engelli ve rezerve dışında kalanlar normal yer olur."
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="Engelli yer"
+              value={engelli}
+              onChange={(e) => setEngelli(digitsOnly(e.target.value, 4))}
+              inputMode="numeric"
+            />
+            <Input
+              label="Rezerve yer"
+              value={rezerve}
+              onChange={(e) => setRezerve(digitsOnly(e.target.value, 4))}
+              inputMode="numeric"
+            />
+          </div>
+
+          {yerPending && <p className="text-label text-faint">Yerler yükleniyor…</p>}
+
+          {/* Same rule as the settings form above: never let a failed load look
+              like empty data. Zero engelli bays is a request to retire every one
+              of them, so the preview and the layout write both stand down. */}
+          {yerError != null && (
+            <p className="rounded-field bg-warn-soft px-3.5 py-3 text-label text-warn">
+              Park yerleri okunamadı. Kaydet ayarları yazar, yer düzenine dokunmaz.
+            </p>
+          )}
+
+          {yerlerHazir &&
+            (ozelSayi > kapasiteSayi ? (
+              <p className="rounded-field bg-danger-soft px-3.5 py-3 text-label text-danger">
+                Engelli ve rezerve yer sayısı kapasiteyi aşıyor.
+              </p>
+            ) : (
+              <div className="space-y-2.5 rounded-field bg-field px-3.5 py-3">
+                {YER_GRUPLARI.map((g) => (
+                  <div key={g.grup} className="flex items-baseline justify-between gap-3">
+                    <span className="shrink-0 text-label text-soft">
+                      {g.etiket}
+                      <span className="text-faint"> · {grupAdedi[g.grup]}</span>
+                    </span>
+                    <span className="truncate text-label font-medium text-ink tnum">
+                      {kodAraligi(g.onek, grupAdedi[g.grup]) ?? '—'}
+                    </span>
+                  </div>
+                ))}
+                <p
+                  className={`border-t border-border pt-2.5 text-label ${
+                    degisim.kapanacak > 0 ? 'text-warn' : 'text-faint'
+                  }`}
+                >
+                  {degisimMetni(degisim)}
+                </p>
+              </div>
+            ))}
+
+          {/* Opt-in, and only shown when there is something to opt into. The
+              generator owns P/E/R and nothing else, so the sample rows from the
+              seed — and any bay added by hand — survive until asked about. */}
+          {yerlerHazir && mevcutDuzen.digerleri.length > 0 && (
+            <Toggle
+              checked={digerKapat}
+              onChange={setDigerKapat}
+              label={`Düzen dışı ${mevcutDuzen.digerleri.length} yeri kapat`}
+              hint={`${mevcutDuzen.digerleri
+                .slice(0, 6)
+                .map((y) => y.kod)
+                .join(', ')}${
+                mevcutDuzen.digerleri.length > 6 ? '…' : ''
+              } — silinmez, yalnızca kullanım dışına alınır.`}
+            />
+          )}
+
+          {yerSonuc && (
+            <div className="space-y-1">
+              <p className="text-label text-success">{sonucMetni(yerSonuc)}</p>
+              {yerSonuc.atlanan.length > 0 && (
+                <p className="text-label text-warn">
+                  Aracı ya da rezervasyonu olduğu için kapatılmadı:{' '}
+                  <span className="tnum">{yerSonuc.atlanan.join(', ')}</span>
+                </p>
+              )}
+            </div>
+          )}
         </Card>
 
         <Card className="space-y-4">
@@ -209,11 +423,6 @@ export default function OtoparkAyarlari() {
           />
           {kameraAktif && (
             <>
-              <AracTipiSecici
-                label="Kameradan gelen araçların varsayılan tipi"
-                value={kameraTip}
-                onChange={setKameraTip}
-              />
               <Input
                 label="Gecikme sınırı (dakika)"
                 value={gecikme}
@@ -281,7 +490,16 @@ export default function OtoparkAyarlari() {
         )}
 
         <div className="safe-bottom flex items-center gap-3 pt-2">
-          <Button size="lg" block onClick={() => void kaydet()} loading={guncelle.isPending}>
+          {/* Disabled rather than left to fail on press: kaydet() validates
+              this first and writes nothing, so the button could only ever
+              bounce, and the reason is already stated up beside the fields. */}
+          <Button
+            size="lg"
+            block
+            onClick={() => void kaydet()}
+            loading={guncelle.isPending || yerUret.isPending}
+            disabled={ozelSayi > kapasiteSayi}
+          >
             Kaydet
           </Button>
         </div>

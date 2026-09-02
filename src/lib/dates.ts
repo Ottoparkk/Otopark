@@ -91,6 +91,16 @@ export function formatTarih(gun: string): string {
   return d && m && y ? `${d}.${m}.${y}` : gun
 }
 
+/**
+ * "12.08" from 'YYYY-MM-DD' — day and month only, for a chip that has to show
+ * two dates at once. The year is dropped because it never fits there; the
+ * dialog that set the range is where the full dates live.
+ */
+export function formatTarihKisa(gun: string): string {
+  const [, m, d] = gun.split('-')
+  return d && m ? `${d}.${m}` : gun
+}
+
 /** Days from today (Istanbul) until a 'YYYY-MM-DD' date. Negative = past. */
 export function gunFarki(gun: string): number {
   const [ty, tm, td] = istanbulGun().split('-').map(Number)

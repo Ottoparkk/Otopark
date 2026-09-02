@@ -31,13 +31,15 @@ export function Toggle({
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={[
-          'relative h-[32px] w-[54px] shrink-0 rounded-chip transition-colors disabled:opacity-45',
+          // rounded-full, not rounded-chip: a switch is a recognisable shape, and a
+          // boxy track reads as a broken control rather than as a sharp one.
+          'relative h-[32px] w-[54px] shrink-0 rounded-full transition-colors disabled:opacity-45',
           checked ? 'bg-accent' : 'bg-field',
         ].join(' ')}
       >
         <span
           className={[
-            'absolute top-[3px] size-[26px] rounded-chip bg-surface transition-[left] duration-150',
+            'absolute top-[3px] size-[26px] rounded-full bg-surface transition-[left] duration-150',
             checked ? 'left-[25px]' : 'left-[3px]',
           ].join(' ')}
         />

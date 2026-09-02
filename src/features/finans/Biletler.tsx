@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   Card,
@@ -8,12 +8,38 @@ import {
   ScreenHeader,
 } from '../../components/ui/primitives'
 import { useBiletGecmisi } from './api'
+import { IstatKutu } from '../yonetim/components'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { formatGoreceli } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
 import { IconAra, IconAraba } from '../../components/ui/icons'
-import { ODEME_CHIP, ODEME_ETIKET, type BiletDurum } from '../../lib/types'
+import {
+  ODEME_CHIP,
+  ODEME_ETIKET,
+  ONAY_ETIKET,
+  type Bilet,
+  type BiletDurum,
+  type OdemeYontemi,
+  type OnayDurum,
+} from '../../lib/types'
+
+/**
+ * The approval state of the money this ticket took, or null when it took none.
+ *
+ * The LIVE collection is the one without `iptal_of` — a cancelled ticket also
+ * carries the reversal that undid it, and reading that row's state would
+ * describe the correction rather than the charge.
+ */
+function onayDurumu(b: Bilet): OnayDurum | null {
+  return b.tahsilat?.find((t) => t.iptal_of === null)?.durum ?? null
+}
+
+const ONAY_CHIP: Record<OnayDurum, string> = {
+  BEKLIYOR: 'bg-warn-soft text-warn',
+  ONAYLANDI: 'bg-success-soft text-success',
+  REDDEDILDI: 'bg-danger-soft text-danger',
+}
 
 const FILTRELER: { value: BiletDurum | 'TUMU'; label: string }[] = [
   { value: 'TUMU', label: 'Tümü' },
@@ -28,11 +54,69 @@ export default function Biletler() {
   const [q, setQ] = useState('')
   const { data: liste = [], isPending, error, refetch } = useBiletGecmisi({ durum, q })
 
+  /**
+   * Totals for what is ON SCREEN — the current filter, capped at the same 200
+   * rows the header names. Deliberately not an all-time figure: this query has
+   * no date range and takes the newest 200, so a bare "toplam" here would be a
+   * number nobody could reproduce. Finans is where the real totals live.
+   */
+  const ozet = useMemo(() => {
+    const tahsilat = liste.reduce((a, b) => a + b.tahsil_kurus, 0)
+    const cikan = liste.filter((b) => b.durum === 'KAPALI').length
+    const iptal = liste.filter((b) => b.durum === 'IPTAL').length
+
+    const yontemler: { etiket: string; net: number }[] = (
+      ['NAKIT', 'KREDI_KARTI', 'HAVALE'] as OdemeYontemi[]
+    ).map((y) => ({
+      etiket: ODEME_ETIKET[y],
+      net: liste.filter((b) => b.odeme_yontemi === y).reduce((a, b) => a + b.tahsil_kurus, 0),
+    }))
+    // Kept for the same reason as on Kasa, though the database makes it
+    // unlikely here: a non-zero collection requires a method. If one ever
+    // appears without one, the three channels must not quietly fail to add up.
+    const yontemsiz = liste
+      .filter((b) => !b.odeme_yontemi)
+      .reduce((a, b) => a + b.tahsil_kurus, 0)
+    if (yontemsiz !== 0) yontemler.push({ etiket: 'yöntemsiz', net: yontemsiz })
+
+    return { tahsilat, cikan, iptal, yontemler }
+  }, [liste])
+
   return (
     <div>
-      <ScreenHeader title="Bilet geçmişi" back="/yonetim" subtitle="Son 200 kayıt" />
+      <ScreenHeader title="Bilet geçmişi" back="/finans" subtitle="Son 200 kayıt" />
 
       <div className="space-y-3 px-5">
+        <Card>
+          <div className="grid grid-cols-3 gap-3">
+            <IstatKutu deger={formatTL(ozet.tahsilat, { decimals: 0 })} etiket="tahsilat" />
+            <IstatKutu deger={String(ozet.cikan)} etiket="çıkan" tone="success" />
+            <IstatKutu
+              deger={String(ozet.iptal)}
+              etiket="iptal"
+              tone={ozet.iptal > 0 ? 'danger' : 'default'}
+            />
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3">
+            {ozet.yontemler.map((y) => (
+              <div key={y.etiket}>
+                <p className="text-lead font-semibold text-ink tnum">
+                  {formatTL(y.net, { decimals: 0 })}
+                </p>
+                <p className="text-label text-faint">{y.etiket}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Two caveats, and both earn their place: the figures describe the
+              rows below rather than all time, and barrier money is not revenue
+              until it clears Onay. */}
+          <p className="mt-3 text-label text-faint">
+            Listedeki biletlerin toplamı — onaylananlar Finans'taki ciroya girer.
+          </p>
+        </Card>
+
         <div className="relative">
           <IconAra
             size={20}
@@ -99,6 +183,18 @@ export default function Biletler() {
                     <span className="text-label text-faint">
                       {formatGoreceli(b.giris_at)} · {sureMetni(b.giris_at, b.cikis_at)}
                     </span>
+                    {/* First in the row: whether this money counts is a
+                        bigger fact about the ticket than how it was paid. */}
+                    {(() => {
+                      const onay = onayDurumu(b)
+                      return onay ? (
+                        <span
+                          className={`rounded-chip px-2 py-0.5 text-micro font-medium ${ONAY_CHIP[onay]}`}
+                        >
+                          {ONAY_ETIKET[onay]}
+                        </span>
+                      ) : null
+                    })()}
                     {b.odeme_yontemi && (
                       <span
                         className={`rounded-chip px-2 py-0.5 text-micro font-medium ${ODEME_CHIP[b.odeme_yontemi]}`}

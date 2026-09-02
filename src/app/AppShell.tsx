@@ -3,9 +3,9 @@ import { useAuth } from './providers/AuthProvider'
 import { isYonetici } from '../lib/rbac'
 import {
   IconAraba,
-  IconCikis,
-  IconGiris,
+  IconKisi,
   IconPanel,
+  IconRapor,
   IconVardiya,
   IconZil,
 } from '../components/ui/icons'
@@ -14,16 +14,16 @@ import { useOkunmamisSayisi } from '../features/settings/api'
 interface NavItem {
   to: string
   label: string
-  Icon: typeof IconGiris
+  Icon: typeof IconAraba
   end?: boolean
 }
 
 /**
  * Bottom navigation on a phone, a top bar from `md` up.
  *
- * Giriş and Çıkış are the first two slots deliberately — between them they
- * are almost everything an operator does all day, and they should never be
- * more than one thumb-tap away.
+ * Gişe is the first slot deliberately: entry, exit and the list of cars
+ * inside are almost everything an operator does all day, and none of them
+ * should ever be more than one thumb-tap away.
  */
 export function AppShell() {
   const { profile } = useAuth()
@@ -31,11 +31,24 @@ export function AppShell() {
   const { data: okunmamis = 0 } = useOkunmamisSayisi(yonetici)
 
   const items: NavItem[] = [
-    { to: '/gise/giris', label: 'Giriş', Icon: IconGiris },
-    { to: '/gise/cikis', label: 'Çıkış', Icon: IconCikis },
-    { to: '/gise', label: 'Araçlar', Icon: IconAraba, end: true },
+    // One slot, not three: Giriş, Çıkış and the vehicle list are modes of
+    // the same page now. No `end`, so /gise/giris and /gise/cikis keep the
+    // tab lit instead of dropping the highlight the moment a mode is picked.
+    { to: '/gise', label: 'Gişe', Icon: IconAraba },
     { to: '/vardiya', label: 'Vardiya', Icon: IconVardiya },
-    ...(yonetici ? [{ to: '/yonetim', label: 'Yönetim', Icon: IconPanel, end: true }] : []),
+    // Personel only, and not out of thrift: a Yönetici reaches Profil from
+    // the Yönetim menu, while a Personel has no menu at all — without this
+    // tab there is no way for them to sign out. Adding it for everyone would
+    // make five tabs on a 375px phone to save a Yönetici one tap.
+    ...(yonetici ? [] : [{ to: '/ayarlar', label: 'Profil', Icon: IconKisi }]),
+    // Finans and Yönetim are both Yönetici-only. Hiding them is UX; RLS
+    // is what actually refuses a Personel who types the URL.
+    ...(yonetici
+      ? [
+          { to: '/finans', label: 'Finans', Icon: IconRapor },
+          { to: '/yonetim', label: 'Yönetim', Icon: IconPanel, end: true },
+        ]
+      : []),
   ]
 
   return (
@@ -44,7 +57,7 @@ export function AppShell() {
       <header className="sticky top-0 z-20 hidden border-b border-divider bg-surface md:block">
         <div className="mx-auto flex h-16 max-w-[1100px] items-center gap-2 px-6">
           <span className="mr-4 flex items-center gap-2.5">
-            <span className="flex size-8 items-center justify-center rounded-[10px] bg-brand text-[17px] font-bold text-on-brand">
+            <span className="flex size-8 items-center justify-center rounded-field bg-brand text-[17px] font-bold text-on-brand">
               P
             </span>
             <span className="text-lead font-semibold text-ink">Otopark</span>
@@ -107,7 +120,7 @@ export function AppShell() {
             >
               {({ isActive }) => (
                 <>
-                  {/* The tinted pill behind the icon — not just a colour
+                  {/* The tinted tile behind the icon — not just a colour
                       change. Which tab you are on has to survive a glance in
                       sunlight, and a tinted shape reads far faster than a hue
                       shift on a 22px stroke icon. */}

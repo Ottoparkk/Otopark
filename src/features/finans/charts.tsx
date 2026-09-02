@@ -103,10 +103,44 @@ export function SutunGrafik({
   )
 }
 
-/** 'YYYY-MM-DD' -> 'DD.MM', which is all the axis has room for. */
+/** 'YYYY-MM-DD' -> 'DD.MM' and 'YYYY-MM' -> 'MM.YY' — all the axis has room for. */
 function gunEtiketi(gun: string): string {
-  const [, ay, g] = gun.split('-')
-  return g && ay ? `${g}.${ay}` : gun
+  const [y, ay, g] = gun.split('-')
+  if (g && ay) return `${g}.${ay}`
+  if (ay && y) return `${ay}.${y.slice(2)}`
+  return gun
+}
+
+/**
+ * Above this many points, per-day bars stop being bars.
+ *
+ * The bars are `flex-1` with a 3px gap, so at ~335px wide the gaps alone
+ * consume the whole row somewhere past sixty: a year of daily data does not
+ * render as a dense chart, it renders as an overflowing smear. Collapsing to
+ * months keeps the same component honest instead of adding a second one.
+ */
+const GUNLUK_BAR_SINIRI = 62
+
+/**
+ * Collapses a daily series to monthly totals once it is too long to draw.
+ *
+ * Returns `aylik` so the caller can retitle the card — a chart labelled
+ * "Günlük ciro" showing month totals would be a wrong number with a correct
+ * shape, which is the worst kind.
+ */
+export function ciroCubuklari(veri: { gun: string; kurus: number }[]): {
+  veri: { gun: string; kurus: number }[]
+  aylik: boolean
+} {
+  if (veri.length <= GUNLUK_BAR_SINIRI) return { veri, aylik: false }
+
+  const aylar = new Map<string, number>()
+  for (const v of veri) {
+    const ay = v.gun.slice(0, 7)
+    aylar.set(ay, (aylar.get(ay) ?? 0) + v.kurus)
+  }
+  // Map preserves insertion order and the source is already date-ordered.
+  return { veri: [...aylar.entries()].map(([gun, kurus]) => ({ gun, kurus })), aylik: true }
 }
 
 /* ----------------------------------------------------------- HalkaGrafik */
@@ -189,7 +223,7 @@ export function HalkaGrafik({
       <ul className="min-w-0 flex-1 space-y-2">
         {dilimler.map((d) => (
           <li key={d.etiket} className="flex items-center gap-2.5">
-            <span className={`size-2.5 shrink-0 rounded-chip bg-current ${d.renk}`} aria-hidden="true" />
+            <span className={`size-2.5 shrink-0 rounded-full bg-current ${d.renk}`} aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate text-label text-soft">{d.etiket}</span>
             <span className="shrink-0 text-label font-medium text-ink tnum">{d.gosterim}</span>
             <span className="w-9 shrink-0 text-right text-micro text-faint tnum">
@@ -231,7 +265,7 @@ export function SiraliCubuklar({
             <span className="min-w-0 truncate text-label text-soft">{s.etiket}</span>
             <span className="shrink-0 text-label font-medium text-ink tnum">{s.gosterim}</span>
           </div>
-          <div className="h-2 w-full overflow-hidden rounded-chip bg-field">
+          <div className="h-2 w-full overflow-hidden rounded-full bg-field">
             <div
               className="h-full rounded-chip bg-accent"
               style={{ width: `${Math.max((s.deger / max) * 100, s.deger > 0 ? 3 : 0)}%` }}
@@ -333,7 +367,7 @@ export function OranSerit({
       <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
         {parcalar.map((p) => (
           <li key={p.etiket} className="flex items-center gap-2">
-            <span className={`size-2.5 rounded-chip bg-current ${p.renk}`} aria-hidden="true" />
+            <span className={`size-2.5 rounded-full bg-current ${p.renk}`} aria-hidden="true" />
             <span className="text-label text-soft">{p.etiket}</span>
             <span className="text-label font-medium text-ink tnum">{p.deger}</span>
             <span className="text-micro text-faint tnum">
@@ -359,6 +393,10 @@ export function Sparkline({ veri, className = '' }: { veri: number[]; className?
   if (veri.length < 2) return null
   const max = Math.max(...veri)
   const min = Math.min(...veri)
+  // A flat line is not a trend. On a lot with no takings yet every value is
+  // zero, and drawing it spent 28px plus margins inside the brand panel on a
+  // mark that said nothing — which is most of why that panel looked empty.
+  if (max === min) return null
   const aralik = max - min || 1
   const W = 100
   const H = 28

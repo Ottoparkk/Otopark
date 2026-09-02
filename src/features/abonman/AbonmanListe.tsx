@@ -6,6 +6,7 @@ import {
   Input,
   ListeDurumu,
   ScreenHeader,
+  Select,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
 import { useAbonmanEkle, useAbonmanlar } from './api'
@@ -211,25 +212,20 @@ export default function AbonmanListe() {
           onChange={(e) => setUcret(e.target.value)}
           inputMode="decimal"
         />
-        <div>
-          <label className="mb-1.5 block text-label font-medium tracking-wide text-faint uppercase">
-            Ayrılmış yer (isteğe bağlı)
-          </label>
-          <select
-            value={yer}
-            onChange={(e) => setYer(e.target.value)}
-            className="min-h-[52px] w-full rounded-field bg-field px-4 text-body text-ink outline-none"
-          >
-            <option value="">Yer atanmadı</option>
-            {yerler
-              .filter((y) => y.rezerve)
-              .map((y) => (
-                <option key={y.id} value={y.id}>
-                  {y.kod}
-                </option>
-              ))}
-          </select>
-        </div>
+        <Select
+          label="Ayrılmış yer (isteğe bağlı)"
+          value={yer}
+          onChange={(e) => setYer(e.target.value)}
+        >
+          <option value="">Yer atanmadı</option>
+          {yerler
+            .filter((y) => y.rezerve)
+            .map((y) => (
+              <option key={y.id} value={y.id}>
+                {y.kod}
+              </option>
+            ))}
+        </Select>
       </FormModal>
     </div>
   )

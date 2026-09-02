@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import {
   Button,
   Card,
@@ -9,6 +9,7 @@ import {
   ListeDurumu,
   LoadError,
   ScreenHeader,
+  Select,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -20,15 +21,18 @@ import {
   useAbonmanTahsil,
   useAbonmanTahsilatlari,
 } from './api'
+import { useAbonmanSil } from '../cop/api'
 import { useParkYerleri } from '../gise/api'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { formatTam, formatTarih, gunEkle, gunFarki, istanbulGun } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
-import { ODEME_CHIP, ODEME_ETIKET, type OdemeYontemi } from '../../lib/types'
+import { IconCop } from '../../components/ui/icons'
+import { ODEME_CHIP, ODEME_ETIKET, ONAY_ETIKET, type OdemeYontemi } from '../../lib/types'
 
 export default function AbonmanDetay() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: a, isPending, error, refetch } = useAbonman(id)
   const {
     data: tahsilatlar = [],
@@ -39,6 +43,7 @@ export default function AbonmanDetay() {
   const { data: yerler = [] } = useParkYerleri()
   const guncelle = useAbonmanGuncelle()
   const tahsil = useAbonmanTahsil()
+  const sil = useAbonmanSil()
 
   /* ---- collect ---- */
   const [tahsilAcik, setTahsilAcik] = useState(false)
@@ -60,6 +65,8 @@ export default function AbonmanDetay() {
 
   /* ---- edit ---- */
   const [duzenle, setDuzenle] = useState(false)
+  const [silAcik, setSilAcik] = useState(false)
+  const [silHata, setSilHata] = useState<string | null>(null)
   const [ad, setAd] = useState('')
   const [tel, setTel] = useState('')
   const [bas, setBas] = useState('')
@@ -140,13 +147,29 @@ export default function AbonmanDetay() {
         subtitle={a.musteri_ad || 'İsimsiz müşteri'}
         back="/yonetim/abonman"
         right={
-          <button
-            type="button"
-            onClick={duzenleAc}
-            className="min-h-[44px] px-2 text-body font-medium text-accent"
-          >
-            Düzenle
-          </button>
+          <div className="flex items-center gap-1">
+            {/* Deleting and cancelling are different answers: İptal (below)
+                keeps the record and reverses the money with a counter-entry,
+                this removes both — recoverable from Çöp Kutusu. */}
+            <button
+              type="button"
+              onClick={() => {
+                setSilHata(null)
+                setSilAcik(true)
+              }}
+              aria-label="Abonmanı sil"
+              className="flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field"
+            >
+              <IconCop size={20} />
+            </button>
+            <button
+              type="button"
+              onClick={duzenleAc}
+              className="min-h-[44px] px-2 text-body font-medium text-accent"
+            >
+              Düzenle
+            </button>
+          </div>
         }
       />
 
@@ -220,6 +243,26 @@ export default function AbonmanDetay() {
                       {formatTL(t.tutar_kurus)}
                     </p>
                     <p className="mt-0.5 text-label text-faint">{formatTam(t.created_at)}</p>
+                    {/* Only when it is not the ordinary case. A collection
+                        still waiting for the Yönetici has been taken but is
+                        not in the revenue figures yet, and this is the only
+                        screen that would otherwise imply it is. */}
+                    {/* The truthiness check is not redundant: this row is
+                        read with select('*'), so on a deployment that ran
+                        ahead of migration 017 the column simply is not
+                        there and an undefined would print as an empty
+                        status line. */}
+                    {t.durum && t.durum !== 'ONAYLANDI' && (
+                      <p
+                        className={
+                          'mt-0.5 text-label ' +
+                          (t.durum === 'REDDEDILDI' ? 'text-danger' : 'text-warn')
+                        }
+                      >
+                        {ONAY_ETIKET[t.durum]}
+                        {t.onay_notu ? ' · ' + t.onay_notu : ''}
+                      </p>
+                    )}
                   </div>
                   <span
                     className={`shrink-0 rounded-chip px-2.5 py-1 text-label font-medium ${ODEME_CHIP[t.yontem]}`}
@@ -237,7 +280,28 @@ export default function AbonmanDetay() {
             Abonmanı iptal et
           </Button>
         )}
+
       </div>
+
+      <ConfirmDialog
+        open={silAcik}
+        onOpenChange={setSilAcik}
+        tone="danger"
+        title="Abonmanı sil"
+        description="Abonman ve alınan tahsilatlar silinecek; ilgili vardiyanın kasa farkı yeniden hesaplanır. Çöp Kutusu'ndan geri alınabilir."
+        confirmLabel="Sil"
+        loading={sil.isPending}
+        error={silHata}
+        onConfirm={() => {
+          void sil
+            .mutateAsync(a.id)
+            .then(() => {
+              setSilAcik(false)
+              navigate('/yonetim/abonman')
+            })
+            .catch((e) => setSilHata(rpcErrorText(e, 'Abonman silinemedi.')))
+        }}
+      />
 
       {/* ------------------------------------------------------- collect --- */}
       <FormModal
@@ -388,29 +452,21 @@ export default function AbonmanDetay() {
           onChange={(e) => setUcret(e.target.value)}
           inputMode="decimal"
         />
-        <div>
-          <label
-            htmlFor="abonman-yer"
-            className="mb-1.5 block text-label font-medium tracking-wide text-faint uppercase"
-          >
-            Ayrılmış yer
-          </label>
-          <select
-            id="abonman-yer"
-            value={yer}
-            onChange={(e) => setYer(e.target.value)}
-            className="min-h-[52px] w-full rounded-field bg-field px-4 text-body text-ink outline-none"
-          >
-            <option value="">Yer atanmadı</option>
-            {yerler
-              .filter((y) => y.rezerve || y.id === a.park_yeri_id)
-              .map((y) => (
-                <option key={y.id} value={y.id}>
-                  {y.kod}
-                </option>
-              ))}
-          </select>
-        </div>
+        <Select
+          id="abonman-yer"
+          label="Ayrılmış yer"
+          value={yer}
+          onChange={(e) => setYer(e.target.value)}
+        >
+          <option value="">Yer atanmadı</option>
+          {yerler
+            .filter((y) => y.rezerve || y.id === a.park_yeri_id)
+            .map((y) => (
+              <option key={y.id} value={y.id}>
+                {y.kod}
+              </option>
+            ))}
+        </Select>
         <Input
           label="Not"
           value={notlar}

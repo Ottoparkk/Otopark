@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import {
   Card,
   Chip,
@@ -24,6 +24,7 @@ import {
   usePuanHareketleri,
 } from './api'
 import { usePuanKurali } from '../yonetim/api'
+import { useKayitSil } from '../cop/api'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { formatTam } from '../../lib/dates'
@@ -40,6 +41,7 @@ const HAREKET_ETIKET: Record<PuanHareketTur, string> = {
 
 export default function HesapDetay() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: h, isPending, error, refetch } = useHesap(id)
   const { data: bakiye = 0 } = useHesapBakiye(id)
   const {
@@ -59,6 +61,7 @@ export default function HesapDetay() {
   const guncelle = useHesapGuncelle()
   const aracEkle = useAracEkle()
   const aracSil = useAracSil()
+  const hesapSil = useKayitSil()
 
   const [duzenle, setDuzenle] = useState(false)
   const [ad, setAd] = useState('')
@@ -71,6 +74,9 @@ export default function HesapDetay() {
   const [plaka, setPlaka] = useState('')
   const [aracHata, setAracHata] = useState<string | null>(null)
   const [silinecek, setSilinecek] = useState<string | null>(null)
+  const [aracSilHata, setAracSilHata] = useState<string | null>(null)
+  const [hesapSilAcik, setHesapSilAcik] = useState(false)
+  const [hesapSilHata, setHesapSilHata] = useState<string | null>(null)
 
   if (error) {
     return (
@@ -113,13 +119,29 @@ export default function HesapDetay() {
         subtitle={h.telefon ? `0${h.telefon}` : undefined}
         back="/yonetim/hesaplar"
         right={
-          <button
-            type="button"
-            onClick={duzenleAc}
-            className="min-h-[44px] px-2 text-body font-medium text-accent"
-          >
-            Düzenle
-          </button>
+          <div className="flex items-center gap-1">
+            {/* An account with points history is refused by the server anyway —
+                those points are money owed and the snapshot does not carry the
+                ledger. Pasif (in Düzenle) is the usual answer. */}
+            <button
+              type="button"
+              onClick={() => {
+                setHesapSilHata(null)
+                setHesapSilAcik(true)
+              }}
+              aria-label="Hesabı sil"
+              className="flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field"
+            >
+              <IconCop size={20} />
+            </button>
+            <button
+              type="button"
+              onClick={duzenleAc}
+              className="min-h-[44px] px-2 text-body font-medium text-accent"
+            >
+              Düzenle
+            </button>
+          </div>
         }
       />
 
@@ -174,7 +196,10 @@ export default function HesapDetay() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => setSilinecek(a.id)}
+                    onClick={() => {
+                      setAracSilHata(null)
+                      setSilinecek(a.id)
+                    }}
                     aria-label="Aracı kaldır"
                     className="flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field"
                   >
@@ -236,6 +261,7 @@ export default function HesapDetay() {
             Hareketler silinemez; düzeltmeler ters kayıtla yapılır.
           </p>
         </section>
+
       </div>
 
       {/* ---------------------------------------------------------- edit --- */}
@@ -320,12 +346,36 @@ export default function HesapDetay() {
         onOpenChange={() => setSilinecek(null)}
         tone="danger"
         title="Aracı kaldır"
-        description="Bu plaka artık puan kazanmaz. Kazanılmış puanlar hesapta kalır."
+        description="Bu plaka artık puan kazanmaz. Kazanılmış puanlar hesapta kalır. Çöp Kutusu'ndan geri alınabilir."
         confirmLabel="Kaldır"
         loading={aracSil.isPending}
+        error={aracSilHata}
         onConfirm={() => {
           if (!silinecek) return
-          void aracSil.mutateAsync(silinecek).then(() => setSilinecek(null))
+          void aracSil
+            .mutateAsync(silinecek)
+            .then(() => setSilinecek(null))
+            .catch((e) => setAracSilHata(rpcErrorText(e, 'Kaldırılamadı.')))
+        }}
+      />
+
+      <ConfirmDialog
+        open={hesapSilAcik}
+        onOpenChange={setHesapSilAcik}
+        tone="danger"
+        title="Hesabı sil"
+        description="Hesap ve araçları silinecek. Puan hareketi olan hesap silinemez — o durumda hesabı Düzenle'den pasife alın. Çöp Kutusu'ndan geri alınabilir."
+        confirmLabel="Sil"
+        loading={hesapSil.isPending}
+        error={hesapSilHata}
+        onConfirm={() => {
+          void hesapSil
+            .mutateAsync({ tablo: 'hesaplar', id: h.id })
+            .then(() => {
+              setHesapSilAcik(false)
+              navigate('/yonetim/hesaplar')
+            })
+            .catch((e) => setHesapSilHata(rpcErrorText(e, 'Hesap silinemedi.')))
         }}
       />
     </div>

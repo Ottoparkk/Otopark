@@ -11,12 +11,15 @@ import {
 } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useIstisnaCoz, useIstisnalar } from './api'
+import { useKayitSil } from '../cop/api'
 import { useFotoUrl } from '../gise/api'
+import { useAuth } from '../../app/providers/AuthProvider'
+import { isYonetici } from '../../lib/rbac'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTam } from '../../lib/dates'
 import { formatSure, dakikaFarki } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
-import { IconKamera, IconTik } from '../../components/ui/icons'
+import { IconCop, IconKamera, IconTik } from '../../components/ui/icons'
 import { ISTISNA_ETIKET, type Istisna, type IstisnaTur } from '../../lib/types'
 
 /** Tone by severity: a rejected event reads red, a flagged one amber. */
@@ -41,13 +44,20 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
 
 export default function Istisnalar() {
   const navigate = useNavigate()
+  // Unlike the rest of /yonetim, this screen is open to Personel — deleting is
+  // not. The RPC refuses them either way; this stops them tapping a control
+  // that could only fail.
+  const yonetici = isYonetici(useAuth().profile)
   const [sadeceAcik, setSadeceAcik] = useState(true)
   const { data: liste = [], isPending, error, refetch } = useIstisnalar(sadeceAcik)
   const coz = useIstisnaCoz()
+  const sil = useKayitSil()
 
   const [secili, setSecili] = useState<Istisna | null>(null)
   const [not, setNot] = useState('')
   const [hata, setHata] = useState<string | null>(null)
+  const [silinecek, setSilinecek] = useState<Istisna | null>(null)
+  const [silHata, setSilHata] = useState<string | null>(null)
 
   return (
     <div>
@@ -91,6 +101,14 @@ export default function Istisnalar() {
                   setHata(null)
                 }}
                 onCikis={() => navigate('/gise/cikis')}
+                onSil={
+                  yonetici
+                    ? () => {
+                        setSilHata(null)
+                        setSilinecek(i)
+                      }
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -122,6 +140,26 @@ export default function Istisnalar() {
           maxLength={200}
         />
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={silinecek !== null}
+        onOpenChange={() => setSilinecek(null)}
+        tone="danger"
+        title="Kaydı sil"
+        description={
+          "Bu olay kaydı listeden tamamen kalkar. Sadece işini bitirmek istiyorsanız “Çözüldü” yeterlidir — kayıt saklanır. Çöp Kutusu'ndan geri alınabilir."
+        }
+        confirmLabel="Sil"
+        loading={sil.isPending}
+        error={silHata}
+        onConfirm={() => {
+          if (!silinecek) return
+          void sil
+            .mutateAsync({ tablo: 'istisnalar', id: silinecek.id })
+            .then(() => setSilinecek(null))
+            .catch((e) => setSilHata(rpcErrorText(e, 'Silinemedi.')))
+        }}
+      />
     </div>
   )
 }
@@ -130,10 +168,12 @@ function IstisnaKart({
   istisna: i,
   onCoz,
   onCikis,
+  onSil,
 }: {
   istisna: Istisna
   onCoz: () => void
   onCikis: () => void
+  onSil?: () => void
 }) {
   const { data: fotoUrl } = useFotoUrl(i.foto_path)
   const cozuldu = i.cozuldu_at !== null
@@ -146,16 +186,28 @@ function IstisnaKart({
 
   return (
     <Card className={cozuldu ? 'opacity-70' : ''}>
-      <div className="flex flex-wrap items-center gap-2">
-        <Chip tone={TUR_TONE[i.tur]}>{ISTISNA_ETIKET[i.tur]}</Chip>
-        <Chip tone="neutral">{i.yon === 'GIRIS' ? 'Giriş' : 'Çıkış'}</Chip>
-        {i.kaynak === 'KAMERA' && (
-          <Chip tone="neutral">
-            <IconKamera size={13} />
-            Kamera
-          </Chip>
+      <div className="flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <Chip tone={TUR_TONE[i.tur]}>{ISTISNA_ETIKET[i.tur]}</Chip>
+          <Chip tone="neutral">{i.yon === 'GIRIS' ? 'Giriş' : 'Çıkış'}</Chip>
+          {i.kaynak === 'KAMERA' && (
+            <Chip tone="neutral">
+              <IconKamera size={13} />
+              Kamera
+            </Chip>
+          )}
+          {cozuldu && <Chip tone="success">Çözüldü</Chip>}
+        </div>
+        {onSil && (
+          <button
+            type="button"
+            onClick={onSil}
+            aria-label="Kaydı sil"
+            className="-mt-1.5 -mr-1.5 flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field"
+          >
+            <IconCop size={18} />
+          </button>
         )}
-        {cozuldu && <Chip tone="success">Çözüldü</Chip>}
       </div>
 
       <p className="mt-2.5 text-lead font-semibold tracking-wide text-ink tnum">

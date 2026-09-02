@@ -8,7 +8,14 @@
  * refused at the gate. Surface them verbatim.
  */
 export function rpcErrorText(err: unknown, fallback: string): string {
-  const m = (err as { message?: unknown } | null)?.message
+  const e = err as { message?: unknown; code?: unknown } | null
+  // PGRST202 is PostgREST saying the function does not exist. It only happens
+  // when a migration has not been run yet, and it answers in English with a
+  // parameter list attached — nothing an operator at a barrier can act on, and
+  // never the sentence to put in front of them. Every other message is the
+  // database's own Turkish and goes through untouched.
+  if (e?.code === 'PGRST202') return 'Bu özellik sunucuda henüz etkin değil.'
+  const m = e?.message
   if (typeof m === 'string' && m.trim() !== '') {
     // PostgREST prefixes some errors; strip the noise, keep the sentence.
     return m.replace(/^(new row violates|ERROR:)\s*/i, '').trim()

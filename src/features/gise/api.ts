@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import { yerleriSirala } from '../../lib/yerkodu'
 import { compressEvidence, fotoYolu } from '../../lib/image'
+import { normalizePlaka } from '../../lib/plaka'
 import type {
   AbonmanGecerlilik,
   AcikBilet,
@@ -10,9 +12,9 @@ import type {
   OdemeYontemi,
   OtoparkAyarlari,
   ParkYeri,
+  ParkYeriDurumu,
   PuanDurumu,
   Tarife,
-  AracTipi,
 } from '../../lib/types'
 
 /**
@@ -53,7 +55,6 @@ export function useAktifTarifeler() {
         .from('tarifeler')
         .select('*')
         .is('gecerli_bitis', null)
-        .order('arac_tipi')
       if (error) throw error
       return data as Tarife[]
     },
@@ -71,10 +72,51 @@ export function useParkYerleri() {
         .eq('is_active', true)
         .order('kod')
       if (error) throw error
-      return data as ParkYeri[]
+      return yerleriSirala(data as ParkYeri[])
     },
     staleTime: 5 * 60_000,
   })
+}
+
+/**
+ * The bays plus what is standing on each one — what the entry picker draws.
+ *
+ * rpc -> TABLE, already in the server's order (P, then E, then R, by number),
+ * so it is used as it arrives: re-sorting here would be a second opinion on an
+ * order the server has already decided, and `ilkBosYer` depends on "first"
+ * meaning the same thing on both sides.
+ *
+ * One call instead of park_yerleri + biletler + rezervasyonlar, and the only
+ * one of the three that can answer "is this bay reserved" without the client
+ * parsing a tstzrange.
+ */
+export function useParkYeriDurumu(enabled = true) {
+  return useQuery({
+    queryKey: ['park_yeri_durumu'],
+    enabled,
+    queryFn: async (): Promise<ParkYeriDurumu[]> => {
+      const { data, error } = await supabase.rpc('park_yeri_durumu')
+      if (error) throw error
+      return (data ?? []) as ParkYeriDurumu[]
+    },
+    // Short: the bay proposed on screen must not be one somebody filled a
+    // minute ago. Every entry, exit and cancellation invalidates it anyway.
+    staleTime: 10_000,
+  })
+}
+
+/**
+ * id -> kod, for the screens that only hold a `park_yeri_id`.
+ *
+ * Built from the cached active-spot list rather than from park_yeri_durumu:
+ * showing which bay a ticket is in needs no occupancy, and this query is
+ * already in the cache for five minutes.
+ */
+export function useYerKodlari(): Record<string, string> {
+  const { data } = useParkYerleri()
+  const harita: Record<string, string> = {}
+  for (const y of data ?? []) harita[y.id] = y.kod
+  return harita
 }
 
 /** rpc -> TABLE, so this is an array. Empty query string returns everything. */
@@ -90,6 +132,50 @@ export function useAcikBiletler(sorgu = '') {
     // worse than a brief spinner.
     staleTime: 5_000,
     refetchInterval: 30_000,
+  })
+}
+
+/**
+ * Vehicles that have already left, most recent first.
+ *
+ * Deliberately NOT filtered to today. "Did that car leave, and what did we
+ * take for it?" is the question this answers, and at 00:30 a strict
+ * today-filter would show an almost empty list right when the night shift
+ * needs it. It also sidesteps converting an Istanbul calendar day into UTC
+ * instants, which is a trap this codebase has paid for before.
+ *
+ * SCOPE IS DECIDED BY RLS, not by this query. `biletler_select` gives
+ * Yönetici every exit but gives Personel only the ones closed by their own
+ * OPEN shift — so a Personel between shifts correctly sees nothing here, and
+ * the empty state has to say so rather than implying the lot had no exits.
+ *
+ * `enabled` is the filter switch on the Gişe screen. Closed tickets are
+ * unbounded history, so when the operator has narrowed the list to "İçeride"
+ * there is no reason to spend a gate phone's mobile data on rows nobody is
+ * looking at.
+ */
+export function useCikanBiletler(sorgu = '', enabled = true) {
+  return useQuery({
+    queryKey: ['cikan_biletler', sorgu],
+    enabled,
+    queryFn: async (): Promise<Bilet[]> => {
+      let q = supabase
+        .from('biletler')
+        .select('*')
+        .eq('durum', 'KAPALI')
+        .order('cikis_at', { ascending: false })
+        .limit(20)
+
+      // Plates are stored normalised, so the search term has to be too —
+      // otherwise "34 abc" never matches "34ABC123".
+      const aranan = normalizePlaka(sorgu)
+      if (aranan) q = q.ilike('plaka', `%${aranan}%`)
+
+      const { data, error } = await q
+      if (error) throw error
+      return data as Bilet[]
+    },
+    staleTime: 10_000,
   })
 }
 
@@ -237,17 +323,27 @@ function useGiseInvalidate() {
     void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
     void qc.invalidateQueries({ queryKey: ['gunluk_ozet'] })
     void qc.invalidateQueries({ queryKey: ['vardiya_ozetim'] })
+    // A bay is freed by an exit or a cancellation exactly as it is taken by
+    // an entry, so both pickers have to hear about all three. Without this the
+    // entry screen keeps proposing a bay that was filled a moment ago and the
+    // operator is told "another car is here" about a choice the app made.
+    void qc.invalidateQueries({ queryKey: ['park_yeri_durumu'] })
+    void qc.invalidateQueries({ queryKey: ['dolu_yerler'] })
   }
 }
 
 export interface BiletAcGirdi {
   plaka: string
-  arac_tipi: AracTipi
   /** Generated ONCE per form session and reused across retries — this is what
    *  makes retry-on-blip and a double-tap both idempotent. */
   islem_id: string
   foto?: string | null
   park_yeri_id?: string | null
+  /** Optional metadata (008). Blank is normalised to NULL server-side. */
+  arac_bilgi?: string | null
+  musteri_ad?: string | null
+  musteri_tel?: string | null
+  notlar?: string | null
 }
 
 /**
@@ -271,7 +367,6 @@ export function useBiletAc() {
     mutationFn: async (girdi: BiletAcGirdi): Promise<string | null> => {
       const { data, error } = await supabase.rpc('bilet_ac', {
         p_plaka: girdi.plaka,
-        p_arac_tipi: girdi.arac_tipi,
         p_islem_id: girdi.islem_id,
         // MOBIL: the server deliberately IGNORES any client timestamp and
         // uses its own clock. Only the camera path supplies a time.
@@ -280,11 +375,53 @@ export function useBiletAc() {
         p_foto: girdi.foto ?? null,
         p_park_yeri_id: girdi.park_yeri_id ?? null,
         p_ham_yanit: null,
+        p_arac_bilgi: girdi.arac_bilgi ?? null,
+        p_musteri_ad: girdi.musteri_ad ?? null,
+        p_musteri_tel: girdi.musteri_tel ?? null,
+        p_notlar: girdi.notlar ?? null,
       })
       if (error) throw error
       return (data as string | null) ?? null // rpc -> scalar uuid
     },
     onSuccess: invalidate,
+  })
+}
+
+/**
+ * Correct the customer details on a ticket that is still open.
+ *
+ * `retry: false`, unlike opening a ticket: this one is a correction someone is
+ * watching, so a failure should be told rather than papered over — and unlike
+ * bilet_ac it carries no idempotency key, because there is nothing to make
+ * idempotent when every call writes the same three columns outright.
+ */
+export function useBiletMusteriGuncelle() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: {
+      bilet_id: string
+      arac_bilgi: string | null
+      musteri_ad: string | null
+      musteri_tel: string | null
+      notlar: string | null
+    }) => {
+      const { error } = await supabase.rpc('bilet_musteri_guncelle', {
+        p_bilet_id: girdi.bilet_id,
+        p_arac_bilgi: girdi.arac_bilgi,
+        p_musteri_ad: girdi.musteri_ad,
+        p_musteri_tel: girdi.musteri_tel,
+        p_notlar: girdi.notlar,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      // The detail panel and the customer panel both read ['bilet', id]; the
+      // list invalidation above does not cover it.
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+    },
   })
 }
 
@@ -346,26 +483,6 @@ export function useBiletIptal() {
   })
 }
 
-export function useAracTipiDuzelt() {
-  const qc = useQueryClient()
-  return useMutation({
-    retry: false,
-    mutationFn: async ({ bilet_id, arac_tipi }: { bilet_id: string; arac_tipi: AracTipi }) => {
-      const { error } = await supabase.rpc('bilet_arac_tipi_duzelt', {
-        p_bilet_id: bilet_id,
-        p_arac_tipi: arac_tipi,
-      })
-      if (error) throw error
-    },
-    onSuccess: (_d, v) => {
-      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
-      void qc.invalidateQueries({ queryKey: ['bilet', v.bilet_id] })
-      // The tariff changed, so the quoted fee must be re-fetched.
-      void qc.invalidateQueries({ queryKey: ['ucret', v.bilet_id] })
-    },
-  })
-}
-
 export function usePuanKullan() {
   const qc = useQueryClient()
   return useMutation({
@@ -409,13 +526,11 @@ export function useKayipBilet() {
     retry: false, // it takes money
     mutationFn: async (girdi: {
       plaka: string
-      arac_tipi: AracTipi
       odeme_yontemi: OdemeYontemi
       islem_id: string
     }): Promise<string> => {
       const { data, error } = await supabase.rpc('kayip_bilet_tahsil', {
         p_plaka: girdi.plaka,
-        p_arac_tipi: girdi.arac_tipi,
         p_odeme_yontemi: girdi.odeme_yontemi,
         p_islem_id: girdi.islem_id,
       })

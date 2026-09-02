@@ -96,6 +96,34 @@ export const IconPuan = (p: IconProps) => (
   </Icon>
 )
 
+/**
+ * The cash box — the kasa ledger, NOT the loyalty points above it.
+ *
+ * A strongbox rather than a banknote: notes would collide with the payment
+ * method chips, which already speak in cash/card/transfer. Kept to five
+ * strokes because this renders at 20px on the Finans card as well as at 44px
+ * in an empty state, and a dial with tick marks turns to mush at the small
+ * size.
+ */
+/** A note written on the ticket — a sheet with two lines, not a bubble. */
+export const IconNot = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5.5 3.5h9.5l4 4v13a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z" />
+    <path d="M14.5 3.6V7.5h4" />
+    <path d="M8 13h8M8 16.5h5" />
+  </Icon>
+)
+
+export const IconKasa = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+    <circle cx="10" cy="12" r="2.6" />
+    <path d="M16 10v4" />
+    <path d="M6.5 19.5V21" />
+    <path d="M17.5 19.5V21" />
+  </Icon>
+)
+
 export const IconAyar = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="3" />
@@ -113,6 +141,14 @@ export const IconZil = (p: IconProps) => (
 export const IconGeri = (p: IconProps) => (
   <Icon {...p}>
     <path d="m14.5 5-7 7 7 7" />
+  </Icon>
+)
+
+/** Price tag — tariffs. */
+export const IconEtiket = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M20.5 12.7 12.8 20.4a2 2 0 0 1-2.8 0l-6.4-6.4a2 2 0 0 1-.6-1.4V4.9a2 2 0 0 1 2-2h7.7a2 2 0 0 1 1.4.6l6.4 6.4a2 2 0 0 1 0 2.8Z" />
+    <circle cx="8.2" cy="8.2" r="1.4" />
   </Icon>
 )
 
@@ -138,6 +174,23 @@ export const IconCarpi = (p: IconProps) => (
 export const IconTik = (p: IconProps) => (
   <Icon {...p}>
     <path d="m4.5 12.5 5 5 10-11" />
+  </Icon>
+)
+
+/** A tick INSIDE a circle — approval, as distinct from IconTik's bare
+ *  "done". The two appear on the same screen, so they must not be the same
+ *  mark. */
+export const IconOnay = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="m8.25 12.25 2.5 2.5 5-5.5" />
+  </Icon>
+)
+
+export const IconTakvim = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+    <path d="M3.5 9.5h17M8 3.5v3M16 3.5v3" />
   </Icon>
 )
 
