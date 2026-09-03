@@ -70,6 +70,22 @@ export const ONAY_ETIKET: Record<OnayDurum, string> = {
   REDDEDILDI: 'Reddedildi',
 }
 
+/** The two payment states a closed ticket can be in. One vocabulary, for the
+ *  same reason as ONAY_ETIKET: the badge on a row and the filter that found
+ *  that row must not name the state differently. */
+export const ODEME_DURUM_ETIKET: Record<'ALINDI' | 'ALINMADI', string> = {
+  ALINDI: 'Ödeme alındı',
+  ALINMADI: 'Ödeme alınmadı',
+}
+
+/** Chip colours for the same three states. Beside the labels on purpose:
+ *  a screen that names a state must not have to invent its colour. */
+export const ONAY_CHIP: Record<OnayDurum, string> = {
+  BEKLIYOR: 'bg-warn-soft text-warn',
+  ONAYLANDI: 'bg-success-soft text-success',
+  REDDEDILDI: 'bg-danger-soft text-danger',
+}
+
 export const ODEME_ETIKET: Record<OdemeYontemi, string> = {
   NAKIT: 'Nakit',
   KREDI_KARTI: 'Kredi Kartı',

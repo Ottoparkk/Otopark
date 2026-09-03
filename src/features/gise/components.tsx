@@ -12,11 +12,16 @@ import { formatTel, normalizeTel } from '../../lib/telefon'
 import { formatGoreceli } from '../../lib/dates'
 import { formatTL } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
+import { biletBorcu, odemeAlindi } from '../../lib/bilet'
 import {
   ODEME_CHIP,
+  ODEME_DURUM_ETIKET,
   ODEME_ETIKET,
+  ONAY_CHIP,
+  ONAY_ETIKET,
   type AcikBilet,
   type Bilet,
+  type OnayDurum,
 } from '../../lib/types'
 import {
   IconAraba,
@@ -161,14 +166,39 @@ export function dolulukYuzde(dolu: number, kapasite: number): number {
  * than how long the car has been sitting there. One shared component would
  * have meant a card that lies in one of its two modes.
  */
-export function CikanKart({ bilet, onClick }: { bilet: Bilet; onClick: () => void }) {
-  // The list is filtered to KAPALI, and the money identity makes this exact
-  // rather than a guess: a non-zero collection cannot be stored without an
-  // odeme_yontemi, so tahsil > 0 IS "cash changed hands". Zero means the fee
-  // was zero — an abonman, or a stay inside the grace period — which is a
-  // legitimate free exit, not an unpaid one, so it reads neutral and the
-  // Abonman chip next to it says why.
-  const ucretsiz = bilet.tahsil_kurus === 0
+export function CikanKart({
+  bilet,
+  onClick,
+  onay = null,
+}: {
+  bilet: Bilet
+  onClick: () => void
+  /**
+   * Approval state of the money, or null to show nothing.
+   *
+   * Passed IN rather than derived here, and that is the safety property: only
+   * the screen knows whether the viewer is a Yönetici, and a Personel's embed
+   * carries collections from their own open shift and nothing else — so a
+   * card that derived this itself would print "Onaylanmadı" over other
+   * people's approved tickets.
+   */
+  onay?: OnayDurum | null
+}) {
+  // Since 027 a closed ticket can owe money, so "tahsil_kurus === 0" no longer
+  // means the exit was free — it means no cash changed hands, which is now two
+  // different situations. They are separated here:
+  //
+  //   borç 0            → genuinely free: an abonman, or inside the grace
+  //                       period. Neutral, and the amount says "Ücretsiz".
+  //   borç > 0, alındı  → the normal exit.
+  //   borç > 0, alınmadı → the car left owing. Amber, and the amount shows
+  //                       what is owed rather than the ₺0 that was taken.
+  //
+  // The amount column reads the FEE in every case, because "what this stay
+  // cost" is the same question whether or not it has been paid yet.
+  const borc = biletBorcu(bilet)
+  const alindi = odemeAlindi(bilet)
+  const bedava = borc === 0
 
   return (
     <button
@@ -187,26 +217,45 @@ export function CikanKart({ bilet, onClick }: { bilet: Bilet; onClick: () => voi
             {formatPlaka(bilet.plaka)}
           </span>
           <span
-            className={`shrink-0 text-body font-semibold tnum ${ucretsiz ? 'text-success' : 'text-ink'}`}
+            className={`shrink-0 text-body font-semibold tnum ${
+              bedava ? 'text-success' : alindi ? 'text-ink' : 'text-warn'
+            }`}
           >
-            {ucretsiz ? 'Ücretsiz' : formatTL(bilet.tahsil_kurus)}
+            {bedava ? 'Ücretsiz' : formatTL(borc)}
           </span>
         </div>
 
-        <div className="mt-1 flex items-center gap-1.5">
-          <Chip size="sm" tone={ucretsiz ? 'neutral' : 'success'} className="shrink-0">
-            {ucretsiz ? 'Ödeme alınmadı' : 'Ödeme alındı'}
+        {/* Wraps: this row can carry four chips (ödeme, abonman, onay, yöntem)
+            plus the time, which at 375px squeezed the timestamp to "2 …".
+            Same treatment as the Finans list, which shows the same chips. */}
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <Chip
+            size="sm"
+            tone={alindi ? 'success' : bedava ? 'neutral' : 'warn'}
+            className="shrink-0"
+          >
+            {ODEME_DURUM_ETIKET[alindi ? 'ALINDI' : 'ALINMADI']}
           </Chip>
           {bilet.abonman_id && (
             <Chip size="sm" tone="success" className="shrink-0">
               Abonman
             </Chip>
           )}
+          {/* Whether this money counts is a bigger fact about the exit than
+              how it was paid, so it sits ahead of the method chip — same
+              order as the Finans list, which shows the same three states. */}
+          {onay && (
+            <span
+              className={`shrink-0 rounded-chip px-2 py-0.5 text-micro font-medium ${ONAY_CHIP[onay]}`}
+            >
+              {ONAY_ETIKET[onay]}
+            </span>
+          )}
           {/* Not a Chip: the payment tones are their own scale (ODEME_CHIP),
               and feeding them through `className` would race Chip's own tone
               classes — equal specificity, so the winner would depend on
               stylesheet order rather than on anything visible here. */}
-          {!ucretsiz && bilet.odeme_yontemi && (
+          {alindi && bilet.odeme_yontemi && (
             <span
               className={`shrink-0 rounded-chip px-2 py-0.5 text-micro font-medium ${ODEME_CHIP[bilet.odeme_yontemi]}`}
             >

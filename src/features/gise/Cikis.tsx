@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
+import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import {
   BrandPanel,
   Button,
@@ -34,6 +35,8 @@ import {
   useBiletKapat,
   useBiletMusteriGuncelle,
   useCikanBiletler,
+  type OdemeFiltre,
+  type OnayFiltre,
   useKayipBilet,
   usePuanDurumu,
   usePuanGeriAl,
@@ -56,12 +59,17 @@ import {
   IconEtiket,
   IconIleri,
   IconKisi,
+  IconAsagi,
   IconTik,
+  IconUyari,
 } from '../../components/ui/icons'
 import {
+  ODEME_DURUM_ETIKET,
+  ONAY_ETIKET,
   type AcikBilet,
   type OdemeYontemi,
 } from '../../lib/types'
+import { onayDurumu } from '../../lib/bilet'
 
 type Filtre = 'TUMU' | 'ICERIDE' | 'CIKAN'
 
@@ -103,12 +111,92 @@ function FiltreChip({
       aria-pressed={aktif}
       onClick={onClick}
       className={[
-        'min-h-[44px] rounded-chip px-4 text-body font-medium transition-colors',
+        'min-h-[44px] shrink-0 rounded-chip px-4 text-body font-medium transition-colors',
         aktif ? 'bg-ink text-bg' : 'bg-field text-soft',
       ].join(' ')}
     >
       {etiket}
     </button>
+  )
+}
+
+const ONAY_FILTRELERI: { deger: OnayFiltre; etiket: string }[] = [
+  { deger: 'TUMU', etiket: 'Tümü' },
+  { deger: 'ONAYLANDI', etiket: ONAY_ETIKET.ONAYLANDI },
+  { deger: 'ONAYLANMADI', etiket: ONAY_ETIKET.BEKLIYOR },
+]
+
+const ODEME_FILTRELERI: { deger: OdemeFiltre; etiket: string }[] = [
+  { deger: 'TUMU', etiket: 'Tümü' },
+  { deger: 'ALINDI', etiket: ODEME_DURUM_ETIKET.ALINDI },
+  { deger: 'ALINMADI', etiket: ODEME_DURUM_ETIKET.ALINMADI },
+]
+
+/**
+ * Filter menu — a menu rather than more chips.
+ *
+ * The row already carries one filter axis; a second set of chips beside it
+ * would read as one long row of six where any could be on, when in fact the
+ * two axes are independent. A closed menu also states its current value in
+ * one word, which is what a filter that is usually "Tümü" should cost.
+ *
+ * Generic: the caller decides who sees it. The Onay instance is Yönetici-only
+ * because a Personel's embed cannot carry other shifts' approval state (see
+ * `useCikanBiletler`); the Ödeme one is for everyone, because payment is a
+ * fact on the ticket itself.
+ */
+function FiltreMenu<T extends string>({
+  deger,
+  varsayilan,
+  secenekler,
+  etiket,
+  onChange,
+}: {
+  deger: T
+  /** The "no filter" value — the trigger shows `etiket` while it is selected. */
+  varsayilan: T
+  secenekler: { deger: T; etiket: string }[]
+  etiket: string
+  onChange: (d: T) => void
+}) {
+  const aktif = deger !== varsayilan
+  const secili = secenekler.find((o) => o.deger === deger)
+  return (
+    <Dropdown.Root>
+      <Dropdown.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`${etiket} filtresi`}
+          className={[
+            'flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-chip px-4 text-body font-medium transition-colors',
+            aktif ? 'bg-ink text-bg' : 'bg-field text-soft',
+          ].join(' ')}
+        >
+          {aktif ? secili?.etiket : etiket}
+          <IconAsagi size={16} />
+        </button>
+      </Dropdown.Trigger>
+      <Dropdown.Portal>
+        <Dropdown.Content
+          align="start"
+          sideOffset={6}
+          className="z-50 min-w-[190px] rounded-card border border-border bg-surface p-1.5 shadow-modal"
+        >
+          {secenekler.map((o) => (
+            <Dropdown.Item
+              key={o.deger}
+              onSelect={() => onChange(o.deger)}
+              className="flex min-h-[44px] cursor-pointer items-center gap-2 rounded-field px-3 text-body text-ink outline-none select-none data-[highlighted]:bg-field"
+            >
+              <span className="flex size-4 shrink-0 items-center justify-center text-accent">
+                {deger === o.deger && <IconTik size={15} />}
+              </span>
+              {o.etiket}
+            </Dropdown.Item>
+          ))}
+        </Dropdown.Content>
+      </Dropdown.Portal>
+    </Dropdown.Root>
   )
 }
 
@@ -161,13 +249,23 @@ export function AracListesi({
   const yonetici = isYonetici(useAuth().profile)
   const yerKodlari = useYerKodlari()
   const [filtre, setFiltre] = useState<Filtre>('TUMU')
+  const [onay, setOnay] = useState<OnayFiltre>('TUMU')
+  const [odeme, setOdeme] = useState<OdemeFiltre>('TUMU')
 
   const iceridiGoster = filtre !== 'CIKAN'
   const cikanGoster = filtre !== 'ICERIDE'
 
   // Skipped entirely while the filter hides it — a gate phone on mobile data
   // should not pull closed tickets nobody asked to see.
-  const cikanlar = useCikanBiletler(sorgu, cikanGoster)
+  const cikanlar = useCikanBiletler({
+    sorgu,
+    enabled: cikanGoster,
+    // Approval is Yönetici-only (see the embed note in the query); payment is
+    // not — it is a fact about the ticket, and the operator who let a car out
+    // unpaid is the one who needs to find it again.
+    onay: yonetici ? onay : 'TUMU',
+    odeme,
+  })
 
   return (
     <div className="flex flex-1 flex-col">
@@ -193,8 +291,20 @@ export function AracListesi({
       </div>
 
       {/* The only control layer on this screen — there is no tab bar above it
-          to nest under, so a single chip row reads as what it is: a filter. */}
-      <div className="mt-3 flex gap-2 px-5" role="group" aria-label="Araç filtresi">
+          to nest under, so a single chip row reads as what it is: a filter.
+
+          Scrolls sideways rather than wrapping or squeezing: three chips plus
+          two menus do not fit — measured at 438px for four of them alone —
+          and at 375px that pushed the whole PAGE into horizontal scroll,
+          dragging every screen
+          below it dragged along with the filter row. `shrink-0` on each chip
+          keeps them from compressing into unreadable slivers instead. The
+          menu itself is portaled, so it is not clipped by this container. */}
+      <div
+        className="mt-3 flex gap-2 overflow-x-auto px-5"
+        role="group"
+        aria-label="Araç filtresi"
+      >
         {FILTRELER.map((f) => (
           <FiltreChip
             key={f.deger}
@@ -203,6 +313,33 @@ export function AracListesi({
             etiket={f.etiket}
           />
         ))}
+        {/* Only where there are exits to filter, and only for the role that
+            can see their approval state at all. */}
+        {cikanGoster && (
+          <FiltreMenu
+            deger={odeme}
+            varsayilan="TUMU"
+            secenekler={ODEME_FILTRELERI}
+            etiket="Ödeme"
+            onChange={(v) => {
+              setOdeme(v)
+              // An unpaid exit has no collection, so it has nothing to
+              // approve — combining the two would have queried for a row
+              // that cannot exist and returned an empty list that reads as
+              // "there are none" rather than "these cannot overlap".
+              if (v === 'ALINMADI') setOnay('TUMU')
+            }}
+          />
+        )}
+        {yonetici && cikanGoster && odeme !== 'ALINMADI' && (
+          <FiltreMenu
+            deger={onay}
+            varsayilan="TUMU"
+            secenekler={ONAY_FILTRELERI}
+            etiket="Onay"
+            onChange={setOnay}
+          />
+        )}
       </div>
 
       <div className="mt-5 flex-1 space-y-6 px-5">
@@ -259,11 +396,22 @@ export function AracListesi({
                 // that actually needs attention.
                 bos={
                   <p className="py-2 text-body text-faint">
-                    {sorgu
-                      ? 'Bu plakayla eşleşen çıkış yok.'
-                      : yonetici
-                        ? 'Henüz çıkış yok.'
-                        : 'Kendi vardiyanızda çıkışı yapılan araçlar burada görünür.'}
+                    {/* "Henüz çıkış yok" while a filter is on would be a lie
+                        about the car park rather than about the filter. */}
+                    {onay !== 'TUMU' || odeme !== 'TUMU'
+                      ? `Bu filtreye uyan çıkış yok (${[
+                          odeme !== 'TUMU' &&
+                            ODEME_FILTRELERI.find((o) => o.deger === odeme)?.etiket,
+                          onay !== 'TUMU' &&
+                            ONAY_FILTRELERI.find((o) => o.deger === onay)?.etiket,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}).`
+                      : sorgu
+                        ? 'Bu plakayla eşleşen çıkış yok.'
+                        : yonetici
+                          ? 'Henüz çıkış yok.'
+                          : 'Kendi vardiyanızda çıkışı yapılan araçlar burada görünür.'}
                   </p>
                 }
               >
@@ -271,6 +419,7 @@ export function AracListesi({
                   <CikanKart
                     key={b.id}
                     bilet={b}
+                    onay={yonetici ? onayDurumu(b) : null}
                     // A closed ticket cannot be collected again — this opens the
                     // record instead of the payment screen.
                     onClick={() => navigate(`/gise/bilet/${b.id}`)}
@@ -309,6 +458,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const [sebep, setSebep] = useState('')
   const [degistirHata, setDegistirHata] = useState<string | null>(null)
   const [override, setOverride] = useState<{ kurus: number; sebep: string } | null>(null)
+  const [cikisOnay, setCikisOnay] = useState(false)
   const [sonuc, setSonuc] = useState<{ tahsil: number; ucret: number; indirim: number } | null>(
     null,
   )
@@ -328,19 +478,25 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
     return Math.min(puan.bakiye, Math.floor(netKurus / kurusPerPuan))
   }, [puan, kurusPerPuan, netKurus])
 
-  async function tahsilEt() {
+  /** `tahsil = false`: the car leaves, the money is not taken and stays owed. */
+  async function tahsilEt(tahsil: boolean) {
     setHata(null)
-    if (odemeGerekli && !yontem) {
+    if (tahsil && odemeGerekli && !yontem) {
       setHata('Ödeme yöntemi seçin.')
       return
     }
     try {
       const r = await kapat.mutateAsync({
         bilet_id: bilet.id,
-        odeme_yontemi: odemeGerekli ? yontem : null,
+        // Null on an unpaid exit, and not merely unused: the server refuses a
+        // method here rather than ignoring it, because sending one means the
+        // caller does not know which of the two things it is doing.
+        odeme_yontemi: tahsil && odemeGerekli ? yontem : null,
         ucret_override_kurus: override?.kurus ?? null,
         sebep: override?.sebep ?? null,
+        tahsil,
       })
+      setCikisOnay(false)
       // The RECEIPT shows what the server actually charged, not the preview.
       setSonuc({ tahsil: r.tahsil_kurus, ucret: r.ucret_kurus, indirim: r.indirim_kurus })
     } catch (err) {
@@ -474,7 +630,10 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
             this is a visibility change, not an RBAC one. */}
         {yonetici && <BiletDetayBolumu bilet={bilet} onSilindi={onKapat} />}
 
-        {hata && (
+        {/* Not while the dialog is open: it shows the same message next to
+            the button that failed, and a second copy behind the overlay is
+            one the operator cannot read anyway. */}
+        {hata && !cikisOnay && (
           <p role="alert" className="rounded-card bg-danger-soft px-4 py-3 text-body text-danger">
             {hata}
           </p>
@@ -482,10 +641,50 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
       </div>
 
       <FloatingBar>
-        <Button size="lg" block loading={kapat.isPending} onClick={() => void tahsilEt()}>
-          {odemeGerekli ? `${formatTL(netKurus)} Tahsil Et` : 'Çıkışı Kaydet'}
-        </Button>
+        <div className="w-full space-y-2">
+          <Button size="lg" block loading={kapat.isPending} onClick={() => void tahsilEt(true)}>
+            {odemeGerekli ? `${formatTL(netKurus)} Tahsil Et ve Çıkış Ver` : 'Çıkışı Kaydet'}
+          </Button>
+          {/* Secondary, and only when there is money to skip: letting a car
+              out unpaid is the exception, so it must not look like the twin
+              of the button beside it. Nothing to collect means there is no
+              second thing to choose. */}
+          {odemeGerekli && (
+            <Button
+              variant="secondary"
+              size="lg"
+              block
+              disabled={kapat.isPending}
+              onClick={() => {
+                // Cleared on open: the dialog renders `hata`, so a failure
+                // from the collect button beside it would appear inside the
+                // confirmation as if THIS action had already failed.
+                setHata(null)
+                setCikisOnay(true)
+              }}
+            >
+              Çıkış Ver
+            </Button>
+          )}
+        </div>
       </FloatingBar>
+
+      {/* Confirmed, because a car physically leaving is the one step that
+          cannot be undone — the money can still be collected afterwards, the
+          vehicle cannot be brought back. */}
+      <ConfirmDialog
+        open={cikisOnay}
+        onOpenChange={setCikisOnay}
+        title="Ödeme almadan çıkış"
+        description={`${formatPlaka(bilet.plaka)} ücret alınmadan çıkacak. ${formatTL(
+          netKurus,
+        )} borç olarak kalır; parayı sonra bilet detayından tahsil edebilirsiniz.`}
+        confirmLabel="Çıkış Ver"
+        tone="danger"
+        loading={kapat.isPending}
+        error={hata}
+        onConfirm={() => void tahsilEt(false)}
+      />
 
       {/* ---- points modal --------------------------------------------- */}
       <FormModal
@@ -583,19 +782,31 @@ function Fis({
   sonuc: { tahsil: number; ucret: number; indirim: number }
   onTamam: () => void
 }) {
+  // An unpaid exit is still a success — the car left — but a green tick over
+  // "₺0 tahsil edildi" would read as "nothing was owed". The number shown is
+  // the one that matters in each case: what was taken, or what is still owed.
+  const borc = sonuc.ucret - sonuc.indirim
+  const odenmedi = sonuc.tahsil === 0 && borc > 0
+
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
-      <div className="mb-5 flex size-16 items-center justify-center rounded-chip bg-success-soft text-success">
-        <IconTik size={34} />
+      <div
+        className={`mb-5 flex size-16 items-center justify-center rounded-chip ${
+          odenmedi ? 'bg-warn-soft text-warn' : 'bg-success-soft text-success'
+        }`}
+      >
+        {odenmedi ? <IconUyari size={34} /> : <IconTik size={34} />}
       </div>
 
       <p className="text-lead font-medium tracking-wide text-soft tnum">{formatPlaka(plaka)}</p>
 
       <p className="mt-2 text-hero font-semibold text-ink tnum">
-        {formatTutar(sonuc.tahsil)}
+        {formatTutar(odenmedi ? borc : sonuc.tahsil)}
         <span className="ml-1 text-title font-medium text-faint">₺</span>
       </p>
-      <p className="mt-1 text-label text-faint">tahsil edildi</p>
+      <p className="mt-1 text-label text-faint">
+        {odenmedi ? 'tahsil edilmedi — borç olarak kaldı' : 'tahsil edildi'}
+      </p>
 
       {sonuc.indirim > 0 && (
         <p className="mt-3 text-label text-faint">

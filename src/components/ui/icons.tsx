@@ -159,6 +159,14 @@ export const IconIleri = (p: IconProps) => (
   </Icon>
 )
 
+/** Chevron down — a control that opens a menu in place, rather than
+ *  navigating somewhere (that one is IconIleri). */
+export const IconAsagi = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m5 9.5 7 7 7-7" />
+  </Icon>
+)
+
 export const IconArti = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 5v14M5 12h14" />

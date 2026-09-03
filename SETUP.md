@@ -76,6 +76,8 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/024_foto_saklama_siniri.sql` | Caps plate-photo retention at 1-30 days (storage quota + KVKK) |
 | `supabase/migrations/025_kendini_toparlama.sql` | Auto-closes shifts left open, Yönetici force-close, nudges for forgotten queues |
 | `supabase/migrations/026_odeme_yontemi_her_yerde.sql` | Every payment carries a method; automatic salary and recurring rules default to Nakit |
+| `supabase/migrations/027_odemesiz_cikis.sql` | Lets a car leave unpaid and the money be collected later, from the ticket detail |
+| `supabase/migrations/028_red_bileti_borclu_birakir.sql` | Rejecting a collection returns the ticket to owing, so the debt stays collectable |
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,
@@ -497,7 +499,31 @@ The provider decision gets **re-made** from this table, not re-argued.
 move the old one to `KAMERA_WEBHOOK_SECRET_ESKI`, update the camera, then delete
 `_ESKI`. Without this the camera is silently rejected mid-rotation.
 
-## 12. Pre-launch checklist
+## 12. Veritabanı yedeği
+
+Backups live in a **separate private repository**, `otopark-backups`, with the
+scheduled job inside it. Nothing about backups sits in this repository.
+
+> That separation is the point. A dump holds plates, customer names and phone
+> numbers, salaries and every lira that moved. It must not be in a repository
+> that developers clone, that could be made public one day, or whose history
+> anyone browses casually — and git history is permanent, so a dump committed
+> once cannot be taken back by deleting the file later.
+
+The local copy sits next to this one, in `otopark-backups/`. Its own README
+carries the setup, the restore commands, and what the backup deliberately does
+not cover (user accounts and plate photos). In short:
+
+- Runs nightly at **01:30 Istanbul**, after this app's own nightly jobs, so
+  each dump holds a fully closed day.
+- Commits `yedekler/YYYY-MM-DD.tar.gz` — `sema.sql` plus `veri.sql`.
+- Needs **one secret on that repository**, `SUPABASE_DB_URL`, and it must be
+  an **IPv4 pooler** string (Supabase → Connect → Transaction pooler). The
+  direct `db.<ref>.supabase.co` host is IPv6-only and GitHub's runners cannot
+  reach it — the dump fails with "Network is unreachable".
+- Fails loudly on an empty dump rather than committing a broken backup.
+
+## 13. Pre-launch checklist
 
 - [ ] `rls_smoke_test.sql` → `ALL TESTS PASSED`
 - [ ] `cron.job` shows both jobs
@@ -515,6 +541,9 @@ move the old one to `KAMERA_WEBHOOK_SECRET_ESKI`, update the camera, then delete
       not acceptable)
 - [ ] Payment does **not** retry: losing signal mid-collection gives an explicit error
 - [ ] The nightly cron fired at 00:05
+- [ ] `otopark-backups` deposunda yedek işi bir kez elle çalıştırıldı
+      (**Actions → Gecelik yedek → Run workflow**) ve **çıkan dosya boş bir
+      projeye geri yüklenerek denendi**
 - [ ] `npm audit --omit=dev` clean
 - [ ] One full shift run end to end by an actual operator
 

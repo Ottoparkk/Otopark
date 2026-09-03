@@ -154,17 +154,65 @@ export function useAcikBiletler(sorgu = '') {
  * there is no reason to spend a gate phone's mobile data on rows nobody is
  * looking at.
  */
-export function useCikanBiletler(sorgu = '', enabled = true) {
+/** Approval filter on the exits list. Not the same shape as `OnayDurum`:
+ *  "Onaylanmadı" covers both a decision not yet made and one made against. */
+export type OnayFiltre = 'TUMU' | 'ONAYLANDI' | 'ONAYLANMADI'
+
+/** Whether the money was taken at all — a different axis from approval:
+ *  collected money still has to be approved before it counts as revenue. */
+export type OdemeFiltre = 'TUMU' | 'ALINDI' | 'ALINMADI'
+
+export function useCikanBiletler({
+  sorgu = '',
+  enabled = true,
+  onay = 'TUMU',
+  odeme = 'TUMU',
+}: {
+  sorgu?: string
+  enabled?: boolean
+  onay?: OnayFiltre
+  odeme?: OdemeFiltre
+} = {}) {
   return useQuery({
-    queryKey: ['cikan_biletler', sorgu],
+    // Both filters belong in the key: without them a filtered result would be
+    // served from the unfiltered cache and the list would not change.
+    queryKey: ['cikan_biletler', sorgu, onay, odeme],
     enabled,
     queryFn: async (): Promise<Bilet[]> => {
+      // The collection rides along so the row can show whether the money was
+      // approved, and RLS still applies to the embedded rows — which is
+      // exactly why the badge is Yönetici-only: a Personel sees collections
+      // from their own open shift and NOTHING else, so an empty embed would
+      // be indistinguishable from "not approved".
+      //
+      // `!inner` while a filter is on, because it constrains the TICKET and
+      // not merely the embedded rows: without it, "Onaylandı" would still
+      // return every exit, just with the non-matching collections stripped.
+      const embed =
+        onay === 'TUMU'
+          ? 'tahsilat:tahsilatlar(durum,iptal_of)'
+          : 'tahsilat:tahsilatlar!inner(durum,iptal_of)'
+
       let q = supabase
         .from('biletler')
-        .select('*')
+        .select(`*, ${embed}`)
         .eq('durum', 'KAPALI')
         .order('cikis_at', { ascending: false })
         .limit(20)
+
+      // Filtered server-side rather than after the fact: this query takes the
+      // newest 20, so filtering the page we happened to receive would answer
+      // "unapproved among the last 20", which is not what the control says.
+      if (onay === 'ONAYLANDI') q = q.eq('tahsilat.durum', 'ONAYLANDI')
+      if (onay === 'ONAYLANMADI') q = q.in('tahsilat.durum', ['BEKLIYOR', 'REDDEDILDI'])
+
+      // `tahsil_kurus` is the whole definition, which is why the badge reads
+      // the same field: a row the filter found and a badge that disagreed
+      // with it would be worse than no badge. A free exit — an abonman, or a
+      // stay inside the grace period — took no money either, so it lands
+      // under "alınmadı" truthfully; the amount beside it says "Ücretsiz".
+      if (odeme === 'ALINDI') q = q.gt('tahsil_kurus', 0)
+      if (odeme === 'ALINMADI') q = q.eq('tahsil_kurus', 0)
 
       // Plates are stored normalised, so the search term has to be too —
       // otherwise "34 abc" never matches "34ABC123".
@@ -431,6 +479,35 @@ export interface BiletKapatGirdi {
   ucret_override_kurus?: number | null
   sebep?: string | null
   foto?: string | null
+  /** false: the car leaves, the money is not taken. Defaults to collecting. */
+  tahsil?: boolean
+}
+
+/**
+ * Takes the money for a ticket that already left without paying.
+ *
+ * Never retries, for the same reason closing does not: a request that
+ * succeeded but whose response was lost would collect twice. The server
+ * refuses a second collection anyway (`tahsil_kurus <> 0`), which is the
+ * real guard — this only keeps the client from asking.
+ */
+export function useBiletTahsil() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: { bilet_id: string; odeme_yontemi: OdemeYontemi }) => {
+      const { error } = await supabase.rpc('bilet_tahsil', {
+        p_bilet_id: girdi.bilet_id,
+        p_odeme_yontemi: girdi.odeme_yontemi,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+    },
+  })
 }
 
 /**
@@ -453,6 +530,7 @@ export function useBiletKapat() {
         p_sebep: girdi.sebep ?? null,
         p_foto: girdi.foto ?? null,
         p_kaynak: 'MOBIL',
+        p_tahsil: girdi.tahsil ?? true,
       })
       if (error) throw error
       // rpc -> TABLE: one row, and it carries the amount ACTUALLY charged.

@@ -2496,6 +2496,191 @@ end if;
 
 raise notice 'PASS 50: otomatik ödemeler yöntemsiz doğamıyor';
 
+-- ---------------------------------------------------------------------------
+-- 51. Ödemesiz çıkış ve sonradan tahsil (027)
+--
+-- Kapanmış bir bilet artık iki durumda olabilir: ödemesi alınmış ya da borçlu.
+-- ARADA BİR DURUM YOK, ve kısıt bunu zorlar — yarım tahsil edilmiş bir bilet,
+-- kasanın ne kadar eksik olduğunu her raporda ayrı hesaplamak demektir.
+-- ---------------------------------------------------------------------------
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+select public.acik_vardiyam() into v_vardiya;
+
+select public.bilet_ac('34BORC01', gen_random_uuid()) into v_bilet;
+perform pg_temp.logout();
+-- Ücret sıfırdan büyük olsun; sıfır ücrette "borç" diye bir şey olmaz.
+update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet;
+perform pg_temp.login(u_personel);
+
+-- (a) Ödemesiz çıkışta yöntem gönderilemez.
+begin
+  perform * from public.bilet_kapat(v_bilet, 'NAKIT', null, null, null, 'MOBIL', false);
+  raise exception 'FAIL 51a: ödemesiz çıkışta ödeme yöntemi kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Ödemesiz çıkışta%' then
+    raise exception 'FAIL 51a: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+-- (b) Araç çıkar, para alınmaz: bilet KAPALI, tahsil 0, tahsilat satırı YOK.
+perform * from public.bilet_kapat(v_bilet, null, null, null, null, 'MOBIL', false);
+
+select b.ucret_kurus, b.tahsil_kurus into v_ucret, v_ucret2
+  from public.biletler b where b.id = v_bilet;
+if v_ucret <= 0 then raise exception 'FAIL 51b: kurulum — ücret sıfır çıktı'; end if;
+if v_ucret2 <> 0 then raise exception 'FAIL 51b: ödemesiz çıkışta para tahsil edildi'; end if;
+if (select durum from public.biletler where id = v_bilet) <> 'KAPALI' then
+  raise exception 'FAIL 51b: bilet kapanmadı';
+end if;
+select count(*) into v_n from public.tahsilatlar where bilet_id = v_bilet;
+if v_n <> 0 then
+  raise exception 'FAIL 51b: ödemesiz çıkış ciroya giren bir tahsilat yazdı';
+end if;
+
+-- (c) Sonradan tahsil: para alınır, tahsilat satırı BEKLIYOR doğar — yani
+--     onaydan geçmeden ciroya girmez, tıpkı normal tahsilat gibi.
+select public.bilet_tahsil(v_bilet, 'NAKIT') into v_n;
+if v_n <> v_ucret then raise exception 'FAIL 51c: yanlış tutar tahsil edildi'; end if;
+if (select tahsil_kurus from public.biletler where id = v_bilet) <> v_ucret then
+  raise exception 'FAIL 51c: bilet tahsil edilmiş görünmüyor';
+end if;
+select count(*) into v_n from public.tahsilatlar
+ where bilet_id = v_bilet and durum = 'BEKLIYOR' and yontem = 'NAKIT';
+if v_n <> 1 then raise exception 'FAIL 51c: tahsilat satırı doğmadı'; end if;
+
+-- Çıkış hangi vardiyada yapıldıysa orada kalmalı: para tahsilat satırının
+-- vardiyasına yazılır, aracın ne zaman çıktığı bilgisi biletin üstünde durur.
+-- Bu iddia olmasaydı, ileride "doğru vardiyaya yazalım" diye eklenen bir satır
+-- çıkışı sessizce tahsil edenin vardiyasına taşır ve hiçbir test patlamazdı.
+if (select kapatan_vardiya_id from public.biletler where id = v_bilet)
+     is distinct from v_vardiya then
+  raise exception 'FAIL 51c: sonradan tahsil çıkışın vardiyasını değiştirdi';
+end if;
+
+-- (d) İki kez tahsil edilemez. Bu kontrol olmasaydı aynı bilet için ikinci bir
+--     tahsilat satırı doğar ve kasa gerçekte alınmamış parayı sayardı.
+begin
+  perform public.bilet_tahsil(v_bilet, 'NAKIT');
+  raise exception 'FAIL 51d: aynı bilet iki kez tahsil edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten alınmış%' then
+    raise exception 'FAIL 51d: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Kısmi ödeme hâlâ imkânsız: ne 0 ne de tam tutar olan bir değer kısıttan
+--     dönmeli. Gevşetilen kimlik yalnızca "hiç" ile "tamamı"na izin verir.
+-- Bayrak ŞART: bayraksız güncelleme değişmezlik guard'ına takılır ve test,
+-- sınadığı kısıt yerine ilgisiz bir sebeple geçmiş görünürdü. Bayrakla guard
+-- parayı serbest bırakır — reddi bu kez gerçekten CHECK verir.
+begin
+  perform set_config('app.bilet_tahsil', v_bilet::text, true);
+  update public.biletler set tahsil_kurus = v_ucret - 1 where id = v_bilet;
+  perform set_config('app.bilet_tahsil', '', true);
+  raise exception 'FAIL 51e: kısmi tahsilat yazılabildi';
+exception
+  when check_violation then perform set_config('app.bilet_tahsil', '', true);
+  when others then
+    perform set_config('app.bilet_tahsil', '', true);
+    raise;
+end;
+
+-- (f) Muafiyet DAR olmalı: bayrak yokken kapanmış bilet hâlâ değişmez, ve
+--     bayrak varken bile para dışındaki kolonlar korunur. Tam bypass verilmiş
+--     olsaydı "sonradan tahsil" adı altında ücret de plaka da değişebilirdi.
+begin
+  update public.biletler set plaka = '34HILE99' where id = v_bilet;
+  raise exception 'FAIL 51f: kapanmış biletin plakası değiştirilebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kapanmış bilet değiştirilemez%' then
+    raise exception 'FAIL 51f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+begin
+  perform set_config('app.bilet_tahsil', v_bilet::text, true);
+  update public.biletler set ucret_kurus = ucret_kurus + 1000 where id = v_bilet;
+  perform set_config('app.bilet_tahsil', '', true);
+  raise exception 'FAIL 51f: tahsil bayrağı ücreti de değiştirmeye izin verdi';
+exception when others then
+  perform set_config('app.bilet_tahsil', '', true);
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kapanmış bilet değiştirilemez%' then
+    raise exception 'FAIL 51f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+raise notice 'PASS 51: ödemesiz çıkış borç bırakıyor, sonradan tahsil bir kez çalışıyor';
+
+-- ---------------------------------------------------------------------------
+-- 52. Reddedilen tahsilat bileti borçlu bırakır (028)
+--
+-- "Reddet" = "bu para alınmadı". Red yalnızca tahsilat satırına dokunsaydı,
+-- bilet "₺X tahsil edildi" demeye devam eder, ciro hiçbir şey saymaz ve
+-- `bilet_tahsil` biletin kendi sayısına bakıp yeniden tahsili reddederdi —
+-- yani borç arayüzden kurtarılamaz olurdu.
+-- ---------------------------------------------------------------------------
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34RED001', gen_random_uuid()) into v_bilet;
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '3 hours' where id = v_bilet;
+
+perform pg_temp.login(u_yonetici);
+perform * from public.bilet_kapat(v_bilet, 'NAKIT');
+select b.ucret_kurus into v_ucret from public.biletler b where b.id = v_bilet;
+if v_ucret <= 0 then raise exception 'FAIL 52: kurulum — ücret sıfır çıktı'; end if;
+
+select t.id into v_id2 from public.tahsilatlar t
+ where t.bilet_id = v_bilet and t.durum = 'BEKLIYOR';
+if v_id2 is null then raise exception 'FAIL 52: kurulum — tahsilat doğmadı'; end if;
+
+-- (a) Red bileti geri alır: para alınmamış say.
+if public.tahsilat_reddet(array[v_id2], 'test') <> 1 then
+  raise exception 'FAIL 52a: red uygulanmadı';
+end if;
+if (select tahsil_kurus from public.biletler where id = v_bilet) <> 0
+   or (select odeme_yontemi from public.biletler where id = v_bilet) is not null then
+  raise exception 'FAIL 52a: reddedilen tahsilat bileti hâlâ ödenmiş gösteriyor';
+end if;
+if (select durum from public.tahsilatlar where id = v_id2) <> 'REDDEDILDI' then
+  raise exception 'FAIL 52a: tahsilat reddedilmedi';
+end if;
+perform pg_temp.logout();
+
+-- (b) Personel başka bir vardiyada kapanmış bileti tahsil edemez. RPC
+--     `security definer` olduğu için RLS'i atlar; kontrol gövdenin içinde
+--     olmasaydı okuma yolunda göremediği bileti tahsil edebilirdi.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_tahsil(v_bilet, 'NAKIT');
+  raise exception 'FAIL 52b: Personel göremediği bileti tahsil etti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 52b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Reddedilen bilet yeniden tahsil EDİLEBİLİR olmalı — 028'in bütün amacı.
+perform pg_temp.login(u_yonetici);
+if public.bilet_tahsil(v_bilet, 'NAKIT') <> v_ucret then
+  raise exception 'FAIL 52c: reddedilen bilet yeniden tahsil edilemedi';
+end if;
+if (select tahsil_kurus from public.biletler where id = v_bilet) <> v_ucret then
+  raise exception 'FAIL 52c: yeniden tahsil bilete yazılmadı';
+end if;
+perform pg_temp.logout();
+
+raise notice 'PASS 52: red bileti borçlu bırakıyor ve yeniden tahsil edilebiliyor';
+
 perform pg_temp.logout();
 raise notice '';
 raise notice 'ALL TESTS PASSED (rolled back)';

@@ -16,30 +16,14 @@ import { sureMetni } from '../../lib/sure'
 import { IconAra, IconAraba } from '../../components/ui/icons'
 import {
   ODEME_CHIP,
+  ODEME_DURUM_ETIKET,
   ODEME_ETIKET,
+  ONAY_CHIP,
   ONAY_ETIKET,
-  type Bilet,
   type BiletDurum,
   type OdemeYontemi,
-  type OnayDurum,
 } from '../../lib/types'
-
-/**
- * The approval state of the money this ticket took, or null when it took none.
- *
- * The LIVE collection is the one without `iptal_of` — a cancelled ticket also
- * carries the reversal that undid it, and reading that row's state would
- * describe the correction rather than the charge.
- */
-function onayDurumu(b: Bilet): OnayDurum | null {
-  return b.tahsilat?.find((t) => t.iptal_of === null)?.durum ?? null
-}
-
-const ONAY_CHIP: Record<OnayDurum, string> = {
-  BEKLIYOR: 'bg-warn-soft text-warn',
-  ONAYLANDI: 'bg-success-soft text-success',
-  REDDEDILDI: 'bg-danger-soft text-danger',
-}
+import { biletBorcu, odemeAlindi, onayDurumu } from '../../lib/bilet'
 
 const FILTRELER: { value: BiletDurum | 'TUMU'; label: string }[] = [
   { value: 'TUMU', label: 'Tümü' },
@@ -175,7 +159,10 @@ export default function Biletler() {
                         b.durum === 'IPTAL' ? 'text-faint line-through' : 'text-ink'
                       }`}
                     >
-                      {b.durum === 'ACIK' ? '—' : formatTL(b.tahsil_kurus)}
+                      {/* The FEE, not what was collected: since 027 a closed
+                          ticket can owe money, and printing tahsil_kurus made
+                          a debt look identical to a free abonman exit. */}
+                      {b.durum === 'ACIK' ? '—' : formatTL(biletBorcu(b))}
                     </span>
                   </div>
 
@@ -183,8 +170,25 @@ export default function Biletler() {
                     <span className="text-label text-faint">
                       {formatGoreceli(b.giris_at)} · {sureMetni(b.giris_at, b.cikis_at)}
                     </span>
-                    {/* First in the row: whether this money counts is a
-                        bigger fact about the ticket than how it was paid. */}
+                    {/* Whether the money was taken at all comes before
+                        whether it counts: an unpaid exit has nothing to
+                        approve, so the approval chip below is absent and
+                        this is the only thing that explains the row. */}
+                    {b.durum === 'KAPALI' && (
+                      <span
+                        className={`rounded-chip px-2 py-0.5 text-micro font-medium ${
+                          odemeAlindi(b)
+                            ? 'bg-success-soft text-success'
+                            : biletBorcu(b) > 0
+                              ? 'bg-warn-soft text-warn'
+                              : 'bg-field text-soft'
+                        }`}
+                      >
+                        {ODEME_DURUM_ETIKET[odemeAlindi(b) ? 'ALINDI' : 'ALINMADI']}
+                      </span>
+                    )}
+                    {/* Then: whether this money counts is a bigger fact about
+                        the ticket than how it was paid. */}
                     {(() => {
                       const onay = onayDurumu(b)
                       return onay ? (
