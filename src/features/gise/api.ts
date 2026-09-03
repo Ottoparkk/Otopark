@@ -618,3 +618,74 @@ export function useKayipBilet() {
     onSuccess: invalidate,
   })
 }
+
+/**
+ * Links an OCR read to the ticket it produced and flags it when the model's
+ * confidence was below the settings threshold (029).
+ *
+ * Called AFTER bilet_ac rather than folded into it: adding a parameter to
+ * bilet_ac would mean dropping and recreating the one entry point on the money
+ * path, and an ambiguous overload there would break every entry. This failing
+ * costs a badge, nothing more — which is why it is fire-and-forget.
+ *
+ * It also records `kabul_edilen` for the accuracy log, so it REPLACES the
+ * separate usePlakaKabul call rather than joining it.
+ */
+export function useBiletOkumaBagla() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (g: { bilet_id: string; log_id: string; kabul: string }) => {
+      const { error } = await supabase.rpc('bilet_okuma_bagla', {
+        p_bilet_id: g.bilet_id,
+        p_okuma_id: g.log_id,
+        p_kabul: g.kabul,
+      })
+      if (error) throw error
+    },
+    // WITHOUT this the badge never shows on the screen the operator lands on.
+    // bilet_ac's own onSuccess has already invalidated `acik_biletler` by the
+    // time this RPC is even sent, so the list refetches while plaka_supheli is
+    // still false and then sits there, correct-looking and wrong, until some
+    // unrelated refetch happens.
+    onSuccess: (_d, g) => {
+      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+      void qc.invalidateQueries({ queryKey: ['bilet', g.bilet_id] })
+    },
+  })
+}
+
+/** "Doğru" — the operator checked the plate with their own eyes. */
+export function useBiletPlakaDogrula() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (bilet_id: string) => {
+      const { error } = await supabase.rpc('bilet_plaka_dogrula', { p_bilet_id: bilet_id })
+      if (error) throw error
+    },
+    onSuccess: (_d, bilet_id) => {
+      void qc.invalidateQueries({ queryKey: ['bilet', bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+    },
+  })
+}
+
+/** "Yanlış, düzelt" — corrects the plate and clears the flag in one call. */
+export function useBiletPlakaDuzelt() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (g: { bilet_id: string; plaka: string }) => {
+      const { error } = await supabase.rpc('bilet_plaka_duzelt', {
+        p_bilet_id: g.bilet_id,
+        p_plaka: g.plaka,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, g) => {
+      void qc.invalidateQueries({ queryKey: ['bilet', g.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+    },
+  })
+}

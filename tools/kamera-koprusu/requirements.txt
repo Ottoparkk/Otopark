@@ -1,4 +1,5 @@
-ultralytics>=8.3
-easyocr>=1.7
-opencv-python-headless>=4.10
-requests>=2.32
+# Permissive licences only — no AGPL, no enterprise licence, no GPU.
+# The plate is read server-side, so nothing here does inference.
+opencv-python-headless==4.13.0.88   # Apache-2.0 (headless: no GUI libs on a server)
+numpy==2.3.4                        # BSD-3-Clause
+requests==2.33.0                    # Apache-2.0

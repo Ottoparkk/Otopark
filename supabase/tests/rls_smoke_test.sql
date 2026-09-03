@@ -1745,6 +1745,15 @@ end if;
 --     kapısı bilet AÇMAKTIR — kapatamaz, para toplayamaz, tarifeye
 --     dokunamaz. Bu listenin uzaması, kameranın yapabileceklerinin
 --     sessizce artması demektir.
+--
+--     `kamera_okuma_bagla` (029) bu listeye BİLEREK eklendi ve sınırı
+--     genişletmiyor: açık bir bilette yalnızca `plaka_okuma_id` ve
+--     `plaka_supheli` kolonlarını yazar. İkisi de para değildir, ücreti
+--     etkilemez, bileti kapatmaz ve kapanmış bir bilete hiç dokunmaz —
+--     durum ACIK değilse false döner. Kameraya kendi açtığı bileti
+--     "kontrol edilmeli" diye işaretlemekten başka bir yetki vermez, ve
+--     is_staff() guard'ı taşıyamadığı için (webhook'ta auth.uid() null)
+--     tek koruması zaten bu grant'tır.
 select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
   into v_liste
   from pg_proc p
@@ -1754,7 +1763,8 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
 
 v_beklenen := array[
   'bildirim_yonetici_turu', 'bilet_ac', 'biletler_immutable_guard',
-  'handle_new_user', 'kamera_cikis_bildir', 'kamera_kalp'];
+  'handle_new_user', 'kamera_cikis_bildir', 'kamera_kalp',
+  'kamera_okuma_bagla'];
 
 if exists (select 1 from unnest(v_liste) x where x <> all(v_beklenen)) then
   raise exception 'FAIL 41b: service_role fazladan fonksiyon çağırabiliyor: %',
@@ -1778,7 +1788,12 @@ foreach v_txt in array array[
   -- Rol kontrolü YOK ve olamaz: cron'da auth.uid() null'dır, guard her
   -- çalıştırmada patlardı. Açık kalsaydı personel kendi vardiyasını
   -- istediği anda "otomatik" kapattırabilirdi.
-  'public.run_vardiya_kurtarma()'
+  'public.run_vardiya_kurtarma()',
+  -- 029: şüphe kararını veren yardımcı. Rol kontrolü taşımaz çünkü onu
+  -- çağıran iki fonksiyon zaten kendi yetkisini kontrol eder; doğrudan
+  -- çağrılabilseydi herhangi bir personel istediği okuma kaydının güven
+  -- değerini yoklayabilirdi. Tek koruması bu yetkinin kapalı olmasıdır.
+  'public.okuma_supheli_mi(uuid, text)'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -2680,6 +2695,132 @@ end if;
 perform pg_temp.logout();
 
 raise notice 'PASS 52: red bileti borçlu bırakıyor ve yeniden tahsil edilebiliyor';
+
+-- ---------------------------------------------------------------------------
+-- 53. Plaka şüphesi (029)
+--
+-- Eşik 0.75'in ALTINDA olamaz: o güvenin altındaki okuma zaten kabul edilmiyor
+-- ve bilete hiç girmiyor, dolayısıyla altında bir uyarı hiç tetiklenmezdi.
+-- Sınanan bant "kabul edildi ama emin değiliz" bandıdır.
+-- ---------------------------------------------------------------------------
+perform pg_temp.logout();
+insert into public.plaka_okuma_log (saglayici, guven, onerilen)
+values ('claude-haiku-4-5', 0.78, '34SUP001') returning id into v_id2;
+
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34SUP001', gen_random_uuid()) into v_bilet;
+
+-- (a) Öneri aynen kabul edilmiş ve güven eşiğin altında → şüpheli.
+if not public.bilet_okuma_bagla(v_bilet, v_id2, '34SUP001') then
+  raise exception 'FAIL 53a: düşük güvenli okuma şüpheli işaretlenmedi';
+end if;
+if not (select b.plaka_supheli from public.biletler b where b.id = v_bilet) then
+  raise exception 'FAIL 53a: bayrak bilete yazılmadı';
+end if;
+-- Doğruluk kaydı da yazılmalı: bagla, plaka_okuma_kabul'ü içeriden çağırır.
+if (select l.kabul_edilen from public.plaka_okuma_log l where l.id = v_id2) <> '34SUP001' then
+  raise exception 'FAIL 53a: doğruluk kaydı yazılmadı';
+end if;
+
+-- (b) Liste rozetinin kaynağı: acik_bilet_ara kolonu döndürmeli. Dönmezse
+--     rozet sessizce hiç çıkmazdı.
+if not exists (select 1 from public.acik_bilet_ara('34SUP001') x
+                where x.id = v_bilet and x.plaka_supheli) then
+  raise exception 'FAIL 53b: acik_bilet_ara şüpheyi göstermiyor';
+end if;
+
+-- (c) "Doğru" bayrağı kaldırır.
+perform public.bilet_plaka_dogrula(v_bilet);
+if (select b.plaka_supheli from public.biletler b where b.id = v_bilet) then
+  raise exception 'FAIL 53c: doğrulama bayrağı kaldırmadı';
+end if;
+perform pg_temp.logout();
+
+-- (d) Operatör öneriyi DEĞİŞTİRDİYSE plaka artık onundur, modelin değil —
+--     şüpheli sayılmamalı. Yanlış alarmların en büyük kaynağı bu olurdu.
+insert into public.plaka_okuma_log (saglayici, guven, onerilen)
+values ('claude-haiku-4-5', 0.78, '34SUP009') returning id into v_id2;
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34SUP002', gen_random_uuid()) into v_bilet;
+if public.bilet_okuma_bagla(v_bilet, v_id2, '34SUP002') then
+  raise exception 'FAIL 53d: operatörün düzelttiği plaka şüpheli sayıldı';
+end if;
+perform pg_temp.logout();
+
+-- (e) Yüksek güvenli okuma işaretlenmemeli.
+insert into public.plaka_okuma_log (saglayici, guven, onerilen)
+values ('claude-haiku-4-5', 0.97, '34SUP003') returning id into v_id2;
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34SUP003', gen_random_uuid()) into v_bilet;
+if public.bilet_okuma_bagla(v_bilet, v_id2, '34SUP003') then
+  raise exception 'FAIL 53e: yüksek güvenli okuma şüpheli sayıldı';
+end if;
+
+-- (f) "Yanlış, düzelt": içeride aynı plaka varsa reddedilmeli (kısmi tekil
+--     indeks), yoksa normalize edilerek yazılmalı.
+begin
+  perform public.bilet_plaka_duzelt(v_bilet, '34SUP002');
+  raise exception 'FAIL 53f: içeride bulunan bir plakaya düzeltmeye izin verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten açık bir bilet%' then
+    raise exception 'FAIL 53f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+if public.bilet_plaka_duzelt(v_bilet, '34 sup 777') <> '34SUP777' then
+  raise exception 'FAIL 53f: plaka düzeltilmedi ya da normalize edilmedi';
+end if;
+if (select b.plaka from public.biletler b where b.id = v_bilet) <> '34SUP777' then
+  raise exception 'FAIL 53f: düzeltme bilete yazılmadı';
+end if;
+perform pg_temp.logout();
+
+-- (g) KABUL KAPISININ ALTINDAKİ okuma işaretlenmemeli. 0.75'in altında olan
+--     okuma operatöre hiç gösterilmez; plakayı insan yazar. Eşleşme tesadüftür
+--     ve ilk sürümde tam burada yanlış alarm üretiliyordu — hem de en sık,
+--     çünkü bastırılmış okumaların çoğu DOĞRUdur.
+insert into public.plaka_okuma_log (saglayici, guven, onerilen)
+values ('claude-haiku-4-5', 0.60, '34SUP004') returning id into v_id2;
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34SUP004', gen_random_uuid()) into v_bilet;
+if public.bilet_okuma_bagla(v_bilet, v_id2, '34SUP004') then
+  raise exception 'FAIL 53g: bastırılmış okuma şüpheli sayıldı';
+end if;
+if (select b.plaka_supheli from public.biletler b where b.id = v_bilet) then
+  raise exception 'FAIL 53g: bastırılmış okuma bilete bayrak yazdı';
+end if;
+perform pg_temp.logout();
+
+-- (h) KAMERA yolu. İşaretin asıl gerekçesi burası: telefonda operatör plakaya
+--     bakar, kamerada kimse bakmaz.
+insert into public.plaka_okuma_log (saglayici, guven, onerilen)
+values ('claude-haiku-4-5', 0.80, '34SUP005') returning id into v_id2;
+perform pg_temp.login(u_yonetici);
+select public.bilet_ac('34SUP005', gen_random_uuid()) into v_bilet;
+perform pg_temp.logout();
+
+if not public.kamera_okuma_bagla(v_bilet, v_id2) then
+  raise exception 'FAIL 53h: kamera bileti şüpheli işaretlenmedi';
+end if;
+if not (select b.plaka_supheli from public.biletler b where b.id = v_bilet) then
+  raise exception 'FAIL 53h: kamera bayrağı bilete yazılmadı';
+end if;
+-- kabul_edilen DOLDURULMAMALI: kamerada kimse kabul etmez. Doldurulsaydı her
+-- satırda onerilen ile birebir aynı olur ve doğruluk ölçümü sahte bir tam
+-- isabet gösterirdi.
+if (select l.kabul_edilen from public.plaka_okuma_log l where l.id = v_id2) is not null then
+  raise exception 'FAIL 53h: kamera yolu kabul_edilen yazdı';
+end if;
+
+-- (i) Kamera RPC'sinin tek koruması GRANT'tır — is_staff() guard'ı taşıyamaz,
+--     çünkü webhook'ta auth.uid() null'dır.
+if has_function_privilege('authenticated', 'public.kamera_okuma_bagla(uuid, uuid)', 'execute')
+   or has_function_privilege('anon', 'public.kamera_okuma_bagla(uuid, uuid)', 'execute') then
+  raise exception 'FAIL 53i: kamera_okuma_bagla istemciye açık';
+end if;
+
+raise notice 'PASS 53: düşük güvenli okuma işaretleniyor, doğrulanıyor ve düzeltiliyor';
 
 perform pg_temp.logout();
 raise notice '';

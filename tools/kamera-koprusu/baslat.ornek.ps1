@@ -13,4 +13,16 @@ $env:RTSP_URL      = "rtsp://kullanici:sifre@10.0.0.42:554/stream1"
 $env:YON   = "GIRIS"
 $env:CIHAZ = "giris-kamerasi"
 
+# The crop box, "x,y,w,h" in pixels. Find it once:
+#   python kopru.py --kare   -> saves kare.jpg, measure the plate rectangle
+#   python kopru.py --test   -> saves kirpik.jpg, confirm the plate is inside
+# Leave it empty and the whole frame is sent, which works but reads worse.
+$env:KIRPMA = "820,540,600,220"
+
+# Opsiyonel. Şerit BOŞKEN `python kopru.py --bos` ile çekin. Gelen araçla giden
+# araç kameradan aynı görünür; bu referans olmadan her araç için bir de boş
+# şerit fotoğrafı okunur. Yanlış bir referans yalnızca fazladan okuma yaptırır,
+# araç kaçırtmaz — o yüzden emin değilseniz boş bırakın.
+# $env:BOS_REFERANS = "bos.jpg"
+
 python kopru.py

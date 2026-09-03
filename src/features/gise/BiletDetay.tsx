@@ -3,14 +3,21 @@ import { useNavigate, useParams } from 'react-router'
 import { Button, Card, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { YontemSecici } from '../../components/ui/YontemSecici'
-import { useBilet, useBiletTahsil, useYerKodlari } from './api'
+import {
+  useBilet,
+  useBiletPlakaDogrula,
+  useBiletPlakaDuzelt,
+  useBiletTahsil,
+  useYerKodlari,
+} from './api'
+import { PlakaInput } from '../../components/ui/PlakaInput'
 import { BiletBilgileri, BiletEkleri, IptalButonu, useBiletAksiyonlari } from './components'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { biletBorcu, odemeAlindi } from '../../lib/bilet'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop } from '../../components/ui/icons'
-import { ODEME_DURUM_ETIKET, type OdemeYontemi } from '../../lib/types'
+import { ODEME_DURUM_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
 
 /** Full history of one ticket. Reached from the vehicles list and Finans. */
 export default function BiletDetay() {
@@ -79,6 +86,11 @@ export default function BiletDetay() {
       />
 
       <div className="space-y-4 px-5">
+        {/* Above the fee on purpose: if this plate is wrong, nothing below it
+            matters — the car cannot be found at exit. Only while the ticket is
+            open, which is the window where the correction is still cheap. */}
+        {bilet.durum === 'ACIK' && bilet.plaka_supheli && <PlakaSuphesi bilet={bilet} />}
+
         <Card>
           <div className="flex items-baseline justify-between gap-3">
             {/* The FEE, not what was collected: since 027 a closed ticket can
@@ -163,4 +175,101 @@ function DurumRozeti({ durum }: { durum: 'ACIK' | 'KAPALI' | 'IPTAL' }) {
   }
   const { t, c } = map[durum]
   return <span className={`rounded-chip px-2.5 py-1 text-label font-medium ${c}`}>{t}</span>
+}
+
+/**
+ * "Plaka yanlış olabilir" — the read that produced this plate scored below
+ * `plaka_supheli_esigi` and the operator accepted it unchanged (029).
+ *
+ * Two ways out and deliberately no third. There is no "dismiss": a badge that
+ * can be waved away without a decision is a badge everybody waves away, and
+ * the entire value here is catching a wrong plate BEFORE the car tries to
+ * leave — after that it is a dispute with a queue forming behind it.
+ */
+function PlakaSuphesi({ bilet }: { bilet: Bilet }) {
+  const dogrula = useBiletPlakaDogrula()
+  const duzelt = useBiletPlakaDuzelt()
+  const [duzeltAcik, setDuzeltAcik] = useState(false)
+  const [yeni, setYeni] = useState(bilet.plaka)
+  const [hata, setHata] = useState<string | null>(null)
+  const calisiyor = dogrula.isPending || duzelt.isPending
+
+  async function kaydet() {
+    setHata(null)
+    try {
+      await duzelt.mutateAsync({ bilet_id: bilet.id, plaka: yeni })
+      setDuzeltAcik(false)
+    } catch (e) {
+      // Stays OPEN on failure. The likeliest error is "another open ticket
+      // already has this plate", and closing the field would hide the one
+      // sentence that explains what to do next.
+      setHata(rpcErrorText(e, 'Plaka değiştirilemedi.'))
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-start gap-3">
+        <span
+          aria-hidden
+          className="mt-0.5 flex size-[26px] shrink-0 items-center justify-center rounded-full bg-warn-soft text-body font-bold text-warn"
+        >
+          !
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="text-body font-semibold text-ink">Plaka yanlış olabilir</p>
+          <p className="mt-1 text-label text-soft">
+            Bu plaka fotoğraftan okundu ve okuma güveni düşüktü. Doğruluğu kontrol edilmeli.
+          </p>
+
+          {duzeltAcik ? (
+            <div className="mt-3 space-y-3">
+              <PlakaInput
+                value={yeni}
+                onChange={setYeni}
+                autoFocus
+                error={hata}
+                onEnter={() => void kaydet()}
+              />
+              <div className="flex gap-2">
+                <Button loading={duzelt.isPending} onClick={() => void kaydet()}>
+                  Kaydet
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={calisiyor}
+                  onClick={() => {
+                    setDuzeltAcik(false)
+                    setHata(null)
+                    setYeni(bilet.plaka)
+                  }}
+                >
+                  Vazgeç
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                loading={dogrula.isPending}
+                onClick={() => {
+                  setHata(null)
+                  dogrula.mutate(bilet.id, {
+                    onError: (e) => setHata(rpcErrorText(e, 'Doğrulanamadı.')),
+                  })
+                }}
+              >
+                Doğru
+              </Button>
+              <Button variant="soft" disabled={calisiyor} onClick={() => setDuzeltAcik(true)}>
+                Yanlış, düzelt
+              </Button>
+              {hata !== null && <p className="w-full text-label text-danger">{hata}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
 }

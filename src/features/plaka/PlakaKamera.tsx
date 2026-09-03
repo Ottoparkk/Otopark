@@ -40,11 +40,17 @@ export function PlakaKamera({
 
     try {
       const sonuc = await oku.mutateAsync(file)
-      if (sonuc.plaka) {
-        onPlaka(sonuc.plaka, sonuc.log_id)
-      } else {
-        setNot('Plaka net okunamadı — elle girin.')
-      }
+      // The log id travels even when the gate suppressed the read, so what the
+      // operator types next is still recorded against what the model guessed.
+      // Without this the log only ever holds reads we ALREADY trusted, and the
+      // threshold could be argued upwards but never downwards — the one number
+      // the log exists to settle would be the one it could not measure.
+      onPlaka(sonuc.plaka ?? '', sonuc.log_id)
+      // Offer the cheap retry before the manual fallback: a suppressed read is
+      // usually a distant photo, and this is the one moment the operator has
+      // evidence of that. Measured — the same plate read wrong from far away
+      // and cleanly from close up.
+      if (!sonuc.plaka) setNot('Plaka net okunamadı — yaklaşıp tekrar çekin ya da elle girin.')
     } catch (err) {
       setNot(rpcErrorText(err, 'Plaka okunamadı — elle girin.'))
     }
@@ -81,6 +87,12 @@ export function PlakaKamera({
         {oku.isPending ? 'Okunuyor…' : aktif ? 'Fotoğraf çek ve oku' : 'Fotoğraf çek'}
       </Button>
 
+      {/* The single highest-value thing an operator can do for the read, and
+          it costs nothing to say. Only shown when OCR is on — with reading
+          off the photo is evidence, and framing it tightly is wrong. */}
+      {aktif && !not && (
+        <p className="mt-2 text-label text-faint">Plaka kareyi doldursun — yaklaşarak çekin.</p>
+      )}
       {not && <p className="mt-2 text-label text-warn">{not}</p>}
     </div>
   )

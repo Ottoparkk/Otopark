@@ -34,6 +34,7 @@ export type BildirimTur =
   | 'KAMERA'
   | 'KAMERA_HAREKET'
   | 'ISTISNA'
+  | 'PLAKA_SUPHE'
   | 'VARDIYA_ACIK'
   | 'ONAY_BEKLIYOR'
 
@@ -126,6 +127,7 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   ISTISNA: 'Çözülmemiş kayıt',
   VARDIYA_ACIK: 'Açık kalan vardiya',
   ONAY_BEKLIYOR: 'Onay bekleyen tahsilat',
+  PLAKA_SUPHE: 'Plaka doğru okunmamış olabilir',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -147,6 +149,10 @@ export interface OtoparkAyarlari {
   kapasite: number
   plaka_saglayici: PlakaSaglayici
   plaka_model: string | null
+  /** Below this confidence an ACCEPTED read is flagged for checking (029).
+   *  Above 0.75, because anything under that is never offered in the first
+   *  place — a threshold below the acceptance gate could never fire. */
+  plaka_supheli_esigi: number
   foto_saklama_gun: number
   kamera_gecikme_limiti_dk: number
   puan_aktif: boolean
@@ -307,6 +313,11 @@ export interface Bilet {
   kaynak_zaman: string | null
   alindi_zaman: string | null
   kayip_bilet: boolean
+  /** 029: the read this plate came from, and whether its confidence was below
+   *  `plaka_supheli_esigi`. Only ever true when the operator ACCEPTED the
+   *  suggestion unchanged — an edited plate is the operator's, not the model's. */
+  plaka_okuma_id: string | null
+  plaka_supheli: boolean
   /**
    * The collections written for this ticket, when the caller asked for them
    * (`useBiletGecmisi` embeds them). Usually one row; a cancelled ticket also
@@ -428,6 +439,8 @@ export interface AcikBilet {
    *  bilet_kapat uses, so the list cannot quote a different number. */
   notu_var: boolean
   ucret_kurus: number
+  /** 029 — drives the "!" badge on the list card. */
+  plaka_supheli: boolean
 }
 
 export interface GunlukOzet {

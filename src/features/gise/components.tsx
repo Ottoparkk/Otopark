@@ -85,6 +85,18 @@ export function BiletKart({
           <span className="min-w-0 flex-1 truncate text-lead font-semibold tracking-wide text-ink tnum">
             {formatPlaka(bilet.plaka)}
           </span>
+          {/* The plate was read from a photo and the model was not confident
+              (029). Deliberately beside the PLATE rather than in the chip row
+              below: it is a warning about this exact text, and among the chips
+              it would read as one more attribute of the visit. */}
+          {bilet.plaka_supheli && (
+            <span
+              aria-label="Plaka doğrulanmalı"
+              className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-warn-soft text-label font-bold text-warn"
+            >
+              !
+            </span>
+          )}
           <span className="shrink-0 text-right">
             <span className="block text-body font-semibold text-ink tnum">
               {sureMetni(bilet.giris_at)}

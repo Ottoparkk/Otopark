@@ -28,6 +28,7 @@ const TON: Record<BildirimTur, string> = {
   ISTISNA: 'bg-warn-soft text-warn',
   VARDIYA_ACIK: 'bg-warn-soft text-warn',
   ONAY_BEKLIYOR: 'bg-warn-soft text-warn',
+  PLAKA_SUPHE: 'bg-warn-soft text-warn',
 }
 
 export default function Bildirimler() {

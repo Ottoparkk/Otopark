@@ -11,9 +11,29 @@
  * only needed at the moment a photo is taken.
  */
 
-/** Anthropic's standard tier caps the long edge at 1568 px. Beyond that the
- *  image is downscaled server-side anyway, so sending more is pure waste. */
-const OCR_MAX_EDGE = 1568
+/**
+ * The resolution cap is PER MODEL, not a constant — getting this wrong costs
+ * accuracy silently.
+ *
+ *   standard tier (Haiku 4.5 and earlier)  1568 px long edge, 1568 visual tokens
+ *   high-res tier (Claude 4.7 and later)   2576 px long edge, 4784 visual tokens
+ *
+ * Anything larger is downscaled server-side, so sending more is pure waste —
+ * but sending 1568 to a high-res model throws away 2.7x the pixels ON THE
+ * PLATE, and pixels on the plate is the variable we measured as dominant.
+ * High-res needs no beta header or opt-in; it is automatic on those models.
+ *
+ * Kept in step with VLM_MODELS in supabase/functions/_shared/ocr.ts — that
+ * allowlist decides which models may be configured at all; this decides how
+ * much image each one is worth sending.
+ */
+const OCR_EDGE_STANDARD = 1568
+const OCR_EDGE_YUKSEK = 2576
+const YUKSEK_COZUNURLUK = new Set(['claude-sonnet-5'])
+
+export function ocrMaxEdge(model: string | null | undefined): number {
+  return model && YUKSEK_COZUNURLUK.has(model) ? OCR_EDGE_YUKSEK : OCR_EDGE_STANDARD
+}
 
 export async function compressEvidence(file: File): Promise<File> {
   const { default: imageCompression } = await import('browser-image-compression')
@@ -31,14 +51,24 @@ export async function compressEvidence(file: File): Promise<File> {
  *
  * Cost note: a 4K photo and a 1456x819 downscale cost the SAME number of
  * visual tokens (the cap binds first), so uploading 4K over mobile data at a
- * barrier buys nothing but latency. Cropping is the only real lever, which is
- * why the capture UI shows a plate-shaped guide.
+ * barrier buys nothing but latency.
+ *
+ * How CLOSE the photo is taken is the lever, and it is an ACCURACY lever, not
+ * just a cost one. Measured on one car photographed twice: from far away the
+ * model got three of eight characters wrong and scored itself 0.55; framed
+ * close it read the plate cleanly. No prompt wording moves accuracy that far.
+ *
+ * There is deliberately no in-app framing guide: `capture="environment"` hands
+ * the screen to the OS camera app, which cannot be drawn on. A guide would
+ * mean replacing it with getUserMedia + video + canvas — a real feature with
+ * a permissions flow of its own. Until then the capture button carries the
+ * instruction in words.
  */
-export async function compressForOcr(file: File): Promise<File> {
+export async function compressForOcr(file: File, maxEdge = OCR_EDGE_STANDARD): Promise<File> {
   const { default: imageCompression } = await import('browser-image-compression')
   return imageCompression(file, {
     maxSizeMB: 1.5,
-    maxWidthOrHeight: OCR_MAX_EDGE,
+    maxWidthOrHeight: maxEdge,
     useWebWorker: true,
     fileType: 'image/jpeg',
     initialQuality: 0.92,

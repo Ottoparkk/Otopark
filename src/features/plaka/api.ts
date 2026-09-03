@@ -1,7 +1,8 @@
 import { useMutation } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
-import { compressForOcr, fileToBase64 } from '../../lib/image'
+import { compressForOcr, fileToBase64, ocrMaxEdge } from '../../lib/image'
 import type { PlakaOkumaSonuc } from '../../lib/types'
+import { useAyarlar } from '../gise/api'
 
 /**
  * Plate OCR. The result is a SUGGESTION and nothing else — it prefills a
@@ -9,6 +10,11 @@ import type { PlakaOkumaSonuc } from '../../lib/types'
  * commits, which is what stops a hallucinated plate becoming a wrong charge.
  */
 export function usePlakaOku() {
+  // Which model is configured decides how much image is worth sending. The
+  // settings row is already fetched with select('*'), so this costs no extra
+  // query and adds no column to any select list.
+  const { data: ayarlar } = useAyarlar()
+
   return useMutation({
     // No retry: a second call is a second API charge, and the operator can
     // simply take another photo if the first one was bad.
@@ -17,7 +23,7 @@ export function usePlakaOku() {
       // The GENTLE profile — heavy JPEG compression makes text hard to read,
       // and a plate read is text reading. The evidence copy is compressed
       // separately and much harder.
-      const hazir = await compressForOcr(file)
+      const hazir = await compressForOcr(file, ocrMaxEdge(ayarlar?.plaka_model))
       const foto_base64 = await fileToBase64(hazir)
 
       const { data, error } = await supabase.functions.invoke('plaka-oku', {

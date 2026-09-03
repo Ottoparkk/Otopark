@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router'
 import { Button, FloatingBar, Select } from '../../components/ui/primitives'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKamera } from '../plaka/PlakaKamera'
-import { usePlakaKabul } from '../plaka/api'
+
 import {
   BOS_EK_BILGI,
   FotoOnizleme,
@@ -18,6 +18,7 @@ import {
   useBiletAc,
   useParkYeriDurumu,
   usePuanDurumu,
+  useBiletOkumaBagla,
 } from './api'
 import { ilkBosYer, yerSecenekEtiketi } from '../../lib/yerkodu'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
@@ -71,7 +72,7 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
 
   const { data: ayarlar } = useAyarlar()
   const biletAc = useBiletAc()
-  const plakaKabul = usePlakaKabul()
+  const okumaBagla = useBiletOkumaBagla()
 
   const normalize = normalizePlaka(plaka)
   const gecerli = plakaGecerli(normalize)
@@ -161,7 +162,10 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
         return
       }
       // Fire-and-forget: the accuracy log must never block a ticket.
-      if (ocrLogId) plakaKabul.mutate({ log_id: ocrLogId, kabul: normalize })
+      // Records what was accepted AND flags a low-confidence read on the
+      // ticket (029). Fire-and-forget: the accuracy log and the badge must
+      // never stand between a car and its ticket.
+      if (ocrLogId) okumaBagla.mutate({ bilet_id: id, log_id: ocrLogId, kabul: normalize })
       sifirla()
       // Back to the list, which is where the next thing an operator does
       // always is. The confirmation travels with the navigation rather than
@@ -247,7 +251,9 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
           aktif={(ayarlar?.plaka_saglayici ?? 'KAPALI') !== 'KAPALI'}
           onFoto={setFoto}
           onPlaka={(p, logId) => {
-            setPlaka(p)
+            // Empty means the read was suppressed: keep the log id, but never
+            // wipe a plate the operator had already typed.
+            if (p) setPlaka(p)
             setOcrLogId(logId)
           }}
         />

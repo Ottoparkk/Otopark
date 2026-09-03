@@ -27,7 +27,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { z } from 'npm:zod@4.4.3'
 import { deriveIslemId, json, parseCameraTime, safeEqual } from '../_shared/http.ts'
-import { bytesToBase64, GUVEN_ESIGI, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
+import { bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 const DAKIKA_LIMIT = 30 // camera-sourced rows per minute
@@ -331,6 +331,8 @@ Deno.serve(async (req: Request) => {
 
     let plaka = olay.plaka ? tidyPlaka(olay.plaka) : ''
     let guven: number | null = null
+    // Kept so the ticket can be linked to the read that produced it below.
+    let okumaId: string | null = null
 
     // No plate text but a picture? That is the thin-bridge topology: the JPEG
     // is all the model needs, so camera OCR was never required.
@@ -338,23 +340,49 @@ Deno.serve(async (req: Request) => {
       if ((ayar.plaka_saglayici ?? 'KAPALI') === 'KAPALI') {
         return json({ hata: 'Görsel geldi ama plaka okuma kapalı.' }, 409)
       }
-      const sonuc = await plakaOku(
-        ayar.plaka_saglayici,
-        ayar.plaka_model,
-        olay.image.data,
-        olay.image.mediaType,
-      )
+      // A THROW HERE HAS TO LEAVE A TRACE. Without this the outer catch
+      // returns 500 and writes nothing: an expired key or an empty credit
+      // balance makes every camera event fail silently, the bridge retries
+      // four times and gives up, and entries simply stop being recorded —
+      // with no operator present to notice. This is the unattended half of
+      // the gap already closed in plaka-oku.
+      let sonuc
+      try {
+        sonuc = await plakaOku(
+          ayar.plaka_saglayici,
+          ayar.plaka_model,
+          olay.image.data,
+          olay.image.mediaType,
+        )
+      } catch (okuErr) {
+        console.error('kamera plaka okuma hatası:', okuErr)
+        await admin.from('plaka_okuma_log').insert({
+          saglayici: ayar.plaka_model ?? ayar.plaka_saglayici,
+          ham_yanit: { hata: String(okuErr).slice(0, 500) },
+          guven: null,
+          onerilen: null,
+        })
+        return json({ hata: 'Plaka okunamadı.' }, 502)
+      }
+
       guven = sonuc.parsed.guven
       const temiz = tidyPlaka(sonuc.parsed.plaka)
-      if (!sonuc.parsed.okunamadi && temiz.length >= 4 && sonuc.parsed.guven >= GUVEN_ESIGI) {
+      // Same judgement as the phone, from the same helper — a camera that
+      // read a shape no Turkish plate has is not evidence, it is noise.
+      if (okumaGuvenilir(temiz, sonuc.parsed.guven, sonuc.parsed.okunamadi)) {
         plaka = temiz
       }
-      await admin.from('plaka_okuma_log').insert({
-        saglayici: sonuc.saglayici,
-        ham_yanit: sonuc.raw as Record<string, unknown>,
-        guven: sonuc.parsed.guven,
-        onerilen: temiz || null,
-      })
+      const { data: log } = await admin
+        .from('plaka_okuma_log')
+        .insert({
+          saglayici: sonuc.saglayici,
+          ham_yanit: sonuc.raw as Record<string, unknown>,
+          guven: sonuc.parsed.guven,
+          onerilen: temiz || null,
+        })
+        .select('id')
+        .single()
+      okumaId = log?.id ?? null
     }
 
     if (!plaka) {
@@ -382,6 +410,18 @@ Deno.serve(async (req: Request) => {
         console.error('bilet_ac reddetti:', error.message)
         return json({ hata: error.message }, 409)
       }
+      // Flag a shaky read on the ticket. THIS is the path that needs it:
+      // on a phone an operator looked at the plate and confirmed it, here
+      // nobody did. Deliberately after the ticket exists and deliberately
+      // not fatal — failing costs a badge, never an entry.
+      if (data && okumaId) {
+        const { error: bagErr } = await admin.rpc('kamera_okuma_bagla', {
+          p_bilet_id: data,
+          p_okuma_id: okumaId,
+        })
+        if (bagErr) console.error('kamera_okuma_bagla başarısız:', bagErr.message)
+      }
+
       // null = the RPC logged an exception instead of opening a ticket
       // (too old, or dated in the future). That is a success for the webhook:
       // the event was handled, deliberately, and a retry must not hammer.

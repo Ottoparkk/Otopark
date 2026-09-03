@@ -446,6 +446,19 @@ Flip **Plaka okuma açık**. That is the whole switch: on = Claude reads the
 photo, off = the camera only takes a picture. One photo can only go to one
 reader, so there is no "all providers at once" setting to make.
 
+**What the reader is told.** The prompt in `_shared/ocr.ts` carries the
+Turkish plate grammar — province code 01-81, then 1-3 letters, then 2-5 digits,
+in one of three shapes — plus the two things on the plate that are not part of
+it: the blue **TR** band, and the second line of a square motorcycle plate.
+Position is what resolves O/0, I/1 and B/8, so telling the model where digits
+and letters live is most of the accuracy.
+
+**A read that does not match that grammar is not rejected, only doubted.** It
+must clear 0.92 confidence instead of 0.75 before the field is prefilled.
+Diplomatic, military and temporary series exist and refusing one at a barrier
+would be worse than the misread it prevents — so an unrecognised shape costs
+the operator a manual entry, never a blocked customer.
+
 The two columns behind that toggle are still there and are changed with SQL,
 not from the screen — they are an escape hatch, not an operator decision:
 
@@ -455,7 +468,9 @@ not from the screen — they are an escape hatch, not an operator decision:
 - `plaka_model`: `claude-haiku-4-5` (default). This field is deliberately free
   text so switching provider needs no migration; the Edge Function validates the
   value against its own allowlist and falls back to the default if it does not
-  recognise it.
+  recognise it. `claude-sonnet-5` is also allowed — it reads plates better and
+  is better calibrated, for roughly +$10/month at this volume, and switching is
+  the one statement below with no redeploy.
 
 ```sql
 update public.otopark_ayarlari
