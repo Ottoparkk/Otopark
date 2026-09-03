@@ -312,6 +312,39 @@
     color: inherit;
   }
 
+  /* iOS Safari sizes date and time inputs from their own intrinsic content and
+     does not honour `width: 100%` until the native appearance is reset, so the
+     Tarih aralığı sheet's two fields rendered WIDER than the sheet itself and
+     were clipped at the screen edge. `min-width` and `max-width` are the other
+     half: the UA's own minimum survives an appearance reset on its own.
+
+     Scoped to these four types rather than folded into the Input primitive,
+     because `appearance: none` there would also strip number spinners and the
+     platform look from every other field in the app. */
+  input[type='date'],
+  input[type='time'],
+  input[type='datetime-local'],
+  input[type='month'] {
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 0;
+    max-width: 100%;
+    /* Restated even though preflight sets it on `*`: the second form of this
+       bug is iOS applying the UA's own date-control box model, in which the
+       horizontal padding is added OUTSIDE the 100% width — an overflow of
+       exactly the padding plus borders, which is what the sheet showed. */
+    box-sizing: border-box;
+  }
+
+  /* Resetting the appearance leaves the value centred on iOS, while its label
+     and every neighbouring field are left-aligned. */
+  input[type='date']::-webkit-date-and-time-value,
+  input[type='time']::-webkit-date-and-time-value,
+  input[type='datetime-local']::-webkit-date-and-time-value,
+  input[type='month']::-webkit-date-and-time-value {
+    text-align: left;
+  }
+
   /* Visible focus for keyboard users, invisible for touch — an operator
      tapping buttons all day should not see a ring on every press. */
   :focus-visible {

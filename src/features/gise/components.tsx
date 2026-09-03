@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
+import { useNavigate } from 'react-router'
 import { Button, Chip, IconTile, Input, Label } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useBiletIptal, useFotoUrl } from './api'
@@ -26,10 +27,14 @@ import {
 import {
   IconAraba,
   IconCikis,
+  IconIleri,
   IconKamera,
   IconNot,
   IconUyari,
 } from '../../components/ui/icons'
+import { useVardiyaOzetim } from '../vardiya/api'
+import { olusturanAdi } from '../../lib/olusturan'
+import { useAdlar } from '../yonetim/api'
 
 /**
  * One row in the open-vehicles list.
@@ -47,12 +52,15 @@ import {
 export function BiletKart({
   bilet,
   yerKod,
+  adlar,
   onClick,
 }: {
   bilet: AcikBilet
   /** Looked up by the list, not here: fifty cards must not mean fifty
-   *  subscriptions to the same cached spot query. */
+   *  subscriptions to the same cached spot query. `adlar` rides along for
+   *  exactly the same reason. */
   yerKod?: string | null
+  adlar: Map<string, string>
   onClick: () => void
 }) {
   // The tile colour carries the row's state, so a scanning eye sorts the list
@@ -143,7 +151,14 @@ export function BiletKart({
                 row is about. */}
             {yerKod && <span className="font-medium text-soft">{yerKod} · </span>}
             {formatGoreceli(bilet.giris_at)}
-            {bilet.gecikmeli_kayit && ' · kameradan'}
+            {/* Who let this car in. 'gecikmeli' rather than the old
+                'kameradan': the creator label already says Kamera, and the
+                thing this flag actually means is that the event arrived from
+                a buffer AFTER the fact — saying "camera" twice would hide
+                the only part a reader could not already see. */}
+            {bilet.gecikmeli_kayit && ' · gecikmeli'}
+            {' · '}
+            {olusturanAdi(bilet.giris_by, bilet.giris_kaynak, adlar)}
           </p>
         </div>
       </div>
@@ -163,6 +178,36 @@ export function BiletKart({
  *
  * A zero or missing capacity yields 0 rather than NaN or Infinity.
  */
+/**
+ * Shown while no till shift is open.
+ *
+ * Not a nicety. With no open shift `bilet_kapat` writes the collection with
+ * `vardiya_id = null`, so the cash is still recorded as revenue but belongs to
+ * no shift — and a drawer count can therefore never account for it. The money
+ * is not lost, the accountability is, and nothing else on the screen would
+ * say so. Silent by construction is exactly the failure this app exists to end.
+ */
+export function VardiyaUyarisi() {
+  const navigate = useNavigate()
+  const { data: ozet, isPending } = useVardiyaOzetim()
+  // Nothing while the answer is unknown: a warning that flashes on every load
+  // and then disappears is one operators learn to ignore.
+  if (isPending || ozet) return null
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/vardiya')}
+      className="flex w-full items-center gap-3 rounded-card bg-warn-soft px-4 py-3 text-left"
+    >
+      <IconUyari size={20} className="shrink-0 text-warn" />
+      <span className="flex-1 text-body font-medium text-warn">
+        Vardiya açık değil — tahsilat hiçbir sayıma girmez
+      </span>
+      <IconIleri size={17} className="shrink-0 text-warn" />
+    </button>
+  )
+}
+
 export function dolulukYuzde(dolu: number, kapasite: number): number {
   if (!kapasite || kapasite <= 0) return 0
   return Math.round((dolu / kapasite) * 100)
@@ -180,10 +225,13 @@ export function dolulukYuzde(dolu: number, kapasite: number): number {
  */
 export function CikanKart({
   bilet,
+  adlar,
   onClick,
   onay = null,
 }: {
   bilet: Bilet
+  /** Same rule as BiletKart: the list subscribes once, the rows do not. */
+  adlar: Map<string, string>
   onClick: () => void
   /**
    * Approval state of the money, or null to show nothing.
@@ -278,6 +326,10 @@ export function CikanKart({
             {bilet.cikis_at ? formatGoreceli(bilet.cikis_at) : '—'}
             {' · '}
             {sureMetni(bilet.giris_at, bilet.cikis_at)}
+            {/* The EXIT side here, not the entry: on a closed ticket the
+                question a reader has is who took the money. */}
+            {' · '}
+            {olusturanAdi(bilet.cikis_by, bilet.cikis_kaynak, adlar)}
           </p>
         </div>
       </div>
@@ -349,6 +401,10 @@ function Satir({ k, v }: { k: string; v: string }) {
 
 /** Everything known about the ticket, as a definition list. */
 export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: string | null }) {
+  // Subscribing here is fine, unlike in the row components: this renders once
+  // per screen, so there is no fifty-cards-fifty-subscriptions problem to
+  // avoid and threading a prop through two detail screens would buy nothing.
+  const adlar = useAdlar()
   return (
     <dl className="space-y-2.5">
       <Satir k="Giriş" v={formatTam(bilet.giris_at)} />
@@ -376,7 +432,15 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
           </dd>
         </div>
       )}
-      <Satir k="Kaynak" v={bilet.giris_kaynak === 'KAMERA' ? 'Kamera' : 'Elle'} />
+      {/* Replaces the old "Kaynak: Kamera / Elle" row. 'Elle' answered a
+          question nobody had — whether a person did it — while leaving out
+          WHICH person, which is the part that matters when a ticket is being
+          questioned. The camera still names itself, because it has no
+          profile row to name. */}
+      <Satir k="Girişi yapan" v={olusturanAdi(bilet.giris_by, bilet.giris_kaynak, adlar)} />
+      {bilet.cikis_at && (
+        <Satir k="Çıkışı yapan" v={olusturanAdi(bilet.cikis_by, bilet.cikis_kaynak, adlar)} />
+      )}
       {bilet.gecikmeli_kayit && bilet.kaynak_zaman && (
         <Satir
           k="Kameradan gelme"
@@ -631,8 +695,9 @@ export function ekBilgiOzet(m: EkBilgiler): string {
  * this is convenience, never the boundary.
  *
  * The phone strips its own trunk prefix as you type, so the only way to be
- * invalid is to stop short of ten digits; the caller checks `telGecerli`
- * before submitting and shows `telHatasi`.
+ * invalid is to stop short of ten digits; the caller checks
+ * `telGonderilebilir` before submitting and shows `telHatasi`. Not
+ * `telGecerli` — the field is optional, and an empty one must pass.
  */
 export function EkBilgiFormu({
   deger,

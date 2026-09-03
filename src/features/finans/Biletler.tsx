@@ -13,6 +13,8 @@ import { formatPlaka } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { formatGoreceli } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
+import { olusturanAdi } from '../../lib/olusturan'
+import { useAdlar } from '../yonetim/api'
 import { IconAra, IconAraba } from '../../components/ui/icons'
 import {
   ODEME_CHIP,
@@ -33,6 +35,9 @@ const FILTRELER: { value: BiletDurum | 'TUMU'; label: string }[] = [
 ]
 
 export default function Biletler() {
+  // Once for the list, handed to each row — the rows are markup here rather
+  // than a component, but the rule is the same one BiletKart documents.
+  const adlar = useAdlar()
   const navigate = useNavigate()
   const [durum, setDurum] = useState<BiletDurum | 'TUMU'>('TUMU')
   const [q, setQ] = useState('')
@@ -169,6 +174,13 @@ export default function Biletler() {
                   <div className="mt-1 flex flex-wrap items-center gap-2">
                     <span className="text-label text-faint">
                       {formatGoreceli(b.giris_at)} · {sureMetni(b.giris_at, b.cikis_at)}
+                      {/* Exit side once the car has gone (who took the money),
+                          entry side while it is still inside (who let it in) —
+                          each row shows the half that can be asked about. */}
+                      {' · '}
+                      {b.cikis_at
+                        ? olusturanAdi(b.cikis_by, b.cikis_kaynak, adlar)
+                        : olusturanAdi(b.giris_by, b.giris_kaynak, adlar)}
                     </span>
                     {/* Whether the money was taken at all comes before
                         whether it counts: an unpaid exit has nothing to

@@ -23,6 +23,27 @@ export function telGecerli(tel: string): boolean {
   return /^[1-9][0-9]{9}$/.test(tel)
 }
 
+/**
+ * True when the field may be submitted: ten storable digits, OR deliberately
+ * blank. Every caller's phone field is OPTIONAL, so this — not `telGecerli` —
+ * is the question a submit handler is actually asking.
+ *
+ * It exists because two screens asked `telGecerli` directly and therefore
+ * refused an EMPTY field while telling the operator "or leave it blank". On
+ * the collection screen that also blocked saving the vehicle, name and note,
+ * since one guard gates the whole form — and most tickets carry no phone, so
+ * the edit was unusable rather than merely misworded.
+ *
+ * Normalising first is what keeps this honest: `ekBilgiGonder` sends
+ * `normalizeTel(tel) || null`, so validating the same normalised value is the
+ * only way the check and the send can agree by construction rather than by
+ * two functions happening to be written the same way.
+ */
+export function telGonderilebilir(tel: string): boolean {
+  const t = normalizeTel(tel)
+  return t === '' || telGecerli(t)
+}
+
 /** "0532 111 22 33" from the stored "5321112233". */
 export function formatTel(tel: string): string {
   if (!telGecerli(tel)) return tel

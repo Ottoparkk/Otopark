@@ -160,6 +160,9 @@ export interface OtoparkAyarlari {
   terk_esik_saat: number
   doluluk_uyari_yuzde: number
   vardiya_esik_saat: number
+  /** 'HH:MM:SS' — NULL disables the automatic shift open entirely (030). */
+  vardiya_otomatik_saat: string | null
+  vardiya_acilis_nakit_kurus: number
   kamera_kalp_atisi: string | null
   kamera_kalp_esik_dk: number
   guncelleyen: string | null
@@ -217,7 +220,11 @@ export interface Tarife {
 
 export interface Vardiya {
   id: string
-  personel_id: string
+  /** NULL when the cron opened it — an automatic shift has no opener (030). */
+  personel_id: string | null
+  /** Who counted the drawer. Shared till: the closer need not be the opener. */
+  kapatan_id: string | null
+  otomatik_acildi: boolean
   acilis_at: string
   kapanis_at: string | null
   acilis_nakit_kurus: number
@@ -369,6 +376,10 @@ export interface Tahsilat {
 
 export interface KasaHareketi {
   id: string
+  /** Set when a recurring rule wrote this row (014). `on delete set null`, so
+   *  a row whose rule was DELETED reads as one-off — stopping a rule only sets
+   *  `is_active = false`, which leaves this intact. */
+  tekrar_kural_id: string | null
   tur: KasaTur
   tutar_kurus: number
   kategori: string | null
@@ -441,6 +452,10 @@ export interface AcikBilet {
   ucret_kurus: number
   /** 029 — drives the "!" badge on the list card. */
   plaka_supheli: boolean
+  /** 031 — who let this car in. NULL with `giris_kaynak = 'KAMERA'`, because
+   *  the webhook has no user. */
+  giris_by: string | null
+  giris_kaynak: Kaynak
 }
 
 export interface GunlukOzet {
@@ -459,6 +474,8 @@ export interface VardiyaOzet {
   havale_kurus: number
   toplam_kurus: number
   bilet_sayisi: number
+  /** Opening float came from settings, not from anyone counting it. */
+  otomatik_acildi: boolean
 }
 
 export interface AbonmanGecerlilik {

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { BrandPanel, OranCubugu, ScreenHeader } from '../../components/ui/primitives'
-import { DolulukRozeti, dolulukYuzde } from './components'
+import { DolulukRozeti, VardiyaUyarisi, dolulukYuzde } from './components'
 import { GirisBolumu } from './Giris'
 import { AracListesi, Tahsilat } from './Cikis'
 import { useAcikBiletler, useGunlukOzet } from './api'
@@ -128,6 +128,9 @@ export default function Gise() {
           back="/gise"
           right={ozet ? <DolulukRozeti dolu={ozet.doluluk} kapasite={ozet.kapasite} /> : null}
         />
+        <div className="mb-4 px-5">
+          <VardiyaUyarisi />
+        </div>
         <GirisBolumu autoFocus />
       </div>
     )
@@ -141,6 +144,7 @@ export default function Gise() {
       />
 
       <div className="space-y-4 px-5">
+        <VardiyaUyarisi />
         {ozet && (
           <BrandPanel>
             <div className="flex items-end justify-between gap-3">

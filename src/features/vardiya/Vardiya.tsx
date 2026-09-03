@@ -15,11 +15,13 @@ import { sureMetni } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
 import { IconVardiya } from '../../components/ui/icons'
 import { useAuth } from '../../app/providers/AuthProvider'
+import { isYonetici } from '../../lib/rbac'
 
 export default function Vardiya() {
   const { profile } = useAuth()
   const { data: ozet, isPending } = useVardiyaOzetim()
-  const { data: gecmis = [] } = useVardiyalarim()
+  const yonetici = isYonetici(profile)
+  const { data: gecmis = [] } = useVardiyalarim(yonetici)
 
   const ac = useVardiyaAc()
   const kapat = useVardiyaKapat()
@@ -48,15 +50,17 @@ export default function Vardiya() {
 
   return (
     <div>
-      <ScreenHeader title="Vardiya" subtitle={profile?.ad_soyad || undefined} />
+      {/* Not the operator's name any more: one drawer, one shift, shared by
+          whoever is on it. Titling it with a person would say the opposite. */}
+      <ScreenHeader title="Vardiya" subtitle="Ortak kasa" />
 
       <div className="space-y-4 px-5">
         {!ozet ? (
           <>
             <EmptyState
               icon={<IconVardiya size={44} />}
-              title="Açık vardiyanız yok"
-              hint="Tahsilatlarınızın doğru sayılabilmesi için vardiyanızı açın."
+              title="Kasa vardiyası açık değil"
+              hint="Vardiya açık değilken tahsil edilen nakit hiçbir sayıma girmez."
               action={
                 <Button size="lg" onClick={() => setAcModal(true)}>
                   Vardiya Aç
@@ -69,6 +73,7 @@ export default function Vardiya() {
             <Card>
               <p className="text-label text-faint">
                 {formatGoreceli(ozet.acilis_at)} · {sureMetni(ozet.acilis_at)}
+                {ozet.otomatik_acildi && ' · otomatik açıldı'}
               </p>
 
               <p className="mt-3 text-hero font-semibold text-ink tnum">
@@ -97,6 +102,16 @@ export default function Vardiya() {
                 Açılış {formatTL(ozet.acilis_nakit_kurus)} + nakit tahsilat{' '}
                 {formatTL(ozet.nakit_kurus)}
               </p>
+              {/* An automatic shift's opening float came from the setting, not
+                  from anyone counting the drawer. If the two differ, every
+                  close reports a difference that nobody caused — so say where
+                  the number came from rather than letting it look counted. */}
+              {ozet.otomatik_acildi && (
+                <p className="mt-1.5 text-label text-warn">
+                  Açılış nakdi ayardan geldi, sayılmadı. Kasadaki para farklıysa
+                  fark bu tutardan doğar.
+                </p>
+              )}
             </Card>
 
             <Button

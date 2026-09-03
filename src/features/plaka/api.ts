@@ -5,6 +5,16 @@ import type { PlakaOkumaSonuc } from '../../lib/types'
 import { useAyarlar } from '../gise/api'
 
 /**
+ * The two halves of a read, as the operator experiences them.
+ *
+ * `HAZIRLIK` is entirely local: decoding a 12 MP photo and resizing it to the
+ * model's resolution cap costs seconds of phone CPU before a single byte is
+ * sent. Reporting both halves as one "Okunuyor…" made that stretch look like a
+ * slow network, and a wait the operator cannot account for reads as a hang.
+ */
+export type OkumaAsamasi = 'HAZIRLIK' | 'OKUMA'
+
+/**
  * Plate OCR. The result is a SUGGESTION and nothing else — it prefills a
  * focused input the operator must confirm. Nothing bills until a human
  * commits, which is what stops a hallucinated plate becoming a wrong charge.
@@ -19,13 +29,22 @@ export function usePlakaOku() {
     // No retry: a second call is a second API charge, and the operator can
     // simply take another photo if the first one was bad.
     retry: false,
-    mutationFn: async (file: File): Promise<PlakaOkumaSonuc> => {
+    mutationFn: async ({
+      file,
+      onAsama,
+    }: {
+      file: File
+      /** Optional: the caller may show which half of the wait it is in. */
+      onAsama?: (asama: OkumaAsamasi) => void
+    }): Promise<PlakaOkumaSonuc> => {
       // The GENTLE profile — heavy JPEG compression makes text hard to read,
       // and a plate read is text reading. The evidence copy is compressed
       // separately and much harder.
+      onAsama?.('HAZIRLIK')
       const hazir = await compressForOcr(file, ocrMaxEdge(ayarlar?.plaka_model))
       const foto_base64 = await fileToBase64(hazir)
 
+      onAsama?.('OKUMA')
       const { data, error } = await supabase.functions.invoke('plaka-oku', {
         body: { foto_base64, media_type: 'image/jpeg' },
       })

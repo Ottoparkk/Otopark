@@ -48,10 +48,11 @@ import { formatPlaka } from '../../lib/plaka'
 import { formatTutar, formatTL, digitsOnly, parseTLToKurus, kurusToInput } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
 import { formatGoreceli } from '../../lib/dates'
-import { telGecerli } from '../../lib/telefon'
+import { telGonderilebilir } from '../../lib/telefon'
 import { rpcErrorText } from '../../lib/errors'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
+import { useAdlar } from '../yonetim/api'
 import {
   IconAra,
   IconAraba,
@@ -248,6 +249,9 @@ export function AracListesi({
   const navigate = useNavigate()
   const yonetici = isYonetici(useAuth().profile)
   const yerKodlari = useYerKodlari()
+  // Once for the whole list, then handed to every row — same rule as the spot
+  // codes above, and the reason both are props rather than hooks in the card.
+  const adlar = useAdlar()
   const [filtre, setFiltre] = useState<Filtre>('TUMU')
   const [onay, setOnay] = useState<OnayFiltre>('TUMU')
   const [odeme, setOdeme] = useState<OdemeFiltre>('TUMU')
@@ -291,20 +295,27 @@ export function AracListesi({
       </div>
 
       {/* The only control layer on this screen — there is no tab bar above it
-          to nest under, so a single chip row reads as what it is: a filter.
+          to nest under, so these read as what they are: filters.
 
-          Scrolls sideways rather than wrapping or squeezing: three chips plus
-          two menus do not fit — measured at 438px for four of them alone —
-          and at 375px that pushed the whole PAGE into horizontal scroll,
-          dragging every screen
-          below it dragged along with the filter row. `shrink-0` on each chip
-          keeps them from compressing into unreadable slivers instead. The
-          menu itself is portaled, so it is not clipped by this container. */}
-      <div
-        className="mt-3 flex gap-2 overflow-x-auto px-5"
-        role="group"
-        aria-label="Araç filtresi"
-      >
+          TWO rows, and each one wraps. An earlier version put all five
+          controls on one sideways-scrolling row, which hid the two menus off
+          the right edge of a phone: a filter nobody can see is a filter
+          nobody uses, and horizontal scroll inside a vertical list is a
+          gesture that fights the page.
+
+          Splitting them is also honest about the structure — the chips pick
+          WHICH vehicles, the menus narrow the exits — so the break says
+          something rather than just fitting.
+
+          `flex-wrap` with `shrink-0` on every control is what keeps the
+          original problem from coming back: nothing compresses into an
+          unreadable sliver, and nothing escapes to the right and drags the
+          whole PAGE into horizontal scroll. It has to wrap rather than merely
+          fit, because an ACTIVE menu shows its value instead of its label
+          ("Ödeme alınmadı", "Onaylanmadı") and the pair no longer fits a
+          narrow screen. The menus themselves are portaled, so neither row
+          clips them. */}
+      <div className="mt-3 flex flex-wrap gap-2 px-5" role="group" aria-label="Araç filtresi">
         {FILTRELER.map((f) => (
           <FiltreChip
             key={f.deger}
@@ -313,9 +324,18 @@ export function AracListesi({
             etiket={f.etiket}
           />
         ))}
-        {/* Only where there are exits to filter, and only for the role that
-            can see their approval state at all. */}
-        {cikanGoster && (
+      </div>
+
+      {/* Only where there are exits to filter — both menus narrow the closed
+          half of the list, so with it hidden the whole row is meaningless.
+          Rendered conditionally rather than emptied, so it takes no vertical
+          space on the İçeride view. */}
+      {cikanGoster && (
+        <div
+          className="mt-2 flex flex-wrap gap-2 px-5"
+          role="group"
+          aria-label="Çıkış filtresi"
+        >
           <FiltreMenu
             deger={odeme}
             varsayilan="TUMU"
@@ -330,17 +350,19 @@ export function AracListesi({
               if (v === 'ALINMADI') setOnay('TUMU')
             }}
           />
-        )}
-        {yonetici && cikanGoster && odeme !== 'ALINMADI' && (
-          <FiltreMenu
-            deger={onay}
-            varsayilan="TUMU"
-            secenekler={ONAY_FILTRELERI}
-            etiket="Onay"
-            onChange={setOnay}
-          />
-        )}
-      </div>
+          {/* Yönetici only: a Personel's embed cannot carry other shifts'
+              approval state at all (see `useCikanBiletler`). */}
+          {yonetici && odeme !== 'ALINMADI' && (
+            <FiltreMenu
+              deger={onay}
+              varsayilan="TUMU"
+              secenekler={ONAY_FILTRELERI}
+              etiket="Onay"
+              onChange={setOnay}
+            />
+          )}
+        </div>
+      )}
 
       <div className="mt-5 flex-1 space-y-6 px-5">
         {/* ---- still here: the actionable half ------------------------- */}
@@ -372,6 +394,7 @@ export function AracListesi({
                   <BiletKart
                     key={b.id}
                     bilet={b}
+                    adlar={adlar}
                     yerKod={b.park_yeri_id ? (yerKodlari[b.park_yeri_id] ?? null) : null}
                     onClick={() => onSec(b)}
                   />
@@ -419,6 +442,7 @@ export function AracListesi({
                   <CikanKart
                     key={b.id}
                     bilet={b}
+                    adlar={adlar}
                     onay={yonetici ? onayDurumu(b) : null}
                     // A closed ticket cannot be collected again — this opens the
                     // record instead of the payment screen.
@@ -1037,7 +1061,7 @@ function EkBilgiBolumu({ biletId }: { biletId: string }) {
     if (!bilet) return
     setHata(null)
     setTelHata(null)
-    if (!telGecerli(taslak.tel)) {
+    if (!telGonderilebilir(taslak.tel)) {
       setTelHata('10 hane girin ya da alanı boş bırakın.')
       return
     }

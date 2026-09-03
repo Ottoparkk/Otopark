@@ -1024,8 +1024,10 @@ end;
 
 -- (b) A collected ticket: deleting it must take the money with it.
 perform pg_temp.login(u_personel);
-select v.id into v_vardiya from public.vardiyalar v
- where v.personel_id = u_personel and v.kapanis_at is null;
+-- 030: vardiya kasaya ait, kişiye değil — "açık mı" sorusunun tek doğru
+-- sorulma biçimi budur. Kişiye göre sorulsaydı başkasının (ya da otomatik
+-- açılmış) bir vardiyası varken vardiya_ac çağrılır ve fixture patlardı.
+select public.acik_vardiyam() into v_vardiya;
 if v_vardiya is null then
   select public.vardiya_ac(0) into v_vardiya;
 end if;
@@ -1199,8 +1201,7 @@ if exists (select 1 from public.biletler where id = v_bilet and musteri_ad = 'S�
 end if;
 
 -- (f) Once the car has left the details freeze with the rest of the ticket.
-if not exists (select 1 from public.vardiyalar
-                where personel_id = u_personel and kapanis_at is null) then
+if public.acik_vardiyam() is null then
   perform public.vardiya_ac(0);
 end if;
 perform public.bilet_kapat(v_bilet, 'NAKIT');
@@ -1789,6 +1790,9 @@ foreach v_txt in array array[
   -- çalıştırmada patlardı. Açık kalsaydı personel kendi vardiyasını
   -- istediği anda "otomatik" kapattırabilirdi.
   'public.run_vardiya_kurtarma()',
+  -- 030: aynı gerekçe. Açık kalsaydı personel günün vardiyasını istediği
+  -- anda açtırıp açılış nakdini ayardaki tutara sabitleyebilirdi.
+  'public.run_vardiya_otomatik_ac()',
   -- 029: şüphe kararını veren yardımcı. Rol kontrolü taşımaz çünkü onu
   -- çağıran iki fonksiyon zaten kendi yetkisini kontrol eder; doğrudan
   -- çağrılabilseydi herhangi bir personel istediği okuma kaydının güven
@@ -2355,11 +2359,18 @@ raise notice 'PASS 48: fotoğraf saklama süresi 1-30 gün ile sınırlı';
 -- var ve ikisi de burada sınanır: gece değil 15 dakikada bir koşan kurtarma
 -- işi, ve Yönetici'nin elle kapatması.
 -- ---------------------------------------------------------------------------
--- Temiz başlangıç: u_personel2'nin açık vardiyası varsa tekil indeks insert'i
--- reddederdi.
+-- Temiz başlangıç: açık bir vardiya varsa tekil indeks aşağıdaki insert'i
+-- reddeder.
+--
+-- 030'dan beri KİŞİ değil KASA başına tek vardiya var, dolayısıyla yalnızca
+-- u_personel2'nin satırını kapatmak yetmez: bu noktada PASS 46'nın kurulumu
+-- u_yonetici adına bir vardiya açmış ve kapatmamış oluyor, ve o satır insert'i
+-- reddettiriyordu. "Temiz başlangıç" artık açık olan HER vardiyayı kapatmak
+-- demektir — modelin kendisi kişiyi umursamadığına göre fixture da
+-- umursamamalı.
 update public.vardiyalar
    set kapanis_at = now(), kapanis_kaynak = 'ELLE'
- where personel_id = u_personel2 and kapanis_at is null;
+ where kapanis_at is null;
 
 update public.otopark_ayarlari set vardiya_esik_saat = 16 where id = 1;
 
@@ -2669,17 +2680,49 @@ if (select durum from public.tahsilatlar where id = v_id2) <> 'REDDEDILDI' then
 end if;
 perform pg_temp.logout();
 
--- (b) Personel başka bir vardiyada kapanmış bileti tahsil edemez. RPC
+-- (b) Personel BAŞKA BİR VARDİYADA kapanmış bileti tahsil edemez. RPC
 --     `security definer` olduğu için RLS'i atlar; kontrol gövdenin içinde
 --     olmasaydı okuma yolunda göremediği bileti tahsil edebilirdi.
+--
+--     030'dan sonra sınır "başkasının kapattığı bilet" DEĞİLDİR: vardiya
+--     kasaya ait, dolayısıyla açık vardiyada kapanmış bir bileti o vardiyadaki
+--     herkes tahsil edebilir — ortak çekmecede doğrusu budur, aksi hâlde
+--     vardiya devrinde ödenmemiş her borç kurtarılamaz kalırdı. Sınanan sınır
+--     bu yüzden vardiyanın KAPANMIŞ olması: bilet önceki vardiyaya ait.
+perform pg_temp.logout();
+update public.vardiyalar
+   set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+
 perform pg_temp.login(u_personel);
+perform public.vardiya_ac(0);
 begin
   perform public.bilet_tahsil(v_bilet, 'NAKIT');
-  raise exception 'FAIL 52b: Personel göremediği bileti tahsil etti';
+  raise exception 'FAIL 52b: Personel başka vardiyanın biletini tahsil etti';
 exception when others then
   if sqlerrm like 'FAIL%' then raise; end if;
   if sqlerrm not like '%yetkiniz yok%' then
     raise exception 'FAIL 52b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+-- (b2) 034: açık vardiyası OLMAYAN personel de tahsil edememeli, ve bu tam
+--      olarak guard'ın delindiği yerdi. `acik_vardiyam()` null dönünce
+--      karşılaştırma NULL olur, `not (false or NULL)` NULL üretir ve PL/pgSQL
+--      NULL'ı false saydığı için `raise` HİÇ çalışmazdı — RLS'in gizlediği
+--      bileti RPC tahsil ettiriyordu. `using (...)` biçiminde aynı ifade
+--      güvenli olduğu için bu yalnızca RPC'de vardı.
+perform public.vardiya_kapat(0, null);
+if public.acik_vardiyam() is not null then
+  raise exception 'FAIL 52b2: kurulum — vardiya kapanmadı';
+end if;
+begin
+  perform public.bilet_tahsil(v_bilet, 'NAKIT');
+  raise exception 'FAIL 52b2: vardiyası olmayan personel bilet tahsil etti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 52b2: beklenmeyen hata: %', sqlerrm;
   end if;
 end;
 perform pg_temp.logout();
@@ -2821,6 +2864,120 @@ if has_function_privilege('authenticated', 'public.kamera_okuma_bagla(uuid, uuid
 end if;
 
 raise notice 'PASS 53: düşük güvenli okuma işaretleniyor, doğrulanıyor ve düzeltiliyor';
+
+-- =====================================================================
+-- 54  Vardiya kasaya ait, kişiye değil (030)
+-- =====================================================================
+
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+select public.acik_vardiyam() into v_vardiya;
+select public.bilet_ac('34ORT001', gen_random_uuid()) into v_bilet;
+perform pg_temp.logout();
+
+-- (a) Ortak çekmece: BAŞKA bir personel aynı vardiyayı görür. Kişi başına
+--     vardiyada ikisinin tahsilatı ayrı sayıma giderdi ve hiçbiri tutmazdı.
+perform pg_temp.login(u_personel2);
+if public.acik_vardiyam() is distinct from v_vardiya then
+  raise exception 'FAIL 54a: vardiya hâlâ kişiye özel';
+end if;
+
+-- (b) ve ikinci bir vardiya AÇAMAZ — indeks artık kasa başına tek satır.
+begin
+  perform public.vardiya_ac(0);
+  raise exception 'FAIL 54b: kasada ikinci vardiya açılabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+
+-- (c) Onun kapattığı bilet de o vardiyaya bağlanır. `kapatan_vardiya_id`
+--     üzerinden bakılıyor çünkü ücretsiz süre içinde kapanan bir bilet hiç
+--     tahsilat satırı üretmez — iddia ücrete bağlı olmamalı.
+perform public.bilet_kapat(v_bilet, 'NAKIT');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and kapatan_vardiya_id = v_vardiya) then
+  raise exception 'FAIL 54c: başka personelin kapattığı bilet vardiyaya bağlanmadı';
+end if;
+
+-- (d) EN ÖNEMLİSİ. Eski `acik_vardiyam()` personel olmayanı auth.uid()
+--     eşleşmediği için eliyordu; kasaya ait tek satır herkes için
+--     eşleşeceğinden o örtük filtre kalktı ve `tahsilatlar_select`in kendi
+--     is_staff() kontrolü YOKTU. Rolü null bir kullanıcı açık vardiyanın
+--     bütün tahsilatlarını okuyabilir hâle gelirdi.
+perform pg_temp.login(u_pending);
+if public.acik_vardiyam() is not null then
+  raise exception 'FAIL 54d: acik_vardiyam bekleyen kullanıcıya vardiya döndürdü';
+end if;
+select count(*) into v_n from public.tahsilatlar;
+if v_n <> 0 then
+  raise exception 'FAIL 54d: bekleyen kullanıcı tahsilatları görüyor (%)', v_n;
+end if;
+select count(*) into v_n from public.vardiyalar;
+if v_n <> 0 then
+  raise exception 'FAIL 54d: bekleyen kullanıcı vardiyaları görüyor (%)', v_n;
+end if;
+perform pg_temp.logout();
+
+-- (e) Personel açık vardiyayı görür, kapananı GÖRMEZ: kapanmış vardiya artık
+--     kişisel bir kayıt değil, işletmenin nakit geçmişi.
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.vardiyalar where id = v_vardiya) then
+  raise exception 'FAIL 54e: personel açık vardiyayı göremiyor';
+end if;
+perform public.vardiya_kapat(0, null);
+if exists (select 1 from public.vardiyalar where id = v_vardiya) then
+  raise exception 'FAIL 54e: personel kapanmış vardiyayı hâlâ görüyor';
+end if;
+perform pg_temp.logout();
+
+-- (f) Sayan kişi yazılır. Ortak çekmecede açan ile sayan aynı olmak zorunda
+--     değil, ve hesap sorulacak kişi sayandır.
+select kapatan_id into v_id from public.vardiyalar where id = v_vardiya;
+if v_id is distinct from u_personel then
+  raise exception 'FAIL 54f: sayan kişi kapatan_id''ye yazılmadı';
+end if;
+
+-- (g) Otomatik vardiyanın açanı YOKTUR; elle açılanın olmak zorundadır.
+-- `check_violation`, `others` DEĞİL: bu noktada açık vardiya olmadığı için
+-- insert kısıta takılmalı. `others` yazılsaydı satır tekil indekse takılsa da
+-- test geçer ve sınamak istediği kısıtı hiç sınamamış olurdu.
+begin
+  insert into public.vardiyalar (personel_id, otomatik_acildi) values (null, false);
+  raise exception 'FAIL 54g: açanı olmayan elle vardiya yazılabildi';
+exception when check_violation then null;
+end;
+insert into public.vardiyalar (personel_id, otomatik_acildi) values (null, true)
+  returning id into v_id;
+delete from public.vardiyalar where id = v_id;
+
+raise notice 'PASS 54: vardiya kasaya ait — ortak, tek, ve rolsüz kullanıcıya kapalı';
+
+-- =====================================================================
+-- 55  Kaydı kim açtı: liste satırı da taşımalı (031)
+-- =====================================================================
+
+-- Kart "Bilinmiyor" yerine gerçek adı yazabilsin diye `acik_bilet_ara` bu iki
+-- kolonu döndürmek ZORUNDA. Eksik olsalar istemci sessizce 'Otomatik' yazardı
+-- — yanlış bir cevap, hata değil, ve o yüzden test ediliyor.
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+select public.bilet_ac('34KIM001', gen_random_uuid()) into v_bilet;
+select a.giris_by, a.giris_kaynak::text into v_id, v_txt
+  from public.acik_bilet_ara('34KIM001') a where a.id = v_bilet;
+if v_id is distinct from u_personel then
+  raise exception 'FAIL 55: acik_bilet_ara girişi yapanı döndürmedi';
+end if;
+if v_txt is distinct from 'MOBIL' then
+  raise exception 'FAIL 55: acik_bilet_ara kaynağı döndürmedi (%)', v_txt;
+end if;
+perform pg_temp.logout();
+
+raise notice 'PASS 55: açık bilet listesi girişi yapanı ve kaynağı taşıyor';
 
 perform pg_temp.logout();
 raise notice '';

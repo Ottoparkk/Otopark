@@ -37,7 +37,13 @@ export default function Vardiyalar() {
   const [notlar, setNotlar] = useState('')
   const [hata, setHata] = useState<string | null>(null)
 
-  const ad = (id: string) => profiller.find((p) => p.id === id)?.ad_soyad || 'Bilinmiyor'
+  // `id` is null on a shift the cron opened (030): there is no opener to name,
+  // and 'Bilinmiyor' would read as a missing record rather than an automatic
+  // one — two very different things when the number underneath is cash.
+  const ad = (id: string | null) =>
+    id === null
+      ? 'Otomatik açıldı'
+      : profiller.find((p) => p.id === id)?.ad_soyad || 'Bilinmiyor'
 
   function kapatmayiAc(v: Vardiya) {
     setHedef(v)
@@ -84,7 +90,17 @@ export default function Vardiyalar() {
               <Card key={v.id}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-body font-medium text-ink">{ad(v.personel_id)}</p>
+                    {/* The drawer is shared, so the accountable person is the
+                        one who COUNTED it. Falls back to the opener, which is
+                        also what every pre-030 row resolves to. */}
+                    <p className="truncate text-body font-medium text-ink">
+                      {ad(v.kapatan_id ?? v.personel_id)}
+                    </p>
+                    {v.kapatan_id && v.personel_id && v.kapatan_id !== v.personel_id && (
+                      <p className="mt-0.5 text-label text-faint">
+                        Açan: {ad(v.personel_id)}
+                      </p>
+                    )}
                     <p className="mt-0.5 text-label text-faint">
                       {formatTam(v.acilis_at)} ·{' '}
                       {acik ? 'devam ediyor' : sureMetni(v.acilis_at, v.kapanis_at)}

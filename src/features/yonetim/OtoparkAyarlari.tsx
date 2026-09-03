@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Input, LoadError, ScreenHeader } from '../../components/ui/primitives'
+import {
+  Button,
+  Card,
+  Input,
+  LoadError,
+  ScreenHeader,
+  Select,
+} from '../../components/ui/primitives'
 import { Toggle } from '../../components/ui/Toggle'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Spinner } from '../../components/ui/Spinner'
 import { useAyarlar } from '../gise/api'
 import { useTumParkYerleri, useYerDuzeniUret, type YerDuzeniSonuc } from '../yerler/api'
 import { useAyarGuncelle } from './api'
-import { digitsOnly } from '../../lib/money'
+import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
 import { YER_GRUPLARI, kodAraligi, yerDegisimi, yerDuzeni } from '../../lib/yerkodu'
 import type { YerGrup } from '../../lib/yerkodu'
@@ -22,6 +29,20 @@ function degisimMetni(d: { eklenecek: number; kapanacak: number }): string {
     ? `${p.join(' · ')} — kapatılan yer silinmez, kapasiteyi büyütünce geri gelir.`
     : p.join(' · ')
 }
+
+/**
+ * Half-hour slots. The cron ticks every 5 minutes, so any value works; the
+ * list exists so the hour is picked rather than typed — a free-text time is
+ * one typo away from a shift that opens at 18:00 instead of 08:00.
+ */
+const SAAT_SECENEKLERI: string[] = Array.from({ length: 48 }, (_, i) => {
+  const s = Math.floor(i / 2)
+  return `${String(s).padStart(2, '0')}:${i % 2 ? '30' : '00'}`
+})
+
+/** 'HH:MM:SS' from Postgres, 'HH:MM' in the picker. */
+const saatKisa = (s: string | null): string => (s ? s.slice(0, 5) : '')
+const saatMetni = (s: string | null): string => (s ? s.slice(0, 5) : 'kapalı')
 
 /** Settings read back as words, so the confirmation lists a change, not a number. */
 // 0 is out of range since 024, but a row written before it can still hold one.
@@ -59,6 +80,8 @@ export default function OtoparkAyarlari() {
   const [terk, setTerk] = useState('')
   const [dolulukUyari, setDolulukUyari] = useState('')
   const [vardiyaEsik, setVardiyaEsik] = useState('')
+  const [otoSaat, setOtoSaat] = useState('')
+  const [acilisNakit, setAcilisNakit] = useState('')
   const [saglayici, setSaglayici] = useState<PlakaSaglayici>('KAPALI')
   const [model, setModel] = useState('')
   const [kameraAktif, setKameraAktif] = useState(false)
@@ -79,6 +102,12 @@ export default function OtoparkAyarlari() {
     // ?? : the column arrives with 025. Reading it before the migration has
     // run must not put the string "undefined" into the field.
     setVardiyaEsik(String(ayar.vardiya_esik_saat ?? 16))
+    // ?? : both columns arrive with 030, same reason as the line above.
+    setOtoSaat(saatKisa(ayar.vardiya_otomatik_saat ?? null))
+    // kurusToInput, NOT formatTL/formatTutar: those group thousands and
+    // `parseTLToKurus` deliberately REJECTS a grouped number as ambiguous, so
+    // the field would refuse to save the value it was hydrated with.
+    setAcilisNakit(kurusToInput(ayar.vardiya_acilis_nakit_kurus ?? 0))
     setSaglayici(ayar.plaka_saglayici)
     setModel(ayar.plaka_model ?? '')
     setKameraAktif(ayar.kamera_aktif)
@@ -164,6 +193,10 @@ export default function OtoparkAyarlari() {
     terk_esik_saat: Number(terk) || 48,
     doluluk_uyari_yuzde: Number(dolulukUyari) || 90,
     vardiya_esik_saat: Number(vardiyaEsik) || 16,
+    // Empty = feature off. Seconds are appended so the value round-trips
+    // identically to what Postgres stores back into a `time` column.
+    vardiya_otomatik_saat: otoSaat ? `${otoSaat}:00` : null,
+    vardiya_acilis_nakit_kurus: parseTLToKurus(acilisNakit || '0') ?? 0,
     plaka_saglayici: saglayici,
     plaka_model: model.trim() || null,
     kamera_aktif: kameraAktif,
@@ -194,6 +227,16 @@ export default function OtoparkAyarlari() {
     'Vardiya kapanma eşiği',
     `${ayar.vardiya_esik_saat} saat`,
     `${yeniAyar.vardiya_esik_saat} saat`,
+  )
+  fark(
+    'Otomatik vardiya açılışı',
+    saatMetni(ayar.vardiya_otomatik_saat ?? null),
+    saatMetni(yeniAyar.vardiya_otomatik_saat),
+  )
+  fark(
+    'Vardiya açılış nakdi',
+    formatTL(ayar.vardiya_acilis_nakit_kurus ?? 0),
+    formatTL(yeniAyar.vardiya_acilis_nakit_kurus),
   )
   fark('Fotoğraf saklama', gunMetni(ayar.foto_saklama_gun), gunMetni(yeniAyar.foto_saklama_gun))
   fark(
@@ -233,6 +276,10 @@ export default function OtoparkAyarlari() {
     // out from under an operator who is still working.
     const esik = Number(vardiyaEsik) || 0
     if (esik < 4 || esik > 72) return 'Vardiya kapanma eşiği 4-72 saat arasında olmalı.'
+    // Unparseable would silently become 0 in `yeniAyar`, and a wrong opening
+    // float is a false discrepancy on every single close.
+    if (parseTLToKurus(acilisNakit || '0') === null)
+      return 'Vardiya açılış nakdi için geçerli bir tutar girin.'
     return null
   }
 
@@ -317,12 +364,39 @@ export default function OtoparkAyarlari() {
             onChange={(e) => setTerk(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
           />
+        </Card>
+
+        {/* Its own card: three settings that only make sense together, and the
+            drawer they describe is shared by everyone on shift. */}
+        <Card className="space-y-4">
+          <p className="text-label font-medium tracking-wide text-faint uppercase">Vardiya</p>
+          <Select
+            label="Otomatik açılış saati"
+            value={otoSaat}
+            onChange={(e) => setOtoSaat(e.target.value)}
+            hint="Bu saatte kasa vardiyası kendiliğinden açılır. Kapalıyken vardiyayı açmak unutulursa, o sırada tahsil edilen nakit hiçbir sayımda görünmez."
+          >
+            <option value="">Kapalı — elle açılır</option>
+            {SAAT_SECENEKLERI.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+          <Input
+            label="Otomatik açılış nakdi (₺)"
+            value={acilisNakit}
+            onChange={(e) => setAcilisNakit(e.target.value)}
+            inputMode="decimal"
+            disabled={!otoSaat}
+            hint="Otomatik açılan vardiyanın kasasında duran para üstü. Kimse saymadığı için burada yazan tutar kullanılır — yanlışsa her kapanışta o kadar fark çıkar."
+          />
           <Input
             label="Vardiya kapanma eşiği (saat)"
             value={vardiyaEsik}
             onChange={(e) => setVardiyaEsik(digitsOnly(e.target.value, 2))}
             inputMode="numeric"
-            hint="Bu kadar süredir açık kalan vardiya otomatik kapatılır — nakit sayılmadan, fark boş bırakılarak. Yoksa personel bir daha vardiya açamaz."
+            hint="Bu kadar süredir açık kalan vardiya otomatik kapatılır — nakit sayılmadan, fark boş bırakılarak."
           />
         </Card>
 

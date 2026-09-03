@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import type {
@@ -58,6 +59,18 @@ export function useProfiller() {
       return data as Profile[]
     },
   })
+}
+
+/**
+ * id -> ad_soyad, for rendering "who created this" on rows.
+ *
+ * Same query as useProfiller, so a screen showing both pays for one request.
+ * Safe for Personel: 003's `profiles_select` already lets active staff read
+ * active staff, which is exactly what a creator label needs and nothing more.
+ */
+export function useAdlar(): Map<string, string> {
+  const { data } = useProfiller()
+  return useMemo(() => new Map((data ?? []).map((p) => [p.id, p.ad_soyad])), [data])
 }
 
 /** Both roster queries, always together — one carries pay, the other does not,

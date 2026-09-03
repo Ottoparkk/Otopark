@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { Button } from '../../components/ui/primitives'
 import { IconKamera } from '../../components/ui/icons'
-import { usePlakaOku } from './api'
+import { usePlakaOku, type OkumaAsamasi } from './api'
 import { rpcErrorText } from '../../lib/errors'
 
 /**
@@ -29,17 +29,22 @@ export function PlakaKamera({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [not, setNot] = useState<string | null>(null)
+  const [asama, setAsama] = useState<OkumaAsamasi | null>(null)
   const oku = usePlakaOku()
 
   async function secildi(file: File | undefined) {
     if (!file) return
     setNot(null)
+    // Cleared BEFORE the mutation starts, never after it ends: `isPending`
+    // flips inside `mutateAsync`, so a stale 'OKUMA' left over from the last
+    // capture would flash the second step before the first one had begun.
+    setAsama(null)
     onFoto(file)
 
     if (!aktif) return
 
     try {
-      const sonuc = await oku.mutateAsync(file)
+      const sonuc = await oku.mutateAsync({ file, onAsama: setAsama })
       // The log id travels even when the gate suppressed the read, so what the
       // operator types next is still recorded against what the model guessed.
       // Without this the log only ever holds reads we ALREADY trusted, and the
@@ -55,6 +60,18 @@ export function PlakaKamera({
       setNot(rpcErrorText(err, 'Plaka okunamadı — elle girin.'))
     }
   }
+
+  // Two named steps read as progress; one long "Okunuyor…" reads as a stall.
+  // `HAZIRLIK` is the label whenever pending but unphased, because it is
+  // always the first half — the tick between the mutation starting and the
+  // first `onAsama` must not flash the wrong step.
+  const etiket = oku.isPending
+    ? asama === 'OKUMA'
+      ? 'Okunuyor…'
+      : 'Fotoğraf hazırlanıyor…'
+    : aktif
+      ? 'Fotoğraf çek ve oku'
+      : 'Fotoğraf çek'
 
   return (
     <div>
@@ -84,7 +101,7 @@ export function PlakaKamera({
         onClick={() => inputRef.current?.click()}
       >
         <IconKamera size={20} />
-        {oku.isPending ? 'Okunuyor…' : aktif ? 'Fotoğraf çek ve oku' : 'Fotoğraf çek'}
+        {etiket}
       </Button>
 
       {/* The single highest-value thing an operator can do for the read, and

@@ -3,9 +3,11 @@ import { supabase } from '../../lib/supabase'
 import type { Vardiya, VardiyaKapatSonuc, VardiyaOzet } from '../../lib/types'
 
 /**
- * rpc -> TABLE, and it returns ZERO rows when there is no open shift. That
- * empty case is normal, not an error: an operator who has not clocked in yet
- * simply has nothing to summarise.
+ * The open TILL shift — one per car park, not one per person (030).
+ *
+ * rpc -> TABLE, and it returns ZERO rows when no shift is open. That empty
+ * case is normal, not an error: before the day starts there is nothing to
+ * summarise.
  */
 export function useVardiyaOzetim() {
   return useQuery({
@@ -20,9 +22,17 @@ export function useVardiyaOzetim() {
   })
 }
 
-/** Own past shifts. RLS limits this to the caller unless they are Yönetici. */
-export function useVardiyalarim() {
+/**
+ * Closed shifts. Yönetici only, and RLS enforces that.
+ *
+ * Since 030 a shift belongs to the till rather than to a person, so its
+ * history is the business's cash record — not something an operator may
+ * page through. `enabled` mirrors the policy so Personel does not fire a
+ * query that is guaranteed to come back empty.
+ */
+export function useVardiyalarim(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ['vardiyalarim'],
     queryFn: async (): Promise<Vardiya[]> => {
       const { data, error } = await supabase

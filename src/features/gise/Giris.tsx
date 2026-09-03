@@ -24,7 +24,7 @@ import { ilkBosYer, yerSecenekEtiketi } from '../../lib/yerkodu'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTarih } from '../../lib/dates'
 import { formatTL } from '../../lib/money'
-import { telGecerli } from '../../lib/telefon'
+import { telGonderilebilir } from '../../lib/telefon'
 import { rpcErrorText } from '../../lib/errors'
 import { IconUyari } from '../../components/ui/icons'
 
@@ -45,6 +45,10 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
   const [foto, setFoto] = useState<File | null>(null)
   const [fotoUrl, setFotoUrl] = useState<string | null>(null)
   const [ocrLogId, setOcrLogId] = useState<string | null>(null)
+  // What the field held when the photo was taken. A read takes a few seconds,
+  // and the field stays editable on purpose — so an operator who gets ahead of
+  // it must not have their typing overwritten when the answer lands.
+  const cekimdekiPlaka = useRef<string | null>(null)
 
   /**
    * null means "follow the proposal", NOT "no bay" — '' is no bay.
@@ -133,7 +137,7 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
     // in the lot has no ticket — the operator sees exactly what is wrong and
     // can either finish the number or clear it and carry on.
     setTelHata(null)
-    if (!telGecerli(musteri.tel)) {
+    if (!telGonderilebilir(musteri.tel)) {
       setTelHata('10 hane girin ya da alanı boş bırakın.')
       setHata('Müşteri numarasını düzeltin veya boş bırakın.')
       return
@@ -249,11 +253,20 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
 
         <PlakaKamera
           aktif={(ayarlar?.plaka_saglayici ?? 'KAPALI') !== 'KAPALI'}
-          onFoto={setFoto}
+          onFoto={(f) => {
+            cekimdekiPlaka.current = plaka
+            setFoto(f)
+          }}
           onPlaka={(p, logId) => {
             // Empty means the read was suppressed: keep the log id, but never
             // wipe a plate the operator had already typed.
-            if (p) setPlaka(p)
+            //
+            // The functional form reads the CURRENT value, not the one this
+            // closure captured — the callback is several seconds old by the
+            // time it runs. Apply the suggestion only if the field is
+            // untouched since the shutter: typing while waiting wins, and
+            // photographing a half-typed plate still gets corrected.
+            if (p) setPlaka((mevcut) => (mevcut === cekimdekiPlaka.current ? p : mevcut))
             setOcrLogId(logId)
           }}
         />

@@ -17,6 +17,7 @@ import { useAyarlar } from '../gise/api'
 import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
 import { normalizePlaka } from '../../lib/plaka'
+import { normalizeTel, telGonderilebilir } from '../../lib/telefon'
 import { IconAra, IconArti, IconAyar, IconPuan } from '../../components/ui/icons'
 
 export default function Hesaplar() {
@@ -226,8 +227,12 @@ export default function Hesaplar() {
             setHata('Hesap adı zorunludur.')
             return
           }
-          const t = tel.replace(/\D/g, '')
-          if (t && !/^[1-9][0-9]{9}$/.test(t)) {
+          // Shared with the gişe screens on purpose: two hand-written copies
+          // of this rule are what let one of them forget the empty case.
+          // normalizeTel also means a number dictated as "0532…" is accepted
+          // here the way it already was at the barrier.
+          const t = normalizeTel(tel)
+          if (!telGonderilebilir(t)) {
             setHata('Telefonu 10 hane olarak girin (örn. 5321234567).')
             return
           }

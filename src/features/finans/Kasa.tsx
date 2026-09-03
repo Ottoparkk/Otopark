@@ -57,6 +57,7 @@ export default function Kasa() {
   const { data: kurallar = [] } = useKasaTekrarKurallari()
 
   const [acik, setAcik] = useState(false)
+  const [duzenliSuzgec, setDuzenliSuzgec] = useState(false)
   const [tur, setTur] = useState<KasaTur>('GIDER')
   const [tutar, setTutar] = useState('')
   const [aciklama, setAciklama] = useState('')
@@ -90,15 +91,21 @@ export default function Kasa() {
    * line from the till.
    */
   const satirlar = useMemo(() => {
-    const kasa = liste.map((k) => ({
-      id: k.id,
-      kasaId: k.id as string | null,
-      gun: k.tarih,
-      tutar: k.tur === 'GELIR' ? k.tutar_kurus : -k.tutar_kurus,
-      baslik: k.aciklama || k.kategori || '—',
-      alt: k.kategori && k.aciklama ? k.kategori : null,
-      etiket: null as string | null,
-    }))
+    const kasa = liste.map((k) => {
+      // ONE expression behind both the chip and the filter, so a row can never
+      // be badged "Düzenli" and then be missing from the Düzenli list.
+      const duzenliMi = k.tekrar_kural_id != null
+      return {
+        id: k.id,
+        kasaId: k.id as string | null,
+        gun: k.tarih,
+        tutar: k.tur === 'GELIR' ? k.tutar_kurus : -k.tutar_kurus,
+        baslik: k.aciklama || k.kategori || '—',
+        alt: k.kategori && k.aciklama ? k.kategori : null,
+        etiket: duzenliMi ? 'Düzenli' : (null as string | null),
+        duzenli: duzenliMi,
+      }
+    })
     const tahsil = tahsilatlar.map((t) => ({
       id: t.id,
       kasaId: null as string | null,
@@ -107,9 +114,43 @@ export default function Kasa() {
       baslik: t.aciklama || (t.tur === 'BILET' ? 'Bilet tahsilatı' : 'Abonman tahsilatı'),
       alt: null as string | null,
       etiket: t.tur === 'BILET' ? 'Bilet' : 'Abonman',
+      // A collection is never rule-written: it comes from a car leaving, so it
+      // is one-off by definition and drops out under the filter.
+      duzenli: false,
     }))
     return [...kasa, ...tahsil].sort((a, b) => (a.gun < b.gun ? 1 : a.gun > b.gun ? -1 : 0))
   }, [liste, tahsilatlar])
+
+  /**
+   * The filter offers itself only where the concept exists at all — an
+   * always-empty chip teaches the operator to stop reading the row, the same
+   * reason the rules card and the chart below are conditional.
+   *
+   * Both halves are needed: `kurallar` holds only ACTIVE rules, so a business
+   * that stopped all of them would lose the filter while its history still
+   * carries rule-written rows; and a brand-new rule can exist before its first
+   * row falls inside the selected period.
+   */
+  const duzenliVar = kurallar.length > 0 || satirlar.some((r) => r.duzenli)
+
+  /**
+   * `&& duzenliVar` is not belt-and-braces: without it, turning the filter on
+   * and then switching to a period with no recurring rows would hide the chip
+   * while it was still filtering — an empty list with nothing on screen to
+   * switch off. Deriving it here rather than resetting in an effect means that
+   * state simply cannot exist.
+   */
+  const gosterilen = useMemo(
+    () => (duzenliSuzgec && duzenliVar ? satirlar.filter((r) => r.duzenli) : satirlar),
+    [satirlar, duzenliSuzgec, duzenliVar],
+  )
+
+  /** Signed, so a month of rent and electricity reads as one negative number
+   *  rather than a turnover figure that hides which way the money went. */
+  const duzenliNet = useMemo(
+    () => gosterilen.reduce((a, r) => a + r.tutar, 0),
+    [gosterilen],
+  )
 
   const toplam = useMemo(() => {
     // Collections are summed SIGNED: a cancelled ticket writes a negative
@@ -264,21 +305,58 @@ export default function Kasa() {
           </GrafikKart>
         )}
 
+        {/* Deliberately NOT wired to the summary card above. That card's net
+            is the same figure Finans reports, and the comment on its
+            arithmetic says so — making a list filter silently re-cut it would
+            leave two screens disagreeing about the period's net. The filtered
+            total goes beside the chip instead, where it is plainly a subtotal
+            of what is on screen. */}
+        {duzenliVar && (
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              aria-pressed={duzenliSuzgec}
+              onClick={() => setDuzenliSuzgec((v) => !v)}
+              className={[
+                'min-h-[44px] shrink-0 rounded-chip px-4 text-body font-medium transition-colors',
+                duzenliSuzgec ? 'bg-ink text-bg' : 'bg-field text-soft',
+              ].join(' ')}
+            >
+              Düzenli
+            </button>
+            {duzenliSuzgec && (
+              <p className="text-label text-faint tnum">
+                {gosterilen.length} kayıt · {formatTL(duzenliNet)}
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="space-y-2">
           <ListeDurumu
             pending={!hazir || isPending}
             error={ilkGunHatasi ?? error}
             onRetry={() => void refetch()}
-            empty={satirlar.length === 0}
+            empty={gosterilen.length === 0}
             bos={
               <EmptyState
                 icon={<IconKasa size={44} />}
-                title={donem === 'TUMU' ? 'Henüz kayıt yok' : 'Bu dönemde kayıt yok'}
-                hint="Elektrik, temizlik, bakım gibi giderleri buraya girin."
+                title={
+                  duzenliSuzgec
+                    ? 'Düzenli kayıt yok'
+                    : donem === 'TUMU'
+                      ? 'Henüz kayıt yok'
+                      : 'Bu dönemde kayıt yok'
+                }
+                hint={
+                  duzenliSuzgec
+                    ? 'Her ay tekrarlayan gelir ve giderler burada listelenir.'
+                    : 'Elektrik, temizlik, bakım gibi giderleri buraya girin.'
+                }
               />
             }
           >
-            {satirlar.map((r) => (
+            {gosterilen.map((r) => (
               <Card key={r.id} className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-body text-ink">{r.baslik}</p>
