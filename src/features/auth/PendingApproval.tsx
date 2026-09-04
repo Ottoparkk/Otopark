@@ -10,7 +10,7 @@ import { useAuth } from '../../app/providers/AuthProvider'
  * the operator would see a working app that is inexplicably empty.
  */
 export default function PendingApproval() {
-  const { signOut, refreshProfile, profile } = useAuth()
+  const { signOut, refreshProfile, profile, profilHatasi } = useAuth()
 
   return (
     <AuthLayout
@@ -31,6 +31,14 @@ export default function PendingApproval() {
         <Button size="lg" block onClick={() => void refreshProfile()}>
           Durumu Yenile
         </Button>
+        {/* Without this the button is silent on failure: the profile fetch
+            fails, nothing on screen changes, and the operator taps forever
+            believing they have not been approved yet. */}
+        {profilHatasi && (
+          <p className="text-center text-label text-danger">
+            Durum alınamadı — bağlantınızı kontrol edip tekrar deneyin.
+          </p>
+        )}
         <Button variant="secondary" size="lg" block onClick={() => void signOut()}>
           Çıkış Yap
         </Button>

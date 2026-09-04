@@ -8,8 +8,14 @@ import {
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
 import { Spinner } from '../../components/ui/Spinner'
-import { useVardiyaAc, useVardiyaKapat, useVardiyaOzetim, useVardiyalarim } from './api'
-import { formatTL, parseTLToKurus } from '../../lib/money'
+import {
+  useAcikVardiya,
+  useVardiyaAc,
+  useVardiyaKapat,
+  useVardiyaOzetim,
+  useVardiyalarim,
+} from './api'
+import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { formatGoreceli, formatTam } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
@@ -22,6 +28,14 @@ export default function Vardiya() {
   const { data: ozet, isPending } = useVardiyaOzetim()
   const yonetici = isYonetici(profile)
   const { data: gecmis = [] } = useVardiyalarim(yonetici)
+  // The open shift row, for the one thing the summary RPC does not carry:
+  // whether a count is already sitting in the Yönetici's approval queue.
+  const { data: acik } = useAcikVardiya()
+  const talepVar = Boolean(acik?.kapatma_talebi_at)
+  // A Yönetici tapping the same button CLOSES the till outright, so the
+  // "correct your count" wording belongs only to the person whose count is
+  // actually waiting. Same state, two different acts.
+  const duzeltme = talepVar && !yonetici
 
   const ac = useVardiyaAc()
   const kapat = useVardiyaKapat()
@@ -32,9 +46,13 @@ export default function Vardiya() {
   const [sayilan, setSayilan] = useState('')
   const [notlar, setNotlar] = useState('')
   const [hata, setHata] = useState<string | null>(null)
-  const [sonuc, setSonuc] = useState<{ beklenen: number; sayilan: number; fark: number } | null>(
-    null,
-  )
+  const [sonuc, setSonuc] = useState<{
+    /** False = the count became a request; the till is still open. */
+    kapandi: boolean
+    beklenen: number
+    sayilan: number
+    fark: number
+  } | null>(null)
 
   const beklenenKurus = ozet ? ozet.acilis_nakit_kurus + ozet.nakit_kurus : 0
   const sayilanKurus = parseTLToKurus(sayilan)
@@ -114,18 +132,41 @@ export default function Vardiya() {
               )}
             </Card>
 
+            {/* A filed request is a state the operator must be able to SEE.
+                Without this the screen looks exactly as it did before they
+                counted, and the natural read is that the tap did nothing. */}
+            {talepVar && (
+              <Card className="bg-warn-soft">
+                <p className="text-body font-semibold text-warn">
+                  Kapatma isteği yönetici onayında
+                </p>
+                <p className="mt-1 text-label text-warn">
+                  Sayılan {formatTL(acik?.talep_sayilan_kurus ?? 0)} ·{' '}
+                  {yonetici
+                    ? 'Onay ekranından karara bağlayabilirsiniz.'
+                    : 'yönetici onayladığında vardiya kapanacak.'}
+                </p>
+              </Card>
+            )}
+
             <Button
               variant="secondary"
               size="lg"
               block
               onClick={() => {
-                setSayilan('')
-                setNotlar('')
+                // Prefilled when correcting a filed count: the operator is
+                // adjusting a number they already sent, not entering a new one.
+                setSayilan(
+                  duzeltme && acik?.talep_sayilan_kurus != null
+                    ? kurusToInput(acik.talep_sayilan_kurus)
+                    : '',
+                )
+                setNotlar(duzeltme ? (acik?.talep_notlar ?? '') : '')
                 setHata(null)
                 setKapatModal(true)
               }}
             >
-              Vardiyayı Kapat
+              {duzeltme ? 'Sayımı Düzelt' : 'Vardiyayı Kapat'}
             </Button>
           </>
         )}
@@ -185,8 +226,8 @@ export default function Vardiya() {
       <FormModal
         open={kapatModal}
         onOpenChange={setKapatModal}
-        title="Vardiyayı kapat"
-        submitLabel="Kapat"
+        title={duzeltme ? 'Sayımı düzelt' : 'Vardiyayı kapat'}
+        submitLabel={duzeltme ? 'Gönder' : 'Kapat'}
         loading={kapat.isPending}
         error={hata}
         onSubmit={() => {
@@ -199,6 +240,9 @@ export default function Vardiya() {
             .then((r) => {
               setKapatModal(false)
               setSonuc({
+                // The server decides, not the client's idea of the role: a
+                // Personel files a request, a Yönetici closes outright.
+                kapandi: r.kapandi,
                 beklenen: r.beklenen_kurus,
                 sayilan: r.sayilan_kurus,
                 fark: r.fark_kurus,
@@ -274,18 +318,37 @@ export default function Vardiya() {
           placeholder="Fark varsa sebebi"
           maxLength={300}
         />
+
+        {/* Said before the tap, not only after it. A confirmation that
+            explains what just happened is too late to be a choice. */}
+        {!yonetici && (
+          <p className="text-label text-faint">
+            Sayımınız Yönetici onayına gönderilir; vardiya onaylandığında kapanır.
+          </p>
+        )}
       </FormModal>
 
       {/* ---- closed summary ------------------------------------------ */}
       <FormModal
         open={sonuc !== null}
         onOpenChange={() => setSonuc(null)}
-        title="Vardiya kapandı"
+        title={sonuc?.kapandi ? 'Vardiya kapandı' : 'Kapatma isteği gönderildi'}
         submitLabel="Tamam"
         onSubmit={() => setSonuc(null)}
       >
         {sonuc && (
           <div className="space-y-3">
+            {/* The whole point of the request flow: the operator must leave
+                this modal knowing the till is still OPEN. */}
+            {!sonuc.kapandi && (
+              <div className="rounded-field bg-warn-soft px-4 py-3">
+                <p className="text-body text-warn">
+                  Kapatma isteği yöneticiye gönderildi. Yönetici onayladığında
+                  vardiya kapanacak.
+                </p>
+              </div>
+            )}
+
             <Kalem k="Olması gereken" v={formatTL(sonuc.beklenen)} />
             <Kalem k="Sayılan" v={formatTL(sonuc.sayilan)} />
             <div className="border-t border-divider pt-3">
@@ -295,7 +358,7 @@ export default function Vardiya() {
                 vurgu={sonuc.fark !== 0}
               />
             </div>
-            {sonuc.fark !== 0 && (
+            {sonuc.fark !== 0 && sonuc.kapandi && (
               <p className="text-label text-faint">Fark Yöneticiye bildirildi.</p>
             )}
           </div>

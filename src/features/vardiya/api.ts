@@ -47,6 +47,32 @@ export function useVardiyalarim(enabled = true) {
   })
 }
 
+/**
+ * The open shift row itself, for the one thing `vardiya_ozetim()` does not
+ * carry: whether a close request is waiting on it (035).
+ *
+ * Read straight from the table rather than by widening the RPC. Changing that
+ * function's return type means drop + re-grant, and 032 exists because the
+ * re-grant was missed once already — a plain SELECT the policy already allows
+ * (staff see the OPEN shift) costs nothing and risks nothing.
+ */
+export function useAcikVardiya() {
+  return useQuery({
+    queryKey: ['acik_vardiya'],
+    queryFn: async (): Promise<Vardiya | null> => {
+      const { data, error } = await supabase
+        .from('vardiyalar')
+        .select('*')
+        .is('kapanis_at', null)
+        .maybeSingle()
+      if (error) throw error
+      return (data as Vardiya) ?? null
+    },
+    staleTime: 10_000,
+    refetchInterval: 60_000,
+  })
+}
+
 export function useVardiyaAc() {
   const qc = useQueryClient()
   return useMutation({
@@ -60,6 +86,7 @@ export function useVardiyaAc() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['vardiya_ozetim'] })
+      void qc.invalidateQueries({ queryKey: ['acik_vardiya'] })
     },
   })
 }
@@ -67,8 +94,9 @@ export function useVardiyaAc() {
 export function useVardiyaKapat() {
   const qc = useQueryClient()
   return useMutation({
-    // Closing counts the drawer and can raise a discrepancy alert. Retrying it
-    // blind would re-run that decision against a shift that is already closed.
+    // Counting the drawer can raise a discrepancy alert, and for a Personel it
+    // files a request a Yönetici will read. Retrying it blind would re-run
+    // that against a shift that has already moved on.
     retry: false,
     mutationFn: async ({
       sayilan,
@@ -89,6 +117,10 @@ export function useVardiyaKapat() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['vardiya_ozetim'] })
       void qc.invalidateQueries({ queryKey: ['vardiyalarim'] })
+      // The request lands on the open shift row, so this is what makes the
+      // "waiting for approval" banner appear without a reload.
+      void qc.invalidateQueries({ queryKey: ['acik_vardiya'] })
+      void qc.invalidateQueries({ queryKey: ['vardiya_talepleri'] })
     },
   })
 }

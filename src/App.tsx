@@ -3,6 +3,7 @@ import { Navigate, Outlet, Route, Routes } from 'react-router'
 import { AppShell } from './app/AppShell'
 import {
   HomeRedirect,
+  RedirectIfActive,
   RedirectIfAuthed,
   RequireActive,
   RequireAuth,
@@ -102,12 +103,17 @@ export default function App() {
           />
           <Route path="/sifre-sifirla" element={<ResetPassword />} />
 
-          {/* Gates for accounts that exist but cannot use the app yet. */}
+          {/* Gates for accounts that exist but cannot use the app yet.
+              RedirectIfActive is what lets go again: these screens are reached
+              by a redirect, so without it an account that turns out to be fine
+              has no way back out. */}
           <Route
             path="/onay-bekliyor"
             element={
               <RequireAuth>
-                <PendingApproval />
+                <RedirectIfActive>
+                  <PendingApproval />
+                </RedirectIfActive>
               </RequireAuth>
             }
           />
@@ -115,7 +121,9 @@ export default function App() {
             path="/hesap-kapali"
             element={
               <RequireAuth>
-                <AccountDisabled />
+                <RedirectIfActive>
+                  <AccountDisabled />
+                </RedirectIfActive>
               </RequireAuth>
             }
           />

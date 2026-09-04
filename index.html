@@ -6,7 +6,9 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <!-- Brand teal (--brand-from). Keep in sync with the manifest in
+    <!-- Brand teal (--brand-from) for the splash, before any script runs.
+         theme.ts replaces it with the live surface colour once the app boots,
+         so these two are not meant to match. Keep in sync with the manifest in
          vite.config.ts and BG in scripts/generate-icons.mjs. -->
     <meta name="theme-color" content="#093140" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -16,16 +18,19 @@
     <link rel="apple-touch-icon" href="/Otopark/icons/apple-touch-icon.png" />
     <title>Otopark</title>
     <script>
-      // Applied before first paint so a dark-mode launch never flashes white.
-      // Mirrors src/lib/theme.ts — keep the storage key in sync.
+      // Applied before first paint so the launch never flashes the wrong
+      // colour. Dark is the DEFAULT, so the stored value is an opt-OUT: only
+      // an explicit '0' turns it off, and a browser that refuses storage still
+      // lands on dark rather than on the other theme from everyone else.
+      // Mirrors src/lib/theme.ts — keep the key and the rule in sync.
       (function () {
+        var dark = true
         try {
-          if (localStorage.getItem('op-dark') === '1') {
-            document.documentElement.classList.add('dark')
-          }
+          dark = localStorage.getItem('op-dark') !== '0'
         } catch (e) {
-          /* storage-restricted context: light mode, app still works */
+          /* storage-restricted context: the default stands, app still works */
         }
+        if (dark) document.documentElement.classList.add('dark')
       })()
     </script>
     <script>

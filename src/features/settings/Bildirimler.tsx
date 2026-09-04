@@ -29,6 +29,10 @@ const TON: Record<BildirimTur, string> = {
   VARDIYA_ACIK: 'bg-warn-soft text-warn',
   ONAY_BEKLIYOR: 'bg-warn-soft text-warn',
   PLAKA_SUPHE: 'bg-warn-soft text-warn',
+  VARDIYA_KAPATMA: 'bg-warn-soft text-warn',
+  // The only type an operator receives, and it carries either outcome — the
+  // body says which, so the tone must not pre-announce bad news.
+  VARDIYA_KARAR: 'bg-accent-soft text-accent',
 }
 
 export default function Bildirimler() {

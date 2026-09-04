@@ -27,7 +27,15 @@ export function isDisabled(profile: Profile | null): boolean {
   return profile?.durum === 'DISABLED'
 }
 
-/** Where a signed-in user belongs when they land on "/". */
-export function anaSayfa(profile: Profile | null): string {
-  return isYonetici(profile) ? '/yonetim' : '/gise'
-}
+/**
+ * Where a signed-in user lands on "/", whatever their role.
+ *
+ * Gişe for everyone, Yönetici included: opening a car park app puts you at the
+ * gate, and the panel is somewhere you go on purpose. It was role-dependent
+ * (Yönetici -> /yonetim) and is deliberately a CONSTANT now — a function
+ * taking a `profile` it ignores would read as though the answer still varied.
+ *
+ * Every caller reaches this only after PENDING and DISABLED have been sent to
+ * their own screens, so there is no role left for which /gise is wrong.
+ */
+export const ANA_SAYFA = '/gise'

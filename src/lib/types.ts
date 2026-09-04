@@ -37,6 +37,8 @@ export type BildirimTur =
   | 'PLAKA_SUPHE'
   | 'VARDIYA_ACIK'
   | 'ONAY_BEKLIYOR'
+  | 'VARDIYA_KAPATMA'
+  | 'VARDIYA_KARAR'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
@@ -128,6 +130,11 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   VARDIYA_ACIK: 'Açık kalan vardiya',
   ONAY_BEKLIYOR: 'Onay bekleyen tahsilat',
   PLAKA_SUPHE: 'Plaka doğru okunmamış olabilir',
+  VARDIYA_KAPATMA: 'Vardiya kapatma isteği',
+  // Reaches the PERSONEL who asked, not the Yönetici — the only type in this
+  // list that is not Yönetici-only, which is why 035 leaves it out of
+  // `bildirim_yonetici_turu`.
+  VARDIYA_KARAR: 'Vardiya kapatma kararı',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -234,6 +241,19 @@ export interface Vardiya {
   notlar: string | null
   /** NULL only while the shift is open — 025 makes the two inseparable. */
   kapanis_kaynak: VardiyaKapanisKaynak | null
+  /**
+   * A Personel's count waiting for Yönetici approval (035).
+   *
+   * Only meaningful while `kapanis_at` is null: approving clears these and
+   * copies them onto the real close columns, and `vardiya_zorla_kapat` (025)
+   * leaves them behind on purpose. Every read filters on the shift being open.
+   */
+  kapatma_talebi_at: string | null
+  kapatma_talebi_by: string | null
+  talep_sayilan_kurus: number | null
+  /** Expected cash AT THE MOMENT OF COUNTING — see VardiyaTalebi. */
+  talep_beklenen_kurus: number | null
+  talep_notlar: string | null
 }
 
 export interface Abonman {
@@ -498,9 +518,39 @@ export interface BiletKapatSonuc {
 }
 
 export interface VardiyaKapatSonuc {
+  /**
+   * FALSE when the count only became a request: a Personel cannot close the
+   * till, so the drawer stays open until a Yönetici approves (035). The
+   * screen must branch on this — reporting "kapandı" either way would tell
+   * the operator the shift is over when it is not.
+   */
+  kapandi: boolean
   beklenen_kurus: number
   sayilan_kurus: number
   fark_kurus: number
+}
+
+/** vardiya_kapatma_onayla() — the same figures, minus a `kapandi` that would
+ *  always be true: approving is the act of closing. */
+export type VardiyaKapanisSonuc = Omit<VardiyaKapatSonuc, 'kapandi'>
+
+/** One pending shift-close request, as the Onay screen lists it. */
+export interface VardiyaTalebi {
+  id: string
+  acilis_at: string
+  acilis_nakit_kurus: number
+  kapatma_talebi_at: string
+  kapatma_talebi_by: string | null
+  talep_sayilan_kurus: number
+  /**
+   * What "olması gereken" was when the operator counted. Compared against the
+   * CURRENT expected figure, the gap is money collected after the count —
+   * which is a different problem from a miscount, and the Yönetici has to be
+   * able to tell them apart before approving.
+   */
+  talep_beklenen_kurus: number | null
+  talep_notlar: string | null
+  talep_eden: { ad_soyad: string } | null
 }
 
 export interface RaporGun {

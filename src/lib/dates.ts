@@ -101,6 +101,44 @@ export function formatTarihKisa(gun: string): string {
   return d && m ? `${d}.${m}` : gun
 }
 
+const ayFmt = new Intl.DateTimeFormat('tr-TR', {
+  month: 'long',
+  year: 'numeric',
+  timeZone: 'Europe/Istanbul',
+})
+
+/** 'YYYY-MM' of today, Istanbul. */
+export function istanbulAy(): string {
+  return istanbulGun().slice(0, 7)
+}
+
+/** "Eylül 2026" from 'YYYY-MM'. */
+export function formatAy(ay: string): string {
+  const [y, m] = ay.split('-').map(Number)
+  if (!y || !m) return ay
+  // Day 15, not 1: the formatter renders in Istanbul time, and a UTC midnight
+  // on the 1st is the one input where a zone shift could land in the previous
+  // month. Mid-month cannot.
+  return ayFmt.format(new Date(Date.UTC(y, m - 1, 15)))
+}
+
+/** First and last day of a 'YYYY-MM', as 'YYYY-MM-DD'. */
+export function ayAraligi(ay: string): { bas: string; bit: string } {
+  const [y, m] = ay.split('-').map(Number)
+  if (!y || !m) return { bas: ay, bit: ay }
+  // Day 0 of the NEXT month is the last day of this one — no month-length table.
+  const son = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  return { bas: `${ay}-01`, bit: `${ay}-${String(son).padStart(2, '0')}` }
+}
+
+/** 'YYYY-MM' n months from `from`. Negative goes back. */
+export function ayEkle(n: number, from: string = istanbulAy()): string {
+  const [y, m] = from.split('-').map(Number)
+  if (!y || !m) return from
+  const t = new Date(Date.UTC(y, m - 1 + n, 15))
+  return t.toISOString().slice(0, 7)
+}
+
 /** Days from today (Istanbul) until a 'YYYY-MM-DD' date. Negative = past. */
 export function gunFarki(gun: string): number {
   const [ty, tm, td] = istanbulGun().split('-').map(Number)

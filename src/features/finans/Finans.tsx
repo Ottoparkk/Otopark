@@ -9,6 +9,7 @@ import {
   useKasaHareketleri,
   useRaporGunluk,
   useOnayOzet,
+  useVardiyaTalepleri,
   useRaporOzet,
   useTumVardiyalar,
   useYontemOzet,
@@ -103,6 +104,10 @@ export default function Finans() {
   // still waiting for a decision is outstanding today whichever window is
   // selected, and hiding it behind "Bugün" is how it would be forgotten.
   const onay = useOnayOzet()
+  // A waiting till close has no other signal anywhere in the app: without it
+  // here the operator is standing at a shift that will not close, and the
+  // Yönetici has no reason to open the screen that would close it.
+  const { data: vardiyaTalep = [] } = useVardiyaTalepleri()
 
   /**
    * What is actually in the till — the money we have, not the money that
@@ -126,6 +131,20 @@ export default function Finans() {
   const { data: vardiyalar = [] } = useTumVardiyalar()
 
   const ciro = ozet.data?.ciro_kurus ?? 0
+
+  // Two different queues behind one card. The figure stays the collections
+  // total — a shift close has no single amount of its own — so the caption is
+  // what has to carry the second queue.
+  const tahsilatAdet = onay.data?.adet ?? 0
+  const onayBekleyen = tahsilatAdet > 0 || vardiyaTalep.length > 0
+  const onayAlt =
+    tahsilatAdet > 0 && vardiyaTalep.length > 0
+      ? tahsilatAdet + ' tahsilat + vardiya kapatma'
+      : tahsilatAdet > 0
+        ? tahsilatAdet + ' tahsilat bekliyor'
+        : vardiyaTalep.length > 0
+          ? 'vardiya kapatma bekliyor'
+          : 'bekleyen yok'
 
   const kasaToplam = useMemo(() => {
     const h = kasa.data ?? []
@@ -309,12 +328,8 @@ export default function Finans() {
               <ToplamKart
                 baslik="Onay"
                 deger={kisaTL(onay.data?.toplam_kurus ?? 0)}
-                alt={
-                  (onay.data?.adet ?? 0) > 0
-                    ? onay.data?.adet + ' tahsilat bekliyor'
-                    : 'bekleyen yok'
-                }
-                tone={(onay.data?.adet ?? 0) > 0 ? 'mor' : 'neutral'}
+                alt={onayAlt}
+                tone={onayBekleyen ? 'mor' : 'neutral'}
                 icon={<IconOnay size={20} />}
                 onClick={() => navigate('/finans/onay')}
               />

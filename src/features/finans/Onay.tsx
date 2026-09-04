@@ -15,13 +15,18 @@ import {
   useOnayOzet,
   useTahsilatOnayla,
   useTahsilatReddet,
+  useVardiyaKapatmaOnayla,
+  useVardiyaKapatmaReddet,
+  useVardiyaTalepleri,
 } from './api'
+import { useVardiyaOzetim } from '../vardiya/api'
+import { useAdlar } from '../yonetim/api'
 import { formatTL } from '../../lib/money'
 import { formatTam } from '../../lib/dates'
 import { formatPlaka } from '../../lib/plaka'
 import { rpcErrorText } from '../../lib/errors'
-import { ODEME_ETIKET, type OnayDurum } from '../../lib/types'
-import { IconOnay, IconTik } from '../../components/ui/icons'
+import { ODEME_ETIKET, type OnayDurum, type VardiyaTalebi } from '../../lib/types'
+import { IconOnay, IconTik, IconVardiya } from '../../components/ui/icons'
 
 /**
  * The gate between money collected at the barrier and money in the books.
@@ -36,6 +41,14 @@ import { IconOnay, IconTik } from '../../components/ui/icons'
  * expects it. A decision here answers one question — does this belong in the
  * revenue figures — and the rejected list is what keeps the answer "no" from
  * quietly meaning "gone".
+ *
+ * TWO QUEUES, ONE SCREEN. Ticket collections and shift-close requests are
+ * both "money the Yönetici has to sign off", so they live together — but they
+ * are separated by a heading rather than by a second row of tabs. A tab bar
+ * under a tab bar hides half the screen behind a control nobody looks for, and
+ * there is at most one shift request at a time; it does not need its own page.
+ * The bulk bar below stays wired to the ticket list ALONE: "Tümünü onayla"
+ * must never sweep up a till close.
  *
  * SELECT, THEN ACT. A pair of buttons on every card put two hundred controls
  * on a screen for a hundred cars and forced a decision one row at a time,
@@ -52,6 +65,38 @@ export default function Onay() {
   const onayla = useTahsilatOnayla()
   const reddet = useTahsilatReddet()
 
+  const bekleyen = sekme === 'BEKLIYOR'
+
+  // ---- shift-close queue -------------------------------------------------
+  // Only fetched on the tab that can act on it: a decided request has no row
+  // left to show — approving closes the shift, rejecting erases the request.
+  const talepler = useVardiyaTalepleri(bekleyen)
+  const adlar = useAdlar()
+  // The CURRENT expected cash, to set against what the operator counted. The
+  // request sits on the open shift and this RPC describes exactly that shift,
+  // so the two always refer to the same drawer.
+  const { data: vardiyaOzet } = useVardiyaOzetim()
+  const vardiyaOnayla = useVardiyaKapatmaOnayla()
+  const vardiyaReddet = useVardiyaKapatmaReddet()
+
+  const [vardiyaSoru, setVardiyaSoru] = useState<{
+    t: VardiyaTalebi
+    tur: 'ONAY' | 'RET'
+  } | null>(null)
+  const [vardiyaSebep, setVardiyaSebep] = useState('')
+  const [vardiyaHata, setVardiyaHata] = useState<string | null>(null)
+  const [vardiyaSonuc, setVardiyaSonuc] = useState<string | null>(null)
+
+  const simdikiBeklenen = vardiyaOzet
+    ? vardiyaOzet.acilis_nakit_kurus + vardiyaOzet.nakit_kurus
+    : null
+
+  function vardiyaKapat() {
+    setVardiyaSoru(null)
+    setVardiyaSebep('')
+    setVardiyaHata(null)
+  }
+
   const [secili, setSecili] = useState<Set<string>>(new Set())
   const [sebep, setSebep] = useState('')
   /** Which dialog is open, if any. */
@@ -60,7 +105,6 @@ export default function Onay() {
   const [sonuc, setSonuc] = useState<string | null>(null)
 
   const kayitlar = liste.data ?? []
-  const bekleyen = sekme === 'BEKLIYOR'
 
   // Ids by value, not the Set itself: a row can disappear between the tap and
   // the decision (someone else decided it, a ticket was cancelled), and acting
@@ -119,6 +163,7 @@ export default function Onay() {
             setSecili(new Set())
             setHata(null)
             setSonuc(null)
+            setVardiyaSonuc(null)
           }}
           options={[
             { value: 'BEKLIYOR', label: 'Bekleyen' },
@@ -140,89 +185,135 @@ export default function Onay() {
 
         {sonuc && <p className="text-body text-success">{sonuc}</p>}
 
-        <ListeDurumu
-          pending={liste.isPending}
-          error={liste.error}
-          onRetry={() => void liste.refetch()}
-          empty={kayitlar.length === 0}
-          bos={
-            <EmptyState
-              icon={<IconOnay size={22} />}
-              title={bekleyen ? 'Onay bekleyen tahsilat yok' : 'Kayıt yok'}
-              hint={
-                bekleyen
-                  ? 'Bilet ve abonman tahsilatları burada birikir; onaylananlar Finans’a geçer.'
-                  : undefined
-              }
-            />
-          }
-        >
-          <ul className="space-y-3">
-            {kayitlar.map((k) => {
-              const isaretli = secili.has(k.id)
-              const govde = (
-                <>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-body font-semibold text-ink">
-                      {k.etiket ? formatPlaka(k.etiket) : 'Kaydı silinmiş'}
-                      <span className="ml-2 text-label font-medium text-faint">
-                        {k.tur === 'BILET' ? 'Bilet' : 'Abonman'}
-                      </span>
-                    </p>
-                    <p className="mt-0.5 text-label text-faint">
-                      {formatTam(k.created_at)} · {k.personel} · {ODEME_ETIKET[k.yontem]}
-                    </p>
-                    {k.aciklama && <p className="mt-0.5 text-label text-faint">{k.aciklama}</p>}
-                    {k.onay_notu && <p className="mt-0.5 text-label text-danger">{k.onay_notu}</p>}
-                  </div>
-                  {/* Negative rows are cancellation counter-entries: the minus
-                      sign is the whole difference between a collection and its
-                      undoing, so it is never stripped. */}
-                  <p className="shrink-0 text-lead font-semibold text-ink tnum">
-                    {formatTL(k.tutar_kurus)}
-                  </p>
-                </>
-              )
+        {/* Separators, not a second tab bar — see the note at the top. Both
+            headings are drawn whenever a decision is possible, so the shape of
+            the screen does not shift under the operator when a close request
+            arrives or clears. */}
+        {bekleyen && (
+          <section>
+            <Ayirac>Vardiya</Ayirac>
+            {vardiyaSonuc && <p className="mb-3 text-body text-success">{vardiyaSonuc}</p>}
+            {talepler.error != null ? (
+              <p className="text-label text-danger">Kapatma istekleri yüklenemedi.</p>
+            ) : (talepler.data ?? []).length === 0 ? (
+              <p className="text-label text-faint">Kapatma isteği yok.</p>
+            ) : (
+              <ul className="space-y-3">
+                {(talepler.data ?? []).map((t) => (
+                  <li key={t.id}>
+                    <TalepKarti
+                      t={t}
+                      ad={
+                        t.kapatma_talebi_by
+                          ? (adlar.get(t.kapatma_talebi_by) ?? 'Bilinmiyor')
+                          : 'Bilinmiyor'
+                      }
+                      simdikiBeklenen={simdikiBeklenen}
+                      onOnay={() => {
+                        setVardiyaHata(null)
+                        setVardiyaSonuc(null)
+                        setVardiyaSoru({ t, tur: 'ONAY' })
+                      }}
+                      onRet={() => {
+                        setVardiyaSebep('')
+                        setVardiyaHata(null)
+                        setVardiyaSonuc(null)
+                        setVardiyaSoru({ t, tur: 'RET' })
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
-              // Only the pending tab is interactive. A decided row is a record,
-              // and making it look tappable would promise an action that does
-              // not exist — decided rows are immutable by design.
-              return (
-                <li key={k.id}>
-                  {bekleyen ? (
-                    <button
-                      type="button"
-                      onClick={() => sec(k.id)}
-                      aria-pressed={isaretli}
-                      className={[
-                        'flex w-full items-start gap-3 rounded-card border bg-surface p-4 text-left shadow-card',
-                        'transition-transform duration-100 active:scale-[0.99]',
-                        isaretli ? 'border-accent inset-ring-1 inset-ring-accent' : 'border-border',
-                      ].join(' ')}
-                    >
-                      {/* The tick box carries the state on its own, so the
-                          selection survives being read in sunlight where a
-                          border tint alone would not. */}
-                      <span
+        <section>
+          {bekleyen && <Ayirac>Bilet ve abonman</Ayirac>}
+          <ListeDurumu
+            pending={liste.isPending}
+            error={liste.error}
+            onRetry={() => void liste.refetch()}
+            empty={kayitlar.length === 0}
+            bos={
+              <EmptyState
+                icon={<IconOnay size={22} />}
+                title={bekleyen ? 'Onay bekleyen tahsilat yok' : 'Kayıt yok'}
+                hint={
+                  bekleyen
+                    ? 'Bilet ve abonman tahsilatları burada birikir; onaylananlar Finans’a geçer.'
+                    : undefined
+                }
+              />
+            }
+          >
+            <ul className="space-y-3">
+              {kayitlar.map((k) => {
+                const isaretli = secili.has(k.id)
+                const govde = (
+                  <>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-body font-semibold text-ink">
+                        {k.etiket ? formatPlaka(k.etiket) : 'Kaydı silinmiş'}
+                        <span className="ml-2 text-label font-medium text-faint">
+                          {k.tur === 'BILET' ? 'Bilet' : 'Abonman'}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 text-label text-faint">
+                        {formatTam(k.created_at)} · {k.personel} · {ODEME_ETIKET[k.yontem]}
+                      </p>
+                      {k.aciklama && <p className="mt-0.5 text-label text-faint">{k.aciklama}</p>}
+                      {k.onay_notu && <p className="mt-0.5 text-label text-danger">{k.onay_notu}</p>}
+                    </div>
+                    {/* Negative rows are cancellation counter-entries: the minus
+                        sign is the whole difference between a collection and its
+                        undoing, so it is never stripped. */}
+                    <p className="shrink-0 text-lead font-semibold text-ink tnum">
+                      {formatTL(k.tutar_kurus)}
+                    </p>
+                  </>
+                )
+
+                // Only the pending tab is interactive. A decided row is a record,
+                // and making it look tappable would promise an action that does
+                // not exist — decided rows are immutable by design.
+                return (
+                  <li key={k.id}>
+                    {bekleyen ? (
+                      <button
+                        type="button"
+                        onClick={() => sec(k.id)}
+                        aria-pressed={isaretli}
                         className={[
-                          'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-[6px] border',
-                          isaretli
-                            ? 'border-accent bg-accent text-accent-ink'
-                            : 'border-border bg-field text-transparent',
+                          'flex w-full items-start gap-3 rounded-card border bg-surface p-4 text-left shadow-card',
+                          'transition-transform duration-100 active:scale-[0.99]',
+                          isaretli ? 'border-accent inset-ring-1 inset-ring-accent' : 'border-border',
                         ].join(' ')}
                       >
-                        <IconTik size={14} />
-                      </span>
-                      {govde}
-                    </button>
-                  ) : (
-                    <Card className="flex items-start gap-3">{govde}</Card>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </ListeDurumu>
+                        {/* The tick box carries the state on its own, so the
+                            selection survives being read in sunlight where a
+                            border tint alone would not. */}
+                        <span
+                          className={[
+                            'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-[6px] border',
+                            isaretli
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : 'border-border bg-field text-transparent',
+                          ].join(' ')}
+                        >
+                          <IconTik size={14} />
+                        </span>
+                        {govde}
+                      </button>
+                    ) : (
+                      <Card className="flex items-start gap-3">{govde}</Card>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </ListeDurumu>
+        </section>
 
         {hata && <p className="text-body text-danger">{hata}</p>}
       </div>
@@ -307,6 +398,156 @@ export default function Onay() {
           maxLength={200}
         />
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={vardiyaSoru?.tur === 'ONAY'}
+        onOpenChange={vardiyaKapat}
+        title="Vardiyayı kapat"
+        description={
+          'Sayılan ' +
+          formatTL(vardiyaSoru?.t.talep_sayilan_kurus ?? 0) +
+          ' ile vardiya kapanacak. Kapanmış vardiya geri açılmaz.'
+        }
+        confirmLabel="Onayla ve kapat"
+        loading={vardiyaOnayla.isPending}
+        error={vardiyaHata}
+        onConfirm={() => {
+          if (!vardiyaSoru) return
+          setVardiyaHata(null)
+          void vardiyaOnayla
+            .mutateAsync(vardiyaSoru.t.id)
+            .then((r) => {
+              vardiyaKapat()
+              setVardiyaSonuc(
+                r.fark_kurus === 0
+                  ? 'Vardiya kapatıldı, kasa tutuyor.'
+                  : 'Vardiya kapatıldı. Fark ' +
+                      (r.fark_kurus > 0 ? '+' : '') +
+                      formatTL(r.fark_kurus) +
+                      '.',
+              )
+            })
+            .catch((e) => setVardiyaHata(rpcErrorText(e, 'Vardiya kapatılamadı.')))
+        }}
+      />
+
+      <ConfirmDialog
+        open={vardiyaSoru?.tur === 'RET'}
+        onOpenChange={vardiyaKapat}
+        title="Kapatma isteğini reddet"
+        description="Vardiya açık kalacak ve personel yeniden sayıp gönderebilecek."
+        confirmLabel="Reddet"
+        tone="danger"
+        loading={vardiyaReddet.isPending}
+        error={vardiyaHata}
+        onConfirm={() => {
+          if (!vardiyaSoru) return
+          setVardiyaHata(null)
+          void vardiyaReddet
+            .mutateAsync({ id: vardiyaSoru.t.id, sebep: vardiyaSebep })
+            .then(() => {
+              vardiyaKapat()
+              setVardiyaSonuc('Kapatma isteği reddedildi, vardiya açık kaldı.')
+            })
+            .catch((e) => setVardiyaHata(rpcErrorText(e, 'Reddedilemedi.')))
+        }}
+      >
+        {/* Reaches the operator as a notification, so it is the only place they
+            learn WHY they are counting again. */}
+        <Input
+          label="Sebep (isteğe bağlı)"
+          value={vardiyaSebep}
+          onChange={(e) => setVardiyaSebep(e.target.value)}
+          placeholder="Personele bildirilir"
+          maxLength={200}
+        />
+      </ConfirmDialog>
+    </div>
+  )
+}
+
+/** Section heading. Quiet by design — it separates, it does not compete. */
+function Ayirac({ children }: { children: React.ReactNode }) {
+  return <p className="mb-2 text-label font-medium tracking-wide text-faint uppercase">{children}</p>
+}
+
+function TalepKarti({
+  t,
+  ad,
+  simdikiBeklenen,
+  onOnay,
+  onRet,
+}: {
+  t: VardiyaTalebi
+  ad: string
+  /** Expected cash RIGHT NOW; null while the summary is still loading. */
+  simdikiBeklenen: number | null
+  onOnay: () => void
+  onRet: () => void
+}) {
+  const fark = simdikiBeklenen === null ? null : t.talep_sayilan_kurus - simdikiBeklenen
+  // Money collected between the count and this decision. Not a miscount, and
+  // the Yönetici cannot tell the two apart without being told.
+  const sonradan =
+    simdikiBeklenen === null || t.talep_beklenen_kurus === null
+      ? 0
+      : simdikiBeklenen - t.talep_beklenen_kurus
+
+  return (
+    <Card>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-field bg-accent-soft text-accent">
+          <IconVardiya size={18} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-body font-semibold text-ink">
+            {ad}
+            <span className="ml-2 text-label font-medium text-faint">Vardiya kapatma</span>
+          </p>
+          <p className="mt-0.5 text-label text-faint">{formatTam(t.kapatma_talebi_at)}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1.5 border-t border-divider pt-3">
+        <Satir k="Olması gereken" v={simdikiBeklenen === null ? '—' : formatTL(simdikiBeklenen)} />
+        <Satir k="Sayılan" v={formatTL(t.talep_sayilan_kurus)} />
+        {fark !== null && (
+          <Satir
+            k="Fark"
+            v={(fark > 0 ? '+' : '') + formatTL(fark)}
+            ton={fark === 0 ? 'text-success' : fark < 0 ? 'text-danger' : 'text-warn'}
+          />
+        )}
+      </div>
+
+      {sonradan !== 0 && (
+        <p className="mt-3 rounded-field bg-warn-soft px-3 py-2 text-label text-warn">
+          Sayımdan sonra {formatTL(Math.abs(sonradan))} nakit
+          {sonradan > 0 ? ' tahsil edildi' : ' geri alındı'} — fark bundan doğuyor olabilir.
+        </p>
+      )}
+
+      {t.talep_notlar && <p className="mt-3 text-label text-faint">{t.talep_notlar}</p>}
+
+      {/* This card carries its own verbs: a till close is one decision at a
+          time, and it must not ride along with "Tümünü onayla". */}
+      <div className="mt-4 flex items-center gap-2">
+        <Button className="flex-1" onClick={onOnay}>
+          Onayla ve kapat
+        </Button>
+        <Button variant="secondary" onClick={onRet}>
+          Reddet
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+function Satir({ k, v, ton = 'text-ink' }: { k: string; v: string; ton?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-label text-faint">{k}</span>
+      <span className={`text-body font-medium tnum ${ton}`}>{v}</span>
     </div>
   )
 }

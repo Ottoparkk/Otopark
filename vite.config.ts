@@ -28,7 +28,10 @@ export default defineConfig({
         // Brand teal + the app background. Keep in sync with the
         // theme-color meta in index.html and --brand-from / --color-bg.
         theme_color: '#093140',
-        background_color: '#EEF1F6',
+        // Dark is the default theme, so the splash matches it — a light
+        // splash would put back exactly the white flash the pre-paint script
+        // in index.html exists to prevent.
+        background_color: '#0F1013',
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },

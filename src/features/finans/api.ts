@@ -17,6 +17,8 @@ import type {
   TahsilatTur,
   Tarife,
   Vardiya,
+  VardiyaKapanisSonuc,
+  VardiyaTalebi,
 } from '../../lib/types'
 
 /**
@@ -638,5 +640,84 @@ export function useTahsilatReddet() {
       return (data as number) ?? 0
     },
     onSuccess: () => onayTazele(qc),
+  })
+}
+
+/* ------------------------------------------------- vardiya kapatma onayı */
+
+/**
+ * Shift-close requests waiting on a Yönetici (035).
+ *
+ * `select('*')` on purpose: the columns arrived in 035, and PostgREST rejects
+ * the WHOLE query — not just the unknown column — when a select list names
+ * one that does not exist yet. The filters still reference the new columns,
+ * so this query does fail if the migration has not run; the screen keeps that
+ * failure inside its own section instead of blanking the ticket list.
+ *
+ * At most one row can exist (a request lives on the open shift, and there is
+ * only ever one of those), but it is typed as a list so the screen renders
+ * the same way whether there is nothing, something, or — if the model ever
+ * changes — several.
+ */
+export function useVardiyaTalepleri(enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ['vardiya_talepleri'],
+    queryFn: async (): Promise<VardiyaTalebi[]> => {
+      const { data, error } = await supabase
+        .from('vardiyalar')
+        .select('*')
+        .is('kapanis_at', null)
+        .not('kapatma_talebi_at', 'is', null)
+        .order('kapatma_talebi_at', { ascending: true })
+      if (error) throw error
+      return (data ?? []) as VardiyaTalebi[]
+    },
+  })
+}
+
+/** Everything a decision on a shift request moves. */
+function vardiyaTazele(qc: ReturnType<typeof useQueryClient>) {
+  for (const k of [
+    'vardiya_talepleri',
+    'acik_vardiya',
+    'vardiya_ozetim',
+    'vardiyalarim',
+    'tum_vardiyalar',
+  ]) {
+    void qc.invalidateQueries({ queryKey: [k] })
+  }
+}
+
+export function useVardiyaKapatmaOnayla() {
+  const qc = useQueryClient()
+  return useMutation({
+    // Never retries: this one call is what actually closes the till.
+    retry: false,
+    mutationFn: async (vardiyaId: string): Promise<VardiyaKapanisSonuc> => {
+      const { data, error } = await supabase.rpc('vardiya_kapatma_onayla', {
+        p_vardiya_id: vardiyaId,
+      })
+      if (error) throw error
+      const row = (data ?? [])[0] as VardiyaKapanisSonuc | undefined
+      if (!row) throw new Error('Vardiya sonucu alınamadı.')
+      return row
+    },
+    onSuccess: () => vardiyaTazele(qc),
+  })
+}
+
+export function useVardiyaKapatmaReddet() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (v: { id: string; sebep: string }): Promise<void> => {
+      const { error } = await supabase.rpc('vardiya_kapatma_reddet', {
+        p_vardiya_id: v.id,
+        p_sebep: v.sebep.trim() || null,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => vardiyaTazele(qc),
   })
 }

@@ -784,16 +784,28 @@ exception when others then
   if sqlerrm like 'FAIL%' then raise; end if;
 end;
 
+-- 035: personelin sayımı yalnızca İSTEKTİR, kapanışı Yönetici yapar. Fark
+-- hesabı bu yüzden onaydan sonra okunuyor.
 select v.fark_kurus into v_ucret from public.vardiya_kapat(0, 'test kapanış') v;
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_kapatma_onayla(v_vardiya);
 perform pg_temp.logout();
 select beklenen_nakit_kurus, sayilan_nakit_kurus, fark_kurus
   into v_rec from public.vardiyalar where id = v_vardiya;
 if v_rec.fark_kurus <> 0 - v_rec.beklenen_nakit_kurus then
   raise exception 'FAIL 29: vardiya farkı yanlış hesaplandı';
 end if;
+-- Bildirim artık İSTEK anında gidiyor ve farkı kendisi taşıyor. Onaydaki
+-- VARDIYA_FARK burada aranmaz: `notify_yonetici` çağıranı hariç tutar, ve
+-- onaylayan Yöneticinin kendisidir — tek Yöneticili bir kasada o satır hiç
+-- doğmaz. Değişmeyen kural şu: farkı bir Yönetici görmüş olmalı.
 select count(*) into v_n from public.notifications
- where tur = 'VARDIYA_FARK' and profile_id = u_yonetici;
-if v_n = 0 then raise exception 'FAIL 29: vardiya farkı Yöneticiye bildirilmedi'; end if;
+ where tur::text = 'VARDIYA_KAPATMA' and profile_id = u_yonetici
+   and govde like '%fark%';
+if v_n = 0 then
+  raise exception 'FAIL 29: kapatma isteği ve farkı Yöneticiye bildirilmedi';
+end if;
 raise notice 'PASS 29: tek açık vardiya kuralı ve fark hesabı + bildirimi doğru';
 
 -- Personel no longer sees the tickets they closed once the shift is shut.
@@ -1083,6 +1095,8 @@ end if;
 perform pg_temp.login(u_personel);
 perform public.vardiya_kapat(500000, null);
 perform pg_temp.login(u_yonetici);
+-- 035: istek onaylanmadan vardiya kapanmaz, ve bu blok KAPALI vardiya ister.
+perform public.vardiya_kapatma_onayla(v_vardiya);
 select sayilan_nakit_kurus, beklenen_nakit_kurus into v_rec
   from public.vardiyalar where id = v_vardiya;
 v_n := v_rec.beklenen_nakit_kurus;
@@ -2713,6 +2727,11 @@ end;
 --      bileti RPC tahsil ettiriyordu. `using (...)` biçiminde aynı ifade
 --      güvenli olduğu için bu yalnızca RPC'de vardı.
 perform public.vardiya_kapat(0, null);
+-- 035: kapanış Yönetici onayıyla tamamlanır. `acik_vardiyam()` kasanın açık
+-- vardiyasını döndürdüğü için id'yi ayrıca taşımaya gerek yok.
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_kapatma_onayla(public.acik_vardiyam());
+perform pg_temp.login(u_personel);
 if public.acik_vardiyam() is not null then
   raise exception 'FAIL 52b2: kurulum — vardiya kapanmadı';
 end if;
@@ -2923,11 +2942,26 @@ perform pg_temp.logout();
 
 -- (e) Personel açık vardiyayı görür, kapananı GÖRMEZ: kapanmış vardiya artık
 --     kişisel bir kayıt değil, işletmenin nakit geçmişi.
+--
+--     035'ten beri personelin sayımı KAPATMAZ, istek yazar; vardiya ancak
+--     Yönetici onayladığında kapanır. Görünürlük iddiası bu yüzden onaydan
+--     SONRA sınanıyor — `vardiya_kapat` tek başına artık yetmez.
 perform pg_temp.login(u_personel);
 if not exists (select 1 from public.vardiyalar where id = v_vardiya) then
   raise exception 'FAIL 54e: personel açık vardiyayı göremiyor';
 end if;
 perform public.vardiya_kapat(0, null);
+if not exists (select 1 from public.vardiyalar
+                where id = v_vardiya and kapanis_at is null) then
+  raise exception 'FAIL 54e: personelin isteği vardiyayı doğrudan kapattı';
+end if;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_kapatma_onayla(v_vardiya);
+perform pg_temp.logout();
+
+perform pg_temp.login(u_personel);
 if exists (select 1 from public.vardiyalar where id = v_vardiya) then
   raise exception 'FAIL 54e: personel kapanmış vardiyayı hâlâ görüyor';
 end if;
@@ -2978,6 +3012,163 @@ end if;
 perform pg_temp.logout();
 
 raise notice 'PASS 55: açık bilet listesi girişi yapanı ve kaynağı taşıyor';
+
+-- =====================================================================
+-- 56  Vardiya kapatma onayı (035)
+--     Personelin sayımı bir İSTEKTİR; çekmece Yönetici onaylayana kadar
+--     açık kalır.
+-- =====================================================================
+
+-- Önceki bloklardan (55) açık kalmış bir vardiya olabilir ve kasa başına tek
+-- vardiya kuralı ikincisini engeller. Temiz çekmeceyle başla: aşağıdaki
+-- aritmetik açılış nakdinin ve tahsilat geçmişinin bilinmesine dayanıyor.
+update public.vardiyalar
+   set kapanis_at           = now(),
+       kapanis_kaynak       = 'ELLE',
+       kapatma_talebi_at    = null,
+       kapatma_talebi_by    = null,
+       talep_sayilan_kurus  = null,
+       talep_beklenen_kurus = null,
+       talep_notlar         = null
+ where kapanis_at is null;
+
+perform pg_temp.login(u_personel);
+select public.vardiya_ac(0) into v_vardiya;
+
+-- (a) Sayım kapatmaz, istek yazar. `kapandi` dönüşü ekranın hangi mesajı
+--     göstereceğine karar veren tek şey — yanlışsa operatöre vardiya kapandı
+--     denir ve kimse kapatmaz.
+select v.kapandi into v_bool from public.vardiya_kapat(12345, 'ilk sayım') v;
+if v_bool then
+  raise exception 'FAIL 56a: personelin sayımı vardiyayı doğrudan kapattı';
+end if;
+if not exists (select 1 from public.vardiyalar
+                where id = v_vardiya and kapanis_at is null) then
+  raise exception 'FAIL 56a: istek sırasında vardiya kapandı';
+end if;
+select kapatma_talebi_by, talep_sayilan_kurus into v_id, v_n
+  from public.vardiyalar where id = v_vardiya;
+if v_id is distinct from u_personel or v_n is distinct from 12345 then
+  raise exception 'FAIL 56a: kapatma isteği yazılmadı (% / %)', v_id, v_n;
+end if;
+
+-- (b) Kararı personel VEREMEZ. Ekranı gizlemek güvenlik değildir; sınır
+--     RPC'nin kendisinde durmalı.
+begin
+  perform public.vardiya_kapatma_onayla(v_vardiya);
+  raise exception 'FAIL 56b: personel kendi kapatma isteğini onayladı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 56b: beklenmeyen hata (onayla): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.vardiya_kapatma_reddet(v_vardiya, null);
+  raise exception 'FAIL 56b: personel kapatma isteğini reddedebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 56b: beklenmeyen hata (reddet): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Ret vardiyayı AÇIK bırakır ve isteği siler: reddedilen bir sayım,
+--     kapanmamış bir çekmecedir.
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_kapatma_reddet(v_vardiya, 'tekrar say');
+if not exists (select 1 from public.vardiyalar
+                where id = v_vardiya and kapanis_at is null
+                  and kapatma_talebi_at is null
+                  and talep_sayilan_kurus is null) then
+  raise exception 'FAIL 56c: ret sonrası vardiya ya da istek durumu yanlış';
+end if;
+
+-- (d) İstek yokken onay diye bir şey yoktur.
+begin
+  perform public.vardiya_kapatma_onayla(v_vardiya);
+  raise exception 'FAIL 56d: istek yokken vardiya kapatıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%kapatma isteği yok%' then
+    raise exception 'FAIL 56d: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Karar bildirimi İSTEĞİ YAPANA gider, o yüzden VARDIYA_KARAR yönetici
+--     tipi OLMAMALI — olsaydı `notifications_select` personeli kendi
+--     bildiriminden men ederdi. İsteğin kendisi ise Yöneticinindir.
+if not public.bildirim_yonetici_turu('VARDIYA_KAPATMA') then
+  raise exception 'FAIL 56e: VARDIYA_KAPATMA yönetici tipi sayılmıyor';
+end if;
+if public.bildirim_yonetici_turu('VARDIYA_KARAR') then
+  raise exception 'FAIL 56e: VARDIYA_KARAR yönetici tipi sayıldı';
+end if;
+-- 029 enum değerini eklemiş ama listeye koymayı atlamıştı; 035 kapattı.
+if not public.bildirim_yonetici_turu('PLAKA_SUPHE') then
+  raise exception 'FAIL 56e: PLAKA_SUPHE yönetici tipi sayılmıyor';
+end if;
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.notifications
+                where profile_id = u_personel and tur::text = 'VARDIYA_KARAR') then
+  raise exception 'FAIL 56e: personel kendi kapatma kararını göremiyor';
+end if;
+
+-- (f) EN ÖNEMLİSİ. Sayımdan SONRA tahsil edilen nakit onayda hesaba katılır.
+--     İsteğin içindeki eski `beklenen` kullanılsaydı, kasada olmayan para
+--     "tutuyor" görünürdü.
+-- Sayım anındaki nakit, ve sayımdan SONRAKİ nakit. İkisi de ölçülüyor:
+-- sabit sayılara güvenmek, bu bloğun önüne bir tahsilat eklendiği gün testi
+-- sessizce yanlış yerden geçirirdi.
+select coalesce(sum(t.tutar_kurus), 0)::integer into v_n
+  from public.tahsilatlar t
+ where t.vardiya_id = v_vardiya and t.yontem = 'NAKIT';
+perform public.vardiya_kapat(50000, 'ikinci sayım');
+select public.kayip_bilet_tahsil('34SONRA1', 'NAKIT', gen_random_uuid()) into v_bilet;
+select coalesce(sum(t.tutar_kurus), 0)::integer into v_ucret
+  from public.tahsilatlar t
+ where t.vardiya_id = v_vardiya and t.yontem = 'NAKIT';
+if v_ucret <= v_n then
+  raise exception 'FAIL 56f: sayımdan sonra nakit tahsilat üretilemedi';
+end if;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_yonetici);
+select * into v_rec from public.vardiya_kapatma_onayla(v_vardiya);
+perform pg_temp.logout();
+
+select acilis_nakit_kurus into v_n from public.vardiyalar where id = v_vardiya;
+if v_rec.beklenen_kurus is distinct from v_n + v_ucret then
+  raise exception 'FAIL 56f: beklenen yeniden hesaplanmadı (% yerine %)',
+    v_n + v_ucret, v_rec.beklenen_kurus;
+end if;
+if v_rec.fark_kurus is distinct from 50000 - (v_n + v_ucret) then
+  raise exception 'FAIL 56f: fark eski beklenene göre hesaplandı (%)',
+    v_rec.fark_kurus;
+end if;
+
+-- (g) Kapatan = nakdi SAYAN kişi, onaylayan değil; ve isteğin notu kaydın
+--     notu olur.
+select kapatan_id, sayilan_nakit_kurus, notlar, kapanis_at
+  into v_id, v_n, v_txt, v_ts
+  from public.vardiyalar where id = v_vardiya;
+if v_ts is null then
+  raise exception 'FAIL 56g: onay vardiyayı kapatmadı';
+end if;
+if v_id is distinct from u_personel then
+  raise exception 'FAIL 56g: kapatan_id sayan kişi değil (%)', v_id;
+end if;
+if v_n is distinct from 50000 or v_txt is distinct from 'ikinci sayım' then
+  raise exception 'FAIL 56g: isteğin sayımı/notu kayda geçmedi (% / %)', v_n, v_txt;
+end if;
+if exists (select 1 from public.vardiyalar
+            where id = v_vardiya and kapatma_talebi_at is not null) then
+  raise exception 'FAIL 56g: kapanan vardiyada istek temizlenmedi';
+end if;
+
+raise notice 'PASS 56: vardiya kapatma isteği Yönetici onayından geçiyor';
 
 perform pg_temp.logout();
 raise notice '';

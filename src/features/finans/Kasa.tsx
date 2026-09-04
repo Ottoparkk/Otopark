@@ -24,10 +24,76 @@ import {
   useOnayliTahsilatlar,
 } from './api'
 import { formatTL, parseTLToKurus } from '../../lib/money'
-import { formatTarih, istanbulGun } from '../../lib/dates'
+import { ayAraligi, ayEkle, formatAy, formatTarih, istanbulAy, istanbulGun } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { IconArti, IconCop, IconKasa } from '../../components/ui/icons'
-import { ODEME_ETIKET, type KasaTur, type OdemeYontemi } from '../../lib/types'
+import {
+  ODEME_ETIKET,
+  type KasaHareketi,
+  type KasaTur,
+  type OdemeYontemi,
+} from '../../lib/types'
+
+/**
+ * The picker's floor. Nothing was recorded before the system went live, so an
+ * empty month before it is a question nobody has.
+ */
+const AY_TABAN = '2026-09'
+
+/**
+ * How far ahead to plan. Twelve answers "what is coming" without turning the
+ * picker into a scroll, and a recurring rule repeats monthly anyway — the
+ * thirteenth month tells you nothing the first did not.
+ */
+const AY_ILERI = 12
+
+/** One list row, whatever produced it. */
+type KasaSatiri = {
+  id: string
+  /** Only a hand-made row can be deleted; null on a collection or a plan. */
+  kasaId: string | null
+  gun: string
+  tutar: number
+  baslik: string
+  alt: string | null
+  etiket: string | null
+  ton: 'accent' | 'warn' | 'neutral'
+  duzenli: boolean
+  /** Not written yet — projected from a rule, so it is not money that moved. */
+  planlanan: boolean
+}
+
+const CHIP_TON: Record<KasaSatiri['ton'], string> = {
+  accent: 'bg-accent-soft text-accent',
+  warn: 'bg-warn-soft text-warn',
+  neutral: 'bg-field text-soft',
+}
+
+/** Newest first, by calendar day. 'YYYY-MM-DD' sorts lexicographically. */
+const gunAzalan = (a: KasaSatiri, b: KasaSatiri) =>
+  a.gun < b.gun ? 1 : a.gun > b.gun ? -1 : 0
+
+/**
+ * A kasa row in list shape. Shared by the period list and the month list so
+ * the two cannot drift in how they render the same record.
+ */
+function kasaSatiri(k: KasaHareketi): KasaSatiri {
+  // ONE expression behind both the badge and the filter, so a row can never be
+  // badged "Düzenli" and then be missing from the Düzenli list.
+  const duzenliMi = k.tekrar_kural_id != null
+  return {
+    id: k.id,
+    kasaId: k.id,
+    gun: k.tarih,
+    tutar: k.tur === 'GELIR' ? k.tutar_kurus : -k.tutar_kurus,
+    baslik: k.aciklama || k.kategori || '—',
+    alt: k.kategori && k.aciklama ? k.kategori : null,
+    etiket: duzenliMi ? 'Düzenli' : null,
+    ton: duzenliMi ? 'accent' : 'neutral',
+    duzenli: duzenliMi,
+    planlanan: false,
+  }
+}
 
 /** Expenses and non-ticket income. Yönetici only — Personel never see this. */
 export default function Kasa() {
@@ -90,35 +156,23 @@ export default function Kasa() {
    * because a collection is undone by cancelling its ticket, not by removing a
    * line from the till.
    */
-  const satirlar = useMemo(() => {
-    const kasa = liste.map((k) => {
-      // ONE expression behind both the chip and the filter, so a row can never
-      // be badged "Düzenli" and then be missing from the Düzenli list.
-      const duzenliMi = k.tekrar_kural_id != null
-      return {
-        id: k.id,
-        kasaId: k.id as string | null,
-        gun: k.tarih,
-        tutar: k.tur === 'GELIR' ? k.tutar_kurus : -k.tutar_kurus,
-        baslik: k.aciklama || k.kategori || '—',
-        alt: k.kategori && k.aciklama ? k.kategori : null,
-        etiket: duzenliMi ? 'Düzenli' : (null as string | null),
-        duzenli: duzenliMi,
-      }
-    })
-    const tahsil = tahsilatlar.map((t) => ({
+  const satirlar = useMemo<KasaSatiri[]>(() => {
+    const kasa = liste.map(kasaSatiri)
+    const tahsil: KasaSatiri[] = tahsilatlar.map((t) => ({
       id: t.id,
-      kasaId: null as string | null,
+      kasaId: null,
       gun: istanbulGun(new Date(t.created_at)),
       tutar: t.tutar_kurus,
       baslik: t.aciklama || (t.tur === 'BILET' ? 'Bilet tahsilatı' : 'Abonman tahsilatı'),
-      alt: null as string | null,
+      alt: null,
       etiket: t.tur === 'BILET' ? 'Bilet' : 'Abonman',
+      ton: 'neutral',
       // A collection is never rule-written: it comes from a car leaving, so it
       // is one-off by definition and drops out under the filter.
       duzenli: false,
+      planlanan: false,
     }))
-    return [...kasa, ...tahsil].sort((a, b) => (a.gun < b.gun ? 1 : a.gun > b.gun ? -1 : 0))
+    return [...kasa, ...tahsil].sort(gunAzalan)
   }, [liste, tahsilatlar])
 
   /**
@@ -140,15 +194,86 @@ export default function Kasa() {
    * switch off. Deriving it here rather than resetting in an effect means that
    * state simply cannot exist.
    */
-  const gosterilen = useMemo(
-    () => (duzenliSuzgec && duzenliVar ? satirlar.filter((r) => r.duzenli) : satirlar),
-    [satirlar, duzenliSuzgec, duzenliVar],
-  )
+  /**
+   * The Düzenli view is scoped by MONTH, not by the period chips above.
+   *
+   * It has to be: a future month has no rows at all, so no period range could
+   * ever reach it. The subtotal line names the month for exactly that reason —
+   * the summary card keeps reporting the period, and two scopes on one screen
+   * must each say which one they are.
+   */
+  const ayModu = duzenliSuzgec && duzenliVar
+  const [ay, setAy] = useState(istanbulAy)
+
+  const aylar = useMemo(() => {
+    const son = ayEkle(AY_ILERI)
+    const out: string[] = []
+    let a = AY_TABAN
+    // Bounded loop, not `while (a <= son)`: a mistyped constant must not hang
+    // the screen it is supposed to draw.
+    for (let i = 0; i < 240 && a <= son; i += 1) {
+      out.push(a)
+      a = ayEkle(1, a)
+    }
+    return out
+  }, [])
+
+  const ayAralik = useMemo(() => ayAraligi(ay), [ay])
+  const ayKasa = useKasaHareketleri(ayAralik.bas, ayAralik.bit, ayModu)
+
+  /**
+   * What a rule WILL write, for days that have not arrived yet.
+   *
+   * Two rules keep this from becoming fiction:
+   *   • `gun > bugün` — a date that has passed either has a row or genuinely
+   *     did not happen. Projecting one would put money on screen that nobody
+   *     spent, in the ledger whose whole job is to be trustworthy.
+   *   • `gun >= next_run` — the rule's own schedule decides. A rule created
+   *     after this month's day has `next_run` in a later month and must not
+   *     appear here at all.
+   * Plus the same dedupe the cron uses, so a day already written is never
+   * shown twice.
+   */
+  const planlanan = useMemo<KasaSatiri[]>(() => {
+    if (!ayModu) return []
+    const bugun = istanbulGun()
+    const yazilmis = new Set(
+      (ayKasa.data ?? [])
+        .filter((k) => k.tekrar_kural_id)
+        .map((k) => `${k.tekrar_kural_id}|${k.tarih}`),
+    )
+    return kurallar
+      // `odeme_gunu` is CHECK-constrained to 1-28, so this is always a real
+      // date: no month-length table, and February needs no special case.
+      .map((k) => ({ k, gun: `${ay}-${String(k.odeme_gunu).padStart(2, '0')}` }))
+      .filter(
+        ({ k, gun }) => gun > bugun && gun >= k.next_run && !yazilmis.has(`${k.id}|${gun}`),
+      )
+      .map(({ k, gun }) => ({
+        id: `plan-${k.id}-${gun}`,
+        kasaId: null,
+        gun,
+        tutar: k.tur === 'GELIR' ? k.tutar_kurus : -k.tutar_kurus,
+        baslik: k.aciklama || k.kategori || '—',
+        alt: k.kategori && k.aciklama ? k.kategori : null,
+        etiket: 'Planlanan',
+        ton: 'warn',
+        duzenli: true,
+        planlanan: true,
+      }))
+  }, [ayModu, ay, ayKasa.data, kurallar])
+
+  const gosterilen = useMemo<KasaSatiri[]>(() => {
+    if (!ayModu) return satirlar
+    const gercek = (ayKasa.data ?? []).filter((k) => k.tekrar_kural_id != null).map(kasaSatiri)
+    return [...gercek, ...planlanan].sort(gunAzalan)
+  }, [ayModu, satirlar, ayKasa.data, planlanan])
 
   /** Signed, so a month of rent and electricity reads as one negative number
    *  rather than a turnover figure that hides which way the money went. */
-  const duzenliNet = useMemo(
-    () => gosterilen.reduce((a, r) => a + r.tutar, 0),
+  const duzenliNet = useMemo(() => gosterilen.reduce((a, r) => a + r.tutar, 0), [gosterilen])
+  const planSayisi = useMemo(
+    () => gosterilen.filter((r) => r.planlanan).length,
     [gosterilen],
   )
 
@@ -312,31 +437,59 @@ export default function Kasa() {
             total goes beside the chip instead, where it is plainly a subtotal
             of what is on screen. */}
         {duzenliVar && (
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              aria-pressed={duzenliSuzgec}
-              onClick={() => setDuzenliSuzgec((v) => !v)}
-              className={[
-                'min-h-[44px] shrink-0 rounded-chip px-4 text-body font-medium transition-colors',
-                duzenliSuzgec ? 'bg-ink text-bg' : 'bg-field text-soft',
-              ].join(' ')}
-            >
-              Düzenli
-            </button>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                aria-pressed={duzenliSuzgec}
+                onClick={() => setDuzenliSuzgec((v) => !v)}
+                className={[
+                  'min-h-[44px] shrink-0 rounded-chip px-4 text-body font-medium transition-colors',
+                  duzenliSuzgec ? 'bg-ink text-bg' : 'bg-field text-soft',
+                ].join(' ')}
+              >
+                Düzenli
+              </button>
+              {/* The sub-filter, and only while the filter it belongs to is on:
+                  on its own a month picker would look like it scoped the whole
+                  screen, which it does not.
+
+                  A compact native select rather than the Select primitive —
+                  that one is a labelled, full-width form field, and this has to
+                  sit beside a chip and read as one. Native so the phone opens
+                  its own wheel picker, which beats anything hand-rolled here. */}
+              {duzenliSuzgec && (
+                <select
+                  aria-label="Ay seç"
+                  value={ay}
+                  onChange={(e) => setAy(e.target.value)}
+                  className="min-h-[44px] shrink-0 rounded-chip border border-border bg-field px-3 text-body font-medium text-ink outline-none focus:border-accent"
+                >
+                  {aylar.map((a) => (
+                    <option key={a} value={a}>
+                      {formatAy(a)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             {duzenliSuzgec && (
               <p className="text-label text-faint tnum">
-                {gosterilen.length} kayıt · {formatTL(duzenliNet)}
+                {formatAy(ay)} · {gosterilen.length} kayıt · {formatTL(duzenliNet)}
+                {planSayisi > 0 && ` · ${planSayisi} planlanan`}
               </p>
             )}
           </div>
         )}
 
         <div className="space-y-2">
+          {/* The month view has its own query, so its loading and error states
+              are its own too — showing the period query's spinner here would
+              report on data this list is not made of. */}
           <ListeDurumu
-            pending={!hazir || isPending}
-            error={ilkGunHatasi ?? error}
-            onRetry={() => void refetch()}
+            pending={ayModu ? ayKasa.isPending : !hazir || isPending}
+            error={ayModu ? ayKasa.error : (ilkGunHatasi ?? error)}
+            onRetry={() => void (ayModu ? ayKasa.refetch() : refetch())}
             empty={gosterilen.length === 0}
             bos={
               <EmptyState
@@ -350,7 +503,7 @@ export default function Kasa() {
                 }
                 hint={
                   duzenliSuzgec
-                    ? 'Her ay tekrarlayan gelir ve giderler burada listelenir.'
+                    ? `${formatAy(ay)} için düzenli gelir ya da gider yok.`
                     : 'Elektrik, temizlik, bakım gibi giderleri buraya girin.'
                 }
               />
@@ -359,14 +512,27 @@ export default function Kasa() {
             {gosterilen.map((r) => (
               <Card key={r.id} className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-body text-ink">{r.baslik}</p>
+                  {/* A planned row is money that has NOT moved. It is dimmed
+                      rather than coloured so the eye reads the real entries
+                      first — the ledger is still the thing being reported. */}
+                  <p className={`truncate text-body ${r.planlanan ? 'text-soft' : 'text-ink'}`}>
+                    {r.baslik}
+                  </p>
                   <p className="mt-0.5 flex flex-wrap items-center gap-2 text-label text-faint">
                     <span>
                       {formatTarih(r.gun)}
                       {r.alt ? ` · ${r.alt}` : ''}
                     </span>
+                    {/* Düzenli takes the accent tone because it is the one
+                        badge the filter above also selects on — the badge and
+                        the chip that finds it should look like the same idea.
+                        Planlanan takes warn, Bilet/Abonman stay neutral: those
+                        two only say where a row came from. The tone travels on
+                        the row itself, so it cannot disagree with the text. */}
                     {r.etiket && (
-                      <span className="rounded-chip bg-field px-2 py-0.5 text-micro font-medium text-soft">
+                      <span
+                        className={`rounded-chip px-2 py-0.5 text-micro font-medium ${CHIP_TON[r.ton]}`}
+                      >
                         {r.etiket}
                       </span>
                     )}
@@ -374,7 +540,7 @@ export default function Kasa() {
                 </div>
                 <span
                   className={`shrink-0 text-body font-semibold tnum ${
-                    r.tutar >= 0 ? 'text-success' : 'text-danger'
+                    r.planlanan ? 'text-soft' : r.tutar >= 0 ? 'text-success' : 'text-danger'
                   }`}
                 >
                   {r.tutar >= 0 ? '+' : '−'}
