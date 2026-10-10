@@ -1,0 +1,141 @@
+========================================================================
+  OTOPARK — Kamera Kurulumu
+========================================================================
+
+Bu program, otoparktaki bilgisayarı kameraya bağlar. Kamera plakayı görür,
+bu bilgisayar fotoğrafı uygulamaya gönderir, bileti uygulama açar.
+
+Bilgisayara başka hiçbir şey kurmanız gerekmiyor.
+
+
+ÖNCE ŞUNU YAPIN
+------------------------------------------------------------------------
+  Bu klasörü ZIP dosyasından ÇIKARIN.
+
+  ZIP'in içinden doğrudan çalıştırmayın — program açılmaz ve sebebini
+  söylemez. Klasöre sağ tıklayıp "Tümünü ayıkla" deyin, sonra çıkan
+  klasörün içinden devam edin.
+
+  Önerilen yer:  C:\Otopark
+
+
+KURULUM
+------------------------------------------------------------------------
+  1. OtoparkKamera.exe dosyasına ÇİFT TIKLAYIN.
+
+  2. Windows "Bu uygulamayı kim çalıştırdı?" diye sorarsa EVET deyin.
+     Program otomatik başlatmayı kurabilmek için buna ihtiyaç duyuyor.
+
+  3. Mavi bir "Windows bilgisayarınızı korudu" ekranı çıkarsa:
+     "Daha fazla bilgi" → "Yine de çalıştır".
+     Bu uyarı, programın imzalı olmamasından kaynaklanıyor; yaygındır.
+
+  4. Sorulan dört şeyi girin. Gerisini program kendisi yapar.
+
+
+ELİNİZDE HAZIR OLSUN
+------------------------------------------------------------------------
+  · Kurulum kodu — uygulamayı yöneten kişiden isteyin.
+
+    Uygulamada: Yönetim → Kamera kurulumu → "Yeni kamera". Oradan
+    XXXXX-XXXXX biçiminde kısa bir kod çıkar.
+
+    EN KOLAYI: size "kurulum-kodu.txt" diye bir dosya gönderildiyse onu
+    OtoparkKamera.exe ile AYNI KLASÖRE koyun. Program kendisi okur ve
+    size hiçbir şey sormaz.
+
+    Kod 15 DAKİKA geçerli ve yalnızca BU KAMERA içindir. Kurulum yarıda
+    kaldıysa (internet koptu, pencere kapandı) süresi dolmadan AYNI kodla
+    yeniden deneyebilirsiniz. Kamera bir kez bağlandıktan sonra ya da
+    süresi geçince kod biter; o zaman yenisini isteyin.
+
+    Programı ikinci kez çalıştırırsanız ve daha önce bu bilgisayara bir
+    kimlik kaydedilmişse, program o şeridi YENİDEN kurmak isteyip
+    istemediğinizi sorar. AYNI şeridi yeniden kuruyorsanız "e" yazın; kod
+    gerekmez. BAŞKA bir şerit (ikinci kamera) kuruyorsanız Enter'a basın
+    ("hayır") ve yeni kodu girin.
+
+    Şeridi (giriş/çıkış) kodu üreten kişi seçer; size sorulmaz.
+
+  · Kameranın kullanıcı adı ve şifresi
+
+  Kameranın RTSP adresini BİLMENİZE GEREK YOK — program kendisi bulur.
+
+  Kurulum sırasında tarayıcıda canlı görüntü açılacak ve plakanın
+  etrafını fareyle sürüklemeniz istenecek. Bariyerde bir araç varken
+  yapın; kutu yeşil olana kadar büyütün.
+
+
+ÇALIŞIYOR MU?
+------------------------------------------------------------------------
+  OtoparkKamera.exe'ye tekrar çift tıklayın ve "Durum" seçeneğini seçin.
+
+  Kurulumdan sonraki ilk gün bir kez bakın. Kamera okumayı kesmişse
+  hiçbir şey hata vermez — otopark boş görünür, o kadar.
+
+
+BİR ŞEY TERS GİDERSE
+------------------------------------------------------------------------
+  Kamera bulunamadı
+      Bilgisayar ile kamera aynı ağda mı? Kamera kablosu takılı mı?
+
+  Şifre yanlış diyor
+      Kameranın web arayüzüne tarayıcıdan girebildiğiniz şifre olmalı;
+      uygulamanın şifresi değil.
+
+  "Kurulum kodu geçersiz"
+      Kodu yanlış yazmış olabilirsiniz. Harf/rakam dışını, büyük-küçük
+      harfi ve tireyi program kendisi düzeltir, yani yalnızca karakterler
+      önemli. Düzelmiyorsa yeni bir kod isteyin.
+
+  "Bu kurulum kodu zaten kullanılmış" / "süresi dolmuş"
+      Kod 15 dakikalık ve kamera bir kez bağlandıktan sonra biter.
+      Yeni bir kod isteyin.
+
+  "Eşleştirme şu anda yapılamıyor"
+      Sorun kodda değil, sunucuda. Birkaç dakika bekleyip AYNI kodla
+      tekrar deneyin.
+
+  "Bu kamera ... şeridine eşleştirilmiş"
+      Kamera uygulamada öbür şerit için tanımlanmış. Uygulamayı yöneten
+      kişi kamerayı kaldırıp doğru şeritle yeni kod üretmeli.
+
+  Kurulum "KURULUM TAMAMLANMADI" diyor
+      Köprü çalışmıyor demektir. Üstündeki ✗ satırı sebebi söyler (çoğu
+      zaman kamera şifresi ya da adresi). Düzeltip programı yeniden
+      çalıştırın; "... şeridi bu kimlikle yeniden kurulsun mu" sorusuna
+      "e" yazın — yeni kurulum kodu gerekmez.
+
+  Durum ekranı "ŞERİT UYUŞMUYOR" diyor
+      Kamera uygulamada öbür şerit (giriş/çıkış) için tanımlanmış.
+      Uygulamayı yöneten kişi kamerayı kaldırıp doğru şeritle yeni kod
+      üretmeli; sonra kurulumu o kodla tekrarlayın.
+
+  Durum ekranı "KAMERA YOK" diyor
+      Program çalışıyor ama kameradan görüntü alamıyor. Kameranın fişini
+      ve ağ kablosunu kontrol edin. Kamera geri geldiğinde program
+      kendiliğinden bağlanır; yeniden kurmanız gerekmez.
+
+  Durum ekranı "KİMLİK REDDEDİLDİ" diyor
+      Kamera uygulamadan kaldırılmış ya da devre dışı bırakılmış.
+      Yeniden etkinleştirilmesini ya da yeni bir kurulum kodu isteyin.
+
+  "Gizli anahtar yanlış"
+      Uygulamayı kuran kişiden yeni bir kurulum kodu isteyin.
+
+  "Kamera girişi kapalı"
+      Uygulamada: Yönetim → Otopark Ayarları → "Kamera girişi açık".
+
+  Program açılıp hemen kapanıyor
+      ZIP'ten çıkarmayı unutmuş olabilirsiniz. Yukarıya bakın.
+
+
+ÖNEMLİ — BİLGİSAYARI KAPATMAYIN
+------------------------------------------------------------------------
+  Bu bilgisayar açık kaldığı sürece kamera çalışır. Kapatılırsa ya da
+  fişi çekilirse girişler kaydedilmez.
+
+  Dizüstü bilgisayarsa kapağını kapatabilirsiniz — kurulum, kapak
+  kapanınca uyumaması için gerekli ayarı zaten yaptı.
+
+  Yeniden başlatmak sorun değil: köprü açılışta kendiliğinden başlar.

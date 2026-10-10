@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router'
+import { IconIleri } from '../../components/ui/icons'
 import {
   Button,
   Card,
@@ -548,6 +550,17 @@ export default function OtoparkAyarlari() {
               </p>
             </>
           )}
+
+          {/* Eşleştirme ve cihaz durumu buraya değil kendi ekranına ait: bu
+              ekran tek bir Kaydet'e bağlı bir form ve anında yazan bir kontrol
+              o akışa girmez. */}
+          <Link
+            to="/yonetim/kameralar"
+            className="flex min-h-[44px] items-center justify-between gap-3 rounded-field bg-field px-3.5 text-body text-ink active:bg-border"
+          >
+            Kamera kurulumu ve durumu
+            <IconIleri size={16} className="shrink-0 text-faint" />
+          </Link>
         </Card>
 
 

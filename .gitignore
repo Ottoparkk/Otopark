@@ -17,3 +17,16 @@ npm-debug.log*
 
 # Kamera köprüsü başlatıcısı: webhook gizli anahtarını taşır.
 tools/kamera-koprusu/baslat.ps1
+
+# Köprü testleri ve kurulum adımları çalışınca üretilenler.
+__pycache__/
+tools/kamera-koprusu/*.jpg
+
+# Kamera köprüsü paketleme çıktıları (yüzlerce MB; sürüm kontrolüne girmez).
+# Dağıtılan .zip GitHub Releases'e yüklenir, repoya değil.
+tools/kamera-koprusu/yapi/
+tools/kamera-koprusu/dagitim/
+
+# Kurulum kodu dosyası: webhook gizli anahtarını taşır. Kuruluma yardım
+# ederken geçici olarak üretilir, asla işlenmez.
+kurulum-kodu.txt

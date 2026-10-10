@@ -1776,10 +1776,22 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
  where n.nspname = 'public' and p.prokind = 'f'
    and has_function_privilege('service_role', p.oid, 'execute');
 
+--     `kamera_eslestir` ve `kamera_kalp_cihaz` (036) de BİLEREK eklendi.
+--     İkisi de sınırı genişletmiyor:
+--       · kamera_eslestir yalnızca GEÇERLİ, SÜRESİ DOLMAMIŞ ve HENÜZ
+--         KULLANILMAMIŞ bir eşleştirme kodunu bir cihaz kimliğine çevirir.
+--         Kodu üreten Yöneticidir; bu fonksiyon kendi başına kod üretemez,
+--         dolayısıyla anahtarı ele geçiren biri yeni kamera tanımlayamaz.
+--       · kamera_kalp_cihaz yalnızca zaman damgası yazar.
+--     İkisi de `auth.uid()` null olduğu için `is_yonetici()` guard'ı
+--     taşıyamaz — tek korumaları bu grant'tır, tıpkı kamera_okuma_bagla
+--     gibi. Kodu ÜRETEN dört RPC (kamera_kod_uret, kamera_bekleyen_kodlar,
+--     kamera_kod_iptal, kamera_cihaz_kaldir/durum) bu listede YOKTUR ve
+--     olmamalıdır: onlar Yöneticinin, kameranın değil.
 v_beklenen := array[
   'bildirim_yonetici_turu', 'bilet_ac', 'biletler_immutable_guard',
-  'handle_new_user', 'kamera_cikis_bildir', 'kamera_kalp',
-  'kamera_okuma_bagla'];
+  'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_kalp',
+  'kamera_kalp_cihaz', 'kamera_okuma_bagla'];
 
 if exists (select 1 from unnest(v_liste) x where x <> all(v_beklenen)) then
   raise exception 'FAIL 41b: service_role fazladan fonksiyon çağırabiliyor: %',
@@ -3169,6 +3181,434 @@ if exists (select 1 from public.vardiyalar
 end if;
 
 raise notice 'PASS 56: vardiya kapatma isteği Yönetici onayından geçiyor';
+
+-- =====================================================================
+-- 57  Kamera eşleştirme ve şerit başına nöbet (036)
+--     Kurulum kodu tek kullanımlıktır, gizli anahtar HİÇ düz metin
+--     saklanmaz, ve her kameranın ölümü AYRI uyarı üretir.
+-- =====================================================================
+
+perform pg_temp.logout();
+delete from public.kamera_eslestirme;
+delete from public.kamera_cihazlari;
+delete from public.notifications where tur = 'KAMERA';
+
+-- (a) Personel bu ekranın hiçbir yerine dokunamaz. Kamera kurulumu onun
+--     işi değil; gördüğü her ekran görmemesi gereken bir ekran olabilir.
+perform pg_temp.login(u_personel);
+begin
+  perform public.kamera_kod_uret('Deneme', 'GIRIS');
+  raise exception 'FAIL 57a: personel kurulum kodu üretebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (kod_uret): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.kamera_bekleyen_kodlar();
+  raise exception 'FAIL 57a: personel bekleyen kodları görebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (bekleyen_kodlar): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.kamera_cihaz_kaldir(gen_random_uuid());
+  raise exception 'FAIL 57a: personel kamera kaldırabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (cihaz_kaldir): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.kamera_cihaz_durum(gen_random_uuid(), false);
+  raise exception 'FAIL 57a: personel kamerayı devre dışı bırakabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (cihaz_durum): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.kamera_kod_durum(gen_random_uuid());
+  raise exception 'FAIL 57a: personel kurulum kodunun durumunu okuyabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (kod_durum): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.kamera_eski_kopru_unut();
+  raise exception 'FAIL 57a: personel eski köprü nöbetini kapatabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 57a: beklenmeyen hata (eski_kopru_unut): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (b) Kimlik BASAN iki fonksiyon istemciye kapalı olmalı. Ekranı gizlemek
+--     güvenlik değildir; sınır grant'ın kendisinde durmalı.
+if has_function_privilege('authenticated', 'public.kamera_eslestir(text)', 'execute')
+   or has_function_privilege('anon', 'public.kamera_eslestir(text)', 'execute') then
+  raise exception 'FAIL 57b: kamera_eslestir istemciye açık';
+end if;
+if has_function_privilege('authenticated', 'public.kamera_kalp_cihaz(uuid)', 'execute')
+   or has_function_privilege('anon', 'public.kamera_kalp_cihaz(uuid)', 'execute') then
+  raise exception 'FAIL 57b: kamera_kalp_cihaz istemciye açık';
+end if;
+-- Canlı kodlar hiçbir role açık olmamalı; hash de istemciye görünmemeli.
+if has_table_privilege('authenticated', 'public.kamera_eslestirme', 'SELECT')
+   or has_table_privilege('service_role', 'public.kamera_eslestirme', 'SELECT') then
+  raise exception 'FAIL 57b: kamera_eslestirme okunabiliyor';
+end if;
+if has_column_privilege('authenticated', 'public.kamera_cihazlari', 'gizli_hash', 'SELECT') then
+  raise exception 'FAIL 57b: gizli_hash istemciye açık';
+end if;
+-- Yetkiler AÇIKÇA yazılmış olmalı, Supabase'in varsayılanına yaslanmamalı:
+-- webhook hash üzerinden sorgu yapar (okuma şart), ama satır yazması için
+-- hiçbir sebep yok — cihazı yalnızca kamera_eslestir oluşturur.
+if not has_column_privilege('service_role', 'public.kamera_cihazlari', 'gizli_hash', 'SELECT') then
+  raise exception 'FAIL 57b: webhook gizli_hash okuyamıyor — eşleştirilen her kamera 401 alır';
+end if;
+if has_table_privilege('service_role', 'public.kamera_cihazlari', 'INSERT')
+   or has_table_privilege('service_role', 'public.kamera_cihazlari', 'UPDATE')
+   or has_table_privilege('service_role', 'public.kamera_cihazlari', 'DELETE') then
+  raise exception 'FAIL 57b: service_role kamera_cihazlari tablosuna yazabiliyor';
+end if;
+if has_table_privilege('authenticated', 'public.kamera_cihazlari', 'INSERT')
+   or has_table_privilege('authenticated', 'public.kamera_cihazlari', 'UPDATE')
+   or has_table_privilege('authenticated', 'public.kamera_cihazlari', 'DELETE') then
+  raise exception 'FAIL 57b: istemci kamera_cihazlari tablosuna yazabiliyor';
+end if;
+if not has_column_privilege('authenticated', 'public.kamera_cihazlari', 'durum_at', 'SELECT') then
+  raise exception 'FAIL 57b: ekranın okuduğu durum_at kolonu kapalı';
+end if;
+if has_function_privilege('anon', 'public.kamera_eski_kopru_unut()', 'execute')
+   or has_function_privilege('service_role', 'public.kamera_eski_kopru_unut()', 'execute') then
+  raise exception 'FAIL 57b: kamera_eski_kopru_unut istemci dışı bir role açık';
+end if;
+if has_function_privilege('anon', 'public.kamera_kod_durum(uuid)', 'execute')
+   or has_function_privilege('service_role', 'public.kamera_kod_durum(uuid)', 'execute') then
+  raise exception 'FAIL 57b: kamera_kod_durum istemci dışı bir role açık';
+end if;
+
+-- (c) Yönetici kod üretir, kamera onu KENDİ anahtarına çevirir. Saklanan
+--     şey anahtarın kendisi değil, sha256'sı olmalı — veritabanını okuyan
+--     biri çalışan bir kimlik elde edememeli.
+perform pg_temp.login(u_yonetici);
+select public.kamera_kod_uret('Çıkış bariyeri', 'CIKIS') into v_json;
+v_txt := v_json ->> 'kod';
+if length(v_txt) <> 11 or substr(v_txt, 6, 1) <> '-' then
+  raise exception 'FAIL 57c: kod biçimi XXXXX-XXXXX değil: %', v_txt;
+end if;
+-- Ekran, kurulumun nereye vardığını kodun KENDİSİNİ bir daha okumadan
+-- izleyebilmeli: üretim cevabı satır kimliğini taşır, durum sorgusu kodu
+-- hiçbir zaman geri vermez.
+v_islem := (v_json ->> 'id')::uuid;
+if v_islem is null then
+  raise exception 'FAIL 57c: kod_uret satır kimliğini döndürmedi';
+end if;
+select public.kamera_kod_durum(v_islem) into v_json;
+if v_json ->> 'durum' <> 'BEKLIYOR' then
+  raise exception 'FAIL 57c: yeni kodun durumu BEKLIYOR değil (%)', v_json ->> 'durum';
+end if;
+if v_json ? 'kod' or v_json::text like '%' || replace(v_txt, '-', '') || '%' then
+  raise exception 'FAIL 57c: durum sorgusu kodu geri verdi';
+end if;
+select public.kamera_kod_durum(gen_random_uuid()) into v_json;
+if v_json ->> 'durum' <> 'YOK' then
+  raise exception 'FAIL 57c: olmayan kodun durumu YOK değil (%)', v_json ->> 'durum';
+end if;
+perform pg_temp.logout();
+
+-- Personel eşleştirilmiş kamerayı da GÖREMEZ.
+perform pg_temp.login(u_personel);
+if exists (select 1 from public.kamera_cihazlari) then
+  raise exception 'FAIL 57c: personel kamera listesini görebiliyor';
+end if;
+perform pg_temp.logout();
+
+-- Küçük harf ve boşlukla gelen kod da çalışmalı: kod telefonda okunuyor.
+perform pg_temp.kamera();
+select public.kamera_eslestir(' ' || lower(v_txt) || ' ') into v_json;
+perform pg_temp.logout();
+
+v_id  := (v_json ->> 'cihaz')::uuid;
+v_txt2 := v_json ->> 'gizli';
+if v_json ->> 'yon' <> 'CIKIS' then
+  raise exception 'FAIL 57c: şerit taşınmadı (%)', v_json ->> 'yon';
+end if;
+if length(v_txt2) <> 64 then
+  raise exception 'FAIL 57c: gizli anahtar 64 karakter değil (%)', length(v_txt2);
+end if;
+if not exists (select 1 from public.kamera_cihazlari
+                where id = v_id
+                  and gizli_hash = encode(sha256(convert_to(v_txt2, 'UTF8')), 'hex')) then
+  raise exception 'FAIL 57c: saklanan hash dönen anahtarla uyuşmuyor';
+end if;
+-- Düz metin hiçbir kolonda durmamalı.
+if exists (select 1 from public.kamera_cihazlari where gizli_hash = v_txt2) then
+  raise exception 'FAIL 57c: gizli anahtar düz metin saklanmış';
+end if;
+if not exists (select 1 from public.kamera_eslestirme
+                where kullanildi_at is not null and cihaz_id = v_id) then
+  raise exception 'FAIL 57c: kod kullanıldı olarak işaretlenmedi';
+end if;
+perform pg_temp.login(u_yonetici);
+select public.kamera_kod_durum(v_islem) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' <> 'KULLANILDI' or (v_json ->> 'cihaz_id')::uuid is distinct from v_id then
+  raise exception 'FAIL 57c: kullanılan kodun durumu cihazı göstermiyor (%)', v_json;
+end if;
+
+-- (d) Kod süreli ve tek bir kameraya bağlı. İkisi de olmazsa sızan bir kod
+--     kalıcı bir arka kapıdır.
+--
+--     Kamera HİÇ bağlanmadıysa aynı kod yeniden denenebilir: cevabı yolda
+--     kaybolan bir kurulum, yoksa hem kodu harcar hem de anahtarını kimsenin
+--     bilmediği ölü bir cihaz satırı bırakırdı. Yeniden deneme YENİ cihaz
+--     açmaz; aynı cihazın anahtarını değiştirir ve eskisini öldürür.
+update public.otopark_ayarlari set kamera_kalp_atisi = null where id = 1;
+perform pg_temp.kamera();
+select public.kamera_eslestir(v_txt) into v_json;
+perform pg_temp.logout();
+if (v_json ->> 'cihaz')::uuid is distinct from v_id then
+  raise exception 'FAIL 57d: yeniden deneme başka bir cihaz açtı';
+end if;
+if (select count(*) from public.kamera_cihazlari) <> 1 then
+  raise exception 'FAIL 57d: yeniden deneme ikinci bir cihaz satırı bıraktı';
+end if;
+v_txt3 := v_json ->> 'gizli';
+if length(v_txt3) <> 64 or v_txt3 = v_txt2 then
+  raise exception 'FAIL 57d: yeniden deneme yeni bir anahtar üretmedi';
+end if;
+if exists (select 1 from public.kamera_cihazlari
+            where gizli_hash = encode(sha256(convert_to(v_txt2, 'UTF8')), 'hex')) then
+  raise exception 'FAIL 57d: yeniden denemeden sonra eski anahtar hâlâ geçerli';
+end if;
+if not exists (select 1 from public.kamera_cihazlari
+                where id = v_id
+                  and gizli_hash = encode(sha256(convert_to(v_txt3, 'UTF8')), 'hex')) then
+  raise exception 'FAIL 57d: yeni anahtarın hash''i saklanmadı';
+end if;
+
+-- Süresi dolunca yeniden deneme de biter — hiç bağlanmamış olsa bile.
+update public.kamera_eslestirme set bitis = now() - interval '1 minute'
+ where cihaz_id = v_id;
+perform pg_temp.kamera();
+begin
+  perform public.kamera_eslestir(v_txt);
+  raise exception 'FAIL 57d: süresi dolmuş kodla yeniden eşleştirilebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlstate <> 'KE001' or lower(sqlerrm) not like '%süresi dolmuş%' then
+    raise exception 'FAIL 57d: beklenmeyen hata (yeniden, süre): % %', sqlstate, sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+update public.kamera_eslestirme set bitis = now() + interval '10 minutes'
+ where cihaz_id = v_id;
+
+-- Kamera bir kez bağlandıysa kod ÖLÜDÜR: çalışan bir kameranın anahtarı
+-- eski bir kodla değiştirilememeli. Cihaz kalp atışı GENEL damgaya da
+-- dokunmamalı — o damga yalnızca elle kurulmuş köprülerindir.
+perform pg_temp.kamera();
+perform public.kamera_kalp_cihaz(v_id);
+begin
+  perform public.kamera_eslestir(v_txt);
+  raise exception 'FAIL 57d: bağlanmış kameranın kodu ikinci kez kullanılabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlstate <> 'KE001' or lower(sqlerrm) not like '%zaten kullanılmış%' then
+    raise exception 'FAIL 57d: beklenmeyen hata (tekrar): % %', sqlstate, sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.kamera_cihazlari
+                where id = v_id and son_gorulme is not null
+                  and gizli_hash = encode(sha256(convert_to(v_txt3, 'UTF8')), 'hex')) then
+  raise exception 'FAIL 57d: reddedilen deneme çalışan kameranın anahtarını değiştirdi';
+end if;
+if (select kamera_kalp_atisi from public.otopark_ayarlari where id = 1) is not null then
+  raise exception 'FAIL 57d: cihaz kalp atışı genel damgayı da vurdu';
+end if;
+
+perform pg_temp.login(u_yonetici);
+select public.kamera_kod_uret('Süresi dolacak', 'GIRIS') into v_json;
+v_txt := v_json ->> 'kod';
+v_islem := (v_json ->> 'id')::uuid;
+perform pg_temp.logout();
+update public.kamera_eslestirme set bitis = now() - interval '1 minute'
+ where kullanildi_at is null;
+perform pg_temp.login(u_yonetici);
+select public.kamera_kod_durum(v_islem) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' <> 'DOLDU' then
+  raise exception 'FAIL 57d: süresi dolan kodun durumu DOLDU değil (%)', v_json ->> 'durum';
+end if;
+perform pg_temp.kamera();
+begin
+  perform public.kamera_eslestir(v_txt);
+  raise exception 'FAIL 57d: süresi dolmuş kod kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlstate <> 'KE001' or lower(sqlerrm) not like '%süresi dolmuş%' then
+    raise exception 'FAIL 57d: beklenmeyen hata (süre): % %', sqlstate, sqlerrm;
+  end if;
+end;
+-- Var olmayan kod ve yanlış uzunluk AYNI mesajı vermeli: fark söylemek,
+-- kod deneyen birine bilgi vermektir.
+begin
+  perform public.kamera_eslestir('ZZZZZ-ZZZZZ');
+  raise exception 'FAIL 57d: olmayan kod kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlstate <> 'KE001' or lower(sqlerrm) not like '%geçersiz%' then
+    raise exception 'FAIL 57d: beklenmeyen hata (olmayan): % %', sqlstate, sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (e) ASIL DÜZELTME. Eskiden tek bir genel kamera_kalp_atisi vardı ve iki
+--     şeritli bir otoparkta giriş köprüsü onu taze tutuyordu — çıkış
+--     kamerası ölünce HİÇBİR uyarı çıkmıyordu.
+delete from public.notifications where tur = 'KAMERA';
+select kamera_kalp_esik_dk into v_n from public.otopark_ayarlari where id = 1;
+
+-- İki kamera: biri ölü, biri canlı. Yalnızca ölü olan uyarı üretmeli.
+update public.kamera_cihazlari
+   set son_gorulme = now() - make_interval(mins => v_n + 10) where id = v_id;
+insert into public.kamera_cihazlari (ad, yon, gizli_hash, son_gorulme)
+values ('Giriş bariyeri', 'GIRIS', repeat('a', 64), now())
+returning id into v_id2;
+
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar?c=' || v_id::text) <> 1 then
+  raise exception 'FAIL 57e: ölü kamera için tam olarak bir uyarı üretilmedi';
+end if;
+if exists (select 1 from public.notifications
+            where tur = 'KAMERA' and link = '/yonetim/kameralar?c=' || v_id2::text) then
+  raise exception 'FAIL 57e: canlı kamera için uyarı üretildi';
+end if;
+
+-- Aynı saat içinde tekrar koşmak ikinci uyarı üretmemeli.
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar?c=' || v_id::text) <> 1 then
+  raise exception 'FAIL 57e: aynı kamera için uyarı tekrarlandı';
+end if;
+
+-- İkinci kamera da ölünce KENDİ uyarısını almalı. Genel "son bir saatte
+-- KAMERA bildirimi var mı" tekilleştirmesi burada olsaydı, ilk ölen ikinci
+-- ölenin uyarısını susturur ve düzeltilen hata geri gelirdi.
+update public.kamera_cihazlari
+   set son_gorulme = now() - make_interval(mins => v_n + 10) where id = v_id2;
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar?c=' || v_id2::text) <> 1 then
+  raise exception 'FAIL 57e: ikinci ölü kamera susturuldu — 036 öncesi hata geri geldi';
+end if;
+
+-- Devre dışı bırakılan kamera uyarı üretmemeli: tamire giden bir kamera
+-- için saatte bir uyarı almanın tek alternatifi onu SİLMEK olmamalı.
+delete from public.notifications where tur = 'KAMERA';
+perform pg_temp.login(u_yonetici);
+perform public.kamera_cihaz_durum(v_id, false);
+perform public.kamera_cihaz_durum(v_id2, false);
+perform pg_temp.logout();
+perform public.run_kamera_kontrol();
+if exists (select 1 from public.notifications where tur = 'KAMERA') then
+  raise exception 'FAIL 57e: devre dışı kamera hâlâ uyarı üretiyor';
+end if;
+
+-- Yeniden etkinleştirilen kamera, son_gorulme günler öncesinde kaldı diye
+-- ANINDA uyarı üretmemeli: tamirden dönen kamera henüz prize takılmamış
+-- olabilir. Bir eşik süresi kadar tanınır, sonra hâlâ sessizse uyarılır.
+perform pg_temp.login(u_yonetici);
+perform public.kamera_cihaz_durum(v_id, true);
+perform pg_temp.logout();
+perform public.run_kamera_kontrol();
+if exists (select 1 from public.notifications where tur = 'KAMERA') then
+  raise exception 'FAIL 57e: yeniden etkinleştirilen kamera anında uyarı üretti';
+end if;
+if (select son_gorulme from public.kamera_cihazlari where id = v_id)
+     is distinct from now() - make_interval(mins => v_n + 10) then
+  raise exception 'FAIL 57e: etkinleştirme son_gorulme değerini değiştirdi';
+end if;
+update public.kamera_cihazlari
+   set durum_at = now() - make_interval(mins => v_n + 10) where id = v_id;
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar?c=' || v_id::text) <> 1 then
+  raise exception 'FAIL 57e: tanınan süre dolduğu hâlde sessiz kamera uyarı üretmedi';
+end if;
+
+-- (f) KARMA KURULUM. Bir şerit eşleştirilmiş, öbürü hâlâ ortak anahtarla
+--     (env) çalışıyor olabilir. Eşleştirilmiş kamera canlıyken elle kurulmuş
+--     köprü ölürse uyarı ÇIKMALI — yoksa 036'nın düzelttiği hata öbür
+--     şeritte geri gelir. Cihaz kalp atışı genel damgayı tazelememeli.
+delete from public.notifications where tur = 'KAMERA';
+update public.kamera_cihazlari set aktif = true, son_gorulme = now(), durum_at = null;
+v_ts := now() - make_interval(mins => v_n + 10);
+update public.otopark_ayarlari set kamera_kalp_atisi = v_ts where id = 1;
+perform public.kamera_kalp_cihaz(v_id2);
+if (select kamera_kalp_atisi from public.otopark_ayarlari where id = 1)
+     is distinct from v_ts then
+  raise exception 'FAIL 57f: eşleştirilmiş kamera elle kurulmuş köprünün damgasını tazeledi';
+end if;
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar') <> 1 then
+  raise exception 'FAIL 57f: canlı bir eşleştirilmiş kamera, ölü elle kurulmuş köprüyü susturdu';
+end if;
+if exists (select 1 from public.notifications
+            where tur = 'KAMERA' and link like '/yonetim/kameralar?c=%') then
+  raise exception 'FAIL 57f: canlı eşleştirilmiş kameralar için uyarı üretildi';
+end if;
+perform public.run_kamera_kontrol();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and profile_id = u_yonetici
+       and link = '/yonetim/kameralar') <> 1 then
+  raise exception 'FAIL 57f: elle kurulmuş köprü uyarısı aynı saat içinde tekrarlandı';
+end if;
+
+-- Tamamen eşleştirmeye geçen otopark eski nöbeti KAPATABİLMELİ; yoksa
+-- bayatlamış damga sonsuza dek saatte bir uyarı üretir.
+delete from public.notifications where tur = 'KAMERA';
+perform pg_temp.login(u_yonetici);
+perform public.kamera_eski_kopru_unut();
+perform pg_temp.logout();
+if (select kamera_kalp_atisi from public.otopark_ayarlari where id = 1) is not null then
+  raise exception 'FAIL 57f: eski köprü nöbeti kapanmadı';
+end if;
+perform public.run_kamera_kontrol();
+if exists (select 1 from public.notifications where tur = 'KAMERA') then
+  raise exception 'FAIL 57f: kapatılan eski köprü nöbeti hâlâ uyarı üretiyor';
+end if;
+
+-- Hiç cihaz yokken genel kontrol HÂLÂ çalışmalı: env anahtarıyla elle
+-- kurulmuş köprülerin tek koruması odur.
+delete from public.kamera_cihazlari;
+update public.otopark_ayarlari set kamera_kalp_atisi = v_ts where id = 1;
+perform public.run_kamera_kontrol();
+if not exists (select 1 from public.notifications
+                where tur = 'KAMERA' and link = '/yonetim/kameralar') then
+  raise exception 'FAIL 57f: cihazsız kurulumda genel kamera kontrolü çalışmadı';
+end if;
+
+raise notice 'PASS 57: kamera eşleştirme tek kullanımlık, anahtar hash''li, nöbet şerit başına';
 
 perform pg_temp.logout();
 raise notice '';

@@ -201,12 +201,12 @@ function FiltreMenu<T extends string>({
   )
 }
 
-/** A quiet section heading inside the one list. */
+/** A section heading inside the one list. */
 function BolumBasligi({ metin, sayi }: { metin: string; sayi?: number }) {
   return (
-    <h3 className="mb-2 flex items-baseline gap-2 text-label font-medium tracking-wide text-faint uppercase">
+    <h3 className="mb-2 flex items-baseline gap-2 text-label font-semibold tracking-wide text-ink uppercase">
       {metin}
-      {sayi !== undefined && <span className="tnum">{sayi}</span>}
+      {sayi !== undefined && <span className="tnum text-soft">{sayi}</span>}
     </h3>
   )
 }

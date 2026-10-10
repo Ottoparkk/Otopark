@@ -377,11 +377,18 @@ supabase login
 supabase link --project-ref <project-ref>
 supabase functions deploy plaka-oku
 supabase functions deploy kamera-webhook --no-verify-jwt
+supabase functions deploy kamera-eslestir --no-verify-jwt
 supabase functions deploy send-push --no-verify-jwt
 ```
 
-`--no-verify-jwt` is **required** for those two: a camera and a database webhook
-cannot present a JWT. Their boundary is the shared secret instead.
+`--no-verify-jwt` is **required** for those three: a camera, the installer
+before it has any credential at all, and a database webhook cannot present a
+JWT. Their boundary is a secret or a single-use code instead.
+
+**Order matters for `kamera-eslestir`:** migration `036` must be applied first —
+the function calls `kamera_eslestir`, which does not exist before it. Deploying
+early is not dangerous (pairing simply fails with a clear error), but nothing
+can be paired until the migration has run.
 
 Secrets (**Edge Functions → Secrets**):
 
@@ -497,6 +504,30 @@ The provider decision gets **re-made** from this table, not re-argued.
 > tests verify the contract, not any vendor's particular behaviour.
 
 1. Turn on **Yönetim → Ayarlar → `kamera_aktif`** (off by default).
+
+**The normal path is now pairing, not a shared secret.** In the app, Yönetici →
+**Yönetim → Kamera kurulumu → "Yeni kamera"** mints an `XXXXX-XXXXX` code for
+ONE camera, valid 15 minutes (it can be exchanged again until that camera's
+first heartbeat, so a lost reply does not burn it; each exchange replaces the
+secret). The installer's own connection test carries `x-kamera-deneme: 1` and
+is NOT counted as a heartbeat, so "Çalışıyor" means the bridge itself is up. The screen follows the setup live: Bekleniyor → Eşleştirildi →
+Çalışıyor. The bridge installer exchanges it at `kamera-eslestir`
+for a credential **of its own**, of which only the SHA-256 is stored. Each
+camera can then be revoked or disabled on its own, and each lane keeps its own
+heartbeat — before 036 one live bridge kept the single global heartbeat fresh,
+so a dead exit camera raised no alert at all.
+
+A paired camera's lane is the one on its own row: a request naming the other
+lane is refused with 409. Paired cameras are watched from their own rows and do
+**not** touch the global heartbeat — that one belongs to hand-installed bridges
+only, so a site running one of each is alerted about either. A site with no
+hand-installed bridge left switches that watch off on the same screen
+(**Elle kurulmuş köprü → "Artık kullanılmıyor"**).
+
+`KAMERA_WEBHOOK_SECRET` is still accepted and is still checked **first**, so
+existing bridges and the manual path below are unaffected. It remains the only
+option for hardware that posts directly, with no bridge:
+
 2. The camera's target address — one of three, whichever the hardware supports:
    - Header: `x-kamera-secret: <KAMERA_WEBHOOK_SECRET>`
    - HTTP Basic: any username, **password** = the secret

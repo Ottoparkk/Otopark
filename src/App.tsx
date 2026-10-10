@@ -34,6 +34,7 @@ const Tarifeler = lazy(() => import('./features/finans/Tarifeler'))
 const Personel = lazy(() => import('./features/yonetim/Personel'))
 const PersonelDetay = lazy(() => import('./features/yonetim/PersonelDetay'))
 const OtoparkAyarlari = lazy(() => import('./features/yonetim/OtoparkAyarlari'))
+const Kameralar = lazy(() => import('./features/yonetim/Kameralar'))
 
 const Finans = lazy(() => import('./features/finans/Finans'))
 const Raporlar = lazy(() => import('./features/finans/Raporlar'))
@@ -165,6 +166,7 @@ export default function App() {
                   money ones included. RLS on `cop` says the same. */}
               <Route path="/yonetim/cop" element={<Cop />} />
               <Route path="/yonetim/ayarlar" element={<OtoparkAyarlari />} />
+              <Route path="/yonetim/kameralar" element={<Kameralar />} />
 
               {/* Finans is its own section, but the same guard: every
                   table behind it is Yönetici-only in RLS. */}

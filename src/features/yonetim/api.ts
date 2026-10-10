@@ -2,6 +2,11 @@ import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import type {
+  KameraCihaz,
+  KameraKod,
+  KameraKodDurum,
+  KameraYeniKod,
+  KameraYon,
   KullaniciDurum,
   OtoparkAyarlari,
   Profile,
@@ -356,6 +361,171 @@ export function useAyarGuncelle() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['ayarlar'] })
+    },
+  })
+}
+
+/* =============================================================== kamera === */
+
+/**
+ * Paired cameras (036).
+ *
+ * A table read, not an RPC: RLS already limits it to a Yönetici and the column
+ * grant already withholds `gizli_hash`, so there is nothing an RPC would add.
+ * `select('*')` would therefore be safe too, but the columns are named so that
+ * adding a sensitive one later cannot leak by default.
+ */
+export function useKameralar(aralikMs = 60_000) {
+  return useQuery({
+    queryKey: ['kamera_cihazlari'],
+    queryFn: async (): Promise<KameraCihaz[]> => {
+      const { data, error } = await supabase
+        .from('kamera_cihazlari')
+        .select('id,ad,yon,aktif,son_gorulme,durum_at,olusturan,created_at')
+        .order('yon')
+        .order('ad')
+      if (error) throw error
+      return (data ?? []) as KameraCihaz[]
+    },
+    // The card's whole job is answering "is it alive right now". A minute is
+    // enough for that; the screen asks for a shorter interval only while a
+    // setup is in progress and someone is waiting to see it land.
+    refetchInterval: aralikMs,
+  })
+}
+
+/**
+ * What became of ONE setup code — polled while its sheet is open, so the
+ * Yönetici sees the moment the person at the car park types it in.
+ *
+ * Keyed by the code row's id, never the code. `id === null` switches the
+ * query off (no sheet open).
+ */
+export function useKameraKodDurum(id: string | null) {
+  return useQuery({
+    queryKey: ['kamera_kod_durum', id],
+    enabled: id !== null,
+    queryFn: async (): Promise<KameraKodDurum> => {
+      const { data, error } = await supabase.rpc('kamera_kod_durum', { p_id: id! })
+      if (error) throw error
+      return data as KameraKodDurum
+    },
+    // Stop asking once the answer can no longer change. KULLANILDI is final
+    // for the code; the camera's first heartbeat is watched through
+    // useKameralar instead.
+    refetchInterval: (q) => (q.state.data && q.state.data.durum !== 'BEKLIYOR' ? false : 3_000),
+  })
+}
+
+/** Outstanding codes. Returns metadata only — never the code itself. */
+export function useKameraKodlar() {
+  return useQuery({
+    queryKey: ['kamera_kodlari'],
+    queryFn: async (): Promise<KameraKod[]> => {
+      const { data, error } = await supabase.rpc('kamera_bekleyen_kodlar')
+      if (error) throw error
+      return (data ?? []) as KameraKod[]
+    },
+    // Each one expires in 15 minutes; a stale list would offer a dead code.
+    refetchInterval: 30_000,
+  })
+}
+
+/**
+ * Mints a pairing code.
+ *
+ * `returns jsonb`, so PostgREST hands back a BARE OBJECT here, not the
+ * single-element array a `returns table` function would give. The code in it
+ * is readable exactly once — nothing can fetch it again.
+ */
+export function useKameraKodUret() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (v: { ad: string; yon: KameraYon }): Promise<KameraYeniKod> => {
+      const { data, error } = await supabase.rpc('kamera_kod_uret', {
+        p_ad: v.ad,
+        p_yon: v.yon,
+      })
+      if (error) throw error
+      return data as KameraYeniKod
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['kamera_kodlari'] })
+    },
+  })
+}
+
+export function useKameraKodIptal() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.rpc('kamera_kod_iptal', { p_id: id })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['kamera_kodlari'] })
+    },
+  })
+}
+
+export function useKameraKaldir() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.rpc('kamera_cihaz_kaldir', { p_id: id })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['kamera_cihazlari'] })
+    },
+  })
+}
+
+/**
+ * Stops watching the hand-installed (shared-secret) bridge.
+ *
+ * Paired cameras are watched from their own rows. The one global timestamp is
+ * left for bridges set up by hand, and a site that has moved entirely to
+ * paired cameras would otherwise be alerted about it every hour, forever.
+ */
+export function useKameraEskiKopruUnut() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async () => {
+      const { error } = await supabase.rpc('kamera_eski_kopru_unut')
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['ayarlar'] })
+    },
+  })
+}
+
+/**
+ * Out of service / back in service.
+ *
+ * Disabling does two things at once: the credential stops being accepted and
+ * the watchdog stops alerting about that camera. Without it the only way to
+ * stop an hourly alert for a camera away being repaired would be to DELETE it
+ * — and then someone has to drive to the car park to pair it again.
+ */
+export function useKameraDurum() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (v: { id: string; aktif: boolean }) => {
+      const { error } = await supabase.rpc('kamera_cihaz_durum', {
+        p_id: v.id,
+        p_aktif: v.aktif,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['kamera_cihazlari'] })
     },
   })
 }

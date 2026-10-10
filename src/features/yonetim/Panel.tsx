@@ -6,6 +6,7 @@ import {
   IconAbonman,
   IconAyar,
   IconCop,
+  IconKamera,
   IconKisi,
   IconPuan,
 } from '../../components/ui/icons'
@@ -87,6 +88,14 @@ export default function Panel() {
             icon={<IconKisi size={22} />}
             baslik="Personel"
             aciklama="Kayıt onayı, rol ve durum"
+          />
+          <MenuKart
+            satir
+            to="/yonetim/kameralar"
+            tone="accent"
+            icon={<IconKamera size={22} />}
+            baslik="Kamera kurulumu"
+            aciklama="Kamera ekle, durumu gör"
           />
           <MenuKart
             satir

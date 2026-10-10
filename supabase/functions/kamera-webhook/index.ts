@@ -12,22 +12,28 @@
  *   • JPEG in          (thin bridge)                            → OCR, then through
  *
  * WHAT IT CANNOT DO — by construction, not by promise:
- *   It may call exactly three RPCs: bilet_ac, kamera_cikis_bildir, kamera_kalp.
- *   There is no path to tariffs, users, the kasa or subscriptions. And it can
- *   never close a ticket or take money: a camera reports, a human collects.
+ *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_okuma_bagla,
+ *   kamera_kalp and kamera_kalp_cihaz. There is no path to tariffs, users, the
+ *   kasa or subscriptions. And it can never close a ticket or take money: a
+ *   camera reports, a human collects.
  *
  * Security posture (OWASP 2025):
- *   A01  Shared secret required, compared in constant time. Accepted three
- *        ways because some cameras (TP-Link VIGI) offer no auth field at all.
+ *   A01  A credential is required and compared in constant time. Two kinds:
+ *        the shared env secret, and (036) a per-camera secret of which only
+ *        the SHA-256 is stored. Accepted three ways because some cameras
+ *        (TP-Link VIGI) offer no auth field at all.
+ *   A02  A per-camera secret is never stored in clear, so reading the database
+ *        yields no working credential, and one camera can be revoked alone.
  *   A03  Body is zod-validated and size-capped before anything touches the DB.
  *   A04  Rate limit AND a daily cap: a leaked URL is a billing attack before
  *        it is anything else.
  *   A09  Every refusal is logged; every accepted event bumps the heartbeat.
  */
-import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
+import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { z } from 'npm:zod@4.4.3'
 import { deriveIslemId, json, parseCameraTime, safeEqual } from '../_shared/http.ts'
 import { bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
+import { seritKarari } from '../_shared/serit.ts'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 const DAKIKA_LIMIT = 30 // camera-sourced rows per minute
@@ -48,11 +54,33 @@ const GUN_LIMIT = 2000 // ...and per day
  * move the old one to _ESKI, reconfigure the camera, then drop _ESKI. Without
  * it, rotating means a window where the camera is silently rejected.
  */
-function secretOk(req: Request, pathSecret: string | null): boolean {
-  const current = Deno.env.get('KAMERA_WEBHOOK_SECRET') ?? ''
-  const previous = Deno.env.get('KAMERA_WEBHOOK_SECRET_ESKI') ?? ''
-  if (current.length < 16) return false // refuse to run on a weak/absent secret
+async function sha256Hex(s: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))
+  return Array.from(d, (x) => x.toString(16).padStart(2, '0')).join('')
+}
 
+/**
+ * Two kinds of credential, and the order matters.
+ *
+ * The ENV path is evaluated first and is byte-for-byte what it always was, so
+ * a bridge set up by hand keeps working and pays no database round trip.
+ *
+ * The DEVICE path is new (036): each paired camera has its own secret, only
+ * its SHA-256 is stored, and `cihazId` tells the caller which camera reported
+ * — which is what makes a per-camera heartbeat possible. Before this, one live
+ * bridge kept the single global heartbeat fresh and a dead exit camera raised
+ * no alarm at all.
+ *
+ * Returns the device id and ITS lane, or nulls for a valid env-secret caller.
+ * The lane is read here, in the same query that proves the credential, so it
+ * cannot be a different row's lane.
+ */
+async function kimlik(
+  req: Request,
+  pathSecret: string | null,
+  admin: SupabaseClient,
+): Promise<{ ok: boolean; cihazId: string | null; cihazYon: string | null }> {
+  const RED = { ok: false, cihazId: null, cihazYon: null }
   const candidates: string[] = []
 
   const header = req.headers.get('x-kamera-secret')
@@ -70,20 +98,60 @@ function secretOk(req: Request, pathSecret: string | null): boolean {
   }
 
   if (pathSecret) candidates.push(pathSecret)
-  if (candidates.length === 0) return false
+  if (candidates.length === 0) return RED
 
-  // Evaluate every candidate against both secrets without early exit.
-  let ok = false
-  for (const c of candidates) {
-    if (safeEqual(c, current)) ok = true
-    if (previous.length >= 16 && safeEqual(c, previous)) ok = true
+  // 1. Shared env secret — UNCHANGED. The `< 16` refusal is scoped to this
+  //    branch now, so an install that only ever uses per-camera credentials
+  //    and has no env secret still works.
+  const current = Deno.env.get('KAMERA_WEBHOOK_SECRET') ?? ''
+  const previous = Deno.env.get('KAMERA_WEBHOOK_SECRET_ESKI') ?? ''
+  if (current.length >= 16) {
+    // Evaluate every candidate against both secrets without early exit.
+    let ok = false
+    for (const c of candidates) {
+      if (safeEqual(c, current)) ok = true
+      if (previous.length >= 16 && safeEqual(c, previous)) ok = true
+    }
+    if (ok) return { ok: true, cihazId: null, cihazYon: null }
   }
-  return ok
+
+  // 2. Per-camera credential. Only exactly-shaped candidates reach the
+  //    database — a minted secret is 64 hex characters — so a probe with a
+  //    junk header never costs a query.
+  //
+  //    ⚠ THE SHAPE AND THE CASE FOLD BELONG TO 036's kamera_eslestir. It
+  //    builds the secret from two uuid::text values, which Postgres renders
+  //    LOWERCASE hex, and hashes that exact string. Lowercasing here is a
+  //    no-op for a real secret and only forgives a hand-retyped one; if the
+  //    secret format ever stops being hex, this filter AND this fold have to
+  //    change with it, or every camera silently starts getting 401.
+  const adaylar = candidates.filter((c) => /^[0-9a-f]{64}$/i.test(c))
+  if (adaylar.length === 0) return RED
+
+  try {
+    const hashes = await Promise.all(adaylar.map((c) => sha256Hex(c.toLowerCase())))
+    const { data, error } = await admin
+      .from('kamera_cihazlari')
+      .select('id, yon')
+      .in('gizli_hash', hashes)
+      .eq('aktif', true)
+      .limit(1)
+    if (error) throw error
+    const satir = data?.[0]
+    if (satir?.id) {
+      return { ok: true, cihazId: satir.id as string, cihazYon: String(satir.yon ?? '') }
+    }
+  } catch (e) {
+    // Fail CLOSED, and stay a 401: a database wobble must never be mistaken
+    // for a valid credential, nor turn into a 500 that tells a prober the
+    // lookup exists.
+    console.warn('kamera-webhook: cihaz kimliği okunamadı —', e)
+  }
+  return RED
 }
 
 /* --------------------------------------------------------- payload shapes */
 
-const YON = new Set(['GIRIS', 'CIKIS'])
 
 const OlaySchema = z.object({
   plaka: z.string().max(32).nullable().optional(),
@@ -257,17 +325,21 @@ Deno.serve(async (req: Request) => {
   const pathSecret = at >= 0 ? (segments[at + 1] ?? null) : null
   const pathYon = at >= 0 ? (segments[at + 2] ?? null) : null
 
-  if (!secretOk(req, pathSecret)) {
-    // No detail in the body: a probe learns nothing about which half was wrong.
-    console.warn('kamera-webhook: reddedilen istek')
-    return json({ hata: 'Yetkisiz.' }, 401)
-  }
-
+  // Created BEFORE the credential check, because a per-camera credential is
+  // verified against the database. Constructing the client does no I/O, so an
+  // unauthenticated request still costs nothing.
   const admin = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     { auth: { persistSession: false } },
   )
+
+  const { ok: yetkili, cihazId, cihazYon } = await kimlik(req, pathSecret, admin)
+  if (!yetkili) {
+    // No detail in the body: a probe learns nothing about which half was wrong.
+    console.warn('kamera-webhook: reddedilen istek')
+    return json({ hata: 'Yetkisiz.' }, 401)
+  }
 
   try {
     const raw = new Uint8Array(await req.arrayBuffer())
@@ -286,7 +358,29 @@ Deno.serve(async (req: Request) => {
     // The heartbeat is bumped for any AUTHENTICATED request, even one that
     // ends as an exception — "the camera is alive" and "the event was usable"
     // are different facts, and the watchdog only cares about the first.
-    await admin.rpc('kamera_kalp')
+    //
+    // A paired camera stamps ITS OWN row and nothing else; an env-secret
+    // bridge has no row and stamps the global one, exactly as before. They are
+    // kept apart on purpose: if a paired camera also refreshed the global
+    // stamp, a live exit camera would hide a dead hand-installed entrance
+    // bridge — the very gap 036 exists to close.
+    //
+    // EXCEPT a request the installer marks as a trial (`x-kamera-deneme: 1`,
+    // sent by its connection test and by its "is the stored credential still
+    // good" probe). That request proves the credential and nothing more: the
+    // bridge is not running yet. Stamping it would show the camera as working
+    // in the app while the wizard is still at step two, and would close the
+    // window in which the same setup code can be exchanged again (open until
+    // the camera's FIRST heartbeat — see 036 kamera_eslestir). The header can
+    // only withhold a heartbeat, never forge one, so honouring it is safe.
+    const deneme = req.headers.get('x-kamera-deneme') === '1'
+    if (deneme) {
+      /* credential checked above; nothing to stamp */
+    } else if (cihazId) {
+      await admin.rpc('kamera_kalp_cihaz', { p_cihaz_id: cihazId })
+    } else {
+      await admin.rpc('kamera_kalp')
+    }
 
     // Cheap flood guard on the rows the webhook can actually create.
     const birDakika = new Date(Date.now() - 60_000).toISOString()
@@ -317,11 +411,17 @@ Deno.serve(async (req: Request) => {
 
     // Direction is never guessed. One camera watches one lane, so it comes
     // from configuration; defaulting it would let a misconfigured exit camera
-    // silently open tickets.
-    const yon = (pathYon ?? url.searchParams.get('yon') ?? olay.yon ?? '').toUpperCase()
-    if (!YON.has(yon)) {
-      return json({ hata: 'yon belirtilmeli: GIRIS veya CIKIS.' }, 400)
+    // silently open tickets. For a PAIRED camera the configuration is the
+    // server's own row, and a request that disagrees with it is refused — see
+    // _shared/serit.ts.
+    const serit = seritKarari(cihazYon, pathYon ?? url.searchParams.get('yon') ?? olay.yon)
+    if (!serit.ok) {
+      if (serit.durum === 409) {
+        console.warn(`kamera-webhook: şerit uyuşmazlığı (${cihazId}) — ${serit.hata}`)
+      }
+      return json(serit.kod ? { hata: serit.hata, kod: serit.kod } : { hata: serit.hata }, serit.durum)
     }
+    const yon = serit.yon
 
     // A camera event with no timestamp is refused outright — billing it from
     // now() is how a buffered 14:00 arrival becomes a 30-minute charge.

@@ -17,3 +17,11 @@ verify_jwt = false
 # the x-push-secret header.
 [functions.send-push]
 verify_jwt = false
+
+# Trades a short, single-use pairing code for a camera's own credential. The
+# installer calls it before the bridge has any secret at all, so there is no
+# JWT and no shared secret to present — the code IS the credential, and it
+# expires in 15 minutes.
+# Deploy with:  supabase functions deploy kamera-eslestir --no-verify-jwt
+[functions.kamera-eslestir]
+verify_jwt = false

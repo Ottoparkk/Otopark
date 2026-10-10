@@ -573,6 +573,53 @@ export interface RaporOzet {
   puan_borcu_kurus: number
 }
 
+/* ---------------------------------------------------------------- kamera */
+
+export type KameraYon = 'GIRIS' | 'CIKIS'
+
+/**
+ * A paired camera bridge (036).
+ *
+ * `gizli_hash` is deliberately absent: the column grant leaves it out, so the
+ * client could not read it even if this type named it.
+ */
+export interface KameraCihaz {
+  id: string
+  ad: string
+  yon: KameraYon
+  aktif: boolean
+  /** null until the bridge's first heartbeat. */
+  son_gorulme: string | null
+  /** When it was last switched off or back on; null if never. */
+  durum_at: string | null
+  olusturan: string | null
+  created_at: string
+}
+
+/** An outstanding pairing code. The code ITSELF is never returned here. */
+export interface KameraKod {
+  id: string
+  ad: string
+  yon: KameraYon
+  bitis: string
+}
+
+/** kamera_kod_uret response — the only time the code is ever readable. */
+export interface KameraYeniKod {
+  /** The code ROW's id — what the screen polls with. Not the code. */
+  id: string
+  kod: string
+  bitis: string
+}
+
+/**
+ * kamera_kod_durum response: what became of one code. Never carries the code.
+ * `YOK` covers both "cancelled" and "never existed".
+ */
+export type KameraKodDurum =
+  | { durum: 'BEKLIYOR' | 'DOLDU' | 'YOK' }
+  | { durum: 'KULLANILDI'; cihaz_id: string | null }
+
 /** plaka-oku Edge Function response. */
 export interface PlakaOkumaSonuc {
   /** null when the read was too weak to prefill — show an empty field. */

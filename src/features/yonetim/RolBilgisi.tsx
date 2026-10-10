@@ -26,7 +26,8 @@ const KAPALI: Madde[] = [
   { ad: 'Finans', detay: 'Kasa, Onay, Raporlar, Bilet, Vardiyalar, Tarifeler' },
   {
     ad: 'Yönetim',
-    detay: 'Abonmanlar, Puan hesapları, Personel, Otopark Ayarları, Çöp Kutusu',
+    detay:
+      'Abonmanlar, Puan hesapları, Personel, Kamera kurulumu, Otopark Ayarları, Çöp Kutusu',
   },
   { ad: 'Bildirimler', detay: 'Ekran açılır ama boştur; her bildirim türü Yöneticiye özeldir' },
 ]
@@ -46,6 +47,7 @@ const YONETICI: Madde[] = [
   { ad: 'Finans', detay: 'Kasa, geçmiş ciro, raporlar, tüm biletler ve vardiyalar' },
   { ad: 'Tarifeler', detay: 'Fiyat değiştirme — açık biletleri geriye dönük etkilemez' },
   { ad: 'Otopark Ayarları', detay: 'Kapasite, park yerleri, kamera, plaka okuma' },
+  { ad: 'Kamera kurulumu', detay: 'Eşleştirme kodu, cihaz durumu, kaldırma' },
   { ad: 'Abonmanlar', detay: 'Abonman ve fiyatları, tahsilat' },
   { ad: 'Puan hesapları', detay: 'Hesaplar, bakiyeler ve puan kuralı' },
   { ad: 'Personel', detay: 'Kayıt onayı, rol, maaş, avans ve prim' },
