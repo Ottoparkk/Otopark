@@ -12,10 +12,13 @@
  *   • JPEG in          (thin bridge)                            → OCR, then through
  *
  * WHAT IT CANNOT DO — by construction, not by promise:
- *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_okuma_bagla,
- *   kamera_kalp and kamera_kalp_cihaz. There is no path to tariffs, users, the
- *   kasa or subscriptions. And it can never close a ticket or take money: a
- *   camera reports, a human collects.
+ *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_tek_kapi,
+ *   kamera_okuma_bagla, kamera_kalp and kamera_kalp_cihaz. There is no path to
+ *   tariffs, users, the kasa or subscriptions. And it can never close a ticket
+ *   or take money: a camera reports, a human collects.
+ *
+ *   kamera_tek_kapi (037, the single-gate lane) adds no new power: it only
+ *   CHOOSES between the first two, or declines to choose.
  *
  * Security posture (OWASP 2025):
  *   A01  A credential is required and compared in constant time. Two kinds:
@@ -33,7 +36,7 @@ import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.1
 import { z } from 'npm:zod@4.4.3'
 import { deriveIslemId, json, parseCameraTime, safeEqual } from '../_shared/http.ts'
 import { bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
-import { seritKarari } from '../_shared/serit.ts'
+import { seritKarari, tekKapiCevabi } from '../_shared/serit.ts'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 const DAKIKA_LIMIT = 30 // camera-sourced rows per minute
@@ -495,6 +498,61 @@ Deno.serve(async (req: Request) => {
     // second does not.
     const islemId =
       olay.islemId ?? (await deriveIslemId([olay.cihaz, yon, olay.zaman, plaka]))
+
+    // One gate for both directions: the lane cannot say whether this car is
+    // arriving or leaving, so the database decides from the ticket state and
+    // refuses to guess when it cannot tell (037 kamera_tek_kapi). Kept as its
+    // own branch, ABOVE the two-lane code, so that code stays byte-for-byte
+    // what it was.
+    if (yon === 'ORTAK') {
+      const { data, error } = await admin.rpc('kamera_tek_kapi', {
+        p_plaka: plaka,
+        p_islem_id: islemId,
+        p_zaman: olay.zaman,
+        p_foto: null,
+        p_ham: olay.ham,
+      })
+      if (error) {
+        console.error('kamera_tek_kapi reddetti:', error.message)
+        return json({ hata: error.message }, 409)
+      }
+      // An answer that is not one of the four decisions is OUR fault, not a
+      // decision: say 500 so the bridge retries (same islem_id, replay-safe)
+      // instead of 200, which would tell it the car has been dealt with.
+      const sonuc = tekKapiCevabi(data)
+      if (!sonuc.ok) {
+        console.error('kamera_tek_kapi tanınmayan cevap:', JSON.stringify(data))
+        return json({ hata: 'İşlenemedi.' }, 500)
+      }
+      const biletId = sonuc.biletId
+
+      // Same reason as the entrance lane below: nobody looked at this plate.
+      // Only when a ticket was OPENED — flagging an exit creates no read to
+      // vouch for, the ticket's plate was set when the car came in.
+      if (sonuc.karar === 'GIRIS' && biletId && okumaId) {
+        const { error: bagErr } = await admin.rpc('kamera_okuma_bagla', {
+          p_bilet_id: biletId,
+          p_okuma_id: okumaId,
+        })
+        if (bagErr) console.error('kamera_okuma_bagla başarısız:', bagErr.message)
+      }
+
+      // 200 for every decision, including "ignored" and "left for a person":
+      // the event WAS handled, and a retry must not hammer. `karar` and
+      // `sebep` are in the body on purpose — the bridge prints the response,
+      // so each decision can be read in its log on site.
+      return json(
+        {
+          ok: true,
+          karar: sonuc.karar,
+          sebep: sonuc.sebep,
+          bilet_id: biletId,
+          islem_id: islemId,
+          istisna: sonuc.karar === 'ISTISNA',
+        },
+        200,
+      )
+    }
 
     if (yon === 'GIRIS') {
       const { data, error } = await admin.rpc('bilet_ac', {

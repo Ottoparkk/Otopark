@@ -51,7 +51,7 @@ def serit_adi(ayar_yolu: str) -> str:
             yon = str(json.load(f).get("YON") or "").strip().upper()
     except Exception:
         yon = ""
-    if yon not in ("GIRIS", "CIKIS"):
+    if yon not in gunluk.SERITLER:
         ad = os.path.basename(ayar_yolu)
         yon = ad[len("kopru-"):-len(".json")].upper()
     return yon

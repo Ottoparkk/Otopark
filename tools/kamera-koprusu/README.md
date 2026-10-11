@@ -88,6 +88,40 @@ okunur ve başka şerit söyleyen bir istek 409 ile reddedilir (ayar dosyası el
 değiştirilse bile). Eski biçimli bir kodda şerit eksikse sihirbaz onu sorar,
 `GIRIS` varsaymaz.
 
+### Tek kapı (`ORTAK`)
+
+Üçüncü bir şerit var: `ORTAK` — araçların **aynı kapıdan girip çıktığı**
+otopark. Köprü için hiçbir şey değişmez (gördüğü aracı fotoğraflar, `yon:
+ORTAK` ile gönderir); fark sunucudadır. Şerit yönü söyleyemediği için
+`kamera-webhook` olayı `kamera_tek_kapi`'ye (037) verir ve karar **bilet
+durumundan** çıkar:
+
+| Plaka… | Karar |
+|---|---|
+| açık bileti var, bilet az önce açıldı (varsayılan 3 dk) | yok sayılır — araç hâlâ kameranın önünde |
+| açık bileti var, daha eski | çıkış: yalnızca "kapıda" damgası |
+| bileti az önce kapandı (varsayılan 5 dk) | yok sayılır — ödeyip çıkan araç |
+| içerideki bir plakaya bir karakter uzak | Çözülmemiş kayıtlar (`YON_BELIRSIZ`) — tahmin edilmez |
+| hiçbiri | giriş: bilet açılır |
+
+Cevap gövdesi `karar` ve `sebep` taşır ve köprü cevabı kayda yazdığı için her
+karar `kopru-ortak.log` içinde okunabilir (`"karar":"YOKSAY","sebep":"YENI_GIRIS"`).
+
+Şerit listesi tek yerde: `gunluk.SERITLER`. Kurulum, kaldırma ve köprü oradan
+okur; `ORTAK` hiçbir yerde `GIRIS`e yuvarlanmaz. 1.0.0 kurulum programı
+`ORTAK`ı tanımaz ve "şerit anlaşılmadı" diye durur — tek kapı için **1.1.0**
+gerekir.
+
+Giriş süresi 3 dakikanın altına indirilemez. Köprü bir aracı gönderdikten sonra
+o araç gidene kadar susar, ama kadrajda bir şey kıpırdayıp yeniden durulursa
+(önünden geçen biri, biraz ilerleyen araç) **aynı aracı yeniden gönderir** —
+bu bir hata değil, araç kaçırmamak için böyle. Tek kapıda o ikinci gönderim,
+bilet 3 dakikadan eskiyse "çıkıyor" sayılır. Yani kameranın önünde 3 dakikadan
+uzun duran, az önce girmiş araç yanlışlıkla "Kapıda" işaretlenebilir (para
+hareket etmez, yalnızca işaret). Kamerayı araçların **kısa bir an durduğu**
+noktaya (köprü plakayı o duruşta çeker) çevirin; sıra beklenen ya da park
+edilen bir yere değil.
+
 Sihirbaz yeniden çalıştırıldığında `kopru-<şerit>.json` içindeki kimliği
 sunucuya sorar; hâlâ geçerliyse **yeni kod istemeden** o şeridi yeniden kurmayı
 teklif eder. Sorunun varsayılanı **hayır**, ve yanında yeni bir

@@ -145,10 +145,16 @@ _ayarlari_yukle()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")   # .../functions/v1/kamera-webhook
 KAMERA_SECRET = os.environ.get("KAMERA_SECRET", "")  # KAMERA_WEBHOOK_SECRET ile aynı
 RTSP_URL = os.environ.get("RTSP_URL", "")         # rtsp://user:pass@10.0.0.42:554/...
-# GIRIS | CIKIS — bu kameranın şeridi. VARSAYILANI YOK: "GIRIS"e düşmek, YON'u
-# unutulmuş bir çıkış köprüsünün giden araçlara bilet açması demekti. İçe
-# aktarma boş değerle de çalışır (--kare / --test şerit istemez); eksik şeridi
-# main() reddeder.
+# GIRIS | CIKIS | ORTAK — bu kameranın şeridi (liste: gunluk.SERITLER).
+# VARSAYILANI YOK: "GIRIS"e düşmek, YON'u unutulmuş bir çıkış köprüsünün giden
+# araçlara bilet açması demekti. İçe aktarma boş değerle de çalışır (--kare /
+# --test şerit istemez); eksik şeridi main() reddeder.
+#
+# ORTAK = tek kapı (giriş ve çıkış aynı yerden). Köprünün yaptığı iş AYNI:
+# gördüğü aracı fotoğraflayıp gönderir. Giriş mi çıkış mı olduğuna sunucu
+# bilet durumundan karar verir. Aynı aracın ikinci kez gönderilmesini (kadrajda
+# bir şey kıpırdayıp durulunca olur — bkz. main'deki yeniden kurma bloğu) de
+# orada, biletin açılış/kapanış anına bakarak yok sayar.
 YON = os.environ.get("YON", "").strip().upper()
 CIHAZ = os.environ.get("CIHAZ", "kopru-1")
 
@@ -310,6 +316,11 @@ def gonder(foto_base64: str, gorulme: datetime) -> bool:
     to the same value and the one-open-ticket-per-plate unique index refuses
     the second. The disarm in main() saves API calls; it is not what protects
     the data, which is why it may re-arm early on a lighting change.
+
+    On the single-gate lane (YON=ORTAK) the same holds for a different reason:
+    there the server ignores a plate whose ticket was opened or closed in the
+    last few minutes (037 kamera_tek_kapi), so a repeat send is neither a
+    second ticket nor a false "leaving" flag.
     """
     islem_id = str(uuid.uuid4())
     govde = {
@@ -598,8 +609,9 @@ def main() -> None:
             sys.exit(f"Ayar dosyası okunamadı — {_AYAR_HATASI}\n"
                      "Dosyayı düzeltin ya da kurulumu yeniden çalıştırın.")
         sys.exit("WEBHOOK_URL ve KAMERA_SECRET tanımlı olmalı (bkz. README).")
-    if YON not in ("GIRIS", "CIKIS"):
-        sys.exit("YON tanımlı değil ya da geçersiz: GIRIS ya da CIKIS olmalı. "
+    if YON not in gunluk.SERITLER:
+        sys.exit("YON tanımlı değil ya da geçersiz: "
+                 f"{gunluk.SERIT_SECENEKLERI} olmalı. "
                  "Şerit tahmin edilmez — yanlışı, çıkan araçlara bilet açar.")
 
     kutu = kirpma_kutusu()

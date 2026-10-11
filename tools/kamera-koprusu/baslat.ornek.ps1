@@ -7,9 +7,10 @@ $env:WEBHOOK_URL   = "https://<project-ref>.supabase.co/functions/v1/kamera-webh
 $env:KAMERA_SECRET = "<KAMERA_WEBHOOK_SECRET ile aynı değer>"
 $env:RTSP_URL      = "rtsp://kullanici:sifre@10.0.0.42:554/stream1"
 
-# GIRIS or CIKIS. One launcher per lane — direction is configuration, never a
-# guess: an exit camera that thinks it is an entrance opens tickets for cars
-# that are leaving.
+# GIRIS, CIKIS or ORTAK. One launcher per lane — direction is configuration,
+# never a guess: an exit camera that thinks it is an entrance opens tickets for
+# cars that are leaving. ORTAK is the single gate cars both enter and leave
+# through; the server then decides from the ticket state (migration 037).
 $env:YON   = "GIRIS"
 $env:CIHAZ = "giris-kamerasi"
 

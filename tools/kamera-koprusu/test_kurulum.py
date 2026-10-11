@@ -1769,6 +1769,102 @@ def test_kaldir_seridi_dosya_adindan_bulur() -> None:
         assert adlar and all(a == "Otopark Kamera Koprusu (CIKIS)" for a in adlar), adlar
 
 
+# ------------------------------------------------------------ tek kapı (037) ---
+#
+# ORTAK üçüncü bir şerittir: giriş ve çıkış aynı kapıdan. Kurulumun şeridi
+# tanıdığı ALTI yer var ve biri unutulursa sonuç sessizdir — o yüzden her biri
+# kendi testini taşıyor.
+
+def test_tek_kapi_eski_bicim_kodda_korunur() -> None:
+    """Elle hazırlanmış kodda YON=ORTAK boşaltılıp yeniden SORULMAMALI."""
+    import kurulum
+    v = kurulum.kodu_coz(_kod_metni(
+        {"WEBHOOK_URL": "https://p/functions/v1/kamera-webhook",
+         "KAMERA_SECRET": "s" * 32, "YON": "ortak"}))
+    assert v is not None and v["YON"] == "ORTAK", v
+
+
+def test_tek_kapi_serit_sorusunda_secilebilir() -> None:
+    """Şerit sorusu ORTAK'ı kabul etmeli ve soruda adını söylemeli."""
+    import builtins
+    import io as _io
+    from contextlib import redirect_stdout
+    import kurulum
+
+    sorulan: list[str] = []
+    eski = builtins.input
+    sira = ["ortak"]
+
+    def cevapla(*a):
+        sorulan.append(" ".join(str(x) for x in a))
+        return sira.pop(0)
+
+    builtins.input = cevapla
+    try:
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            yon = kurulum.serit_sor()
+    finally:
+        builtins.input = eski
+    assert yon == "ORTAK", yon
+    assert "ORTAK" in (" ".join(sorulan) + yakala.getvalue()), sorulan
+
+
+def test_tek_kapi_eslestirmede_tasinir() -> None:
+    """
+    Sunucu ORTAK dediyse ayara ORTAK yazılır. Eskiden "şerit anlaşılmadı" diye
+    duruyordu — yani tek kapılı bir otoparkta kurulum HİÇ bitmezdi.
+    """
+    import kurulum
+    _sahte_requests(200, {
+        "webhook_url": "https://p.supabase.co/functions/v1/kamera-webhook",
+        "gizli": "a" * 64, "yon": "ORTAK",
+        "cihaz": "11111111-2222-3333-4444-555555555555", "ad": "Tek kapı"})
+    try:
+        v = kurulum.eslestir("https://p.supabase.co/functions/v1/kamera-webhook",
+                             "7K2M9-4QX3F")
+    finally:
+        sys.modules.pop("requests", None)
+    assert v is not None and v["YON"] == "ORTAK", v
+
+
+def test_tek_kapi_kayitli_kimligi_taninir() -> None:
+    """Yarıda kalan tek kapı kurulumunun diskteki kimliği teklif edilmeli."""
+    ayar = {**_KAYITLI, "YON": "ORTAK"}
+    v, cikti = _mevcut_kimlik(400, ["e"], ayar)
+    assert v == ayar, (v, cikti)
+    assert "ORTAK" in cikti, cikti
+
+
+def test_tek_kapi_kaldirirken_dogru_gorev() -> None:
+    """
+    Görev adı şeride bağlı. ORTAK tanınmasaydı şerit DOSYA ADINDAN okunur,
+    var olmayan bir görev "silinir" ve gerçek görev her açılışta ayarsız
+    başlamak üzere yerinde kalırdı.
+    """
+    _, _, _, cagrilar = _kaldir({"/query": True, "/delete": True},
+                                {"YON": "ORTAK", "KAMERA_SECRET": "x" * 32})
+    adlar = [c[c.index("/tn") + 1] for c in cagrilar if "/tn" in c]
+    assert adlar and all(a == "Otopark Kamera Koprusu (ORTAK)" for a in adlar), adlar
+
+
+def test_tek_kapi_seritler_tek_yerde() -> None:
+    """
+    Şerit listesi TEK yerde durur (gunluk.SERITLER). Altı ayrı demet,
+    dördüncü bir şerit eklendiği gün beşinin güncellenip birinin unutulması
+    demektir — bu testin yakaladığı hata tam olarak öyle başladı.
+    """
+    import re
+    import gunluk
+    assert gunluk.SERITLER == ("GIRIS", "CIKIS", "ORTAK"), gunluk.SERITLER
+    burasi = os.path.dirname(os.path.abspath(__file__))
+    for ad in ("kurulum.py", "kaldir.py", "kopru.py", "durum.py", "giris.py"):
+        with open(os.path.join(burasi, ad), encoding="utf-8") as f:
+            metin = f.read()
+        elle = re.findall(r'\(\s*"GIRIS"\s*,\s*"CIKIS"\s*(?:,\s*"ORTAK"\s*)?\)', metin)
+        assert not elle, f"{ad}: şerit listesi elle yazılmış: {elle}"
+
+
 if __name__ == "__main__":
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     kotu = 0

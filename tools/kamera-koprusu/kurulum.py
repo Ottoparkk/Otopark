@@ -151,7 +151,7 @@ def kodu_coz(kod: str) -> dict | None:
     # koddan_ayar onu sorar. Çıkış kamerası için hazırlanmış ama şeridi eksik
     # bir kod, tek satırlık bir uyarıyla giriş kamerası olarak kurulmamalı.
     yon = str(veri.get("YON") or "").strip().upper()
-    veri["YON"] = yon if yon in ("GIRIS", "CIKIS") else ""
+    veri["YON"] = yon if yon in gunluk.SERITLER else ""
     return veri
 
 
@@ -161,10 +161,10 @@ def serit_sor() -> str:
     tahmindir, ve yanlış tahmin çıkan araçlara bilet açar.
     """
     while True:
-        yon = sor("Bu kamera hangi şerit? GIRIS / CIKIS").strip().upper()
-        if yon in ("GIRIS", "CIKIS"):
+        yon = sor(f"Bu kamera hangi şerit? {gunluk.SERIT_SECENEKLERI}").strip().upper()
+        if yon in gunluk.SERITLER:
             return yon
-        print("  ! GIRIS ya da CIKIS yazın.")
+        print("  ! GIRIS, CIKIS ya da ORTAK yazın.")
 
 
 def guvenli_adres(adres: str) -> bool:
@@ -253,8 +253,9 @@ def eslestir(webhook_url: str, kod: str) -> dict | None:
     # durur: 'GIRIS'e düşmek, çıkış kamerasının giden araçlara bilet
     # açmasıyla biter ve bunu kimse fark etmez.
     yon = str(c.get("yon", "")).upper()
-    if yon not in ("GIRIS", "CIKIS"):
+    if yon not in gunluk.SERITLER:
         print(f"  ✗ Sunucudan gelen şerit anlaşılmadı: {yon or '(boş)'}")
+        print("    Bu kurulum programı eski olabilir — güncel sürümü indirin.")
         return None
 
     ayar = {
@@ -544,7 +545,7 @@ def kayitli_kimlikler() -> list[dict]:
             continue
         if not isinstance(veri, dict):
             continue
-        if str(veri.get("YON") or "").upper() not in ("GIRIS", "CIKIS"):
+        if str(veri.get("YON") or "").upper() not in gunluk.SERITLER:
             continue
         if not veri.get("WEBHOOK_URL") or not veri.get("KAMERA_SECRET"):
             continue

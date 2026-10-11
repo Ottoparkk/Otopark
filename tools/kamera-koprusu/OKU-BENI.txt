@@ -55,7 +55,15 @@ ELİNİZDE HAZIR OLSUN
     gerekmez. BAŞKA bir şerit (ikinci kamera) kuruyorsanız Enter'a basın
     ("hayır") ve yeni kodu girin.
 
-    Şeridi (giriş/çıkış) kodu üreten kişi seçer; size sorulmaz.
+    Şeridi (giriş / çıkış / tek kapı) kodu üreten kişi seçer; size
+    sorulmaz.
+
+    TEK KAPI: araçlar aynı kapıdan girip çıkıyorsa kamera "tek kapı"
+    olarak tanımlanır. Sizin için kurulum aynıdır. Kamerayı, araçların
+    İKİ YÖNDE de kısa bir an durduğu noktaya çevirin ve plaka kutusunu
+    hem gelen hem giden aracın plakası içinde kalacak genişlikte çizin.
+    Araçların uzun süre beklediği ya da park ettiği bir yeri göstermesin:
+    orada bekleyen araç yanlışlıkla "çıkıyor" diye işaretlenebilir.
 
   · Kameranın kullanıcı adı ve şifresi
 
@@ -99,6 +107,11 @@ BİR ŞEY TERS GİDERSE
   "Bu kamera ... şeridine eşleştirilmiş"
       Kamera uygulamada öbür şerit için tanımlanmış. Uygulamayı yöneten
       kişi kamerayı kaldırıp doğru şeritle yeni kod üretmeli.
+
+  "Sunucudan gelen şerit anlaşılmadı: ORTAK"
+      Bu program eski bir sürüm; tek kapıyı tanımıyor. Güncel
+      OtoparkKamera'yı indirip AYNI kodla (15 dakika dolmadıysa) yeniden
+      deneyin.
 
   Kurulum "KURULUM TAMAMLANMADI" diyor
       Köprü çalışmıyor demektir. Üstündeki ✗ satırı sebebi söyler (çoğu

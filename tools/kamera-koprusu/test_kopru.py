@@ -96,6 +96,14 @@ SENARYOLAR = {
         sure=11.0, pencereler=[(6.8, 11.0)], kopuk=(2.0, 2.3),
         kayitta_sirayla=["kare alınamadı", "kamera bağlandı"],
     ),
+    # Tek kapi (037): giris ve cikis ayni yerden. Kopru ORTAK seridiyle
+    # BASLAMALI ve gonderdigi her olay o seridi tasimali — yonu sunucu bilet
+    # durumundan cikarir. Kopru burada GIRIS'e "yuvarlasaydi" odeyip cikan
+    # her araca yeniden bilet acilirdi; bu modun kapattigi hata tam o.
+    "tek_kapi": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 6, DURDU)],
+        sure=7.0, pencereler=[(1.8, 6.0)], yon="ORTAK",
+    ),
 }
 
 
@@ -141,7 +149,8 @@ def tek_kos(ad: str) -> int:
             return Yanit(400)
         # Yapay gecikmeden ÖNCE kaydedilir: ölçtüğümüz şey köprünün göndermeye
         # karar verdiği an, taklit ağın yavaşlığı değil.
-        gonderimler.append({"t": time.monotonic() - T0, "id": json["islem_id"]})
+        gonderimler.append({"t": time.monotonic() - T0, "id": json["islem_id"],
+                            "yon": json.get("yon")})
         if S.get("yavas"):
             time.sleep(S["yavas"])
         kod = kodlar.pop(0) if kodlar else 200
@@ -161,7 +170,7 @@ def tek_kos(ad: str) -> int:
 
     os.environ.update(WEBHOOK_URL="http://stub/kamera-webhook",
                       KAMERA_SECRET="x" * 32,
-                      RTSP_URL="rtsp://stub/1", YON="GIRIS")
+                      RTSP_URL="rtsp://stub/1", YON=S.get("yon", "GIRIS"))
     if S.get("max_bekleme"):
         os.environ["MAX_BEKLEME_SN"] = S["max_bekleme"]
     if S.get("acilis_bekleme"):
@@ -260,6 +269,11 @@ def tek_kos(ad: str) -> int:
                 hata = 1
                 break
             konum = i + len(parca)
+    if S.get("yon"):
+        yanlis = sorted({str(g["yon"]) for g in gonderimler if g["yon"] != S["yon"]})
+        if yanlis:
+            print(f"FAIL: olaylar {S['yon']} şeridiyle gitmeliydi, giden: {yanlis}")
+            hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")
         hata = 1

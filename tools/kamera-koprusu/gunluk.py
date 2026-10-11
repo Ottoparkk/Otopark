@@ -61,6 +61,19 @@ def gizle(metin: str) -> str:
     return _YETKI.sub(_maskele, metin)
 
 
+# Bir köprünün bağlanabileceği şeritler — TEK tanım. Kurulum, kaldırma ve
+# köprünün kendisi buradan okur: liste altı ayrı yerde elle yazılıyken üçüncü
+# şerit (ORTAK) eklendiğinde her birinin tek tek bulunması gerekti.
+#
+# ORTAK = tek kapı: araçlar aynı yerden girip çıkıyor. Köprü için bir fark
+# yok (gördüğünü gönderir); giriş mi çıkış mı olduğuna SUNUCU bilet durumundan
+# karar verir. O yüzden ORTAK hiçbir yerde GIRIS'e "yuvarlanmaz".
+SERITLER = ("GIRIS", "CIKIS", "ORTAK")
+
+# Soru ve hata metinlerinde aynı cümle: şeritler ve tek kapının ne demek olduğu.
+SERIT_SECENEKLERI = "GIRIS / CIKIS / ORTAK (tek kapı: giriş ve çıkış aynı yerden)"
+
+
 # Sunucunun köprüyü REDDETTİĞİNİ söyleyen satırların sabit metinleri. Köprü
 # (kopru.py) bunları yazar, `durum` (durum.py) bunları arar; ikisi aynı sabiti
 # kullanmazsa bir taraftaki küçük bir yazım değişikliği, reddedilen bir köprüyü

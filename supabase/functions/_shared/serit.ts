@@ -18,13 +18,23 @@
  *     "the lane is never guessed" would hold only inside the installer, and an
  *     exit camera with an edited config file would open tickets for departing
  *     cars while the screen still called it the exit lane.
+ *
+ * ORTAK (037) is a THIRD lane, not "either": one gate that cars both enter and
+ * leave through. This file only says the event belongs to that lane; whether
+ * it is an arrival or a departure is decided in Postgres from the ticket state
+ * (kamera_tek_kapi). A camera paired as ORTAK that names GIRIS is refused like
+ * any other mismatch — obeying it would open a ticket for every departing car.
  */
+export type Serit = 'GIRIS' | 'CIKIS' | 'ORTAK'
+
 export type SeritKarari =
-  | { ok: true; yon: 'GIRIS' | 'CIKIS' }
+  | { ok: true; yon: Serit }
   | { ok: false; durum: 400 | 409; hata: string; kod?: 'SERIT_UYUSMAZ' }
 
-function gecerli(y: string): y is 'GIRIS' | 'CIKIS' {
-  return y === 'GIRIS' || y === 'CIKIS'
+const YON_GEREKLI = 'yon belirtilmeli: GIRIS, CIKIS veya ORTAK.'
+
+function gecerli(y: string): y is Serit {
+  return y === 'GIRIS' || y === 'CIKIS' || y === 'ORTAK'
 }
 
 export function seritKarari(
@@ -36,17 +46,17 @@ export function seritKarari(
   // Garbage is refused for both kinds of caller: a paired camera sending a
   // lane nobody recognises is misconfigured, and saying so beats ignoring it.
   if (istek !== '' && !gecerli(istek)) {
-    return { ok: false, durum: 400, hata: 'yon belirtilmeli: GIRIS veya CIKIS.' }
+    return { ok: false, durum: 400, hata: YON_GEREKLI }
   }
 
   if (cihazYon === null) {
     if (istek === '') {
-      return { ok: false, durum: 400, hata: 'yon belirtilmeli: GIRIS veya CIKIS.' }
+      return { ok: false, durum: 400, hata: YON_GEREKLI }
     }
-    return { ok: true, yon: istek as 'GIRIS' | 'CIKIS' }
+    return { ok: true, yon: istek as Serit }
   }
 
-  // The row is constrained to GIRIS/CIKIS by a CHECK. If it ever reads as
+  // The row is constrained to the three lanes by a CHECK. If it ever reads as
   // anything else, fail closed — falling back to the request would be a guess.
   if (!gecerli(cihazYon)) {
     return { ok: false, durum: 409, hata: 'Bu kameranın şeridi tanımsız.' }
@@ -66,4 +76,48 @@ export function seritKarari(
     }
   }
   return { ok: true, yon: cihazYon }
+}
+
+/**
+ * What kamera_tek_kapi (037) answered, or the fact that it answered nothing
+ * we recognise.
+ *
+ * Here for the same reason as the rule above — pure, so Node can check it —
+ * and it matters more than its size suggests: the webhook turns this into a
+ * 200, and a 200 is the bridge's signal that the vehicle is DEALT WITH and
+ * need not be sent again. Passing an empty or unknown answer through as
+ * success would lose that car with no ticket, no exception row and no retry.
+ * So anything outside the four decisions is a fault, the webhook answers 500,
+ * and the bridge retries with the same islem_id (the RPC is replay-safe).
+ *
+ * GIRIS and CIKIS must point at a ticket: one was opened, the other stamped.
+ */
+export type TekKapiKarar = 'GIRIS' | 'CIKIS' | 'YOKSAY' | 'ISTISNA'
+
+export type TekKapiCevabi =
+  | { ok: true; karar: TekKapiKarar; sebep: string | null; biletId: string | null }
+  | { ok: false }
+
+const TEK_KAPI_KARARLARI: readonly string[] = ['GIRIS', 'CIKIS', 'YOKSAY', 'ISTISNA']
+
+export function tekKapiCevabi(veri: unknown): TekKapiCevabi {
+  if (veri === null || typeof veri !== 'object' || Array.isArray(veri)) {
+    return { ok: false }
+  }
+  const v = veri as Record<string, unknown>
+  if (typeof v.karar !== 'string' || !TEK_KAPI_KARARLARI.includes(v.karar)) {
+    return { ok: false }
+  }
+  const karar = v.karar as TekKapiKarar
+
+  const ham = v.bilet_id ?? null
+  if (ham !== null && typeof ham !== 'string') return { ok: false }
+  if ((karar === 'GIRIS' || karar === 'CIKIS') && !ham) return { ok: false }
+
+  return {
+    ok: true,
+    karar,
+    sebep: typeof v.sebep === 'string' ? v.sebep : null,
+    biletId: ham || null,
+  }
 }

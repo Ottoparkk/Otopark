@@ -524,6 +524,53 @@ only, so a site running one of each is alerted about either. A site with no
 hand-installed bridge left switches that watch off on the same screen
 (**Elle kurulmuş köprü → "Artık kullanılmıyor"**).
 
+### Single gate ("Tek kapı", migration 037)
+
+For a car park where cars **enter and leave through the same gate**, pick
+**Tek kapı** as the lane when minting the code (stored as `ORTAK`). The lane
+can no longer say which way a car is going, so `kamera_tek_kapi` decides from
+the ticket state, on the **server's** clock:
+
+| The plate… | Result |
+|---|---|
+| has an open ticket opened under `tek_kapi_giris_yoksay_dk` (3) minutes ago | ignored — still in view after arriving |
+| has an older open ticket | flagged "Kapıda" (`cikis_bekliyor_at`), nothing else |
+| was closed/cancelled under `tek_kapi_cikis_yoksay_dk` (5) minutes ago | ignored — driving out after paying |
+| is one character off an open ticket from the last 3 minutes | ignored — same car, second read differs |
+| is one character off an older open ticket | **Çözülmemiş kayıtlar** as `YON_BELIRSIZ` — never guessed |
+| is one character off a ticket closed in the last 5 minutes | ignored — paid car, misread on the way out |
+| none of these | a ticket is opened |
+
+As with two lanes, the camera never closes a ticket and never takes money.
+
+**Limits of deciding from the ticket state** — the phone flow covers all of
+them, and none of them moves money:
+
+- a car that returns within 5 minutes of paying is not recorded;
+- a car the camera sees more than 5 minutes after its ticket was closed gets a
+  **new ticket** (cancel it). So collect at the gate, not long before it;
+- a car with **no** open ticket is always treated as arriving — including one
+  leaving whose entry was never recorded (camera or internet was down);
+- a stay shorter than 3 minutes is not flagged at exit;
+- a just-arrived car that waits in front of the camera longer than 3 minutes
+  can be flagged "Kapıda" by mistake: the bridge sends the same car again
+  whenever something moves in view and settles. Aim the camera at the spot
+  where cars stop for a moment (the bridge needs that pause to photograph the
+  plate), not at a place where they queue or park.
+
+There is no screen for the two durations; tune them on installation day:
+
+```sql
+update public.otopark_ayarlari
+   set tek_kapi_giris_yoksay_dk = 3,   -- 3–60
+       tek_kapi_cikis_yoksay_dk = 5    -- 1–60
+ where id = 1;
+```
+
+Needs installer **1.1.0** or later; 1.0.0 stops with "şerit anlaşılmadı: ORTAK"
+(the same code still works in 1.1.0 while its 15 minutes last). Deploy order:
+`037` → smoke test through **PASS 58** → `kamera-webhook` → frontend.
+
 `KAMERA_WEBHOOK_SECRET` is still accepted and is still checked **first**, so
 existing bridges and the manual path below are unaffected. It remains the only
 option for hardware that posts directly, with no bridge:
@@ -532,9 +579,9 @@ option for hardware that posts directly, with no bridge:
    - Header: `x-kamera-secret: <KAMERA_WEBHOOK_SECRET>`
    - HTTP Basic: any username, **password** = the secret
    - URL path: `.../functions/v1/kamera-webhook/<secret>/giris`
-3. Direction is **required** and never guessed: `giris`/`cikis` at the end of
-   the path, or `?yon=GIRIS`. There is no default, so a misconfigured exit
-   camera cannot silently open tickets.
+3. Direction is **required** and never guessed: `giris`/`cikis`/`ortak` at the
+   end of the path, or `?yon=GIRIS`. There is no default, so a misconfigured
+   exit camera cannot silently open tickets. `ortak` is the single gate above.
 4. **Put the camera's clock on NTP.** This is not housekeeping, it is money: a
    camera an hour off mis-bills every vehicle, silently. The server takes the
    timestamp from the camera because a buffered event can arrive hours late.

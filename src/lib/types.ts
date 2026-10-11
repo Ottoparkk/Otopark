@@ -15,7 +15,13 @@ export type OdemeYontemi = 'NAKIT' | 'KREDI_KARTI' | 'HAVALE'
 export type Kaynak = 'MOBIL' | 'KAMERA' | 'MANUEL'
 export type ParkYeriTip = 'NORMAL' | 'ENGELLI' | 'SARJ'
 export type AbonmanDurum = 'AKTIF' | 'DOLDU' | 'IPTAL'
-export type IstisnaTur = 'GELECEK' | 'BAYAT' | 'ACIK_BILET_YOK' | 'COKLU_ESLESME'
+export type IstisnaTur =
+  | 'GELECEK'
+  | 'BAYAT'
+  | 'ACIK_BILET_YOK'
+  | 'COKLU_ESLESME'
+  // 037: a single-gate camera could not tell an arrival from a departure.
+  | 'YON_BELIRSIZ'
 export type HesapDurum = 'AKTIF' | 'PASIF'
 export type PuanHareketTur = 'KAZANIM' | 'KULLANIM' | 'IPTAL' | 'DUZELTME'
 export type KasaTur = 'GELIR' | 'GIDER'
@@ -113,6 +119,20 @@ export const ISTISNA_ETIKET: Record<IstisnaTur, string> = {
   BAYAT: 'Çok geç geldi',
   ACIK_BILET_YOK: 'Açık bilet yok',
   COKLU_ESLESME: 'Birden fazla eşleşme',
+  YON_BELIRSIZ: 'Giriş mi çıkış mı belirsiz',
+}
+
+/**
+ * Lane names, in one place. ORTAK is the single-gate lane (037): cars enter
+ * and leave through the same gate and the server tells them apart.
+ *
+ * A map rather than `yon === 'CIKIS' ? 'Çıkış' : 'Giriş'` at each call site:
+ * that ternary would silently label a single-gate camera "Giriş".
+ */
+export const KAMERA_YON_ETIKET: Record<KameraYon, string> = {
+  GIRIS: 'Giriş',
+  CIKIS: 'Çıkış',
+  ORTAK: 'Tek kapı',
 }
 
 export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
@@ -413,7 +433,7 @@ export interface KasaHareketi {
 export interface Istisna {
   id: string
   tur: IstisnaTur
-  yon: 'GIRIS' | 'CIKIS'
+  yon: KameraYon
   plaka: string | null
   kaynak: Kaynak
   islem_id: string | null
@@ -575,7 +595,7 @@ export interface RaporOzet {
 
 /* ---------------------------------------------------------------- kamera */
 
-export type KameraYon = 'GIRIS' | 'CIKIS'
+export type KameraYon = 'GIRIS' | 'CIKIS' | 'ORTAK'
 
 /**
  * A paired camera bridge (036).

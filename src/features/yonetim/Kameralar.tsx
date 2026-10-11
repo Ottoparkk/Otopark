@@ -28,7 +28,12 @@ import { SUPABASE_URL } from '../../lib/supabase'
 import { formatGoreceli } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { metniIndir, panoyaKopyala } from '../../lib/pano'
-import type { KameraCihaz, KameraYeniKod, KameraYon } from '../../lib/types'
+import {
+  KAMERA_YON_ETIKET,
+  type KameraCihaz,
+  type KameraYeniKod,
+  type KameraYon,
+} from '../../lib/types'
 
 const WEBHOOK_URL = `${SUPABASE_URL}/functions/v1/kamera-webhook`
 
@@ -288,7 +293,10 @@ export default function Kameralar() {
                     <div className="min-w-0">
                       <p className="truncate text-body font-medium text-ink">{k.ad}</p>
                       <p className="mt-1 text-label text-faint">
-                        {k.yon === 'CIKIS' ? 'Çıkış' : 'Giriş'} şeridi ·{' '}
+                        {k.yon === 'ORTAK'
+                          ? 'Tek kapı · giriş ve çıkış'
+                          : `${KAMERA_YON_ETIKET[k.yon]} şeridi`}{' '}
+                        ·{' '}
                         {k.son_gorulme ? formatGoreceli(k.son_gorulme) : 'hiç bağlanmadı'}
                       </p>
                     </div>
@@ -351,7 +359,7 @@ export default function Kameralar() {
                   <div className="min-w-0">
                     <p className="truncate text-body text-ink">{k.ad}</p>
                     <p className="mt-0.5 text-label text-faint">
-                      {k.yon === 'CIKIS' ? 'Çıkış' : 'Giriş'} · kalan{' '}
+                      {KAMERA_YON_ETIKET[k.yon]} · kalan{' '}
                       <span className="tnum">{kalanMetni(k.bitis, simdi)}</span>
                     </p>
                   </div>
@@ -548,11 +556,22 @@ export default function Kameralar() {
               label="Şerit"
               value={yon}
               options={[
-                { value: 'GIRIS', label: 'Giriş' },
-                { value: 'CIKIS', label: 'Çıkış' },
+                { value: 'GIRIS', label: KAMERA_YON_ETIKET.GIRIS },
+                { value: 'CIKIS', label: KAMERA_YON_ETIKET.CIKIS },
+                { value: 'ORTAK', label: KAMERA_YON_ETIKET.ORTAK },
               ]}
               onChange={setYon}
             />
+            {/* Shown only when chosen: it explains a behaviour the other two
+                lanes do not have, and under them it would read as a warning
+                about something the Yönetici did not pick. */}
+            {yon === 'ORTAK' && (
+              <p className="text-label text-soft">
+                Araçlar aynı kapıdan girip çıkıyorsa bunu seçin. Kamera, içeride bileti olan
+                aracı çıkıyor, olmayanı giriyor sayar; emin olamadığını Çözülmemiş kayıtlar’a
+                bırakır.
+              </p>
+            )}
             <p className="text-label text-faint">
               Şerit sonradan değiştirilemez — çıkış kamerasını giriş sanan bir köprü, çıkan
               araçlara bilet açar. Yanlışsa kamerayı kaldırıp yeniden ekleyin.

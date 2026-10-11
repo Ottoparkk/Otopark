@@ -20,7 +20,12 @@ import { formatTam } from '../../lib/dates'
 import { formatSure, dakikaFarki } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop, IconKamera, IconTik } from '../../components/ui/icons'
-import { ISTISNA_ETIKET, type Istisna, type IstisnaTur } from '../../lib/types'
+import {
+  ISTISNA_ETIKET,
+  KAMERA_YON_ETIKET,
+  type Istisna,
+  type IstisnaTur,
+} from '../../lib/types'
 
 /** Tone by severity: a rejected event reads red, a flagged one amber. */
 const TUR_TONE: Record<IstisnaTur, 'danger' | 'warn' | 'accent'> = {
@@ -28,6 +33,7 @@ const TUR_TONE: Record<IstisnaTur, 'danger' | 'warn' | 'accent'> = {
   BAYAT: 'danger',
   ACIK_BILET_YOK: 'warn',
   COKLU_ESLESME: 'accent',
+  YON_BELIRSIZ: 'warn',
 }
 
 /** What the operator should actually DO — the label alone does not say. */
@@ -40,7 +46,16 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
     'Çıkışta bu plakaya ait açık bilet bulunamadı. Plaka yanlış okunmuş ya da giriş kaydedilmemiş olabilir.',
   COKLU_ESLESME:
     'Aramaya birden fazla açık bilet uydu. Doğru aracı Çıkış ekranından seçin.',
+  YON_BELIRSIZ:
+    'Bu plaka, içerideki bir aracın plakasına bir karakter uzak. O araç çıkıyorsa Çıkış ekranından tahsil edin; yeni gelen başka bir araçsa girişini elle açın.',
 }
+
+/**
+ * Exceptions nothing will ever resolve on its own. The camera deliberately
+ * declined to act, so no retry is coming — the "do not enter it by hand" note
+ * below would be exactly the wrong advice for these.
+ */
+const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set(['YON_BELIRSIZ'])
 
 export default function Istisnalar() {
   const navigate = useNavigate()
@@ -189,7 +204,7 @@ function IstisnaKart({
       <div className="flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <Chip tone={TUR_TONE[i.tur]}>{ISTISNA_ETIKET[i.tur]}</Chip>
-          <Chip tone="neutral">{i.yon === 'GIRIS' ? 'Giriş' : 'Çıkış'}</Chip>
+          <Chip tone="neutral">{KAMERA_YON_ETIKET[i.yon]}</Chip>
           {i.kaynak === 'KAMERA' && (
             <Chip tone="neutral">
               <IconKamera size={13} />
@@ -222,7 +237,7 @@ function IstisnaKart({
 
       <p className="mt-2 text-body text-soft">{TUR_ACIKLAMA[i.tur]}</p>
 
-      {i.kaynak === 'KAMERA' && !cozuldu && (
+      {i.kaynak === 'KAMERA' && !cozuldu && !KENDILIGINDEN_COZULMEZ.has(i.tur) && (
         <p className="mt-2 rounded-field bg-warn-soft px-3 py-2 text-label font-medium text-warn">
           Bu araç kameradan geldi — elle girmeyin. Bağlantı düzeldiğinde kayıt
           kendiliğinden oluşabilir.
@@ -241,7 +256,9 @@ function IstisnaKart({
         i.cozum_notu && <p className="mt-3 text-label text-faint">Not: {i.cozum_notu}</p>
       ) : (
         <div className="mt-3 flex gap-2">
-          {i.tur !== 'GELECEK' && i.yon === 'CIKIS' && (
+          {/* A doubtful single-gate read may well be a departure, so it gets
+              the same shortcut an exit-lane exception does. */}
+          {((i.tur !== 'GELECEK' && i.yon === 'CIKIS') || i.tur === 'YON_BELIRSIZ') && (
             <button
               type="button"
               onClick={onCikis}
