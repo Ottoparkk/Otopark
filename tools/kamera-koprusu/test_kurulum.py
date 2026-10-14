@@ -50,7 +50,9 @@ def kopru_degeri(alanlar: list[str], ayar: dict | None, env: dict | None = None,
             "print('\\n'.join(str(getattr(kopru, a)) for a in "
             f"{alanlar!r}))\n"
         )
-        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        # PROGRAMDATA da çevrilir: ayar verilmediğinde kopru varsayılan yola,
+        # yani makinenin gerçek %PROGRAMDATA%\Otopark\kopru.json dosyasına bakar.
+        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": klasor}
         # Testi çalıştıran kabuktan sızabilecek değerler sonucu kirletmesin.
         for a in ("WEBHOOK_URL", "KAMERA_SECRET", "RTSP_URL", "YON", "CIHAZ",
                   "OTOPARK_AYAR"):
@@ -102,7 +104,8 @@ def test_bozuk_ayar_patlamaz() -> None:
         with open(yol, "w", encoding="utf-8") as f:
             f.write("{ bu json degil")
         kod = ONYUK + "import kopru\nprint(kopru.YON)\n"
-        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol}
+        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol,
+                 "PROGRAMDATA": klasor}
         for a in ("YON", "WEBHOOK_URL"):
             ortam.pop(a, None)
         ortam["OTOPARK_AYAR"] = yol
@@ -401,7 +404,8 @@ def test_bom_lu_ayar_okunur() -> None:
             assert f.read(3) == b"\xef\xbb\xbf", "fixture BOM'suz yazıldı"
 
         kod = ONYUK + "import kopru\nprint(kopru.YON)\nprint(kopru.KIRPMA)\n"
-        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol}
+        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol,
+                 "PROGRAMDATA": klasor}
         for a in ("YON", "KIRPMA", "WEBHOOK_URL"):
             ortam.pop(a, None)
         ortam["OTOPARK_AYAR"] = yol
@@ -423,7 +427,8 @@ def test_bozuk_ayar_yaniltici_mesaj_vermez() -> None:
         with open(yol, "w", encoding="utf-8") as f:
             f.write("{ bu json degil")
         kod = ONYUK + "import kopru\nkopru.main()\n"
-        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol}
+        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "OTOPARK_AYAR": yol,
+                 "PROGRAMDATA": klasor}
         for a in ("WEBHOOK_URL", "KAMERA_SECRET", "YON"):
             ortam.pop(a, None)
         ortam["OTOPARK_AYAR"] = yol
@@ -432,6 +437,14 @@ def test_bozuk_ayar_yaniltici_mesaj_vermez() -> None:
         cikti = r.stdout + r.stderr
         assert "Ayar dosyası okunamadı" in cikti, cikti[-600:]
         assert "bozuk.json" in cikti, cikti[-600:]
+        # kopru.main() ilk iş kayıt dosyasını açar (gunluk.baslat). O dosya bu
+        # testin KENDİ klasöründe olmalı: PROGRAMDATA devralındığında köprü,
+        # testi çalıştıran makinenin gerçek C:\ProgramData\Otopark\kayit
+        # klasörüne yazıyordu — her koşuda dört satır.
+        kayit = os.path.join(klasor, "Otopark", "kayit", "kopru-kopru.log")
+        assert os.path.isfile(kayit), f"kayıt testin klasörüne yazılmadı: {kayit}"
+        with open(kayit, encoding="utf-8") as f:
+            assert "köprü başladı" in f.read()
 
 
 def test_kayit_kamera_sifresi_sizdirmaz() -> None:
@@ -718,10 +731,11 @@ def _kalp_ciktisi(kodlar: list[int]) -> str:
         f"for _ in range({len(kodlar)}):\n"
         "    kopru.kalp()\n"
     )
-    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    gecici = tempfile.mkdtemp()
+    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": gecici}
     for a in ("WEBHOOK_URL", "KAMERA_SECRET", "RTSP_URL", "YON", "CIHAZ"):
         ortam.pop(a, None)
-    ortam["OTOPARK_AYAR"] = os.path.join(tempfile.mkdtemp(), "yok.json")
+    ortam["OTOPARK_AYAR"] = os.path.join(gecici, "yok.json")
     r = subprocess.run([sys.executable, "-c", kod], capture_output=True,
                        text=True, encoding="utf-8", env=ortam)
     if r.returncode:
@@ -1865,15 +1879,71 @@ def test_tek_kapi_seritler_tek_yerde() -> None:
         assert not elle, f"{ad}: şerit listesi elle yazılmış: {elle}"
 
 
+# ------------------------------------------- testler makineye dokunmaz ---
+
+def test_alt_surecler_programdata_devralmaz() -> None:
+    """
+    Bu dosyada alt süreç başlatan her fonksiyon PROGRAMDATA'yı geçici bir
+    klasöre çevirir.
+
+    Köprü ayarını da kaydını da %PROGRAMDATA%\\Otopark altında arar. Ortamı
+    `os.environ`den kurup PROGRAMDATA'yı devralan bir alt süreç, testi
+    çalıştıran makinenin GERÇEK klasörünü görür: `kopru.main()` oradaki kayıt
+    dosyasına yazar, ayarsız bir içe aktarma da oradaki `kopru.json`u okur.
+    """
+    import ast
+
+    with open(os.path.abspath(__file__), encoding="utf-8") as f:
+        agac = ast.parse(f.read())
+    eksik = []
+    for fn in ast.walk(agac):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        dugumler = list(ast.walk(fn))
+        baslatir = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "run" and isinstance(d.func.value, ast.Name)
+            and d.func.value.id == "subprocess"
+            for d in dugumler)
+        cevirir = any(
+            isinstance(d, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == "PROGRAMDATA"
+                for k in d.keys)
+            for d in dugumler)
+        if baslatir and not cevirir:
+            eksik.append(fn.name)
+    assert not eksik, f"PROGRAMDATA'yı devralan alt süreç: {eksik}"
+
+
+def _tuzaktakiler(tuzak: str) -> list[str]:
+    return sorted(os.path.relpath(os.path.join(kok, ad), tuzak)
+                  for kok, _, dosyalar in os.walk(tuzak) for ad in dosyalar)
+
+
 if __name__ == "__main__":
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     kotu = 0
+    # Her test PROGRAMDATA olarak BOŞ bir tuzak klasörünü devralır. Kendi
+    # geçici klasörünü kurmayı unutan test oraya yazar — makinenin gerçek
+    # C:\ProgramData\Otopark klasörüne değil — ve o test FAIL olur. Her testten
+    # önce yeniden atanır: önceki test değiştirip geri almamış olabilir.
+    tuzak = tempfile.mkdtemp(prefix="otopark-test-")
     for t in testler:
+        os.environ["PROGRAMDATA"] = tuzak
+        hata = None
         try:
             t()
-            print(f"  PASS  {t.__name__}")
         except Exception as e:
+            hata = str(e)
+        sizan = _tuzaktakiler(tuzak)
+        if sizan:
+            hata = ((hata + " | ") if hata else "") + (
+                "devralınan PROGRAMDATA'ya yazdı: " + ", ".join(sizan))
+            tuzak = tempfile.mkdtemp(prefix="otopark-test-")   # sonrakiler temiz başlasın
+        if hata is None:
+            print(f"  PASS  {t.__name__}")
+        else:
             kotu += 1
-            print(f"  FAIL  {t.__name__}: {e}")
+            print(f"  FAIL  {t.__name__}: {hata}")
     print(f"\n{len(testler) - kotu}/{len(testler)} geçti")
     sys.exit(1 if kotu else 0)
