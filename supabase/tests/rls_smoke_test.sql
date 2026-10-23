@@ -36,6 +36,8 @@
 --      that exists, is in use and is empty
 --    • Single gate (037): direction comes from the ticket state, a doubtful
 --      read goes to a person, and the camera still never closes or collects
+--    • A false "Kapıda" mark (038) is cleared only by active staff, only on an
+--      open ticket, and leaves an audit row
 -- ============================================================
 
 begin;
@@ -3955,6 +3957,127 @@ if (select count(*) from public.notifications
 end if;
 
 raise notice 'PASS 58: tek kapıda yön bilet durumundan, belirsiz okuma insana, para yine insanda';
+
+-- =====================================================================
+-- 59  Yanlış "Kapıda" işareti kapıdaki personel tarafından kaldırılır (038)
+--     Kamera bir aracı çıkıyor sandığında `cikis_bekliyor_at` damgalanır ve
+--     bilet kapanana kadar öyle kalırdı. Kaldırmak para değildir, ama bileti
+--     değiştirir: yalnızca aktif personel, yalnızca AÇIK bilette, izi kalır.
+-- =====================================================================
+
+perform pg_temp.logout();
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 59: fixture — u_personel aktif bir Personel değil';
+end if;
+
+-- Açık bilet, damgayı GERÇEK yoldan alır: kameranın çıkış kapısı.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ59KPD01', now() - interval '1 hour', t.id, 'ACIK'
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id into v_bilet;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ59KPD01', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+select cikis_bekliyor_at into v_ts from public.biletler where id = v_bilet;
+if v_ts is null then
+  raise exception 'FAIL 59: fixture — kamera çıkış olayı bileti damgalamadı';
+end if;
+
+-- (a) Rolü olmayan ve devre dışı kullanıcı kaldıramaz.
+foreach v_id in array array[u_pending, u_disabled] loop
+  perform pg_temp.login(v_id);
+  begin
+    perform public.bilet_kapida_temizle(v_bilet);
+    raise exception 'FAIL 59a: rolsüz/devre dışı kullanıcı kapıda işaretini kaldırdı';
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if sqlerrm not like '%Yetkiniz yok%' then
+      raise exception 'FAIL 59a: beklenmeyen hata: %', sqlerrm;
+    end if;
+  end;
+  perform pg_temp.logout();
+end loop;
+if (select cikis_bekliyor_at from public.biletler where id = v_bilet) is distinct from v_ts then
+  raise exception 'FAIL 59a: reddedilen çağrı damgayı değiştirdi';
+end if;
+
+-- (b) Kapıdaki personel kaldırır; bilet açık kalır, iz yazılır.
+perform pg_temp.login(u_personel);
+select public.bilet_kapida_temizle(v_bilet) into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from true then
+  raise exception 'FAIL 59b: kaldırma true dönmedi (%)', v_bool;
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK' and cikis_bekliyor_at is null) then
+  raise exception 'FAIL 59b: damga kaldırılmadı ya da bilet açık kalmadı';
+end if;
+if (select count(*) from public.audit_log
+     where action = 'bilet_kapida_temizlendi' and row_id = v_bilet
+       and actor = u_personel and (detay ->> 'eski')::timestamptz = v_ts) <> 1 then
+  raise exception 'FAIL 59b: kaldırma audit_log''a eski damgasıyla yazılmadı';
+end if;
+
+-- (c) İkinci basış zararsız: false döner, ikinci iz yazılmaz.
+perform pg_temp.login(u_personel);
+select public.bilet_kapida_temizle(v_bilet) into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from false then
+  raise exception 'FAIL 59c: işaretsiz bilette true döndü (%)', v_bool;
+end if;
+if (select count(*) from public.audit_log
+     where action = 'bilet_kapida_temizlendi' and row_id = v_bilet) <> 1 then
+  raise exception 'FAIL 59c: işaretsiz bilette ikinci iz yazıldı';
+end if;
+
+-- (d) Kapanmış bilet: damga dursa bile dokunulmaz.
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ59KPD01', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal(v_bilet, 'Test — kapıda işareti');
+perform pg_temp.logout();
+select cikis_bekliyor_at into v_ts2 from public.biletler where id = v_bilet;
+if v_ts2 is null then
+  raise exception 'FAIL 59d: fixture — iptal öncesi bilet yeniden damgalanmadı';
+end if;
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_kapida_temizle(v_bilet);
+  raise exception 'FAIL 59d: kapanmış biletin işareti kaldırıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%açık değil%' then
+    raise exception 'FAIL 59d: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+-- (e) Olmayan bilet açıkça reddedilir, sessizce "tamam" denmez.
+begin
+  perform public.bilet_kapida_temizle(gen_random_uuid());
+  raise exception 'FAIL 59e: olmayan bilet için hata verilmedi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%bulunamadı%' then
+    raise exception 'FAIL 59e: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if (select cikis_bekliyor_at from public.biletler where id = v_bilet) is distinct from v_ts2 then
+  raise exception 'FAIL 59d: kapanmış biletin damgası değişti';
+end if;
+
+-- (f) Yalnızca giriş yapmış kullanıcıya açık; kamera bu kapıyı kullanamaz.
+if not has_function_privilege('authenticated', 'public.bilet_kapida_temizle(uuid)', 'execute') then
+  raise exception 'FAIL 59f: bilet_kapida_temizle authenticated rolüne kapalı';
+end if;
+foreach v_txt in array array['anon', 'service_role'] loop
+  if has_function_privilege(v_txt, 'public.bilet_kapida_temizle(uuid)', 'execute') then
+    raise exception 'FAIL 59f: bilet_kapida_temizle % rolüne açık', v_txt;
+  end if;
+end loop;
+
+raise notice 'PASS 59: yanlış kapıda işaretini yalnızca aktif personel, yalnızca açık bilette, izli kaldırıyor';
 
 perform pg_temp.logout();
 raise notice '';

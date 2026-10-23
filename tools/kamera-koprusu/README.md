@@ -282,13 +282,39 @@ That is the size at which the model's own documentation says reads become
 unreliable — move the camera closer or zoom in; no amount of prompt tuning
 recovers pixels that were never captured.
 
-## Optional: skip the empty lane
+## Skipping the empty lane (learned automatically since 1.2.0)
 
 A car **arriving** and a car **leaving** look identical to the bridge — motion,
-then stillness — so by default it sends a photo for both, and every vehicle
-costs two reads instead of one.
+then stillness — so it photographs the empty lane after every departure, and
+every vehicle costs two reads instead of one.
 
-Point it at a reference of the empty lane and it stops paying for departures:
+**Since 1.2.0 the bridge learns the empty lane by itself.** When it sends a
+photo of the empty lane, the server's model answers "no vehicle at all"
+(`arac_yok` in the webhook's 422). The bridge keeps a tiny 160×120 grey copy as
+a *candidate*. When a later empty-lane photo gets the same answer, looks the
+same, **and at least one car was read in between**, the candidate becomes a
+*reference*. From then on a settled picture that matches a reference is not
+sent; the log says `boş şerit — gönderilmedi (fark=…, ref=…)`.
+
+- Up to 6 references (day, dusk, infrared night, wet road…); the one unused
+  longest makes room. Kept in memory: after a restart the first departures are
+  paid for again and the references come back.
+- "A car read in between" is what stops one parked car with an unreadable plate,
+  photographed twice, from being learned as "empty". A 422 without `arac_yok`
+  ("a car I cannot read") is never learned from.
+- Size-mismatched pictures are never treated as matching (the motion `fark()`
+  returns 0.0 for that case; the learner refuses to compare instead).
+- **Check it on installation day:** every skip logs its `fark`. Empty-lane
+  matches should sit near 0, and a car must never come close to `BOS_ESIGI`
+  (3.0). If anything looks borderline, set `"BOS_OGREN": "0"` in the lane's
+  config file and the bridge behaves exactly like 1.1.0.
+- Needs the webhook that sends `arac_yok` (deployed with the Haiku 5.5 change).
+  Against an older webhook nothing is learned and nothing changes.
+- `durum` shows `Boş şerit : N okundu, M atlandı` for today.
+
+### Manual reference (still supported)
+
+A hand-made reference works alongside the learned ones and is never dropped:
 
 ```bash
 python kopru.py --bos      # run this while the lane is EMPTY
@@ -306,7 +332,7 @@ read costs a fraction of a cent, a missed car costs a free park.
 window the next vehicle needs. That is why the floor is 2s and not longer; with
 a reference configured the departure never fires and the question goes away.
 
-Leave `BOS_REFERANS` unset and nothing changes.
+Leave `BOS_REFERANS` unset and only the learned references are used.
 
 ## Run
 
@@ -364,13 +390,14 @@ and a missed car costs a free park while a repeat costs a fraction of a kuruş.
 | `MIN_BEKLEME_SN` | `2` | Floor between two sends. Keep it well under a plausible dwell at the barrier — see the empty-lane note above. |
 | `MAX_BEKLEME_SN` | `120` | Re-arm after this even if the scene never changed. Insurance — a wedged disarm would lose every later car. |
 | `SAHNE_ESIGI` | `6.0` | How different the crop must look from the sent frame before the vehicle counts as gone. |
-| `BOS_REFERANS` | *(none)* | Path to an empty-lane frame from `--bos`. Unset = send on every settle. |
-| `BOS_ESIGI` | `3.0` | How close to the reference counts as "empty". |
+| `BOS_REFERANS` | *(none)* | Path to an empty-lane frame from `--bos`. Optional since 1.2.0 (references are learned). |
+| `BOS_ESIGI` | `3.0` | How close to a reference counts as "empty" — for learned and manual references alike. |
+| `BOS_OGREN` | `1` | `0` turns empty-lane learning off (behaviour of 1.1.0). |
 
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, ~80 sn
+python test_kopru.py            # yakalama döngüsü, 12 senaryo, ~2,5 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
@@ -389,7 +416,14 @@ arkaya, hız sınırı (429), yavaş webhook, bariyerde bekleyen araç, ve bariy
 ilerleyen üç araçlık kuyruk. Sabit 60 sn'lik beklemenin olduğu sürümde bunların
 dördü kalıyor.
 
-`test_kurulum.py`'deki 71 birim testi kurulum tarafını tutuyor — ayar yükleme,
+Son dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
+bakıp model gibi cevap veriyor (araç → 200, boş → 422 + `arac_yok`):
+`bos_ogrenme` üçüncü boş şeridin HİÇ gönderilmediğini ve üçüncü aracın yine
+gönderildiğini; `bos_belirsiz` (arac_yok yok), `bos_arada_okuma_yok` (arada
+okunan araç yok) ve `bos_ogren_kapali` (`BOS_OGREN=0`) hiçbir şeyin
+öğrenilmediğini sınıyor.
+
+`test_kurulum.py`'deki 84 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
 **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.

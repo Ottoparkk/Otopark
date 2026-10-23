@@ -20,6 +20,8 @@ import { rpcErrorText } from '../../lib/errors'
 import { YER_GRUPLARI, kodAraligi, yerDegisimi, yerDuzeni } from '../../lib/yerkodu'
 import type { YerGrup } from '../../lib/yerkodu'
 import type { PlakaSaglayici } from '../../lib/types'
+import { PLAKA_MODELLERI, plakaModeliMetni } from '../../lib/plakaModelleri'
+import { tekKapiHatasi } from './tekKapiAyar'
 
 /** What pressing Kaydet will do to the layout, in one line. */
 function degisimMetni(d: { eklenecek: number; kapanacak: number }): string {
@@ -88,6 +90,8 @@ export default function OtoparkAyarlari() {
   const [model, setModel] = useState('')
   const [kameraAktif, setKameraAktif] = useState(false)
   const [gecikme, setGecikme] = useState('')
+  const [tkGiris, setTkGiris] = useState('')
+  const [tkCikis, setTkCikis] = useState('')
   const [onayAcik, setOnayAcik] = useState(false)
   const [hata, setHata] = useState<string | null>(null)
   const [kaydedildi, setKaydedildi] = useState(false)
@@ -114,6 +118,9 @@ export default function OtoparkAyarlari() {
     setModel(ayar.plaka_model ?? '')
     setKameraAktif(ayar.kamera_aktif)
     setGecikme(String(ayar.kamera_gecikme_limiti_dk))
+    // ?? : both columns arrive with 037, and their defaults are 3 and 5.
+    setTkGiris(String(ayar.tek_kapi_giris_yoksay_dk ?? 3))
+    setTkCikis(String(ayar.tek_kapi_cikis_yoksay_dk ?? 5))
   }, [ayar])
 
   /**
@@ -203,6 +210,15 @@ export default function OtoparkAyarlari() {
     plaka_model: model.trim() || null,
     kamera_aktif: kameraAktif,
     kamera_gecikme_limiti_dk: Number(gecikme) || 720,
+    // The fields are only on screen while the camera is on. With it off the
+    // stored values are written back unchanged, so an edit the user can no
+    // longer see is neither saved nor able to block the save.
+    tek_kapi_giris_yoksay_dk: kameraAktif
+      ? Number(tkGiris)
+      : (ayar.tek_kapi_giris_yoksay_dk ?? 3),
+    tek_kapi_cikis_yoksay_dk: kameraAktif
+      ? Number(tkCikis)
+      : (ayar.tek_kapi_cikis_yoksay_dk ?? 5),
   }
 
   // The only irreversible-feeling part of this screen: bays leaving service.
@@ -246,12 +262,27 @@ export default function OtoparkAyarlari() {
     acikKapali(ayar.plaka_saglayici !== 'KAPALI'),
     acikKapali(yeniAyar.plaka_saglayici !== 'KAPALI'),
   )
+  fark(
+    'Plaka okuma modeli',
+    plakaModeliMetni(ayar.plaka_model),
+    plakaModeliMetni(yeniAyar.plaka_model),
+  )
   fark('Kamera girişi', acikKapali(ayar.kamera_aktif), acikKapali(yeniAyar.kamera_aktif))
   if (yeniAyar.kamera_aktif) {
     fark(
       'Kamera gecikme sınırı',
       `${ayar.kamera_gecikme_limiti_dk} dk`,
       `${yeniAyar.kamera_gecikme_limiti_dk} dk`,
+    )
+    fark(
+      'Tek kapı: girişten sonra yok sayma',
+      `${ayar.tek_kapi_giris_yoksay_dk ?? 3} dk`,
+      `${yeniAyar.tek_kapi_giris_yoksay_dk} dk`,
+    )
+    fark(
+      'Tek kapı: çıkıştan sonra yok sayma',
+      `${ayar.tek_kapi_cikis_yoksay_dk ?? 5} dk`,
+      `${yeniAyar.tek_kapi_cikis_yoksay_dk} dk`,
     )
   }
   if (yerlerHazir && (degisim.eklenecek > 0 || degisim.kapanacak > 0)) {
@@ -282,6 +313,12 @@ export default function OtoparkAyarlari() {
     // float is a false discrepancy on every single close.
     if (parseTLToKurus(acilisNakit || '0') === null)
       return 'Vardiya açılış nakdi için geçerli bir tutar girin.'
+    // Mirrors the CHECKs in 037. Only while the fields are on screen — with the
+    // camera off the stored values are written back untouched (see yeniAyar).
+    if (kameraAktif) {
+      const tekKapi = tekKapiHatasi(tkGiris, tkCikis)
+      if (tekKapi) return tekKapi
+    }
     return null
   }
 
@@ -521,6 +558,31 @@ export default function OtoparkAyarlari() {
             label="Plaka okuma açık"
             hint="Fotoğraftan plaka önerilir. Kapalıyken kamera yalnızca fotoğraf çeker."
           />
+          {/* Only for the Claude reader: the other provider has no models, and
+              this would read as a choice that does nothing. */}
+          {saglayici === 'VLM' && (
+            <Select
+              label="Okuma modeli"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              hint={`${
+                PLAKA_MODELLERI.find((m) => m.id === model)?.aciklama ?? ''
+              } Emin olunamayan okumalar bir kez de Claude Sonnet 5.5'e sorulur.`.trim()}
+            >
+              <option value="">{plakaModeliMetni(null)}</option>
+              {PLAKA_MODELLERI.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.onerilen ? `${m.etiket} — önerilen` : m.etiket}
+                </option>
+              ))}
+              {/* A value written by hand that is not on the list. Shown as what
+                  it is instead of being swapped for something on the list —
+                  the server is using the default for it right now. */}
+              {model !== '' && !PLAKA_MODELLERI.some((m) => m.id === model) && (
+                <option value={model}>{plakaModeliMetni(model)}</option>
+              )}
+            </Select>
+          )}
           <p className="text-label text-faint">
             Okuma her zaman bir <strong className="text-soft">öneridir</strong> — operatör
             onaylamadan hiçbir kayıt oluşmaz.
@@ -544,6 +606,34 @@ export default function OtoparkAyarlari() {
                 inputMode="numeric"
                 hint="Bundan eski kamera olayı bilete dönüşmez, istisna olarak işaretlenir."
               />
+              {/* Only matter for a "Tek kapı" camera (one gate for entry and
+                  exit). Kept here rather than on the camera screen because
+                  that screen writes instantly and this one saves on Kaydet.
+                  Grouped under one heading so each label stays one line on a
+                  phone — the full wording is in the save confirmation. */}
+              <div className="space-y-4 border-t border-border pt-4">
+                <div>
+                  <p className="text-body font-medium text-ink">Tek kapı</p>
+                  <p className="mt-0.5 text-label text-faint">
+                    Giriş ve çıkış aynı kapıdansa, kameranın aynı aracı bu süreler içinde
+                    yeniden görmesi yok sayılır.
+                  </p>
+                </div>
+                <Input
+                  label="Girişten sonra (dakika)"
+                  value={tkGiris}
+                  onChange={(e) => setTkGiris(digitsOnly(e.target.value, 2))}
+                  inputMode="numeric"
+                  hint="Yeni giren araç kapıda görünmeye devam etse de çıkış sayılmaz. 3-60."
+                />
+                <Input
+                  label="Çıkıştan sonra (dakika)"
+                  value={tkCikis}
+                  onChange={(e) => setTkCikis(digitsOnly(e.target.value, 2))}
+                  inputMode="numeric"
+                  hint="Çıkışı yapılan araç kapıda yeniden görünse de yeni giriş açılmaz. 1-60."
+                />
+              </div>
               <p className="rounded-field bg-warn-soft px-3 py-2.5 text-label text-warn">
                 Kameranın saatini NTP'ye bağlayın. Bir saat kaymış kamera her aracı
                 sessizce yanlış ücretlendirir.

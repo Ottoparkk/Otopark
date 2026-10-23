@@ -1879,6 +1879,182 @@ def test_tek_kapi_seritler_tek_yerde() -> None:
         assert not elle, f"{ad}: şerit listesi elle yazılmış: {elle}"
 
 
+# ------------------------------------------ boş şerit öğrenme (1.2.0) ---
+
+# Ortak hazırlık: 160x120 gri boş şerit ve aynı yerde duran bir "araç".
+_BOS_HAZIRLIK = r"""
+import numpy as np
+bos = np.full((120, 160), 100, np.uint8)
+araba = bos.copy(); araba[20:100, 30:130] = 220
+def seviye(v):
+    return np.full((120, 160), v, np.uint8)
+"""
+
+
+def _bos_kos(govde: str, env: dict | None = None) -> str:
+    kod, cikti = _kopru_calistir(_BOS_HAZIRLIK + govde + "\nprint('TAMAM')\n", env)
+    assert kod == 0 and "TAMAM" in cikti, cikti
+    return cikti
+
+
+def test_bos_ogrenme_arada_okuma_ister() -> None:
+    """
+    Bir boş şerit fotoğrafı ancak ikinci bir "araç yok" cevabıyla ve ARADA
+    OKUNMUŞ bir araçla referans olur. Arada okuma olmadan iki aynı fotoğraf,
+    aynı yerde duran ve okunamayan tek bir aracın iki fotoğrafı da olabilir —
+    onu öğrenmek o aracı ve benzerlerini görünmez yapardı.
+    """
+    _bos_kos(r"""
+b = kopru.BosOgrenme(3.0)
+assert not b.eslesir(bos)[0]
+assert b.arac_yok_geldi(bos) is False          # aday
+assert b.arac_yok_geldi(bos.copy()) is False   # arada okuma yok: doğrulanmaz
+assert not b.eslesir(bos)[0]
+b.okundu()
+assert b.arac_yok_geldi(bos.copy()) is True    # şimdi referans
+ok, d, kaynak = b.eslesir(bos)
+assert ok and d < 3.0 and kaynak.startswith('öğrenilen'), (ok, d, kaynak)
+assert not b.eslesir(araba)[0], 'araç boş şeritle eşleşti'
+""")
+
+
+def test_bos_ogrenme_esik_ve_bicim() -> None:
+    """Eşiğin altı eşleşir, üstü eşleşmez; boyutu farklı görüntü ASLA eşleşmez.
+
+    kopru.fark() boyut farkında 0.0 döner ("aynı"); hareket için zararsız ama
+    burada "boş şerit" demek olurdu — o yüzden eşleştirme kendi kontrolünü yapar.
+    """
+    _bos_kos(r"""
+b = kopru.BosOgrenme(3.0)
+b.arac_yok_geldi(bos); b.okundu(); assert b.arac_yok_geldi(bos)
+assert b.eslesir(seviye(102))[0]               # fark 2 < 3
+assert not b.eslesir(seviye(104))[0]           # fark 4 > 3
+assert not b.eslesir(np.full((60, 80), 100, np.uint8))[0], 'farklı boyut eşleşti'
+assert not b.eslesir(None)[0]
+assert b.arac_yok_geldi(np.full((60, 80), 100, np.uint8)) is False
+
+# Öğrenirken de AYNI eşik: adaydan eşik kadar farklı bir "araç yok" fotoğrafı
+# o adayı doğrulamaz (başka bir sahnedir), yeni aday olur.
+c = kopru.BosOgrenme(3.0)
+c.arac_yok_geldi(seviye(100)); c.okundu()
+assert c.arac_yok_geldi(seviye(104)) is False      # fark 4 > 3
+assert c.referans_sayisi() == 0
+assert c.arac_yok_geldi(seviye(102)) is True       # fark 2 < 3, arada okuma var
+""")
+
+
+def test_bos_ogrenme_kapali_ve_sabit_referans() -> None:
+    """BOS_OGREN=0 hiçbir şey öğrenmez; elle verilen BOS_REFERANS yine çalışır."""
+    _bos_kos(r"""
+b = kopru.BosOgrenme(3.0, ogren=False)
+b.arac_yok_geldi(bos); b.okundu()
+assert b.arac_yok_geldi(bos) is False
+assert not b.eslesir(bos)[0]
+s = kopru.BosOgrenme(3.0, sabit=bos, ogren=False)
+ok, d, kaynak = s.eslesir(bos)
+assert ok and kaynak == 'sabit', (ok, kaynak)
+assert not s.eslesir(araba)[0]
+""")
+
+
+def test_bos_ogrenme_sinirlar() -> None:
+    """
+    En fazla 8 aday, en fazla 6 referans. Yer açmak için EN UZUN SÜREDİR
+    eşleşmeyen referans düşer — kullanılan (örn. gece) referansı yeni gelen
+    atmasın.
+    """
+    _bos_kos(r"""
+b = kopru.BosOgrenme(3.0)
+for v in range(0, 250, 25):                     # 10 farklı aday
+    b.arac_yok_geldi(seviye(v))
+assert len(b._adaylar) == kopru.BosOgrenme.ADAY_EN_COK == 8, len(b._adaylar)
+
+b = kopru.BosOgrenme(3.0)
+seviyeler = [10, 40, 70, 100, 130, 160, 190]
+for v in seviyeler[:6]:
+    b.arac_yok_geldi(seviye(v)); b.okundu(); assert b.arac_yok_geldi(seviye(v)), v
+assert b.referans_sayisi() == 6
+assert b.eslesir(seviye(10))[0]                 # ilki yeniden kullanıldı
+b.arac_yok_geldi(seviye(190)); b.okundu(); assert b.arac_yok_geldi(seviye(190))
+assert b.referans_sayisi() == kopru.BosOgrenme.REFERANS_EN_COK == 6
+assert b.eslesir(seviye(10))[0], 'kullanılan referans atıldı'
+assert not b.eslesir(seviye(40))[0], 'en eski kullanılmayan referans atılmadı'
+assert b.eslesir(seviye(190))[0]
+""")
+
+
+def test_gonder_arac_yok_cevabini_ogrenir() -> None:
+    """
+    422 + arac_yok: hata değil, boş şerit görüntüsü — "[!] reddedildi" yazılmaz
+    (durum onu reddedilme sayardı) ve aday olarak kaydedilir. arac_yok olmayan
+    422 eskisi gibi reddedilmedir ve ÖĞRENİLMEZ; bozuk gövde de köprüyü
+    düşürmez. 2xx bir okumadır.
+    """
+    import gunluk
+    cikti = _bos_kos(r"""
+from datetime import datetime, timezone
+import json as _j
+class Y:
+    def __init__(s, kod, govde): s.status_code = kod; s.text = govde
+cevap = []
+kopru.requests.post = lambda *a, **k: cevap.pop(0)
+kopru._bos = kopru.BosOgrenme(3.0)
+simdi = datetime.now(timezone.utc)
+
+cevap.append(Y(422, _j.dumps({'hata': 'Plaka okunamadı.', 'guven': None, 'arac_yok': True})))
+assert kopru.gonder('eA==', simdi, bos) is False
+assert len(kopru._bos._adaylar) == 1
+
+cevap.append(Y(422, _j.dumps({'hata': 'Plaka okunamadı.', 'guven': 0.4, 'arac_yok': False})))
+assert kopru.gonder('eA==', simdi, seviye(200)) is False
+cevap.append(Y(422, 'bu json degil'))
+assert kopru.gonder('eA==', simdi, seviye(150)) is False
+assert len(kopru._bos._adaylar) == 1, 'arac_yok olmayan 422 öğrenildi'
+
+cevap.append(Y(200, '{"ok":true}'))
+assert kopru.gonder('eA==', simdi, araba) is True
+assert kopru._bos._okunan == 1
+
+cevap.append(Y(422, _j.dumps({'hata': 'x', 'guven': None, 'arac_yok': True})))
+assert kopru.gonder('eA==', simdi, bos.copy()) is False
+assert kopru._bos.referans_sayisi() == 1
+
+kopru._bos = None                                  # öğrenme nesnesi yokken de çalışmalı
+cevap.append(Y(422, _j.dumps({'hata': 'x', 'guven': None, 'arac_yok': True})))
+assert kopru.gonder('eA==', simdi, bos) is False
+""")
+    assert gunluk.BOS_GORUNTU_ISARETI in cikti, cikti
+    assert gunluk.BOS_OGRENILDI_ISARETI in cikti, cikti
+    assert cikti.count("[!] reddedildi 422") == 2, cikti
+
+
+def test_durum_bos_serit_satirlari() -> None:
+    """
+    Gece boyunca yalnızca atlanan boş şerit satırları olabilir: bu, kameranın
+    görüntü verdiğinin kanıtıdır (KAMERA YOK değil). Boş şerit görüntüsü bir
+    reddedilme de değildir; özet onları ayrı sayar.
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    assert durum.kamera_kopuk([
+        f"{bugun} 01:00:00  [!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor",
+        f"{bugun} 01:00:09  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.40, ref=öğrenilen-1)",
+    ]) is False
+    satirlar = [
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:01:00  [+] gönderildi -> ok",
+        f"{bugun} 09:02:00  [i] {gunluk.BOS_GORUNTU_ISARETI}",
+        f"{bugun} 09:03:00  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.10, ref=öğrenilen-1)",
+        f"{bugun} 09:04:00  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.20, ref=öğrenilen-1)",
+    ]
+    assert durum.bos_ozet(satirlar) == (1, 2), durum.bos_ozet(satirlar)
+    ok, cikti = _durum_senaryosu(satirlar)
+    assert ok is True, cikti
+    assert "1 gönderim, 0 reddedilme" in cikti, cikti
+    assert "Boş şerit    : 1 okundu, 2 atlandı" in cikti, cikti
+
+
 # ------------------------------------------- testler makineye dokunmaz ---
 
 def test_alt_surecler_programdata_devralmaz() -> None:

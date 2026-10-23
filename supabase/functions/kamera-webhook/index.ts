@@ -35,7 +35,7 @@
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { z } from 'npm:zod@4.4.3'
 import { deriveIslemId, json, parseCameraTime, safeEqual } from '../_shared/http.ts'
-import { bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
+import { aracYokMu, bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
 import { seritKarari, tekKapiCevabi } from '../_shared/serit.ts'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -436,6 +436,10 @@ Deno.serve(async (req: Request) => {
     let guven: number | null = null
     // Kept so the ticket can be linked to the read that produced it below.
     let okumaId: string | null = null
+    // "The model saw no vehicle at all" — told to the bridge on a 422 so it can
+    // learn what the empty gate looks like and stop paying to send it. False
+    // whenever there was no read, so only a real model answer can teach it.
+    let aracYok = false
 
     // No plate text but a picture? That is the thin-bridge topology: the JPEG
     // is all the model needs, so camera OCR was never required.
@@ -469,6 +473,7 @@ Deno.serve(async (req: Request) => {
       }
 
       guven = sonuc.parsed.guven
+      aracYok = aracYokMu(sonuc.parsed)
       const temiz = tidyPlaka(sonuc.parsed.plaka)
       // Same judgement as the phone, from the same helper — a camera that
       // read a shape no Turkish plate has is not evidence, it is noise.
@@ -489,7 +494,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!plaka) {
-      return json({ hata: 'Plaka okunamadı.', guven }, 422)
+      // `arac_yok` is additive: a bridge older than 1.2.0 ignores it.
+      return json({ hata: 'Plaka okunamadı.', guven, arac_yok: aracYok }, 422)
     }
 
     // Cameras do not send UUIDs, and bilet_ac requires an idempotency key, so

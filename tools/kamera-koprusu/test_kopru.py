@@ -104,6 +104,64 @@ SENARYOLAR = {
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 6, DURDU)],
         sure=7.0, pencereler=[(1.8, 6.0)], yon="ORTAK",
     ),
+    # Boş şerit öğrenme (1.2.0). Sunucu fotoğrafa bakıp karar veriyor (araç
+    # varsa 200; yoksa 422 + arac_yok). Üç araç gelip gidiyor; her gidişin
+    # ardında boş şerit yerleşiyor. Birinci boş fotoğraf ADAY olur, ikincisi
+    # (arada bir araç OKUNDU) onu doğrular ve referans yapar, ÜÇÜNCÜSÜ HİÇ
+    # GÖNDERİLMEMELİ. Üçüncü araç yine de gönderilmeli: öğrenilmiş bir boş
+    # şerit asla bir aracı gizlememeli.
+    "bos_ogrenme": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
+               (3.5, 4.2, GELIYOR), (4.2, 7, BOS),
+               (7, 7.8, GELIYOR), (7.8, 9.5, DURDU),
+               (9.5, 10.2, GELIYOR), (10.2, 13, BOS),
+               (13, 13.8, GELIYOR), (13.8, 15.5, DURDU),
+               (15.5, 16.2, GELIYOR), (16.2, 19.5, BOS)],
+        sure=19.5, pencereler=[(1.8, 3.5), (7.8, 9.5), (13.8, 15.5)],
+        goruntu_sunucu=True, arac_yok=True,
+        bos_gonderilir=[(4.2, 7.0), (10.2, 13.0)],
+        bos_gonderilmez=[(16.2, 19.5)],
+        kayitta_sirayla=["boş şerit görüntüsü (sunucu: araç yok)",
+                         "boş şerit öğrenildi",
+                         "boş şerit — gönderilmedi"],
+    ),
+    # Sunucu "araç var ama plaka okunamadı" diyor (arac_yok YOK): bu bir boş
+    # şerit kanıtı DEĞİL, öğrenilmemeli — üçüncü boş fotoğraf yine gider.
+    "bos_belirsiz": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
+               (3.5, 4.2, GELIYOR), (4.2, 7, BOS),
+               (7, 7.8, GELIYOR), (7.8, 9.5, DURDU),
+               (9.5, 10.2, GELIYOR), (10.2, 13, BOS),
+               (13, 13.8, GELIYOR), (13.8, 15.5, DURDU),
+               (15.5, 16.2, GELIYOR), (16.2, 19.5, BOS)],
+        sure=19.5, pencereler=[(1.8, 3.5), (7.8, 9.5), (13.8, 15.5)],
+        goruntu_sunucu=True, arac_yok=False,
+        bos_gonderilir=[(4.2, 7.0), (10.2, 13.0), (16.2, 19.5)],
+    ),
+    # İki "araç yok" cevabı arka arkaya, arada OKUNAN araç yok (yalnızca biri
+    # kadrajdan geçti). Kural: arada okunmuş bir araç olmadan aday doğrulanmaz
+    # — aynı park etmiş, okunamayan aracın iki fotoğrafı referans olamasın.
+    "bos_arada_okuma_yok": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
+               (3.5, 4.2, GELIYOR), (4.2, 7, BOS),
+               (7, 7.6, GELIYOR), (7.6, 10.5, BOS),
+               (10.5, 11.1, GELIYOR), (11.1, 14, BOS)],
+        sure=14.0, pencereler=[(1.8, 3.5)],
+        goruntu_sunucu=True, arac_yok=True,
+        bos_gonderilir=[(4.2, 7.0), (7.6, 10.5), (11.1, 14.0)],
+    ),
+    # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
+    "bos_ogren_kapali": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
+               (3.5, 4.2, GELIYOR), (4.2, 7, BOS),
+               (7, 7.8, GELIYOR), (7.8, 9.5, DURDU),
+               (9.5, 10.2, GELIYOR), (10.2, 13, BOS),
+               (13, 13.8, GELIYOR), (13.8, 15.5, DURDU),
+               (15.5, 16.2, GELIYOR), (16.2, 19.5, BOS)],
+        sure=19.5, pencereler=[(1.8, 3.5), (7.8, 9.5), (13.8, 15.5)],
+        goruntu_sunucu=True, arac_yok=True, bos_ogren="0",
+        bos_gonderilir=[(4.2, 7.0), (10.2, 13.0), (16.2, 19.5)],
+    ),
 }
 
 
@@ -136,9 +194,18 @@ def tek_kos(ad: str) -> int:
         pass
 
     class Yanit:
-        def __init__(self, kod):
+        def __init__(self, kod, text='{"ok":true}'):
             self.status_code = kod
-            self.text = '{"ok":true}'
+            self.text = text
+
+    def arac_var_mi(foto_base64: str) -> bool:
+        # Sunucudaki modelin yerine: sahte sahnede boş şerit düz 100 gri,
+        # araç 220'lik bir dikdörtgen — ortalama parlaklık ikisini ayırır.
+        import base64 as _b64
+        import cv2 as _cv2
+        img = _cv2.imdecode(np.frombuffer(_b64.b64decode(foto_base64), np.uint8),
+                            _cv2.IMREAD_GRAYSCALE)
+        return float(img.mean()) > 120
 
     def post(url, json=None, headers=None, timeout=None):
         # Kalp atışı: 400 beklenen cevaptır ve sıradaki durum kodunu
@@ -153,6 +220,14 @@ def tek_kos(ad: str) -> int:
                             "yon": json.get("yon")})
         if S.get("yavas"):
             time.sleep(S["yavas"])
+        if S.get("goruntu_sunucu"):
+            if arac_var_mi(json["foto_base64"]):
+                return Yanit(200)
+            # kamera-webhook'un plaka çıkmayınca verdiği cevap (vlm.ts aracYokMu).
+            govde = {"hata": "Plaka okunamadı.", "guven": None,
+                     "arac_yok": bool(S.get("arac_yok"))}
+            import json as _json
+            return Yanit(422, _json.dumps(govde))
         kod = kodlar.pop(0) if kodlar else 200
         if kod == 0:
             raise RequestException("ağ yok")
@@ -175,6 +250,8 @@ def tek_kos(ad: str) -> int:
         os.environ["MAX_BEKLEME_SN"] = S["max_bekleme"]
     if S.get("acilis_bekleme"):
         os.environ["ACILIS_BEKLEME_SN"] = S["acilis_bekleme"]
+    if S.get("bos_ogren"):
+        os.environ["BOS_OGREN"] = S["bos_ogren"]
 
     sys.path.insert(0, BURASI)
     import cv2
@@ -274,13 +351,26 @@ def tek_kos(ad: str) -> int:
         if yanlis:
             print(f"FAIL: olaylar {S['yon']} şeridiyle gitmeliydi, giden: {yanlis}")
             hata = 1
+    # Boş şerit pencereleri: öğrenilmiş bir boş şerit gönderilMEMELİ, henüz
+    # öğrenilmemiş (ya da öğrenilmemesi gereken) boş şerit gönderilMELİ.
+    for a, b in S.get("bos_gonderilmez", []):
+        icinde = [g for g in gonderimler if a <= g["t"] <= b]
+        if icinde:
+            print(f"FAIL: boş şerit ({a}-{b}s) öğrenilmiş olmalıydı ama "
+                  f"{len(icinde)} kez gönderildi")
+            hata = 1
+    for a, b in S.get("bos_gonderilir", []):
+        if not [g for g in gonderimler if a <= g["t"] <= b]:
+            print(f"FAIL: boş şerit ({a}-{b}s) gönderilmeliydi — öğrenilmemesi "
+                  "gereken bir şey öğrenildi")
+            hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")
         hata = 1
 
     if not hata:
         fazla = len(gonderimler) - eslesen
-        ek = f"  (+{fazla} boş şerit — BOS_REFERANS ile sıfırlanır)" if fazla else ""
+        ek = f"  (+{fazla} boş şerit fotoğrafı)" if fazla else ""
         print(f"PASS: {ad}{ek}")
     return hata
 

@@ -23,13 +23,15 @@
  * PLATE, and pixels on the plate is the variable we measured as dominant.
  * High-res needs no beta header or opt-in; it is automatic on those models.
  *
- * Kept in step with VLM_MODELS in supabase/functions/_shared/ocr.ts — that
+ * Kept in step with VLM_MODELS in supabase/functions/_shared/vlm.ts — that
  * allowlist decides which models may be configured at all; this decides how
  * much image each one is worth sending.
  */
 const OCR_EDGE_STANDARD = 1568
 const OCR_EDGE_YUKSEK = 2576
-const YUKSEK_COZUNURLUK = new Set(['claude-sonnet-5'])
+// Haiku 5.5 is a high-res model too, but stays at the standard edge by owner
+// decision (2026-10-23): cheapest, and the accuracy report can argue otherwise.
+const YUKSEK_COZUNURLUK = new Set(['claude-sonnet-5', 'claude-sonnet-5-5'])
 
 export function ocrMaxEdge(model: string | null | undefined): number {
   return model && YUKSEK_COZUNURLUK.has(model) ? OCR_EDGE_YUKSEK : OCR_EDGE_STANDARD

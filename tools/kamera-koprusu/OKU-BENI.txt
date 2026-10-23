@@ -81,6 +81,13 @@ ELİNİZDE HAZIR OLSUN
   Kurulumdan sonraki ilk gün bir kez bakın. Kamera okumayı kesmişse
   hiçbir şey hata vermez — otopark boş görünür, o kadar.
 
+  BOŞ ŞERİT: araç gidince kamera boş yolu da görür. Program boş yolun
+  neye benzediğini birkaç araçtan sonra KENDİSİ öğrenir (gündüz ve gece
+  için ayrı ayrı) ve boş yolun fotoğrafını göndermeyi bırakır. Kayıtta
+  "boş şerit — gönderilmedi" satırları görmek NORMALDİR; Durum ekranında
+  "Boş şerit : ... okundu, ... atlandı" olarak sayılır. Hiçbir ayar
+  gerekmez.
+
 
 BİR ŞEY TERS GİDERSE
 ------------------------------------------------------------------------

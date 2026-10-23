@@ -127,8 +127,12 @@ def kamera_kopuk(satirlar: list[str]) -> bool:
     for satir in reversed(satirlar):
         if gunluk.KAMERA_YOK_ISARETI in satir or gunluk.KARE_YOK_ISARETI in satir:
             return True
+        # A skipped empty-lane picture is a picture too: a quiet night can be
+        # nothing but those, and that is a working camera (1.2.0).
         if (gunluk.KAMERA_VAR_ISARETI in satir or "[i] çalışıyor" in satir
-                or "[i] araç durdu" in satir):
+                or "[i] araç durdu" in satir
+                or gunluk.BOS_ATLANDI_ISARETI in satir
+                or gunluk.BOS_GORUNTU_ISARETI in satir):
             return False
         if "köprü başladı" in satir:
             return False
@@ -149,6 +153,24 @@ def ozet(satirlar: list[str]) -> tuple[int, int, str | None]:
         if "[!]" in s and "hız sınırı" not in s:
             son_hata = s
     return gonderim, red, son_hata
+
+
+def bos_ozet(satirlar: list[str]) -> tuple[int, int]:
+    """
+    Bugün kaç boş şerit fotoğrafı OKUNDU (sunucuya gitti, parası ödendi) ve
+    kaçı ATLANDI (öğrenilmiş boş şeritle eşleşti, hiç gönderilmedi). İkisi
+    birlikte boş şerit öğrenmenin işe yarayıp yaramadığını söyler.
+    """
+    bugun = time.strftime("%d.%m")
+    okunan = atlanan = 0
+    for s in satirlar:
+        if not s.startswith(bugun):
+            continue
+        if gunluk.BOS_GORUNTU_ISARETI in s:
+            okunan += 1
+        elif gunluk.BOS_ATLANDI_ISARETI in s:
+            atlanan += 1
+    return okunan, atlanan
 
 
 def gorev_var_mi(yon: str) -> bool:
@@ -231,6 +253,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
 
     gonderim, red, son_hata = ozet(satirlar)
     print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme")
+    bos_okunan, bos_atlanan = bos_ozet(satirlar)
+    if bos_okunan or bos_atlanan:
+        print(f"     Boş şerit    : {bos_okunan} okundu, {bos_atlanan} atlandı")
     if son_hata:
         print(f"     Son uyarı    : {son_hata[:110]}")
     print("     Son satırlar :")

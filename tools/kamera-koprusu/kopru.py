@@ -39,6 +39,7 @@ optimisation, it is the accuracy lever.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import queue
 import sys
@@ -235,6 +236,15 @@ HAREKET_PENCERESI_SN = float(os.environ.get("HAREKET_PENCERESI_SN", "12"))
 BOS_REFERANS = os.environ.get("BOS_REFERANS", "").strip()
 BOS_ESIGI = float(os.environ.get("BOS_ESIGI", "3.0"))
 
+# Boş şeridi KENDİ öğrenme (1.2.0) — bkz. BosOgrenme. Varsayılan AÇIK; "0"
+# sahada kapatma anahtarıdır ve davranışı birebir 1.1.0'a döndürür.
+#
+# Kurulumda "şerit şu an boş" fotoğrafı çekmek yerine bu: o fotoğraf yanlışlıkla
+# araç varken çekilirse benzer bir aracı GİZLEYEBİLİRDİ. Burada referans yalnızca
+# sunucudaki modelin "görselde HİÇ ARAÇ yok" dediği fotoğraflardan doğar; gece
+# ve gündüz için ayrı ayrı, kendiliğinden.
+BOS_OGREN = os.environ.get("BOS_OGREN", "1").strip() != "0"
+
 # The watchdog marks a camera dead if it has not heard anything. A quiet night
 # is not a fault, so ping on a timer as well as on events.
 KALP_ARALIGI_SN = 300
@@ -297,10 +307,130 @@ def gri_kucuk(img: np.ndarray) -> np.ndarray:
     return cv2.resize(g, (160, 120), interpolation=cv2.INTER_AREA)
 
 
+class BosOgrenme:
+    """
+    What the EMPTY lane looks like, learned from the server's own answers.
+
+    Every departure leaves the empty lane behind, and to the motion logic that
+    is "motion, then stillness" — so it gets photographed and paid for like a
+    car. Once this knows what the empty lane looks like, a settled picture that
+    matches is not sent.
+
+    THE RULE THAT KEEPS IT SAFE: a picture becomes a reference only when
+      1. the server's model said "no vehicle at all" (`arac_yok`, not merely
+         "plate unreadable") about it, AND
+      2. a LATER picture got the same answer and looks the same, AND
+      3. at least one car was READ (a 2xx) in between.
+    (3) is what stops one parked, unreadable car photographed twice from
+    becoming "the empty lane". A car changes the crop a lot, so a reference can
+    only ever stop pictures that look like the empty road; the worst a bad one
+    can do is cost the reads it was meant to save — never a missed car.
+
+    Several references, because the empty lane looks different by day, at dusk,
+    under infrared at night and on a wet road. Kept in memory only: after a
+    restart the first departures are paid for again and the references come
+    back by themselves.
+
+    Shared by the capture thread (eslesir) and the sender thread (the rest),
+    hence the lock.
+    """
+
+    ADAY_EN_COK = 8
+    REFERANS_EN_COK = 6
+
+    def __init__(self, esik: float, sabit: np.ndarray | None = None, ogren: bool = True):
+        self.esik = esik
+        self.ogren = ogren
+        self._sabit = sabit            # elle verilen BOS_REFERANS — hiç düşmez
+        self._adaylar: list[tuple[np.ndarray, int]] = []   # (görüntü, o anki okunan)
+        self._referanslar: list[list] = []                  # [görüntü, son kullanım]
+        self._okunan = 0
+        self._sira = 0
+        self._kilit = threading.Lock()
+
+    @staticmethod
+    def _fark(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
+        # NOT kopru.fark(): that returns 0.0 ("identical") for a size mismatch,
+        # harmless for motion but here it would mean "empty lane" — a skipped
+        # car. Different sizes are simply not comparable.
+        if a is None or b is None or a.shape != b.shape:
+            return None
+        return float(np.mean(cv2.absdiff(a, b)))
+
+    def _benzer(self, a: np.ndarray | None, b: np.ndarray | None) -> bool:
+        d = self._fark(a, b)
+        return d is not None and d < self.esik
+
+    def referans_sayisi(self) -> int:
+        with self._kilit:
+            return len(self._referanslar)
+
+    def okundu(self) -> None:
+        """A car's plate was read (any 2xx for a photo)."""
+        with self._kilit:
+            self._okunan += 1
+
+    def arac_yok_geldi(self, gri: np.ndarray | None) -> bool:
+        """The server said "no vehicle" about `gri`. True when it became a reference."""
+        if not self.ogren or gri is None:
+            return False
+        with self._kilit:
+            # Already covered (the reference may have been learned while this
+            # picture waited in the send queue): nothing to do.
+            if any(self._benzer(r[0], gri) for r in self._referanslar):
+                return False
+            for i, (aday, okunan_o_an) in enumerate(self._adaylar):
+                if not self._benzer(aday, gri):
+                    continue
+                if self._okunan <= okunan_o_an:
+                    # Same picture, but no car read since: keep waiting.
+                    return False
+                del self._adaylar[i]
+                if len(self._referanslar) >= self.REFERANS_EN_COK:
+                    # Drop the one unused for longest, so the night reference
+                    # survives a sunny week instead of the newest one winning.
+                    eski = min(range(len(self._referanslar)),
+                               key=lambda k: self._referanslar[k][1])
+                    del self._referanslar[eski]
+                self._sira += 1
+                self._referanslar.append([gri, self._sira])
+                return True
+            self._adaylar.append((gri, self._okunan))
+            if len(self._adaylar) > self.ADAY_EN_COK:
+                del self._adaylar[0]
+            return False
+
+    def eslesir(self, gri: np.ndarray | None) -> tuple[bool, float, str]:
+        """(does `gri` look like the empty lane, how close, which reference)."""
+        with self._kilit:
+            d = self._fark(self._sabit, gri)
+            if d is not None and d < self.esik:
+                return True, d, "sabit"
+            for i, r in enumerate(self._referanslar):
+                d = self._fark(r[0], gri)
+                if d is not None and d < self.esik:
+                    self._sira += 1
+                    r[1] = self._sira
+                    return True, d, f"öğrenilen-{i + 1}"
+            return False, 0.0, ""
+
+
 # --------------------------------------------------------------- gönderim ---
 
 
-def gonder(foto_base64: str, gorulme: datetime) -> bool:
+# Set by main(); None in the setup modes and in tests that call gonder alone.
+_bos: BosOgrenme | None = None
+
+
+def _arac_yok_mu(govde: str) -> bool:
+    """Did the webhook's 422 say "no vehicle at all"? Anything unparseable: no."""
+    try:
+        return json.loads(govde).get("arac_yok") is True
+    except (ValueError, AttributeError):
+        return False
+
+
+def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None) -> bool:
     """
     One vehicle, one POST.
 
@@ -344,7 +474,20 @@ def gonder(foto_base64: str, gorulme: datetime) -> bool:
             ret_kaydet(r.status_code, getattr(r, "text", "") or "")
             if r.status_code < 300:
                 print(f"[+] gönderildi -> {r.text[:160]}", flush=True)
+                if _bos is not None:
+                    _bos.okundu()
                 return True
+            # Not a refusal: the model looked and saw an empty lane. Logged as
+            # information, so `durum` does not count it as a rejection, and
+            # handed to the learner. A 422 WITHOUT the flag ("a car I cannot
+            # read") falls through to the ordinary refusal below and is never
+            # learned from.
+            if r.status_code == 422 and _arac_yok_mu(getattr(r, "text", "") or ""):
+                print(f"[i] {gunluk.BOS_GORUNTU_ISARETI}", flush=True)
+                if _bos is not None and _bos.arac_yok_geldi(gri):
+                    print(f"[i] {gunluk.BOS_OGRENILDI_ISARETI} "
+                          f"({_bos.referans_sayisi()} referans)", flush=True)
+                return False
             # 429 is the ONE 4xx that DOES fix itself — the webhook's 30/min
             # and 2000/day caps. Lumping it in with the rest meant a
             # rate-limited vehicle was thrown away instead of retried.
@@ -450,29 +593,32 @@ def ret_kaydet(kod: int | None, govde: str = "") -> None:
 #
 # Bounded, and full means DROP rather than block: falling behind must never
 # turn back into the capture loop stalling, which is the whole point of this.
-_kuyruk: "queue.Queue[tuple[str, datetime]]" = queue.Queue(maxsize=4)
+_kuyruk: "queue.Queue[tuple[str, datetime, np.ndarray | None]]" = queue.Queue(maxsize=4)
 
 
 def gonderici() -> None:
     while True:
-        foto, gorulme = _kuyruk.get()
+        foto, gorulme, gri = _kuyruk.get()
         try:
-            gonder(foto, gorulme)
+            gonder(foto, gorulme, gri)
         except Exception as e:  # one bad send must never kill the worker
             print(f"[!] gönderim hatası: {e}", flush=True)
         finally:
             _kuyruk.task_done()
 
 
-def kuyruga_al(foto: str, gorulme: datetime) -> None:
+def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None) -> None:
     """
     `gorulme` is stamped by the CALLER, at the moment the car settled — never
     by the worker. The server bills from this timestamp, so letting a queued
     item pick up the time it was finally dequeued would quietly shorten every
     stay by however long the backlog happened to be.
+
+    `gri` is the small grey version of the SAME picture, so the answer can be
+    learned against exactly what was sent (BosOgrenme).
     """
     try:
-        _kuyruk.put_nowait((foto, gorulme))
+        _kuyruk.put_nowait((foto, gorulme, gri))
     except queue.Full:
         print("[!] gönderim kuyruğu dolu — bu araç atlandı", flush=True)
 
@@ -629,6 +775,10 @@ def main() -> None:
         else:
             bos_gri = gri_kucuk(olcekle(kirp(ref, kutu)))
             print("[i] boş şerit referansı yüklendi", flush=True)
+    global _bos
+    _bos = BosOgrenme(BOS_ESIGI, sabit=bos_gri, ogren=BOS_OGREN)
+    if not BOS_OGREN:
+        print("[i] boş şerit öğrenme kapalı (BOS_OGREN=0)", flush=True)
 
     print(f"[i] kamera açılıyor ({YON})", flush=True)
     cap = kamera_ac(bekle=True)
@@ -740,9 +890,15 @@ def main() -> None:
         gecerli_pencere = simdi - son_hareket < HAREKET_PENCERESI_SN
         if silahli and durgun_sayaci >= DURGUN_KARE and gecerli_pencere:
             # Şerit boş görünüyorsa bu, GELEN değil GİDEN aracın bıraktığı
-            # durgunluktur. Referans yoksa bu dal hiç çalışmaz ve davranış
-            # eskisiyle birebir aynıdır — kaçırmaktansa fazladan okumak.
-            if bos_gri is not None and fark(bos_gri, gri) < BOS_ESIGI:
+            # durgunluktur. Referans yoksa (elle verilmemiş, henüz öğrenilmemiş)
+            # bu dal hiç çalışmaz ve davranış eskisiyle birebir aynıdır —
+            # kaçırmaktansa fazladan okumak. Satır her yerleşmede BİR kez
+            # yazılır (son_hareket sıfırlanınca bir sonraki harekete kadar bu
+            # dala girilmez); `fark` değeri sahada eşiği ayarlamanın ölçüsüdür.
+            bos_mu, bos_fark, bos_ref = _bos.eslesir(gri)
+            if bos_mu:
+                print(f"[i] {gunluk.BOS_ATLANDI_ISARETI} "
+                      f"(fark={bos_fark:.2f}, ref={bos_ref})", flush=True)
                 durgun_sayaci = 0
                 son_hareket = 0.0
                 continue
@@ -750,7 +906,7 @@ def main() -> None:
             print(f"[i] araç durdu (fark={d:.2f}) — gönderiliyor", flush=True)
             gonderim_sayaci += 1
             try:
-                kuyruga_al(jpeg_base64(kirpik), datetime.now(timezone.utc))
+                kuyruga_al(jpeg_base64(kirpik), datetime.now(timezone.utc), gri)
             except Exception as e:  # encoding, not network — never kill the loop
                 print(f"[!] gönderilemedi: {e}", flush=True)
             # Disarmed until this vehicle leaves the frame, not until a clock

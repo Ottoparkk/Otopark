@@ -689,3 +689,24 @@ export function useBiletPlakaDuzelt() {
     },
   })
 }
+
+/**
+ * "Araç çıkmadı" — clears a camera's false "Kapıda" stamp (038). Any active
+ * staff member, open tickets only, audited server-side. Resolves to `false`
+ * when there was no stamp left to clear (a second tap, or a colleague first).
+ */
+export function useKapidaTemizle() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (bilet_id: string): Promise<boolean> => {
+      const { data, error } = await supabase.rpc('bilet_kapida_temizle', { p_bilet_id: bilet_id })
+      if (error) throw error
+      return data === true
+    },
+    onSuccess: (_d, bilet_id) => {
+      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+      void qc.invalidateQueries({ queryKey: ['bilet', bilet_id] })
+    },
+  })
+}

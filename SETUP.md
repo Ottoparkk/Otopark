@@ -453,7 +453,31 @@ Flip **Plaka okuma açık**. That is the whole switch: on = Claude reads the
 photo, off = the camera only takes a picture. One photo can only go to one
 reader, so there is no "all providers at once" setting to make.
 
-**What the reader is told.** The prompt in `_shared/ocr.ts` carries the
+**Which model reads.** When the toggle is on, an **Okuma modeli** list appears
+under it (Yönetici only, saved with Kaydet). Empty = the default, **Claude
+Haiku 4.5**. Choices: **Claude Haiku 5.5** (recommended, about 85% cheaper per
+read), Haiku 4.5, Claude Sonnet 5.5, Claude Sonnet 5. Switching back is the same
+one choice — no redeploy. Every read logs the model that produced it in
+`plaka_okuma_log.saglayici`, so the accuracy query below compares models
+directly. Rules per model live in `supabase/functions/_shared/vlm.ts` and are
+checked by `node tests/vlm.check.mjs`:
+
+- Haiku 4.5 keeps exactly its old request (`temperature: 0`, 200 tokens).
+- The newer models think before answering, so they get `effort: low` and room
+  for the answer (2048 tokens; only used tokens are billed) and no
+  `temperature` (they refuse it).
+- Haiku 5.5 can decline a request for safety reasons and has no automatic
+  fallback; a declined read is retried once on Haiku 4.5.
+- **Second opinion:** a read that is close but under the bar (confidence
+  0.50–0.75, or 0.50–0.92 for a non-standard plate) is asked again of **Claude
+  Sonnet 5.5** (about $0.005 a time). Its answer is used only if it clears the
+  bar by itself; if that second read fails, the first answer stands. The log row
+  keeps both answers (`ham_yanit.onceki_okuma` / `ham_yanit.ikinci_gorus`).
+- The answer now also says `arac_yok` ("no vehicle in the picture"). The camera
+  webhook passes it back on a 422 so the bridge (1.2.0+) can learn what the
+  empty gate looks like and stop paying to send it.
+
+**What the reader is told.** The prompt in `_shared/vlm.ts` carries the
 Turkish plate grammar — province code 01-81, then 1-3 letters, then 2-5 digits,
 in one of three shapes — plus the two things on the plate that are not part of
 it: the blue **TR** band, and the second line of a square motorcycle plate.
@@ -466,18 +490,17 @@ Diplomatic, military and temporary series exist and refusing one at a barrier
 would be worse than the misread it prevents — so an unrecognised shape costs
 the operator a manual entry, never a blocked customer.
 
-The two columns behind that toggle are still there and are changed with SQL,
-not from the screen — they are an escape hatch, not an operator decision:
+The provider column behind that toggle is still changed with SQL, not from the
+screen — it is an escape hatch, not an operator decision:
 
 - `plaka_saglayici`: `KAPALI` / `VLM` (Claude, what the toggle writes) /
   `ALPR` (Plate Recognizer — needs `PLATE_RECOGNIZER_TOKEN`, and their
   published country list does not include Turkey, so it is unverified here).
-- `plaka_model`: `claude-haiku-4-5` (default). This field is deliberately free
-  text so switching provider needs no migration; the Edge Function validates the
-  value against its own allowlist and falls back to the default if it does not
-  recognise it. `claude-sonnet-5` is also allowed — it reads plates better and
-  is better calibrated, for roughly +$10/month at this volume, and switching is
-  the one statement below with no redeploy.
+- `plaka_model` is set from the screen now (above). It stays free text in the
+  database so adding a model needs no migration; the Edge Function validates
+  the value against its own allowlist and falls back to the default if it does
+  not recognise it — and the screen shows such a value as "geçersiz" rather
+  than hiding it.
 
 ```sql
 update public.otopark_ayarlari
@@ -558,14 +581,23 @@ them, and none of them moves money:
   where cars stop for a moment (the bridge needs that pause to photograph the
   plate), not at a place where they queue or park.
 
-There is no screen for the two durations; tune them on installation day:
+Tune the two durations on installation day in **Yönetim → Otopark ayarları →
+Kamera → Tek kapı** (shown while the camera is on; Yönetici only, saved with
+Kaydet). The screen checks the same ranges as the database: **Girişten sonra**
+3–60, **Çıkıştan sonra** 1–60.
 
-```sql
-update public.otopark_ayarlari
-   set tek_kapi_giris_yoksay_dk = 3,   -- 3–60
-       tek_kapi_cikis_yoksay_dk = 5    -- 1–60
- where id = 1;
-```
+**A false "Kapıda" mark (038).** When the camera wrongly flags a car as leaving,
+the staff member at the gate opens that car (the Tahsilat screen shows "Kamera
+çıkışta gördü") and taps **Araç çıkmadı**. That clears `cikis_bekliyor_at`
+only — the ticket stays open, the fee and the exit photo are untouched — and
+writes `bilet_kapida_temizlendi` to `audit_log`. RPC `bilet_kapida_temizle`:
+any active staff, open tickets only, not callable by the camera. Deploy order:
+`038` → smoke test through **PASS 59** → frontend.
+
+**Empty-lane learning (installer 1.2.0).** The bridge learns what the empty
+lane looks like from the webhook's `arac_yok` answer and stops paying to send
+it — see `tools/kamera-koprusu/README.md`. Needs the webhook deployed with the
+Haiku 5.5 change; `"BOS_OGREN": "0"` in the lane's config turns it off.
 
 Needs installer **1.1.0** or later; 1.0.0 stops with "şerit anlaşılmadı: ORTAK"
 (the same code still works in 1.1.0 while its 15 minutes last). Deploy order:

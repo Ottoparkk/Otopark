@@ -33,6 +33,7 @@ import {
   useAyarlar,
   useBilet,
   useBiletKapat,
+  useKapidaTemizle,
   useBiletMusteriGuncelle,
   useCikanBiletler,
   type OdemeFiltre,
@@ -602,6 +603,10 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           )}
         </BrandPanel>
 
+        {bilet.cikis_bekliyor_at && (
+          <KapidaIsareti biletId={bilet.id} plaka={bilet.plaka} zaman={bilet.cikis_bekliyor_at} />
+        )}
+
         {/* ---- points ------------------------------------------------- */}
         {!abonman && puan?.hesap_var && bilet.indirim_kurus === 0 && maxPuan > 0 && (
           <button
@@ -796,6 +801,70 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
 }
 
 /* ============================================================== receipt === */
+
+/**
+ * "Kamera bu aracı çıkışta gördü" + a way to say it did not leave (038).
+ *
+ * The camera stamps `cikis_bekliyor_at` when it believes a car is leaving, and
+ * until now only closing the ticket made the "Kapıda" chip go away. A car that
+ * was merely waiting in view — common at a single gate — stayed "Kapıda" for
+ * its whole stay. Here, on the screen a "Kapıda" row opens, because that is
+ * where the operator finds out the car is still parked.
+ *
+ * Hidden locally after success: `bilet` is the snapshot the list handed over,
+ * so it would keep showing the stamp until the operator went back.
+ */
+function KapidaIsareti({ biletId, plaka, zaman }: { biletId: string; plaka: string; zaman: string }) {
+  const temizle = useKapidaTemizle()
+  const [onay, setOnay] = useState(false)
+  const [hata, setHata] = useState<string | null>(null)
+  const [kaldirildi, setKaldirildi] = useState(false)
+
+  if (kaldirildi) return null
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 rounded-card bg-accent-soft px-4 py-3">
+        <p className="min-w-0 text-body text-accent">
+          Kamera çıkışta gördü
+          <span className="block text-label">{formatGoreceli(zaman)}</span>
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            setHata(null)
+            setOnay(true)
+          }}
+          className="min-h-[44px] shrink-0 text-body font-medium text-accent underline"
+        >
+          Araç çıkmadı
+        </button>
+      </div>
+
+      {/* Stays open on a refusal, so the server's Turkish reason is read
+          beside the button that failed. */}
+      <ConfirmDialog
+        open={onay}
+        onOpenChange={setOnay}
+        title="Kapıda işareti kaldırılsın mı?"
+        description={`${formatPlaka(plaka)} içeride görünmeye devam edecek. Bilet açık kalır, ücret değişmez.`}
+        confirmLabel="Kaldır"
+        loading={temizle.isPending}
+        error={hata}
+        onConfirm={() => {
+          setHata(null)
+          temizle.mutate(biletId, {
+            onSuccess: () => {
+              setOnay(false)
+              setKaldirildi(true)
+            },
+            onError: (e) => setHata(rpcErrorText(e, 'İşaret kaldırılamadı.')),
+          })
+        }}
+      />
+    </>
+  )
+}
 
 function Fis({
   plaka,
