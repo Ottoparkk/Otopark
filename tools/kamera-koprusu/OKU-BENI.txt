@@ -18,6 +18,12 @@ Bilgisayara başka hiçbir şey kurmanız gerekmiyor.
 
   Önerilen yer:  C:\Otopark
 
+  Ayıklayınca içinde "OtoparkKamera" klasörü olur. Programı o klasörün
+  içinden çalıştırın ve klasöre başka dosya KOYMAYIN: kurulum bu klasörü,
+  yalnızca bilgisayarın yöneticilerinin değiştirebileceği hâle getirir
+  (program her açılışta oradan, yetkili olarak çalışır). Sonradan içine
+  dosya kopyalarken Windows izin isterse "Devam" deyin.
+
 
 KURULUM
 ------------------------------------------------------------------------
@@ -42,7 +48,8 @@ ELİNİZDE HAZIR OLSUN
 
     EN KOLAYI: size "kurulum-kodu.txt" diye bir dosya gönderildiyse onu
     OtoparkKamera.exe ile AYNI KLASÖRE koyun. Program kendisi okur ve
-    size hiçbir şey sormaz.
+    size hiçbir şey sormaz. Dosyayı ikinci kez indirdiyseniz adı
+    "kurulum-kodu (1).txt" olabilir; program EN YENİSİNİ okur.
 
     Kod 15 DAKİKA geçerli ve yalnızca BU KAMERA içindir. Kurulum yarıda
     kaldıysa (internet koptu, pencere kapandı) süresi dolmadan AYNI kodla
@@ -65,7 +72,12 @@ ELİNİZDE HAZIR OLSUN
     Araçların uzun süre beklediği ya da park ettiği bir yeri göstermesin:
     orada bekleyen araç yanlışlıkla "çıkıyor" diye işaretlenebilir.
 
-  · Kameranın kullanıcı adı ve şifresi
+  · Kameranın kullanıcı adı ve şifresi — DİKKATLE yazın. Kamera birkaç
+    yanlış denemeden sonra girişleri yaklaşık yarım saat kilitler.
+
+  · Bu bilgisayarın saati doğru olmalı (Ayarlar → Saat ve dil → "Saati
+    otomatik olarak ayarla"). Araçların giriş saati BU bilgisayarın
+    saatinden alınır; program kurulumda bunu kontrol eder.
 
   Kameranın RTSP adresini BİLMENİZE GEREK YOK — program kendisi bulur.
 
@@ -96,7 +108,21 @@ BİR ŞEY TERS GİDERSE
 
   Şifre yanlış diyor
       Kameranın web arayüzüne tarayıcıdan girebildiğiniz şifre olmalı;
-      uygulamanın şifresi değil.
+      uygulamanın şifresi değil. Program şifreyi bir kez sınar ve kabul
+      edilmezse yeniden sorar. Şifreden eminseniz iki soruda da Enter'a
+      basın; program aynı şifreyle devam eder. Üç FARKLI şifre de kabul
+      edilmezse program durur: kamera girişleri kilitlemiş olabilir —
+      yaklaşık 30 dakika bekleyip programı yeniden çalıştırın (yeni
+      kurulum kodu gerekmez).
+
+  "Bu bilgisayarın saati sunucudan ... ileri/geri"
+      Ayarlar → Saat ve dil → "Saati otomatik olarak ayarla"yı açın ve
+      "Şimdi eşitle"ye basın. Sonra programı yeniden çalıştırın; yeni
+      kurulum kodu gerekmez.
+
+  "Kamera bağlandı ama sunucudan cevap gelmedi"
+      Bu bilgisayarın internet bağlantısını kontrol edin. Program
+      denemeye devam eder; birkaç dakika sonra "Durum"a bakın.
 
   "Kurulum kodu geçersiz"
       Kodu yanlış yazmış olabilirsiniz. Harf/rakam dışını, büyük-küçük

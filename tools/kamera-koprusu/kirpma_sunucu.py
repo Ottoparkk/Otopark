@@ -218,9 +218,18 @@ def esik_secimi(kutu, tum_kare: list[float], kirpik: list[float]) -> list[float]
 
 
 def _kamera(rtsp: str):
-    cap = cv2.VideoCapture(rtsp)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return cap
+    """
+    Köprünün KENDİ bağlantı yolu: RTSP üzerinden TCP ve tek karelik tampon.
+
+    Eskiden burada ayrı bir VideoCapture kuruluyordu. Kamera taraması TCP
+    seçeneğini geri almış ve kopru henüz içe aktarılmamış oluyordu, yani bu
+    sayfa UDP ile bağlanıyordu: Windows Güvenlik Duvarı yeni programın gelen
+    UDP paketlerini engellerse sayfa "görüntü bekleniyor"da kalıyordu, oysa
+    tarama da köprü de (ikisi TCP) çalışıyordu. Geç içe aktarma, olcum_ekle
+    ile aynı sebeple.
+    """
+    from kopru import kamera_baglan
+    return kamera_baglan(rtsp)
 
 
 def _okuyucu(rtsp: str, d: _Durum) -> None:
@@ -447,6 +456,13 @@ def esik_oner(olcumler: list[float]) -> tuple[float, float]:
     if tepe < max(3.0, taban * 3):
         durgun = max(2.0, round(taban * 1.5, 1))
         return durgun, max(6.0, round(durgun * 3, 1))
-    durgun = max(0.5, round(taban * 1.5, 1))
-    hareket = max(durgun + 1.0, round(min(tepe * 0.5, taban * 4 + 2), 1))
+    # Hareket görülmüş olsa da eşikler varsayılanın (2.0 / 6.0) ALTINA İNMEZ,
+    # yalnızca yukarı çekilebilir. Ölçüm gündüz, altı saniyelik bir örnekten
+    # geliyor; buradan DURGUN 0.5 ve HAREKET ~2 çıkabiliyordu ve gece kızıl
+    # ötesi gürültüsü ikisinin ARASINA düşer: her kare durgun sayacını sıfırlar,
+    # hiçbir araç "durmaz", hiçbir şey gönderilmez — kalp atışı sürdüğü için
+    # de sunucu ve `durum` köprüyü sağlıklı gösterir. Varsayılanlar sahada
+    # çalıştığı bilinen değerler; daha hassası, o tek gece riskine değmez.
+    durgun = max(2.0, round(taban * 1.5, 1))
+    hareket = max(6.0, durgun + 1.0, round(min(tepe * 0.5, taban * 4 + 2), 1))
     return durgun, hareket

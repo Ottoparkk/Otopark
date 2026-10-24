@@ -713,17 +713,22 @@ def test_koddan_ayar_eski_bicim_eslestirmez() -> None:
 
 # ------------------------------------------------- kimlik reddi (401 / 403) ---
 
-def _kalp_ciktisi(kodlar: list[int]) -> str:
-    """Ayrı süreçte kopru.kalp()'i verilen durum kodlarıyla sırayla çağırır."""
+def _kalp_ciktisi(kodlar: list[int], tarih: str | None = None) -> str:
+    """
+    Ayrı süreçte kopru.kalp()'i verilen durum kodlarıyla sırayla çağırır.
+    `tarih`: cevabın HTTP `Date` başlığı (saat kayması testi için).
+    """
     kod = (
         "import sys,types\n"
         "r=types.ModuleType('requests')\n"
         "r.RequestException=Exception\n"
         f"_k={kodlar!r}\n"
+        f"_t={tarih!r}\n"
         "class Y:\n"
         "    def __init__(self,k):\n"
         "        self.status_code=k\n"
         "        self.text=''\n"
+        "        self.headers={'Date': _t} if _t else {}\n"
         "r.post=lambda *a,**k: Y(_k.pop(0))\n"
         "sys.modules['requests']=r\n"
         f"sys.path.insert(0, {BURASI!r})\n"
@@ -753,10 +758,14 @@ def test_kalp_kimlik_reddini_kaydeder() -> None:
     oysa geçen her araç reddediliyordu.
     """
     import durum
+    import gunluk
     c = _kalp_ciktisi([401])
     assert durum.RED_ISARETI in c, c
-    # 400 beklenen cevaptır: tek başına hiçbir şey yazmamalı.
-    assert _kalp_ciktisi([400]).strip() == "", _kalp_ciktisi([400])
+    # 400 beklenen cevaptır. Yalnızca İLK seferinde bağlantının doğrulandığını
+    # bir kez yazar (1.2.1: kurulum sihirbazı bu satırı bekler); başka hiçbir
+    # şey yazmaz ve sonraki kalp atışları sessizdir.
+    c = _kalp_ciktisi([400, 400])
+    assert c.strip().splitlines() == [f"[i] {gunluk.SUNUCU_TAMAM_ISARETI}"], c
     # 403 kimlik değil ayar sorunudur ve AYRI söylenmeli.
     c = _kalp_ciktisi([403])
     assert durum.KAPALI_ISARETI in c and durum.RED_ISARETI not in c, c
@@ -1136,7 +1145,7 @@ def test_baglanti_denemesi_kalp_atisi_saymaz() -> None:
     m.post = post
     sys.modules["requests"] = m
     try:
-        kod, _ = kurulum.webhook_yokla({"WEBHOOK_URL": "https://p", "KAMERA_SECRET": "s" * 64})
+        kod, _, _ = kurulum.webhook_yokla({"WEBHOOK_URL": "https://p", "KAMERA_SECRET": "s" * 64})
     finally:
         sys.modules.pop("requests", None)
     assert kod == 400
@@ -1275,7 +1284,8 @@ def test_baslangic_erken_baslamis_kopruyu_kacirmaz() -> None:
         bugun = time.strftime("%d.%m")
         with open(yol, "w", encoding="utf-8") as f:
             f.write(f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———\n"
-                    f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}\n")
+                    f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}\n"
+                    f"{bugun} 09:00:02  [i] {gunluk.SUNUCU_TAMAM_ISARETI}\n")
         on_sn_once = time.time() - 10
         os.utime(yol, (on_sn_once, on_sn_once))
         with redirect_stdout(_io.StringIO()):
@@ -1455,12 +1465,14 @@ def test_baslangic_sunucu_reddediyorsa_basari_saymaz() -> None:
 
 
 def test_baslangic_saglikli() -> None:
+    # 1.2.1: sağlıklı = kamera bağlandı VE sunucu ilk kalp atışını kabul etti.
     import gunluk
     bugun = time.strftime("%d.%m")
     ok, cikti = _baslangic([
         f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
         f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}",
         f"{bugun} 09:00:02  [i] çalışıyor — 1 kare, 0 gönderim",
+        f"{bugun} 09:00:02  [i] {gunluk.SUNUCU_TAMAM_ISARETI}",
     ])
     assert ok is True and "✓" in cikti, cikti
 
@@ -2053,6 +2065,640 @@ def test_durum_bos_serit_satirlari() -> None:
     assert ok is True, cikti
     assert "1 gönderim, 0 reddedilme" in cikti, cikti
     assert "Boş şerit    : 1 okundu, 2 atlandı" in cikti, cikti
+
+
+# ------------------------------------------------ 1.2.1: kurulum günü ---
+
+def _kopru_yuklu() -> None:
+    """kopru'yu bir kez içe aktarır; `requests` kurulu değilse sahtesiyle."""
+    import types
+    if "kopru" in sys.modules:
+        return
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        sahte = types.ModuleType("requests")
+        sahte.RequestException = Exception
+        sahte.post = lambda *a, **k: None
+        sys.modules["requests"] = sahte
+        try:
+            import kopru  # noqa: F401
+        finally:
+            sys.modules.pop("requests", None)
+        return
+    import kopru  # noqa: F401,F811
+
+
+def test_esik_oner_gece_icin_varsayilanin_altina_inmez() -> None:
+    """
+    Eşikler yalnızca YUKARI çekilebilir, varsayılanın (2.0 / 6.0) altına inmez.
+
+    Kutu gündüz, altı saniyelik bir örnekle ölçülüyor. O sırada bir araç
+    kıpırdarsa öneri DURGUN'u 0.5'e, HAREKET'i ~2'ye indiriyordu. Gece kızıl
+    ötesi gürültüsü ikisinin ARASINA düşer: her kare durgun sayacını sıfırlar,
+    hiçbir araç "durmaz", hiçbir şey gönderilmez — kalp atışı sürdüğü için de
+    sunucu ve `durum` köprüyü sağlıklı gösterir. Her gece bütün girişler
+    sessizce kaybolurdu.
+    """
+    import kirpma_sunucu
+    for olcum in ([0.3] * 900 + [14.0] * 100, [0.1] * 950 + [4.0] * 50):
+        durgun, hareket = kirpma_sunucu.esik_oner(olcum)
+        assert durgun >= 2.0 and hareket >= 6.0, (durgun, hareket)
+        assert durgun < hareket, (durgun, hareket)
+
+
+def test_tum_kare_eski_kirpmayi_temizler() -> None:
+    """
+    "Tüm kareyi kullan" eski kırpma kutusunu SİLMELİ.
+
+    Kayıtlı kimlikle yeniden kurulumda ayar eski dosyadan gelir ve KIRPMA
+    taşır. Tüm kare seçilince yeni kutu yazılmıyordu, yani ekranda "tüm kare
+    gönderilecek" denirken eski kutu — artık plakayı içermeyen bir bölge —
+    köprüye geri yazılıyordu.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import kirpma_sunucu
+    import kurulum
+
+    eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
+    kirpma_sunucu.kirpma_sec = lambda rtsp: (None, [])
+    kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
+    try:
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+    finally:
+        kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
+    ayar = dict(_KAYITLI)              # KIRPMA "1,2,3,4"
+    ayar.update(yeni)
+    assert ayar.get("KIRPMA") == "", ayar
+
+
+def test_kod_dosyasi_en_yenisi_okunur() -> None:
+    """
+    Tarayıcı ikinci indirmeyi "kurulum-kodu (1).txt" diye kaydeder.
+
+    İlk kodun süresi dolup yenisi indirildiğinde sihirbaz yalnızca tam adı
+    arıyordu: ya hiç bulamıyordu ya da yanındaki ESKİ, süresi dolmuş dosyayı
+    okuyup "kodun süresi dolmuş" diyordu.
+    """
+    import kurulum
+
+    def klasor_kur(dosyalar: dict[str, tuple[str, float]]) -> str:
+        k = tempfile.mkdtemp()
+        for ad, (icerik, yas) in dosyalar.items():
+            yol = os.path.join(k, ad)
+            with open(yol, "w", encoding="utf-8") as f:
+                f.write(icerik)
+            os.utime(yol, (time.time() - yas, time.time() - yas))
+        return k
+
+    eski = kurulum.BURASI
+    try:
+        k = klasor_kur({"kurulum-kodu.txt": ("ESKI\n", 600),
+                        "kurulum-kodu (1).txt": ("YENI\n", 0)})
+        kurulum.BURASI = k
+        assert kurulum.dosyadan_kod() == ("YENI", os.path.join(k, "kurulum-kodu (1).txt"))
+
+        k = klasor_kur({"kurulum-kodu (1).txt": ("YALNIZ\n", 0)})
+        kurulum.BURASI = k
+        assert kurulum.dosyadan_kod() == ("YALNIZ", os.path.join(k, "kurulum-kodu (1).txt"))
+
+        # Boş bir yeni dosya, dolu eskisini gölgelememeli.
+        k = klasor_kur({"kurulum-kodu.txt": ("DOLU\n", 600),
+                        "kurulum-kodu (1).txt": ("\n", 0)})
+        kurulum.BURASI = k
+        assert kurulum.dosyadan_kod() == ("DOLU", os.path.join(k, "kurulum-kodu.txt"))
+
+        k = klasor_kur({"baska.txt": ("X\n", 0)})
+        kurulum.BURASI = k
+        assert kurulum.dosyadan_kod() is None
+    finally:
+        kurulum.BURASI = eski
+
+
+def test_gunluk_iki_akis_birlikte_dondurur() -> None:
+    """
+    Kayıt dosyası, stdout VE stderr açıkken de döndürülmeli.
+
+    İkisi aynı dosyayı AYRI tutamaçlarla açıyordu. Windows'ta Python dosyayı
+    silme/yeniden adlandırma paylaşımı olmadan açar; biri döndürmeye kalkınca
+    öbürünün açık tutamacı yüzünden yeniden adlandırma başarısız oluyor, hata
+    yutuluyor ve dosya sınırsız büyüyordu — üstelik o andan sonra HER satırda
+    kapat/aç yapılıyordu. Tek akışlı test bunu göremezdi.
+    """
+    klasor = tempfile.mkdtemp()
+    kod = (
+        "import sys\n"
+        f"sys.path.insert(0, {BURASI!r})\n"
+        "import gunluk\n"
+        "gunluk.AZAMI_BOYUT = 400\n"
+        "gunluk.baslat('GIRIS')\n"
+        "for i in range(60):\n"
+        "    print(f'[i] satir {i:03d} ' + 'x' * 20, flush=True)\n"
+        "sys.stderr.write('[!] stderr satiri\\n')\n"
+        "sys.stderr.flush()\n"
+    )
+    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": klasor}
+    r = subprocess.run([sys.executable, "-c", kod], capture_output=True, text=True,
+                       encoding="utf-8", env=ortam)
+    assert r.returncode == 0, r.stderr[-800:]
+    yol = os.path.join(klasor, "Otopark", "kayit", "kopru-giris.log")
+    assert os.path.isfile(yol + ".1"), "kayıt hiç döndürülmedi"
+    assert os.path.getsize(yol) < 1000, os.path.getsize(yol)
+    hepsi = ""
+    for p in (yol + ".2", yol + ".1", yol):
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                hepsi += f.read()
+    assert "stderr satiri" in hepsi, "stderr kayda düşmedi"
+    assert "satir 059" in hepsi, "son satır kayboldu"
+
+
+def test_kirpma_sayfasi_tcp_ile_baglanir() -> None:
+    """
+    Kırpma sayfası kameraya köprüyle AYNI yoldan (RTSP üzerinden TCP) bağlanmalı.
+
+    Kendi VideoCapture'ını kuruyordu; kamera taraması seçeneği geri almış ve
+    kopru henüz içe aktarılmamış oluyordu, yani sayfa UDP ile bağlanıyordu.
+    Windows Güvenlik Duvarı yeni programın gelen UDP paketlerini engellerse
+    sayfa "görüntü bekleniyor"da kalıyordu — tarama ve köprü (ikisi de TCP)
+    çalışırken.
+    """
+    import cv2
+    import kirpma_sunucu
+    _kopru_yuklu()
+
+    gorulen: list[str | None] = []
+
+    class Sahte:
+        def set(self, *a):
+            return True
+
+    def yakala(*a, **k):
+        gorulen.append(os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"))
+        return Sahte()
+
+    eski_vc = cv2.VideoCapture
+    eski_ortam = os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+    cv2.VideoCapture = yakala
+    try:
+        kirpma_sunucu._kamera("rtsp://1.2.3.4/x")
+    finally:
+        cv2.VideoCapture = eski_vc
+        if eski_ortam is None:
+            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+        else:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = eski_ortam
+    assert gorulen == ["rtsp_transport;tcp"], gorulen
+
+
+def test_elle_rtsp_adresi_dogrulanir() -> None:
+    """
+    Elle yazılan RTSP adresi rtsp:// ile başlamalı ve kare vermeli.
+
+    Keşif kamerayı bulamayınca yazılan adres hiç denenmeden kabul ediliyordu.
+    Hemen üstteki soru IP istediği için kişi çoğu kez yalnızca IP yazar;
+    kırpma sayfası sonsuza dek kare bekliyordu.
+    """
+    import builtins
+    import io as _io
+    from contextlib import redirect_stdout
+    import kesif
+    import kurulum
+
+    denenen: list[str] = []
+
+    def dene(url):
+        denenen.append(url)
+        return (True, (2688, 1520)) if url.endswith("/dogru") else (False, None)
+
+    eski = (builtins.input, kesif.dene)
+    sira = ["192.168.50.20", "rtsp://admin:Gizli1@1.2.3.4:554/yanlis",
+            "rtsp://admin:Gizli1@1.2.3.4:554/dogru"]
+    builtins.input = lambda *a: sira.pop(0) if sira else ""
+    kesif.dene = dene
+    try:
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            sonuc = kurulum.elle_rtsp_sor()
+        builtins.input = lambda *a: ""
+        with redirect_stdout(_io.StringIO()):
+            bos = kurulum.elle_rtsp_sor()
+    finally:
+        builtins.input, kesif.dene = eski
+    cikti = yakala.getvalue()
+    assert sonuc == ("rtsp://admin:Gizli1@1.2.3.4:554/dogru", (2688, 1520)), sonuc
+    assert denenen == ["rtsp://admin:Gizli1@1.2.3.4:554/yanlis",
+                       "rtsp://admin:Gizli1@1.2.3.4:554/dogru"], denenen
+    assert "rtsp://" in cikti, cikti
+    assert "Gizli1" not in cikti, "kamera şifresi ekrana yazıldı"
+    assert bos is None
+
+
+def _sahte_rtsp(mod: str, kapat_401: bool = False):
+    """
+    Küçük bir RTSP sunucusu: DESCRIBE'a kimlik ister, sonra doğrular.
+
+    mod: "digest" | "digest_qop" | "basic" | "meydan_yok" (kimlik istemez) |
+         "stale" (ilk kimlikli isteğe "nonce eskidi" der, yeni nonce verir).
+    kapat_401: ilk 401'den sonra bağlantıyı kapatır (bazı kameralar böyle).
+    Döndürür: (port, sayaç, durdur).
+    """
+    import base64 as _b64
+    import hashlib
+    import re
+    import socket
+    import threading
+
+    sifre = "Gizli@Sifre:1"
+    realm = "Login to TEST"
+    durum = {"nonce": "abc123nonce", "stale_verildi": False}
+    sayac = {"yetkili": 0}
+    sunucu = socket.socket()
+    sunucu.bind(("127.0.0.1", 0))
+    sunucu.listen(5)
+    sunucu.settimeout(0.2)
+    port = sunucu.getsockname()[1]
+    dur = threading.Event()
+
+    def md5(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    def dogru_mu(baslik: str) -> bool:
+        if baslik.lower().startswith("basic "):
+            return _b64.b64decode(baslik[6:]).decode("utf-8") == "admin:" + sifre
+        p = dict(re.findall(r'(\w+)="?([^",]*)"?', baslik[7:]))
+        nonce = durum["nonce"]
+        ha1 = md5(f"{p.get('username')}:{realm}:{sifre}")
+        ha2 = md5(f"DESCRIBE:{p.get('uri')}")
+        if p.get("qop"):
+            beklenen = md5(f"{ha1}:{nonce}:{p.get('nc')}:{p.get('cnonce')}:{p['qop']}:{ha2}")
+        else:
+            beklenen = md5(f"{ha1}:{nonce}:{ha2}")
+        return (p.get("username") == "admin" and p.get("nonce") == nonce
+                and p.get("response") == beklenen)
+
+    def cevap(b, cseq: str, kod: int, ek: str = "") -> None:
+        ad = {200: "OK", 401: "Unauthorized", 404: "Not Found"}[kod]
+        b.sendall(f"RTSP/1.0 {kod} {ad}\r\nCSeq: {cseq}\r\n{ek}\r\n".encode("utf-8"))
+
+    def isle(b) -> None:
+        tampon = b""
+        with b:
+            b.settimeout(3)
+            while True:
+                try:
+                    veri = b.recv(4096)
+                except OSError:
+                    return
+                if not veri:
+                    return
+                tampon += veri
+                while b"\r\n\r\n" in tampon:
+                    istek, tampon = tampon.split(b"\r\n\r\n", 1)
+                    satirlar = istek.decode("utf-8").split("\r\n")
+                    basliklar = {s.split(":", 1)[0].strip().lower(): s.split(":", 1)[1].strip()
+                                 for s in satirlar[1:] if ":" in s}
+                    cseq = basliklar.get("cseq", "0")
+                    if mod == "meydan_yok":
+                        cevap(b, cseq, 404)
+                        continue
+                    yetki = basliklar.get("authorization")
+                    if not yetki:
+                        if mod == "basic":
+                            ek = f'WWW-Authenticate: Basic realm="{realm}"\r\n'
+                        else:
+                            qop = ', qop="auth"' if mod == "digest_qop" else ""
+                            ek = (f'WWW-Authenticate: Digest realm="{realm}", '
+                                  f'nonce="{durum["nonce"]}"{qop}\r\n')
+                        cevap(b, cseq, 401, ek)
+                        if kapat_401:
+                            return
+                        continue
+                    sayac["yetkili"] += 1
+                    if mod == "stale" and not durum["stale_verildi"]:
+                        # Şifreye bakmadan: "nonce eskidi, şununla tekrar dene".
+                        durum["stale_verildi"] = True
+                        durum["nonce"] = "yeni456nonce"
+                        cevap(b, cseq, 401, f'WWW-Authenticate: Digest realm="{realm}", '
+                                            f'nonce="{durum["nonce"]}", stale=TRUE\r\n')
+                        continue
+                    # Kimlik doğruysa "/" yolu yok: 404. Yanlışsa yine 401.
+                    cevap(b, cseq, 404 if dogru_mu(yetki) else 401)
+
+    def dongu() -> None:
+        while not dur.is_set():
+            try:
+                b, _ = sunucu.accept()
+            except OSError:
+                continue
+            threading.Thread(target=isle, args=(b,), daemon=True).start()
+        sunucu.close()
+
+    threading.Thread(target=dongu, daemon=True).start()
+    return port, sayac, dur.set
+
+
+def test_kamera_sifresi_tek_denemeyle_dogrulanir() -> None:
+    """
+    Şifre, şablon taramasından ÖNCE ve TEK bir kimlikli istekle sınanır.
+
+    Tarama on yolu aynı şifreyle deniyor ve yanlış şifreyle yanlış yolu
+    ayırt edemiyordu: tek bir yazım hatası on başarısız giriş demekti. Dahua
+    beş, Hikvision yedi yanlıştan sonra hesabı kilitler; doğru şifreyle
+    yeniden deneyen kişi de kilit sürerken "şifre yanlış" görüyordu.
+    """
+    import socket
+    import kesif
+
+    for mod in ("digest", "digest_qop", "basic"):
+        for kapat in (False, True):
+            port, sayac, durdur = _sahte_rtsp(mod, kapat)
+            try:
+                s = kesif.kimlik_dogrula("127.0.0.1", port, "admin", "Gizli@Sifre:1")
+                assert s == "tamam" and sayac["yetkili"] == 1, (mod, kapat, s, sayac)
+                sayac["yetkili"] = 0
+                s = kesif.kimlik_dogrula("127.0.0.1", port, "admin", "yanlis")
+                assert s == "yanlis" and sayac["yetkili"] == 1, (mod, kapat, s, sayac)
+            finally:
+                durdur()
+
+    # "stale": şifre doğru ama nonce eskimiş. Bu YANLIŞ ŞİFRE DEĞİLDİR —
+    # yanlış sayılsaydı doğru şifre reddedilir, kurulum boşuna takılırdı.
+    for sifre, beklenen in (("Gizli@Sifre:1", "tamam"), ("yanlis", "yanlis")):
+        port, sayac, durdur = _sahte_rtsp("stale")
+        try:
+            s = kesif.kimlik_dogrula("127.0.0.1", port, "admin", sifre)
+            assert s == beklenen and sayac["yetkili"] == 2, (sifre, s, sayac)
+        finally:
+            durdur()
+
+    # Kimlik istemeyen sunucu: bilinmiyor → bugünkü tarama aynen sürer.
+    port, sayac, durdur = _sahte_rtsp("meydan_yok")
+    try:
+        assert kesif.kimlik_dogrula("127.0.0.1", port, "admin", "x") == "bilinmiyor"
+        assert sayac["yetkili"] == 0
+    finally:
+        durdur()
+
+    # Kapalı port da bilinmiyor; sihirbaz durmaz.
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    bos_port = s.getsockname()[1]
+    s.close()
+    assert kesif.kimlik_dogrula("127.0.0.1", bos_port, "admin", "x", zaman_asimi=1.0) == "bilinmiyor"
+
+
+def _kamera_bilgisi(dogrulamalar: list[str], girdiler: list[str]):
+    import builtins
+    import io as _io
+    from contextlib import redirect_stdout
+    import kesif
+    import kurulum
+
+    taranan: list[str] = []
+    kalan = list(dogrulamalar)
+    sira = list(girdiler)
+
+    def bul(ip, kullanici, sifre, port=554, bildir=None):
+        taranan.append(sifre)
+        return f"rtsp://{kullanici}:{sifre}@{ip}:{port}/x", "Dahua / Amcrest", (2688, 1520)
+
+    eski = (builtins.input, kesif.kameralari_ara, kesif.port_acik,
+            kesif.kimlik_dogrula, kesif.rtsp_bul)
+    builtins.input = lambda *a: sira.pop(0) if sira else ""
+    kesif.kameralari_ara = lambda *a, **k: ["10.0.0.5"]
+    kesif.port_acik = lambda *a, **k: True
+    kesif.kimlik_dogrula = lambda *a, **k: kalan.pop(0)
+    kesif.rtsp_bul = bul
+    yakala = _io.StringIO()
+    try:
+        with redirect_stdout(yakala):
+            try:
+                sonuc = kurulum.kamera_bilgisi()
+            except SystemExit as e:
+                sonuc = ("cikis", str(e.code))
+    finally:
+        (builtins.input, kesif.kameralari_ara, kesif.port_acik,
+         kesif.kimlik_dogrula, kesif.rtsp_bul) = eski
+    return sonuc, taranan, yakala.getvalue()
+
+
+def test_yanlis_kamera_sifresi_taramayi_baslatmaz() -> None:
+    # Girdiler: kamera seçimi, kullanıcı, şifre, port; her yanlıştan sonra
+    # kullanıcı (Enter = aynısı) ve şifre yeniden sorulur.
+    # Üç FARKLI yanlış: tarama HİÇ başlamaz, kilit uyarısıyla durur.
+    sonuc, taranan, cikti = _kamera_bilgisi(
+        ["yanlis"] * 3, ["1", "admin", "s1", "554", "", "s2", "", "s3"])
+    assert taranan == [], taranan
+    assert sonuc[0] == "cikis", sonuc
+    assert "kilit" in (sonuc[1] + cikti).lower(), cikti
+    # Yanlış, sonra doğru: tarama DOĞRU şifreyle ve bir kez.
+    sonuc, taranan, cikti = _kamera_bilgisi(
+        ["yanlis", "tamam"], ["1", "admin", "s1", "554", "", "s2"])
+    assert taranan == ["s2"], taranan
+    assert str(sonuc[0]).startswith("rtsp://"), sonuc
+    # Kamera doğrulamaya cevap vermiyorsa bugünkü tarama aynen.
+    sonuc, taranan, _ = _kamera_bilgisi(["bilinmiyor"], ["1", "admin", "s1", "554"])
+    assert taranan == ["s1"], taranan
+    # Kontrol kurulumu ASLA tek başına durdurmaz: kişi aynı şifrede ısrar
+    # ederse (Enter) tarama o şifreyle sürer. Kontrolün bir kameranın
+    # tuhaflığı yüzünden yanılması, doğru şifreyle kurulumu kilitlememeli.
+    sonuc, taranan, cikti = _kamera_bilgisi(
+        ["yanlis"], ["1", "admin", "s1", "554", "", ""])
+    assert taranan == ["s1"], (taranan, cikti)
+    assert str(sonuc[0]).startswith("rtsp://"), sonuc
+
+
+def test_saat_farki() -> None:
+    from email.utils import formatdate
+    import gunluk
+
+    simdi = time.time()
+    f = gunluk.saat_farki(formatdate(simdi - 600, usegmt=True), simdi)
+    assert f is not None and abs(f - 600) < 2, f          # bu bilgisayar İLERİ
+    f = gunluk.saat_farki(formatdate(simdi + 300, usegmt=True), simdi)
+    assert f is not None and abs(f + 300) < 2, f          # bu bilgisayar GERİ
+    for bozuk in (None, "", "dün", "Mon, 99 Foo 2026"):
+        assert gunluk.saat_farki(bozuk, simdi) is None, bozuk
+    assert "10 dakika ileri" in gunluk.saat_farki_metni(600)
+    assert "5 dakika geri" in gunluk.saat_farki_metni(-300)
+
+
+def test_baglanti_testi_saat_farkini_yakalar() -> None:
+    """
+    Bağlantı testi bu bilgisayarın saatini sunucununkiyle karşılaştırır.
+
+    Köprü her aracın zamanını BU bilgisayarın saatiyle damgalar ve ücret o
+    damgadan hesaplanır. Saat beş dakikadan fazla ileriyse her giriş "ileri
+    tarihli" kayda düşer, geriyse her araç fazla ücretlendirilir. Sihirbaz bunu
+    hiç sınamıyor, kapanışta da yanlış cihazın (kameranın) saatini söylüyordu.
+    """
+    import io as _io
+    import types
+    from contextlib import redirect_stdout
+    from email.utils import formatdate
+    import kurulum
+
+    class Yanit:
+        def __init__(self, tarih):
+            self.status_code = 400
+            self.text = ""
+            self.headers = {"Date": tarih} if tarih else {}
+
+    ayar = {"WEBHOOK_URL": "https://x/functions/v1/kamera-webhook", "KAMERA_SECRET": "z" * 32}
+    durumlar = (
+        (formatdate(time.time() - 600, usegmt=True), False, "ileri"),
+        (formatdate(time.time() + 600, usegmt=True), False, "geri"),
+        (formatdate(time.time(), usegmt=True), True, None),
+        (None, True, None),                       # başlık yoksa sınanamaz, durdurmaz
+    )
+    try:
+        for tarih, beklenen, kelime in durumlar:
+            m = types.ModuleType("requests")
+            m.post = lambda *a, _t=tarih, **k: Yanit(_t)
+            sys.modules["requests"] = m
+            yakala = _io.StringIO()
+            with redirect_stdout(yakala):
+                ok = kurulum.baglanti_testi(ayar)
+            cikti = yakala.getvalue()
+            assert ok is beklenen, (tarih, cikti)
+            if kelime:
+                assert kelime in cikti and "saat" in cikti.lower(), cikti
+    finally:
+        sys.modules.pop("requests", None)
+
+
+def test_kalp_saat_farkini_yazar() -> None:
+    """Köprü de saat kaymasını yazar — saatte en çok bir kez, `durum` görsün."""
+    from email.utils import formatdate
+    import gunluk
+    c = _kalp_ciktisi([400, 400], tarih=formatdate(time.time() - 600, usegmt=True))
+    assert c.count(gunluk.SAAT_ISARETI) == 1, c
+    assert "ileri" in c, c
+    c = _kalp_ciktisi([400], tarih=formatdate(time.time(), usegmt=True))
+    assert gunluk.SAAT_ISARETI not in c, c
+
+
+def test_kalp_sunucu_dogrulandi_bir_kez() -> None:
+    """
+    Kabul edilen ilk kalp atışı BİR KEZ "sunucu bağlantısı doğrulandı" yazar.
+
+    Kurulum sihirbazı bunu bekler: kamera bağlandıktan iki saniye sonra
+    "çalışıyor" deniyordu; ilk kalp atışının cevabı (TLS + soğuk başlangıç)
+    daha geç gelirse sunucunun reddi görülmeden kurulum "tamamlandı" oluyordu.
+    """
+    import gunluk
+    c = _kalp_ciktisi([400, 400, 400])
+    assert c.count(gunluk.SUNUCU_TAMAM_ISARETI) == 1, c
+    c = _kalp_ciktisi([401])
+    assert gunluk.SUNUCU_TAMAM_ISARETI not in c, c
+
+
+def test_baslangic_sunucu_cevabini_bekler() -> None:
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
+    kamera = f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}"
+    ok, cikti = _baslangic([bas, kamera, f"{bugun} 09:00:02  [i] çalışıyor — 1 kare, 0 gönderim"])
+    assert ok is False and "sunucu" in cikti.lower() and "✓" not in cikti, cikti
+    ok, cikti = _baslangic([bas, kamera, f"{bugun} 09:00:03  [!] {gunluk.KALP_YOK_ISARETI}: ağ yok"])
+    assert ok is False and "internet" in cikti.lower(), cikti
+
+
+def _program_klasoru(ad: str, dosyalar: list[str]) -> str:
+    klasor = os.path.join(tempfile.mkdtemp(), ad)
+    os.makedirs(os.path.join(klasor, "_internal"))
+    for d in dosyalar:
+        with open(os.path.join(klasor, d), "w", encoding="utf-8"):
+            pass
+    return klasor
+
+
+def _kisitla(klasor: str, donmus: bool = True):
+    import io as _io
+    from contextlib import redirect_stdout
+    import kurulum
+
+    komutlar: list[list[str]] = []
+    eski = (kurulum.calistir, sys.executable, getattr(sys, "frozen", None))
+    kurulum.calistir = lambda k: (komutlar.append(k), (True, ""))[1]
+    sys.executable = os.path.join(klasor, "OtoparkKamera.exe")
+    if donmus:
+        sys.frozen = True                          # type: ignore[attr-defined]
+    yakala = _io.StringIO()
+    try:
+        with redirect_stdout(yakala):
+            sonuc = kurulum.program_klasorunu_kisitla()
+    finally:
+        kurulum.calistir, sys.executable = eski[0], eski[1]
+        if eski[2] is None:
+            if hasattr(sys, "frozen"):
+                del sys.frozen                     # type: ignore[attr-defined]
+        else:
+            sys.frozen = eski[2]                   # type: ignore[attr-defined]
+    return sonuc, komutlar, yakala.getvalue()
+
+
+def test_program_klasoru_yalnizca_kendi_klasorumuzse_kisitlanir() -> None:
+    """
+    Görev SYSTEM olarak OtoparkKamera.exe'yi çalıştırıyor. Önerilen C:\\Otopark
+    C:\\'den "Authenticated Users: Değiştir" devralır: o bilgisayardaki HERHANGİ
+    bir hesap .exe'yi ya da _internal'daki bir DLL'i değiştirip bir sonraki
+    açılışta SYSTEM olarak çalıştırabilirdi.
+
+    Ama ASLA bizim olmayan bir klasöre dokunulmaz: program Masaüstü'ne ya da
+    İndirilenler'e çıkarılmışsa o klasörü kısıtlamak, kişiyi kendi klasörünün
+    dışında bırakırdı. Yalnızca adı OtoparkKamera olan ve içinde yalnızca
+    paket dosyaları bulunan klasör kısıtlanır.
+    """
+    k = _program_klasoru("OtoparkKamera", ["OtoparkKamera.exe", "OKU-BENI.txt",
+                                           "kurulum-kodu (1).txt", "kare.jpg", "desktop.ini"])
+    sonuc, komutlar, cikti = _kisitla(k)
+    assert sonuc is True and len(komutlar) == 1, (komutlar, cikti)
+    c = komutlar[0]
+    assert c[0] == "icacls" and c[1] == k and "/inheritance:r" in c, c
+    for hak in ("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)",
+                "*S-1-5-32-545:(OI)(CI)(RX)"):
+        assert hak in c, (hak, c)
+
+    for ad, dosyalar in (("OtoparkKamera", ["OtoparkKamera.exe", "Belgem.docx"]),
+                         ("Masaüstü", ["OtoparkKamera.exe"]),
+                         ("Downloads", ["OtoparkKamera.exe", "OKU-BENI.txt"])):
+        k = _program_klasoru(ad, dosyalar)
+        sonuc, komutlar, cikti = _kisitla(k)
+        assert sonuc is False and komutlar == [], (ad, dosyalar, komutlar)
+        assert "C:\\Otopark" in cikti, cikti
+
+    # Kaynaktan çalışırken (paketlenmemiş) hiçbir şeye dokunulmaz.
+    k = _program_klasoru("OtoparkKamera", ["OtoparkKamera.exe"])
+    sonuc, komutlar, _ = _kisitla(k, donmus=False)
+    assert sonuc is None and komutlar == [], komutlar
+
+
+def test_gorev_kur_program_klasorunu_kisitlar() -> None:
+    import io as _io
+    from contextlib import redirect_stdout
+    import kurulum
+
+    cagri: list[int] = []
+    eski = (kurulum.calistir, kurulum.baslangic_dogrula,
+            kurulum.program_klasorunu_kisitla, getattr(sys, "frozen", None))
+    kurulum.calistir = lambda k: (True, "")
+    kurulum.baslangic_dogrula = lambda yon, **k: True
+    kurulum.program_klasorunu_kisitla = lambda: cagri.append(1) or True
+    try:
+        sys.frozen = True                          # type: ignore[attr-defined]
+        with redirect_stdout(_io.StringIO()):
+            assert kurulum.gorev_kur(r"C:\ProgramData\Otopark\kopru-giris.json", "GIRIS")
+    finally:
+        kurulum.calistir, kurulum.baslangic_dogrula, kurulum.program_klasorunu_kisitla = eski[:3]
+        if eski[3] is None:
+            del sys.frozen                         # type: ignore[attr-defined]
+        else:
+            sys.frozen = eski[3]                   # type: ignore[attr-defined]
+    assert cagri == [1], cagri
 
 
 # ------------------------------------------- testler makineye dokunmaz ---

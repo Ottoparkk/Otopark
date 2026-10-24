@@ -602,6 +602,39 @@ lane looks like from the webhook's `arac_yok` answer and stops paying to send
 it — see `tools/kamera-koprusu/README.md`. Needs the webhook deployed with the
 Haiku 5.5 change; `"BOS_OGREN": "0"` in the lane's config turns it off.
 
+**A camera car is never lost silently (039).** Two cases used to leave only a
+`plaka_okuma_log` row — no ticket, no exception, nobody told:
+
+- *The plate could not be read* (the model saw a vehicle but its read is under
+  the bar, and it did NOT say "no vehicle"). On the entrance and single-gate
+  lanes it becomes **Çözülmemiş kayıtlar** `OKUNAMADI` with the model's guess and
+  confidence, plus the usual Yönetici notification. The exit lane is staffed
+  and writes nothing. The single gate's advice differs: the car may have been
+  leaving, so staff check before opening an entry by hand.
+- *Plate reading itself failed* (Anthropic credit used up, key revoked, an
+  outage — the webhook answers 502). The Yönetici gets **"Plaka okuma
+  çalışmıyor"** (type `KAMERA`) at most once an hour, from any lane. The car
+  becomes an `OKUNAMADI` row (without a per-car notification) only on the
+  bridge's LAST attempt, which installer **1.2.1** marks with
+  `x-kamera-son-gonderim: 1`: the bridge retries the same `islem_id`, and a row
+  written on an earlier try would make the single gate refuse a later try that
+  did read the plate. Older bridges get the alert only.
+
+RPCs `kamera_okunamadi` / `kamera_okuma_hatasi`: service_role only, refuse a
+caller with a JWT. Camera exception rows no longer store the photo (`ham_yanit`
+dropped `foto_base64`; it made each row hundreds of KB). Deploy order: `039` →
+smoke test through **PASS 61** → `kamera-webhook` → frontend.
+
+**Installer 1.2.1** (install this one, not 1.2.0): the camera password is
+checked with ONE request before the address scan (a typo used to cost up to ten
+failed logins and lock the camera); a typed RTSP address is tried before it is
+accepted; the connection test checks this PC's clock against the server's;
+setup is called finished only after the server accepts the bridge's first
+heartbeat; the heartbeat no longer blocks the camera; motion thresholds never
+drop below the defaults (2.0 / 6.0); the program folder is made admin-only when
+it is the package's own `OtoparkKamera` folder; the log rotates correctly on
+Windows.
+
 Needs installer **1.1.0** or later; 1.0.0 stops with "şerit anlaşılmadı: ORTAK"
 (the same code still works in 1.1.0 while its 15 minutes last). Deploy order:
 `037` → smoke test through **PASS 58** → `kamera-webhook` → frontend.
@@ -620,6 +653,9 @@ option for hardware that posts directly, with no bridge:
 4. **Put the camera's clock on NTP.** This is not housekeeping, it is money: a
    camera an hour off mis-bills every vehicle, silently. The server takes the
    timestamp from the camera because a buffered event can arrive hours late.
+   (With the **bridge** the timestamp comes from the bridge PC's clock instead,
+   not the camera's: keep Windows time on automatic. Installer 1.2.1 checks it
+   and the bridge logs a warning when it drifts more than a minute.)
 5. The URL-path method is the weakest (addresses end up in proxy and server
    logs) — if you use it, rotate the secret more often.
 

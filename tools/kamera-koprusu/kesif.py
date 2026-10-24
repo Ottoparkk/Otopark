@@ -8,7 +8,11 @@ kaldırıyor — kullanıcı adı ve şifre yetiyor, gerisi denenerek bulunuyor.
 """
 from __future__ import annotations
 
+import base64
+import contextlib
+import hashlib
 import os
+import re
 import socket
 import urllib.parse
 import uuid
@@ -83,16 +87,41 @@ def port_acik(ip: str, port: int = 554, saniye: float = 3.0) -> bool:
         return False
 
 
+@contextlib.contextmanager
+def _tcp_ile():
+    """
+    Denemeler köprünün yaptığı gibi TCP üzerinden; sonra değişken geri konur:
+    kopru.py aynı değişkeni kendi ayarıyla kullanıyor ve tarama sırasındaki
+    seçenek canlı akışa sızmamalı.
+    """
+    onceki = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _PROBE_SECENEK
+    try:
+        yield
+    finally:
+        if onceki is None:
+            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+        else:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = onceki
+
+
+def dene(url: str) -> tuple[bool, tuple[int, int] | None]:
+    """Tek bir adresi taramayla AYNI şekilde dener: (kare geldi mi, boyutu)."""
+    with _tcp_ile():
+        return _kare_alinabiliyor_mu(url)
+
+
 def rtsp_bul(ip: str, kullanici: str, sifre: str, port: int = 554,
              bildir=None) -> tuple[str, str, tuple[int, int]] | None:
     """
     Şablonları sırayla dener, kare alabilen ilkini döndürür.
 
     (adres, marka, (genişlik, yükseklik)) ya da hiçbiri tutmazsa None.
+
+    Şifreyi SINAMAZ: yanlış şifreyle yanlış yolu ayırt edemez ve her şablon
+    bir giriş denemesidir. Önce kimlik_dogrula çağrılmalı (bkz. kurulum).
     """
-    onceki = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _PROBE_SECENEK
-    try:
+    with _tcp_ile():
         for marka, yol in RTSP_YOLLARI:
             url = rtsp_adresi(ip, kullanici, sifre, yol, port)
             if bildir:
@@ -101,13 +130,164 @@ def rtsp_bul(ip: str, kullanici: str, sifre: str, port: int = 554,
             if ok and boyut:
                 return url, marka, boyut
         return None
-    finally:
-        # Geri konur: kopru.py aynı değişkeni kendi ayarıyla kullanıyor ve
-        # tarama sırasındaki kısa zaman aşımı canlı akışa sızmamalı.
-        if onceki is None:
-            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+
+
+# ------------------------------------------------------ şifre doğrulama ---
+
+def _rtsp_cevabi(soket: socket.socket) -> tuple[int, dict[str, list[str]]] | None:
+    """Bir RTSP cevabının durum kodu ve başlıkları (aynı ad birden çok kez gelebilir)."""
+    tampon = b""
+    while b"\r\n\r\n" not in tampon:
+        parca = soket.recv(4096)
+        if not parca:
+            return None
+        tampon += parca
+        if len(tampon) > 65536:
+            return None
+    bas, _, govde = tampon.partition(b"\r\n\r\n")
+    satirlar = bas.decode("utf-8", errors="replace").split("\r\n")
+    ilk = satirlar[0].split()
+    if len(ilk) < 2 or not ilk[0].upper().startswith("RTSP/") or not ilk[1].isdigit():
+        return None
+    basliklar: dict[str, list[str]] = {}
+    for s in satirlar[1:]:
+        if ":" in s:
+            ad, _, deger = s.partition(":")
+            basliklar.setdefault(ad.strip().lower(), []).append(deger.strip())
+    # Gövde varsa okunup atılır ki aynı bağlantıdaki ikinci cevap kaymasın.
+    try:
+        kalan = int((basliklar.get("content-length") or ["0"])[0]) - len(govde)
+    except ValueError:
+        kalan = 0
+    while kalan > 0:
+        parca = soket.recv(min(kalan, 4096))
+        if not parca:
+            break
+        kalan -= len(parca)
+    return int(ilk[1]), basliklar
+
+
+def _yetki_basligi(meydanlar: list[str], kullanici: str, sifre: str,
+                   uri: str) -> str | None:
+    """
+    WWW-Authenticate meydan okumasına cevap: Digest (MD5, qop'lu ya da
+    qopsuz) öncelikli, yoksa Basic. Anlaşılmayan biçim None — o zaman hüküm
+    verilmez, tarama eskisi gibi sürer.
+    """
+    def md5(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    for m in meydanlar:
+        if not m.lower().startswith("digest "):
+            continue
+        # Değer tırnaklı (virgül içerebilir) ya da tırnaksız olabilir. finditer:
+        # findall katılmayan grubu '' verir ve ikisi ayırt edilemezdi.
+        p: dict[str, str] = {}
+        for e in re.finditer(r'(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]*))', m):
+            p[e.group(1).lower()] = e.group(2) if e.group(2) is not None else e.group(3)
+        realm, nonce = p.get("realm"), p.get("nonce")
+        algoritma = (p.get("algorithm") or "MD5").upper()
+        if realm is None or not nonce or algoritma != "MD5":
+            return None
+        ha1 = md5(f"{kullanici}:{realm}:{sifre}")
+        ha2 = md5(f"DESCRIBE:{uri}")
+        alanlar = [f'username="{kullanici}"', f'realm="{realm}"', f'nonce="{nonce}"',
+                   f'uri="{uri}"']
+        qoplar = [q.strip().lower() for q in (p.get("qop") or "").split(",") if q.strip()]
+        if "auth" in qoplar:
+            nc, cnonce = "00000001", uuid.uuid4().hex[:16]
+            cevap = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}")
+            alanlar += [f'response="{cevap}"', "qop=auth", f"nc={nc}", f'cnonce="{cnonce}"']
+        elif qoplar:
+            return None
         else:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = onceki
+            alanlar.append(f'response="{md5(f"{ha1}:{nonce}:{ha2}")}"')
+        if p.get("opaque") is not None:
+            alanlar.append(f'opaque="{p["opaque"]}"')
+        return "Digest " + ", ".join(alanlar)
+    for m in meydanlar:
+        if m.lower().startswith("basic"):
+            jeton = base64.b64encode(f"{kullanici}:{sifre}".encode("utf-8")).decode("ascii")
+            return "Basic " + jeton
+    return None
+
+
+def kimlik_dogrula(ip: str, port: int, kullanici: str, sifre: str,
+                   zaman_asimi: float = 4.0) -> str:
+    """
+    Kameranın kullanıcı adını ve şifresini TEK bir kimlikli istekle sınar:
+    "tamam" | "yanlis" | "bilinmiyor".
+
+    NEDEN: rtsp_bul on yolu aynı şifreyle dener ve yanlış şifreyi yanlış
+    yoldan ayıramaz, yani tek bir yazım hatası on başarısız giriş demekti.
+    Kameralar bunu saldırı sayar ve hesabı kilitler (Dahua beş, Hikvision
+    yedi yanlıştan sonra); doğru şifreyle yeniden deneyen kişi kilit sürerken
+    yine "şifre yanlış" görüyordu ve kameranın web arayüzü de onu içeri
+    almıyordu.
+
+    Kökte bir DESCRIBE: kamera kimlik isterse (401) aynı isteği kimlikle bir
+    kez daha gönderir. 401/403 → "yanlis". Başka her cevap → "tamam" (kimlik
+    geçti; kökte yayın olmaması, 404, beklenen şeydir). Kimlik istemeyen, anlaşılmaz
+    cevap veren ya da ulaşılamayan kamera → "bilinmiyor" ve tarama bugünkü
+    gibi sürer: bu kontrol yalnızca bir yanlışı ERKEN yakalamak için var,
+    kurulumu hiçbir zaman kendi başına durdurmaz.
+    """
+    uri = f"rtsp://{ip}:{port}/"
+
+    def istek(soket: socket.socket, cseq: int, yetki: str | None):
+        metin = (f"DESCRIBE {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n"
+                 "Accept: application/sdp\r\nUser-Agent: OtoparkKamera\r\n")
+        if yetki:
+            metin += f"Authorization: {yetki}\r\n"
+        soket.sendall((metin + "\r\n").encode("utf-8"))
+        return _rtsp_cevabi(soket)
+
+    try:
+        soket = socket.create_connection((ip, port), timeout=zaman_asimi)
+    except (OSError, ValueError):
+        return "bilinmiyor"
+    try:
+        soket.settimeout(zaman_asimi)
+        ilk = istek(soket, 1, None)
+        if ilk is None or ilk[0] != 401:
+            return "bilinmiyor"
+        yetki = _yetki_basligi(ilk[1].get("www-authenticate", []), kullanici, sifre, uri)
+        if yetki is None:
+            return "bilinmiyor"
+        try:
+            ikinci = istek(soket, 2, yetki)
+        except OSError:
+            ikinci = None
+        if ikinci is None:
+            # Bazı kameralar 401'den sonra bağlantıyı kapatır: aynı meydan
+            # okumayla bir kez daha, yeni bir bağlantıdan (ffmpeg de böyle
+            # yapar — bu kameralarda nonce bağlantıya bağlı değil).
+            soket.close()
+            soket = socket.create_connection((ip, port), timeout=zaman_asimi)
+            soket.settimeout(zaman_asimi)
+            ikinci = istek(soket, 2, yetki)
+        if ikinci is None:
+            return "bilinmiyor"
+        # "stale" = şifre doğru ama nonce eskimiş. Yanlış şifre DEĞİLDİR:
+        # yeni meydan okumayla bir kez daha.
+        if ikinci[0] == 401 and any(
+                "stale=true" in m.replace('"', "").replace(" ", "").lower()
+                for m in ikinci[1].get("www-authenticate", [])):
+            yetki = _yetki_basligi(ikinci[1].get("www-authenticate", []),
+                                   kullanici, sifre, uri)
+            if yetki is None:
+                return "bilinmiyor"
+            ikinci = istek(soket, 3, yetki)
+            if ikinci is None:
+                return "bilinmiyor"
+        return "yanlis" if ikinci[0] in (401, 403) else "tamam"
+    except (OSError, ValueError):
+        return "bilinmiyor"
+    finally:
+        try:
+            soket.close()
+        except OSError:
+            pass
 
 
 # ------------------------------------------------------------------ keşif ---

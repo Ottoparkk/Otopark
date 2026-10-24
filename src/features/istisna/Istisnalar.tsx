@@ -34,6 +34,7 @@ const TUR_TONE: Record<IstisnaTur, 'danger' | 'warn' | 'accent'> = {
   ACIK_BILET_YOK: 'warn',
   COKLU_ESLESME: 'accent',
   YON_BELIRSIZ: 'warn',
+  OKUNAMADI: 'warn',
 }
 
 /** What the operator should actually DO — the label alone does not say. */
@@ -48,14 +49,42 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
     'Aramaya birden fazla açık bilet uydu. Doğru aracı Çıkış ekranından seçin.',
   YON_BELIRSIZ:
     'Bu plaka, içerideki bir aracın plakasına bir karakter uzak. O araç çıkıyorsa Çıkış ekranından tahsil edin; yeni gelen başka bir araçsa girişini elle açın.',
+  // Entrance lane. The single gate gets its own text below: there the car may
+  // have been LEAVING, and opening an entry for it would leave a phantom
+  // ticket that blocks that plate's next real entry.
+  OKUNAMADI:
+    'Kamera bir araç gördü ama plakasını okuyamadı; bilet açılmadı. Araç içerideyse ve bileti yoksa girişini elle açın. Zaten bileti varsa kaydı çözüldü olarak işaretleyin.',
+}
+
+const OKUNAMADI_TEK_KAPI =
+  'Tek kapıda bir araç görüldü ama plakası okunamadı; girdiği mi çıktığı mı bilinmiyor. İçeride bileti olmayan bir araç varsa girişini elle açın; çıkan bir araçsa kaydı çözüldü olarak işaretleyin.'
+
+function aciklama(i: Istisna): string {
+  return i.tur === 'OKUNAMADI' && i.yon === 'ORTAK' ? OKUNAMADI_TEK_KAPI : TUR_ACIKLAMA[i.tur]
+}
+
+/**
+ * What an OKUNAMADI row carries in `ham_yanit` (039): the model's guess and
+ * confidence, or that plate reading itself failed. The raw error goes to the
+ * Yönetici's alert only — it is not for the gate.
+ */
+function okumaBilgisi(i: Istisna): { tahmin: string | null; guven: number | null; servisHatasi: boolean } {
+  const ham: Record<string, unknown> = i.tur === 'OKUNAMADI' && i.ham_yanit ? i.ham_yanit : {}
+  return {
+    tahmin: typeof ham.tahmin === 'string' && ham.tahmin ? ham.tahmin : null,
+    guven: typeof ham.guven === 'number' ? ham.guven : null,
+    servisHatasi: typeof ham.hata === 'string',
+  }
 }
 
 /**
  * Exceptions nothing will ever resolve on its own. The camera deliberately
  * declined to act, so no retry is coming — the "do not enter it by hand" note
- * below would be exactly the wrong advice for these.
+ * below would be exactly the wrong advice for these. An unreadable plate is
+ * one: the bridge does not retry it (and a failed read is only recorded on its
+ * last attempt).
  */
-const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set(['YON_BELIRSIZ'])
+const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set(['YON_BELIRSIZ', 'OKUNAMADI'])
 
 export default function Istisnalar() {
   const navigate = useNavigate()
@@ -192,6 +221,7 @@ function IstisnaKart({
 }) {
   const { data: fotoUrl } = useFotoUrl(i.foto_path)
   const cozuldu = i.cozuldu_at !== null
+  const okuma = okumaBilgisi(i)
 
   // Both timestamps are kept precisely so this lag is visible. A camera that
   // buffered through an outage shows up here as hours, and a camera whose
@@ -235,7 +265,17 @@ function IstisnaKart({
         {gecikmeDk >= 2 ? ` · ${formatSure(gecikmeDk)} gecikmeli` : ''}
       </p>
 
-      <p className="mt-2 text-body text-soft">{TUR_ACIKLAMA[i.tur]}</p>
+      {okuma.tahmin && (
+        <p className="mt-1 text-label text-faint">
+          Modelin tahmini: <span className="tnum">{formatPlaka(okuma.tahmin)}</span>
+          {okuma.guven !== null ? ` · güven %${Math.round(okuma.guven * 100)}` : ''} — kesin değil
+        </p>
+      )}
+      {okuma.servisHatasi && (
+        <p className="mt-1 text-label text-faint">Plaka okuma servisi o sırada çalışmıyordu.</p>
+      )}
+
+      <p className="mt-2 text-body text-soft">{aciklama(i)}</p>
 
       {i.kaynak === 'KAMERA' && !cozuldu && !KENDILIGINDEN_COZULMEZ.has(i.tur) && (
         <p className="mt-2 rounded-field bg-warn-soft px-3 py-2 text-label font-medium text-warn">
@@ -257,8 +297,11 @@ function IstisnaKart({
       ) : (
         <div className="mt-3 flex gap-2">
           {/* A doubtful single-gate read may well be a departure, so it gets
-              the same shortcut an exit-lane exception does. */}
-          {((i.tur !== 'GELECEK' && i.yon === 'CIKIS') || i.tur === 'YON_BELIRSIZ') && (
+              the same shortcut an exit-lane exception does — and so does an
+              unreadable plate on the single gate. */}
+          {((i.tur !== 'GELECEK' && i.yon === 'CIKIS') ||
+            i.tur === 'YON_BELIRSIZ' ||
+            (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK')) && (
             <button
               type="button"
               onClick={onCikis}

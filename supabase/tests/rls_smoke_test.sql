@@ -38,6 +38,9 @@
 --      read goes to a person, and the camera still never closes or collects
 --    • A false "Kapıda" mark (038) is cleared only by active staff, only on an
 --      open ticket, and leaves an audit row
+--    • A camera car whose plate cannot be read, or that arrives while plate
+--      reading is down, is no longer lost silently (039): an exception row,
+--      and an hourly alert when the reading service fails
 -- ============================================================
 
 begin;
@@ -1798,10 +1801,16 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
 --     kapıdan birini seçer — bilet_ac ya da kamera_cikis_bildir — ya da
 --     hiçbirini (yok sayar / çözülmemiş kayıt yazar). Kameranın yapabildiği
 --     şeyler aynı kalır: bilet açmak ve "kapıda" damgası vurmak.
+--
+--     `kamera_okunamadi` ve `kamera_okuma_hatasi` (039) de BİLEREK eklendi:
+--     ikisi de yalnızca "OKUNAMADI" türünde çözülmemiş kayıt ve Yönetici
+--     uyarısı yazar. Bilet açmaz, kapatmaz, para görmez; kayıt ve uyarı da
+--     zaten bu listedeki bilet_ac'ın istisna yolunun yazdığı türden şeyler.
 v_beklenen := array[
   'bildirim_yonetici_turu', 'bilet_ac', 'biletler_immutable_guard',
   'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_kalp',
-  'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_tek_kapi'];
+  'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
+  'kamera_okunamadi', 'kamera_tek_kapi'];
 
 if exists (select 1 from unnest(v_liste) x where x <> all(v_beklenen)) then
   raise exception 'FAIL 41b: service_role fazladan fonksiyon çağırabiliyor: %',
@@ -4078,6 +4087,284 @@ foreach v_txt in array array['anon', 'service_role'] loop
 end loop;
 
 raise notice 'PASS 59: yanlış kapıda işaretini yalnızca aktif personel, yalnızca açık bilette, izli kaldırıyor';
+
+-- =====================================================================
+-- 60  Okunamayan plaka çözülmemiş kayıt olur (039)
+--     Model bir araç gördü ama plakasını okuyamadı: eskiden webhook 422
+--     dönüyor, bilet açılmıyor ve kimse bunu bilmiyordu — giriş kapısından
+--     geçen araç sessizce kayboluyordu. Artık giriş ve tek kapı şeridinde
+--     bir "OKUNAMADI" kaydı yazılır ve Yöneticiye her zamanki gibi bildirilir.
+--     Çıkış şeridi kayıt yazmaz: orada para zaten insanda.
+-- =====================================================================
+
+perform pg_temp.logout();
+
+-- Bildirim sayımları u_yonetici'nin bu iki türü SUSTURMAMIŞ olmasına dayanır
+-- (notify_yonetici notif_prefs'e bakar). Susturulmuşsa test yanlış sebepten
+-- kalırdı; açıkça söylensin.
+if not exists (select 1 from public.profiles
+                where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE'
+                  and coalesce(notif_prefs ->> 'ISTISNA', 'true') <> 'false'
+                  and coalesce(notif_prefs ->> 'KAMERA', 'true') <> 'false') then
+  raise exception 'FAIL 60: fixture — u_yonetici aktif Yönetici değil ya da ISTISNA/KAMERA bildirimlerini susturmuş';
+end if;
+
+-- (a) Sınır grant'ta: yalnızca kamera (service_role) çağırır.
+if not has_function_privilege('service_role',
+     'public.kamera_okunamadi(text, uuid, timestamptz, text, numeric, jsonb)', 'execute') then
+  raise exception 'FAIL 60a: kamera_okunamadi service_role rolüne kapalı';
+end if;
+foreach v_txt in array array['anon', 'authenticated'] loop
+  if has_function_privilege(v_txt,
+       'public.kamera_okunamadi(text, uuid, timestamptz, text, numeric, jsonb)', 'execute') then
+    raise exception 'FAIL 60a: kamera_okunamadi % rolüne açık', v_txt;
+  end if;
+end loop;
+
+-- (b) Giriş şeridinde okunamayan araç: TEK kayıt, TEK bildirim. Fotoğraf
+--     ham yanıtta SAKLANMAZ (her satırı yüzlerce KB yapıyordu).
+select count(*) into v_n from public.notifications
+ where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() - interval '1 minute', '34AB12', 0.62,
+         jsonb_build_object('cihaz', 'test-60', 'foto_base64', 'QUJD'))
+  into v_id;
+perform pg_temp.logout();
+if v_id is null or not exists (
+     select 1 from public.istisnalar
+      where id = v_id and islem_id = v_islem and tur::text = 'OKUNAMADI'
+        and yon = 'GIRIS' and plaka is null and kaynak = 'KAMERA'
+        and kaynak_zaman = now() - interval '1 minute'
+        and ham_yanit ->> 'tahmin' = '34AB12'
+        and (ham_yanit ->> 'guven')::numeric = 0.62
+        and ham_yanit ->> 'cihaz' = 'test-60'
+        and not (ham_yanit ? 'foto_base64')) then
+  raise exception 'FAIL 60b: okunamayan araç doğru kaydedilmedi';
+end if;
+if (select count(*) from public.notifications
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
+  raise exception 'FAIL 60b: Yöneticiye tam bir bildirim gitmedi';
+end if;
+
+-- (c) Aynı olay yeniden gelirse ikinci kayıt ve ikinci bildirim olmaz.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
+perform pg_temp.logout();
+if v_id2 is distinct from v_id
+   or (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
+   or (select count(*) from public.notifications
+        where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
+  raise exception 'FAIL 60c: tekrarlanan olay ikinci kayıt ya da bildirim üretti';
+end if;
+
+-- (d) Tek kapı kabul edilir; çıkış şeridi, eksik kimlik ve eksik zaman
+--     reddedilir.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now(), null, null, null) into v_id2;
+if v_id2 is null or not exists (select 1 from public.istisnalar
+                                 where id = v_id2 and yon = 'ORTAK'
+                                   and tur::text = 'OKUNAMADI') then
+  raise exception 'FAIL 60d: tek kapıda okunamayan araç kaydedilmedi';
+end if;
+begin
+  perform public.kamera_okunamadi('CIKIS', gen_random_uuid(), now(), null, null, null);
+  raise exception 'FAIL 60d: çıkış şeridi kayıt yazdı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.kamera_okunamadi('GIRIS', null, now(), null, null, null);
+  raise exception 'FAIL 60d: işlem kimliği olmadan kayıt yazıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.kamera_okunamadi('GIRIS', gen_random_uuid(), null, null, null, null);
+  raise exception 'FAIL 60d: zaman damgası olmadan kayıt yazıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Grant bir gün açılırsa gövdedeki guard da tutmalı: JWT taşıyan
+--     çağıran (yani bir insan) sahte "okunamadı" kaydı yazamamalı.
+perform set_config('request.jwt.claims',
+  json_build_object('sub', u_personel::text, 'role', 'authenticated')::text, true);
+begin
+  perform public.kamera_okunamadi('GIRIS', gen_random_uuid(), now(), null, null, null);
+  raise exception 'FAIL 60e: JWT taşıyan çağıran kayıt yazabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 60e: beklenmeyen hata (jwt): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+raise notice 'PASS 60: okunamayan plaka giriş ve tek kapıda çözülmemiş kayıt oluyor, bir kez bildiriliyor';
+
+-- =====================================================================
+-- 61  Plaka okuma servisi çöktüğünde haber verilir (039)
+--     Anthropic bakiyesi biterse ya da anahtar geçersizleşirse webhook her
+--     araçta 502 dönüyordu ve tek iz okuma günlüğündeki bir satırdı. Kalp
+--     atışı sürdüğü için "kameradan haber yok" uyarısı da susuyordu: bütün
+--     kamera girişleri kimse bilmeden duruyordu. Artık:
+--       · her hatada Yöneticiye uyarı — saatte EN FAZLA bir kez;
+--       · köprünün SON denemesinde (x-kamera-son-gonderim) giriş ve tek kapı
+--         şeridinde araç başına bir "OKUNAMADI" kaydı, araç başına bildirim
+--         olmadan (bir arıza yüz bildirim olmasın).
+--     Son deneme dışında kayıt YAZILMAZ: kamera_tek_kapi, kaydı olan bir
+--     islem_id'yi "ISTISNA TEKRAR" diye kısa keser; ilk hatada yazılan kayıt,
+--     başarılı bir yeniden denemenin biletini engellerdi. (h) bunu sınar.
+-- =====================================================================
+
+perform pg_temp.logout();
+
+-- (a) Sınır grant'ta: yalnızca kamera (service_role) çağırır.
+if not has_function_privilege('service_role',
+     'public.kamera_okuma_hatasi(text, uuid, timestamptz, text, boolean, jsonb)', 'execute') then
+  raise exception 'FAIL 61a: kamera_okuma_hatasi service_role rolüne kapalı';
+end if;
+foreach v_txt in array array['anon', 'authenticated'] loop
+  if has_function_privilege(v_txt,
+       'public.kamera_okuma_hatasi(text, uuid, timestamptz, text, boolean, jsonb)', 'execute') then
+    raise exception 'FAIL 61a: kamera_okuma_hatasi % rolüne açık', v_txt;
+  end if;
+end loop;
+
+-- Canlıdan kalmış bir uyarı bu testin tekilleştirmesini etkilemesin.
+-- (Rollback geri getirir.)
+delete from public.notifications where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor';
+select count(*) into v_n from public.notifications
+ where tur = 'ISTISNA' and profile_id = u_yonetici;
+
+-- (b) İlk hata: tek uyarı, son deneme değilse kayıt YOK.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('GIRIS', v_islem, now(),
+          'Anthropic 400: credit balance is too low', false, null);
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor'
+       and profile_id = u_yonetici and link = '/istisnalar'
+       and govde like '%credit balance is too low%'
+       and govde like '%Anthropic bakiyesini%') <> 1 then
+  raise exception 'FAIL 61b: okuma hatası Yöneticiye tam bir kez bildirilmedi';
+end if;
+if exists (select 1 from public.istisnalar where islem_id = v_islem) then
+  raise exception 'FAIL 61b: son deneme olmayan hata kayıt yazdı';
+end if;
+
+-- (c) Aynı saat içinde ikinci ve üçüncü hata yeni uyarı ÜRETMEZ — çıkış
+--     şeridindeki hata da (uyarı her şerit için, kayıt yalnızca girişte).
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('GIRIS', v_islem, now(), 'Anthropic 401', false, null);
+perform public.kamera_okuma_hatasi('CIKIS', gen_random_uuid(), now(), 'Anthropic 401', false, null);
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor'
+       and profile_id = u_yonetici) <> 1 then
+  raise exception 'FAIL 61c: aynı saat içinde ikinci uyarı gönderildi';
+end if;
+
+-- (d) Saat dolunca yeniden uyarır. (Tek transaction'da now() sabit:
+--     önceki uyarı geri çekilerek kurulur.)
+update public.notifications set created_at = now() - interval '61 minutes'
+ where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor';
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('CIKIS', gen_random_uuid(), now(), 'Anthropic 529', false, null);
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor'
+       and profile_id = u_yonetici) <> 2 then
+  raise exception 'FAIL 61d: bir saat sonra uyarı yinelenmedi';
+end if;
+
+-- (e) Son denemede giriş şeridi: TEK kayıt, sebebi içinde, araç başına
+--     bildirim YOK. Uzun hata metni kısaltılır, fotoğraf saklanmaz.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('GIRIS', v_islem, now() - interval '30 seconds',
+          'Anthropic 400: ' || repeat('x', 600), true,
+          jsonb_build_object('cihaz', 'test-61', 'foto_base64', 'QUJD'));
+perform public.kamera_okuma_hatasi('GIRIS', v_islem, now(), 'Anthropic 400', true, null);
+perform pg_temp.logout();
+if (select count(*) from public.istisnalar
+     where islem_id = v_islem and tur::text = 'OKUNAMADI' and yon = 'GIRIS'
+       and plaka is null and kaynak = 'KAMERA'
+       and kaynak_zaman = now() - interval '30 seconds'
+       and ham_yanit ->> 'hata' like 'Anthropic 400: x%'
+       and length(ham_yanit ->> 'hata') <= 300
+       and ham_yanit ->> 'cihaz' = 'test-61'
+       and not (ham_yanit ? 'foto_base64')) <> 1 then
+  raise exception 'FAIL 61e: son denemedeki okuma hatası tek ve doğru kayıt olmadı';
+end if;
+if (select count(*) from public.notifications
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
+  raise exception 'FAIL 61e: okuma hatası kaydı araç başına bildirim üretti';
+end if;
+
+-- (f) Son denemede çıkış şeridi kayıt yazmaz.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('CIKIS', v_islem, now(), 'Anthropic 401', true, null);
+perform pg_temp.logout();
+if exists (select 1 from public.istisnalar where islem_id = v_islem) then
+  raise exception 'FAIL 61f: çıkış şeridindeki okuma hatası kayıt yazdı';
+end if;
+
+-- (g) Anlamsız şerit, eksik kimlik ya da zaman reddedilir; JWT taşıyan
+--     çağıran (bir insan) sahte uyarı üretemez.
+perform pg_temp.kamera();
+begin
+  perform public.kamera_okuma_hatasi('SAGA', gen_random_uuid(), now(), 'x', true, null);
+  raise exception 'FAIL 61g: anlamsız şerit kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.kamera_okuma_hatasi('GIRIS', null, now(), 'x', true, null);
+  raise exception 'FAIL 61g: işlem kimliği olmadan kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.kamera_okuma_hatasi('GIRIS', gen_random_uuid(), null, 'x', true, null);
+  raise exception 'FAIL 61g: zaman damgası olmadan kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+perform set_config('request.jwt.claims',
+  json_build_object('sub', u_personel::text, 'role', 'authenticated')::text, true);
+begin
+  perform public.kamera_okuma_hatasi('GIRIS', gen_random_uuid(), now(), 'x', true, null);
+  raise exception 'FAIL 61g: JWT taşıyan çağıran okuma hatası bildirebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 61g: beklenmeyen hata (jwt): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (h) Asıl tuzak: tek kapıda ilk deneme okunamadı (son deneme DEĞİL), sonraki
+--     deneme okudu. Aynı islem_id ile tek kapı kararı bilet AÇMALI — erken
+--     yazılmış bir kayıt onu "ISTISNA TEKRAR" diye keserdi.
+if exists (select 1 from public.biletler where plaka = 'ZZ61TK001' and durum = 'ACIK') then
+  raise exception 'FAIL 61h: fixture — ZZ61TK001 zaten içeride';
+end if;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('ORTAK', v_islem, now(), 'Anthropic 529: overloaded', false, null);
+select public.kamera_tek_kapi('ZZ61TK001', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' <> 'GIRIS' or (v_json ->> 'bilet_id') is null then
+  raise exception 'FAIL 61h: okuma hatasından sonraki başarılı deneme bilet açmadı (%)', v_json;
+end if;
+
+raise notice 'PASS 61: okuma servisi çöktüğünde saatte bir uyarı, son denemede araç başına kayıt';
 
 perform pg_temp.logout();
 raise notice '';

@@ -110,6 +110,7 @@ def sunucu_reddi(satirlar: list[str]) -> str | None:
         if gunluk.SERIT_ISARETI in satir:
             return "serit"
         if (KABUL_ISARETI in satir or "[+] gönderildi" in satir
+                or gunluk.SUNUCU_TAMAM_ISARETI in satir
                 or "köprü başladı" in satir):
             return None
     return None

@@ -121,3 +121,46 @@ export function tekKapiCevabi(veri: unknown): TekKapiCevabi {
     biletId: ham || null,
   }
 }
+
+/**
+ * Should an unreadable plate become an exception row (039 kamera_okunamadi)?
+ *
+ * Before 039 a car whose plate could not be read got a 422 and nothing else:
+ * through an entrance camera it drove in with no ticket and nobody was told.
+ *
+ *   • GIRIS and ORTAK only. At a two-lane exit a person collects the money and
+ *     sees the car; on the single gate the car may be arriving.
+ *   • Only when a photo was actually read — a plate-string camera that sent no
+ *     plate is a different fault.
+ *   • NEVER when the model said there is no vehicle: the bridge photographs the
+ *     empty lane after every departure, and each of those becoming "a car we
+ *     could not read" would bury the real ones.
+ */
+export function okunamadiKaydedilir(yon: Serit, gorselOkundu: boolean, aracYok: boolean): boolean {
+  return (yon === 'GIRIS' || yon === 'ORTAK') && gorselOkundu && !aracYok
+}
+
+/**
+ * Is this the bridge's LAST attempt for the event (`x-kamera-son-gonderim`,
+ * bridge 1.2.1+)? Exactly "1", like `x-kamera-deneme`.
+ *
+ * When the reading service fails the bridge retries the same islem_id. The
+ * per-car exception is written only on the last try: written earlier, it would
+ * make kamera_tek_kapi (037) answer "ISTISNA TEKRAR" to a later retry that
+ * DID read the plate, and that car would never get its ticket.
+ */
+export function sonGonderimMi(baslik: string | null | undefined): boolean {
+  return baslik === '1'
+}
+
+/**
+ * The raw body as it is stored with an exception — without the photo.
+ *
+ * The bridge's JSON carries the JPEG as `foto_base64`; stored in `ham_yanit`
+ * it made every camera exception row hundreds of KB, all downloaded by the
+ * exceptions screen. A copy: the caller still needs the original.
+ */
+export function hamFotosuz(govde: Record<string, unknown>): Record<string, unknown> {
+  const { foto_base64: _foto, ...kalan } = govde
+  return kalan
+}

@@ -92,6 +92,46 @@ KAMERA_VAR_ISARETI = "kamera bağlandı"
 BOS_GORUNTU_ISARETI = "boş şerit görüntüsü (sunucu: araç yok)"   # 422 + arac_yok
 BOS_OGRENILDI_ISARETI = "boş şerit öğrenildi"
 BOS_ATLANDI_ISARETI = "boş şerit — gönderilmedi"
+# 1.2.1. Sunucunun İLK kalp atışını kabul ettiği an (bir kez yazılır): kurulum
+# sihirbazı köprüyü ancak bunu görünce "çalışıyor" sayar.
+SUNUCU_TAMAM_ISARETI = "sunucu bağlantısı doğrulandı"
+# Kalp atışı sunucuya hiç ulaşamadı (ağ / internet).
+KALP_YOK_ISARETI = "kalp gönderilemedi"
+# Bu bilgisayarın saati sunucununkinden SAAT_TOLERANS_SN'den fazla farklı.
+# Köprü her aracı bu saatle damgalar ve ücret o damgadan hesaplanır.
+SAAT_ISARETI = "bilgisayarın saati sunucudan farklı"
+SAAT_TOLERANS_SN = 60
+
+
+def saat_farki(tarih: str | None, simdi: float) -> float | None:
+    """
+    Bu bilgisayarın saati, sunucunun HTTP `Date` başlığına göre kaç saniye
+    İLERİ (eksi: geri). Başlık yoksa ya da anlaşılmazsa None — o zaman hüküm
+    verilmez.
+
+    Sunucu tarafında saat hep doğru (Supabase NTP'li); dolayısıyla fark, bu
+    bilgisayarın kaymasıdır. Yolculuk süresi birkaç saniyeyi geçmez, tolerans
+    dakika ölçeğinde.
+    """
+    if not tarih:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        d = parsedate_to_datetime(tarih)
+    except Exception:
+        return None
+    if d is None or d.tzinfo is None:
+        return None
+    return simdi - d.timestamp()
+
+
+def saat_farki_metni(saniye: float) -> str:
+    """'10 dakika ileri' / '45 saniye geri' — ekranda ve kayıtta aynı cümle."""
+    yon = "ileri" if saniye > 0 else "geri"
+    dakika = round(abs(saniye) / 60)
+    if dakika >= 1:
+        return f"{dakika} dakika {yon}"
+    return f"{round(abs(saniye))} saniye {yon}"
 
 
 def kayit_klasoru() -> str:
@@ -105,25 +145,28 @@ def kayit_yolu(yon: str) -> str:
     return os.path.join(kayit_klasoru(), f"kopru-{ad}.log")
 
 
-class _Ikili(io.TextIOBase):
+class _Kayit:
     """
-    Hem asıl akışa hem dosyaya yazar. Hiçbir hata köprüyü öldürmemeli:
-    dosya yazılamazsa sessizce devre dışı kalır ve konsol yolu sürer.
+    TEK kayıt dosyası: tutamaç, kilit, boyut ve döndürme.
+
+    stdout ve stderr bunu PAYLAŞIR. Eskiden ikisi aynı dosyayı ayrı ayrı
+    açıyordu ve Windows'ta Python dosyayı silme/yeniden adlandırma paylaşımı
+    olmadan açar: biri döndürmeye kalkınca öbürünün açık tutamacı yüzünden
+    yeniden adlandırma hep başarısız oluyor, dosya sınırsız büyüyor ve o andan
+    sonra her satırda kapat/aç yapılıyordu (bu bilgisayarda ölçüldü).
+
+    Hiçbir hata köprüyü öldürmemeli: dosya yazılamazsa sessizce devre dışı
+    kalır ve konsol yolu sürer.
     """
 
-    def __init__(self, akis, yol: str) -> None:
-        self._akis = akis                      # None olabilir (konsolsuz .exe)
+    def __init__(self, yol: str, hata_akisi=None) -> None:
         self._yol = yol
         self._dosya = None
         self._boyut = 0
-        self._satir_basi = True
         self._kilit = threading.Lock()         # gönderici iş parçacığı da yazar
-        self._yerel = threading.local()        # yarım satırlar, iş parçacığı başına
-        self._ac()
+        self._ac(hata_akisi)
 
-    # -- dosya --------------------------------------------------------------
-
-    def _ac(self) -> None:
+    def _ac(self, hata_akisi=None) -> None:
         try:
             os.makedirs(os.path.dirname(self._yol), exist_ok=True)
             self._dosya = open(self._yol, "a", encoding="utf-8", errors="replace")
@@ -131,11 +174,15 @@ class _Ikili(io.TextIOBase):
         except Exception as e:
             self._dosya = None
             # Asıl akışa yaz, kendimize değil: kendimize yazmak sonsuz döngü.
-            if self._akis is not None:
+            if hata_akisi is not None:
                 try:
-                    self._akis.write(f"[!] kayıt dosyası açılamadı ({self._yol}): {e}\n")
+                    hata_akisi.write(f"[!] kayıt dosyası açılamadı ({self._yol}): {e}\n")
                 except Exception:
                     pass
+
+    @property
+    def acik(self) -> bool:
+        return self._dosya is not None
 
     def _dondur(self) -> None:
         """
@@ -165,36 +212,7 @@ class _Ikili(io.TextIOBase):
             pass
         self._ac()
 
-    # -- TextIOBase ---------------------------------------------------------
-
-    def write(self, s: str) -> int:  # type: ignore[override]
-        if not s:
-            return 0
-        if self._akis is not None:
-            try:
-                self._akis.write(s)
-            except Exception:
-                self._akis = None       # konsol gittiyse dosya yolu sürsün
-        if self._dosya is None:
-            return len(s)
-
-        # Satırlar İŞ PARÇACIĞI BAŞINA tamponlanıyor. `print()` metni, ayracı
-        # ve satır sonunu AYRI write() çağrılarıyla yazar: kilit tek çağrıyı korur
-        # ama iki çağrı arasında öteki iş parçacığı araya girer ve satırlar
-        # birbirinin içine geçer. Köprüde bu gerçek bir durum — yakalama
-        # döngüsü "[i] araç durdu" yazarken gönderici "[+] gönderildi"
-        # yazıyor — ve bozulan şey tek tanı kaydı oluyor.
-        tampon = getattr(self._yerel, "metin", "") + s
-        *tam, kalan = tampon.split("\n")
-        self._yerel.metin = kalan
-        if tam:
-            damga = time.strftime("%d.%m %H:%M:%S")
-            self._dosyaya(
-                "".join((f"{damga}  {gizle(r)}\n" if r else "\n") for r in tam)
-            )
-        return len(s)
-
-    def _dosyaya(self, metin: str) -> None:
+    def yaz(self, metin: str) -> None:
         with self._kilit:
             if self._dosya is None:
                 return
@@ -217,19 +235,67 @@ class _Ikili(io.TextIOBase):
                     pass
                 self._dosya = None      # bir daha denenmez; köprü sürer
 
+    def flush(self) -> None:
+        with self._kilit:
+            if self._dosya is not None:
+                try:
+                    self._dosya.flush()
+                except Exception:
+                    pass
+
+
+class _Ikili(io.TextIOBase):
+    """
+    Bir akış (stdout ya da stderr): hem kendi konsoluna hem ORTAK kayda yazar.
+
+    `kayit` verilmezse kendi kaydını açar (testler ve tek akışlı kullanım);
+    `baslat` iki akışa AYNI kaydı verir — bkz. _Kayit.
+    """
+
+    def __init__(self, akis, yol: str, kayit: _Kayit | None = None) -> None:
+        self._akis = akis                      # None olabilir (konsolsuz .exe)
+        self._kayit = kayit if kayit is not None else _Kayit(yol, akis)
+        self._yerel = threading.local()        # yarım satırlar, iş parçacığı başına
+
+    def write(self, s: str) -> int:  # type: ignore[override]
+        if not s:
+            return 0
+        if self._akis is not None:
+            try:
+                self._akis.write(s)
+            except Exception:
+                self._akis = None       # konsol gittiyse dosya yolu sürsün
+        if not self._kayit.acik:
+            return len(s)
+
+        # Satırlar İŞ PARÇACIĞI BAŞINA tamponlanıyor. `print()` metni, ayracı
+        # ve satır sonunu AYRI write() çağrılarıyla yazar: kilit tek çağrıyı korur
+        # ama iki çağrı arasında öteki iş parçacığı araya girer ve satırlar
+        # birbirinin içine geçer. Köprüde bu gerçek bir durum — yakalama
+        # döngüsü "[i] araç durdu" yazarken gönderici "[+] gönderildi"
+        # yazıyor — ve bozulan şey tek tanı kaydı oluyor.
+        tampon = getattr(self._yerel, "metin", "") + s
+        *tam, kalan = tampon.split("\n")
+        self._yerel.metin = kalan
+        if tam:
+            damga = time.strftime("%d.%m %H:%M:%S")
+            self._kayit.yaz(
+                "".join((f"{damga}  {gizle(r)}\n" if r else "\n") for r in tam)
+            )
+        return len(s)
+
     def flush(self) -> None:  # type: ignore[override]
         kalan = getattr(self._yerel, "metin", "")
         if kalan:
             self._yerel.metin = ""
             damga = time.strftime("%d.%m %H:%M:%S")
-            self._dosyaya(f"{damga}  {gizle(kalan)}\n")
-        with self._kilit:
-            for h in (self._akis, self._dosya):
-                if h is not None:
-                    try:
-                        h.flush()
-                    except Exception:
-                        pass
+            self._kayit.yaz(f"{damga}  {gizle(kalan)}\n")
+        if self._akis is not None:
+            try:
+                self._akis.flush()
+            except Exception:
+                pass
+        self._kayit.flush()
 
     def isatty(self) -> bool:  # type: ignore[override]
         return bool(self._akis is not None and getattr(self._akis, "isatty", bool)())
@@ -242,8 +308,11 @@ def baslat(yon: str) -> str | None:
     """
     yol = kayit_yolu(yon)
     try:
-        sys.stdout = _Ikili(sys.stdout, yol)
-        sys.stderr = _Ikili(sys.stderr, yol)
+        # İki akış, TEK kayıt: ayrı tutamaçlar Windows'ta döndürmeyi
+        # imkânsız kılıyordu (bkz. _Kayit).
+        kayit = _Kayit(yol, sys.stdout)
+        sys.stdout = _Ikili(sys.stdout, yol, kayit)
+        sys.stderr = _Ikili(sys.stderr, yol, kayit)
     except Exception:
         return None
     print(f"[i] ——— köprü başladı ({yon}) — pid {os.getpid()} ———", flush=True)

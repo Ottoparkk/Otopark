@@ -150,6 +150,27 @@ SENARYOLAR = {
         goruntu_sunucu=True, arac_yok=True,
         bos_gonderilir=[(4.2, 7.0), (7.6, 10.5), (11.1, 14.0)],
     ),
+    # Kalp atışı yakalama iş parçacığını BLOKLAMAMALI (1.2.1). Kalp atışı
+    # senkron koşuyordu: yavaş bir sunucu (soğuk başlangıç, kopuk Wi-Fi)
+    # döngüyü 10-20 sn donduruyordu ve o arada gelip duran araç hiç
+    # görülmüyordu. Burada ilk kalp atışı 5 sn sürüyor; araç 1.8. saniyede
+    # duruyor ve kalp atışı bitmeden GÖNDERİLMELİ. Kabul edilen ilk kalp
+    # atışı da kayda bir kez "sunucu bağlantısı doğrulandı" yazmalı —
+    # kurulum sihirbazı bu satırı bekliyor.
+    "kalp_bloklamaz": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 8, DURDU)],
+        sure=8.0, pencereler=[(1.8, 4.0)], kalp_gecikme=5.0,
+        kayitta_sirayla=["kamera bağlandı", "sunucu bağlantısı doğrulandı"],
+    ),
+    # Okuma servisi çöktü (502): köprü aynı islem_id ile dört kez dener ve
+    # YALNIZCA sonuncusu `x-kamera-son-gonderim: 1` taşır. Sunucu aracı ancak
+    # o denemede "okunamadı" kaydına çevirir; daha erken yazsaydı başarılı bir
+    # yeniden denemenin biletini tek kapıda keserdi.
+    "son_gonderim": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 12, DURDU)],
+        sure=11.0, pencereler=[(1.8, 3.0)], kodlar=[502, 502, 502, 502], tekrar=4,
+        son_baslik=True,
+    ),
     # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
     "bos_ogren_kapali": dict(
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
@@ -213,11 +234,13 @@ def tek_kos(ad: str) -> int:
         # karşı monotonic(), yani sistem çalışma süresi).
         if not (json and json.get("foto_base64")):
             kalpler.append(time.monotonic() - T0)
+            if S.get("kalp_gecikme"):
+                time.sleep(S["kalp_gecikme"])
             return Yanit(400)
         # Yapay gecikmeden ÖNCE kaydedilir: ölçtüğümüz şey köprünün göndermeye
         # karar verdiği an, taklit ağın yavaşlığı değil.
         gonderimler.append({"t": time.monotonic() - T0, "id": json["islem_id"],
-                            "yon": json.get("yon")})
+                            "yon": json.get("yon"), "basliklar": dict(headers or {})})
         if S.get("yavas"):
             time.sleep(S["yavas"])
         if S.get("goruntu_sunucu"):
@@ -363,6 +386,12 @@ def tek_kos(ad: str) -> int:
         if not [g for g in gonderimler if a <= g["t"] <= b]:
             print(f"FAIL: boş şerit ({a}-{b}s) gönderilmeliydi — öğrenilmemesi "
                   "gereken bir şey öğrenildi")
+            hata = 1
+    if S.get("son_baslik"):
+        isaretli = [g.get("basliklar", {}).get("x-kamera-son-gonderim") == "1"
+                    for g in sorted(gonderimler, key=lambda g: g["t"])]
+        if isaretli != [False] * (len(isaretli) - 1) + [True]:
+            print(f"FAIL: yalnızca son deneme işaretli olmalıydı: {isaretli}")
             hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")

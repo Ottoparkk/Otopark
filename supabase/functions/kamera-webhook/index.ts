@@ -13,12 +13,16 @@
  *
  * WHAT IT CANNOT DO — by construction, not by promise:
  *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_tek_kapi,
- *   kamera_okuma_bagla, kamera_kalp and kamera_kalp_cihaz. There is no path to
- *   tariffs, users, the kasa or subscriptions. And it can never close a ticket
- *   or take money: a camera reports, a human collects.
+ *   kamera_okuma_bagla, kamera_kalp, kamera_kalp_cihaz, kamera_okunamadi and
+ *   kamera_okuma_hatasi. There is no path to tariffs, users, the kasa or
+ *   subscriptions. And it can never close a ticket or take money: a camera
+ *   reports, a human collects.
  *
  *   kamera_tek_kapi (037, the single-gate lane) adds no new power: it only
- *   CHOOSES between the first two, or declines to choose.
+ *   CHOOSES between the first two, or declines to choose. The two 039 RPCs
+ *   only write an exception row and an alert, so that a car whose plate could
+ *   not be read — or that arrived while plate reading was down — is not lost
+ *   without a trace.
  *
  * Security posture (OWASP 2025):
  *   A01  A credential is required and compared in constant time. Two kinds:
@@ -36,7 +40,13 @@ import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.1
 import { z } from 'npm:zod@4.4.3'
 import { deriveIslemId, json, parseCameraTime, safeEqual } from '../_shared/http.ts'
 import { aracYokMu, bytesToBase64, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
-import { seritKarari, tekKapiCevabi } from '../_shared/serit.ts'
+import {
+  hamFotosuz,
+  okunamadiKaydedilir,
+  seritKarari,
+  sonGonderimMi,
+  tekKapiCevabi,
+} from '../_shared/serit.ts'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 const DAKIKA_LIMIT = 30 // camera-sourced rows per minute
@@ -207,7 +217,8 @@ function fromJson(body: Record<string, unknown>): Omit<Olay, 'image'> {
       (body.mac as string) ??
       (body.ip as string) ??
       null,
-    ham: body,
+    // Without the photo: this is what gets stored with an exception (039).
+    ham: hamFotosuz(body),
   }
 }
 
@@ -440,6 +451,11 @@ Deno.serve(async (req: Request) => {
     // learn what the empty gate looks like and stop paying to send it. False
     // whenever there was no read, so only a real model answer can teach it.
     let aracYok = false
+    // Whether a photo was actually read here, and the model's best guess even
+    // when it was not good enough to use — both go into the exception row an
+    // unreadable entrance plate now produces (039).
+    let okundu = false
+    let tahmin = ''
 
     // No plate text but a picture? That is the thin-bridge topology: the JPEG
     // is all the model needs, so camera OCR was never required.
@@ -469,12 +485,30 @@ Deno.serve(async (req: Request) => {
           guven: null,
           onerilen: null,
         })
+        // The log row alone left a total outage invisible: with the credit
+        // used up EVERY camera car failed here while heartbeats kept the
+        // watchdog quiet. Now the Yönetici is alerted (at most hourly), and on
+        // the bridge's LAST attempt the car becomes an exception row. Never
+        // earlier — see sonGonderimMi. Still 502, so the bridge retries as
+        // before; a failure here must not change what the bridge sees.
+        const { error: hataErr } = await admin.rpc('kamera_okuma_hatasi', {
+          p_yon: yon,
+          p_islem_id:
+            olay.islemId ?? (await deriveIslemId([olay.cihaz, yon, olay.zaman, 'OKUMA_HATASI'])),
+          p_zaman: olay.zaman,
+          p_hata: String(okuErr).slice(0, 300),
+          p_son_gonderim: sonGonderimMi(req.headers.get('x-kamera-son-gonderim')),
+          p_ham: olay.ham,
+        })
+        if (hataErr) console.error('kamera_okuma_hatasi başarısız:', hataErr.message)
         return json({ hata: 'Plaka okunamadı.' }, 502)
       }
 
+      okundu = true
       guven = sonuc.parsed.guven
       aracYok = aracYokMu(sonuc.parsed)
       const temiz = tidyPlaka(sonuc.parsed.plaka)
+      tahmin = temiz
       // Same judgement as the phone, from the same helper — a camera that
       // read a shape no Turkish plate has is not evidence, it is noise.
       if (okumaGuvenilir(temiz, sonuc.parsed.guven, sonuc.parsed.okunamadi)) {
@@ -494,8 +528,27 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!plaka) {
-      // `arac_yok` is additive: a bridge older than 1.2.0 ignores it.
-      return json({ hata: 'Plaka okunamadı.', guven, arac_yok: aracYok }, 422)
+      // A car the model saw but could not read used to vanish here: no ticket,
+      // no exception, nobody told. On the entrance and single-gate lanes it is
+      // now an exception row with the usual Yönetici notification (039). The
+      // bridge never retries a 422, so this runs once per event; the RPC also
+      // deduplicates on islem_id.
+      let istisna = false
+      if (okunamadiKaydedilir(yon, okundu, aracYok)) {
+        const { error: okErr } = await admin.rpc('kamera_okunamadi', {
+          p_yon: yon,
+          p_islem_id:
+            olay.islemId ?? (await deriveIslemId([olay.cihaz, yon, olay.zaman, tahmin])),
+          p_zaman: olay.zaman,
+          p_tahmin: tahmin || null,
+          p_guven: guven,
+          p_ham: olay.ham,
+        })
+        if (okErr) console.error('kamera_okunamadi başarısız:', okErr.message)
+        else istisna = true
+      }
+      // `arac_yok` and `istisna` are additive: older bridges ignore them.
+      return json({ hata: 'Plaka okunamadı.', guven, arac_yok: aracYok, istisna }, 422)
     }
 
     // Cameras do not send UUIDs, and bilet_ac requires an idempotency key, so

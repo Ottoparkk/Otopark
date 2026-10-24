@@ -55,10 +55,24 @@ Dört soru sorar, ikisi kameranın kendi kullanıcı adı ve şifresi:
    .exe'nin yanına konmuşsa hiç sorulmaz. Kod okunduktan sonra dosyanın
    silinmesi teklif edilir (varsayılan: evet)
 2. **Kamera** — ağda kendisi arar; şifreyi girin, RTSP adresini marka marka
-   deneyerek bulur (Hikvision, Dahua, VIGI, Uniview, Axis, Reolink, ONVIF)
+   deneyerek bulur (Hikvision, Dahua, VIGI, Uniview, Axis, Reolink, ONVIF).
+   1.2.1: şifre taramadan ÖNCE tek bir istekle sınanır — tarama her yolu ayrı
+   bir giriş denemesi olarak yapar ve tek bir yazım hatası kamerayı (Dahua beş,
+   Hikvision yedi yanlıştan sonra) kilitlerdi. Kabul edilmezse yeniden sorulur;
+   iki soruda da Enter = aynı bilgilerle devam (kontrol asla tek başına
+   durdurmaz). Elle yazılan RTSP adresi kabul edilmeden önce denenir.
 3. **Kırpma kutusu** — tarayıcıda canlı görüntü açılır, plakanın etrafını
    **fareyle sürüklersiniz**. Kutu 200 pikselin altına düşerse kırmızıya döner
-4. **Test** — bağlantı ve gizli anahtar doğrulanır
+4. **Test** — bağlantı ve gizli anahtar doğrulanır; 1.2.1'den beri bu
+   bilgisayarın saati de sunucununkiyle karşılaştırılır (bir dakikadan fazla
+   fark = durur, ne yapılacağını söyler)
+
+Kurulum, köprü başlayıp kameraya bağlandıktan **ve sunucu ilk kalp atışını
+kabul ettikten** sonra "tamamlandı" der (1.2.1). Program `OtoparkKamera`
+klasörünün kendisinden çalışıyorsa (ZIP'in klasörü, içinde yalnızca paket
+dosyaları) o klasör yalnızca yöneticilerin değiştirebileceği hâle getirilir:
+görev oradaki programı SYSTEM olarak çalıştırıyor. Başka bir klasörde (Masaüstü,
+İndirilenler) izinlere DOKUNULMAZ, yalnızca uyarılır.
 
 ### Kurulum kodu neden var
 
@@ -102,6 +116,7 @@ durumundan** çıkar:
 | açık bileti var, daha eski | çıkış: yalnızca "kapıda" damgası |
 | bileti az önce kapandı (varsayılan 5 dk) | yok sayılır — ödeyip çıkan araç |
 | içerideki bir plakaya bir karakter uzak | Çözülmemiş kayıtlar (`YON_BELIRSIZ`) — tahmin edilmez |
+| okunamadı (araç var, plaka okunmadı) | Çözülmemiş kayıtlar (`OKUNAMADI`, 039) — girdi mi çıktı mı bilinmez |
 | hiçbiri | giriş: bilet açılır |
 
 Cevap gövdesi `karar` ve `sebep` taşır ve köprü cevabı kayda yazdığı için her
@@ -397,7 +412,7 @@ and a missed car costs a free park while a repeat costs a fraction of a kuruş.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 12 senaryo, ~2,5 dk
+python test_kopru.py            # yakalama döngüsü, 14 senaryo, ~3 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
@@ -416,14 +431,21 @@ arkaya, hız sınırı (429), yavaş webhook, bariyerde bekleyen araç, ve bariy
 ilerleyen üç araçlık kuyruk. Sabit 60 sn'lik beklemenin olduğu sürümde bunların
 dördü kalıyor.
 
-Son dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
+İki senaryo 1.2.1'den: `kalp_bloklamaz` — kalp atışı yakalama döngüsünde senkron
+koşuyordu ve yavaş bir cevap kamerayı 10-20 sn donduruyordu; o arada gelip duran
+araç hiç görülmüyordu (bu senaryo eski kodda aracı gerçekten kaçırıyordu).
+`son_gonderim` — okuma servisi çökünce aynı islem_id ile dört deneme yapılır ve
+yalnızca SONUNCUSU `x-kamera-son-gonderim: 1` taşır (sunucu aracı ancak o
+denemede "okunamadı" kaydına çevirir, 039).
+
+Dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
 bakıp model gibi cevap veriyor (araç → 200, boş → 422 + `arac_yok`):
 `bos_ogrenme` üçüncü boş şeridin HİÇ gönderilmediğini ve üçüncü aracın yine
 gönderildiğini; `bos_belirsiz` (arac_yok yok), `bos_arada_okuma_yok` (arada
 okunan araç yok) ve `bos_ogren_kapali` (`BOS_OGREN=0`) hiçbir şeyin
 öğrenilmediğini sınıyor.
 
-`test_kurulum.py`'deki 84 birim testi kurulum tarafını tutuyor — ayar yükleme,
+`test_kurulum.py`'deki 99 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
 **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.
@@ -531,9 +553,13 @@ park with no cars. Two things guard against it:
 
 ## Before you trust it
 
-- **Set the camera's clock, and set NTP.** The bridge sends the time the car
-  was *seen* and the server bills from it. A camera an hour off bills every car
-  wrong, silently, forever.
+- **Keep THIS PC's clock right** (Windows: Settings → Time & language → *Set
+  time automatically*). The bridge stamps the time the car was *seen* with the
+  PC's clock — not the camera's — and the server bills from it. More than five
+  minutes fast and every entry becomes a "future" exception instead of a
+  ticket; slow, and every car is billed long. The installer checks it against
+  the server (1.2.1) and the bridge logs `bilgisayarın saati sunucudan farklı`
+  (at most hourly) when it drifts more than a minute.
 - **Turn the camera on in the app**: Yönetim → Otopark ayarları → *Kamera girişi
   açık*. Until then the webhook refuses everything with 403.
 - **Plate reading must be on too** (`plaka_saglayici` ≠ `KAPALI`) and the API

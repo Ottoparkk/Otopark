@@ -39,7 +39,9 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.2.0"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir
+SURUM = "1.2.1"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir
+                  # 1.2.1: kurulum günü düzeltmeleri (şifre kilidi, saat, gece eşiği,
+                  #        kalp atışı, kayıt döndürme, program klasörü, son deneme başlığı)
 
 # Kendi modüllerimiz. PyInstaller fonksiyon içi `import`ları da tarıyor ama
 # bunlar geç içe aktarma zinciriyle bağlı (giris -> kurulum -> kirpma_sunucu

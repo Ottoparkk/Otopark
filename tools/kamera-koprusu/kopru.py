@@ -421,6 +421,9 @@ class BosOgrenme:
 # Set by main(); None in the setup modes and in tests that call gonder alone.
 _bos: BosOgrenme | None = None
 
+# Tries per vehicle, all with the same islem_id (replay-safe on the server).
+DENEME_SAYISI = 4
+
 
 def _arac_yok_mu(govde: str) -> bool:
     """Did the webhook's 422 say "no vehicle at all"? Anything unparseable: no."""
@@ -461,12 +464,20 @@ def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None) -
         "foto_base64": foto_base64,
     }
 
-    for deneme in range(4):
+    for deneme in range(DENEME_SAYISI):
+        basliklar = {"x-kamera-secret": KAMERA_SECRET}
+        # The LAST try says so. If plate reading itself is down, the server
+        # turns the car into an exception row only on this request (039):
+        # written on an earlier try, it would make the single gate refuse a
+        # later try that DID read the plate, and that car would never get its
+        # ticket. Earlier tries only raise the hourly alert.
+        if deneme == DENEME_SAYISI - 1:
+            basliklar["x-kamera-son-gonderim"] = "1"
         try:
             r = requests.post(
                 WEBHOOK_URL,
                 json=govde,
-                headers={"x-kamera-secret": KAMERA_SECRET},
+                headers=basliklar,
                 timeout=30,  # a plate read happens server-side inside this call
             )
             # Before anything else: a refused bridge must be visible to `durum`
@@ -516,7 +527,12 @@ def kalp() -> None:
     The webhook bumps the heartbeat for any request that clears the secret,
     BEFORE it parses the body — so an empty POST is a valid ping. It answers
     400 and that is the expected result, not an error.
+
+    Runs on its own short-lived thread (see main): it used to run on the
+    capture thread, and a slow answer froze the camera for up to 20 s — long
+    enough for a car to arrive, stop and go unseen.
     """
+    global _sunucu_dogrulandi
     try:
         r = requests.post(
             WEBHOOK_URL, json={}, headers={"x-kamera-secret": KAMERA_SECRET}, timeout=10
@@ -526,13 +542,50 @@ def kalp() -> None:
         # from here a silently failing ping looks exactly like a healthy
         # bridge, and whoever is reading this console is the only one who can
         # tell the difference.
-        print(f"[!] kalp gönderilemedi: {e}", flush=True)
+        print(f"[!] {gunluk.KALP_YOK_ISARETI}: {e}", flush=True)
         return
-    ret_kaydet(getattr(r, "status_code", None), getattr(r, "text", "") or "")
+    kod = getattr(r, "status_code", None)
+    ret_kaydet(kod, getattr(r, "text", "") or "")
+    # Said ONCE, the first time the server accepts this bridge: the installer
+    # waits for this line before it calls the setup finished (1.2.1). Before,
+    # it declared success two seconds after the camera connected, and a
+    # refusal arriving later went unseen.
+    if (not _sunucu_dogrulandi and kod is not None and kod not in (401, 403)
+            and (kod < 300 or kod in _KIMLIK_SONRASI)):
+        _sunucu_dogrulandi = True
+        print(f"[i] {gunluk.SUNUCU_TAMAM_ISARETI}", flush=True)
+    saat_kontrol(r)
+
+
+# Whether the server has accepted a heartbeat since start (one log line).
+_sunucu_dogrulandi = False
+# Monotonic time of the last clock warning: at most one an hour.
+_son_saat_uyarisi: float | None = None
+
+
+def saat_kontrol(r) -> None:
+    """
+    Compare this PC's clock with the server's `Date` header.
+
+    Every vehicle is stamped with THIS clock and billed from that stamp. More
+    than five minutes fast and every entry becomes a "future" exception
+    instead of a ticket; slow, and every stay is billed long. Logged with `[!]`
+    so `durum` shows it as the last warning; at most once an hour.
+    """
+    global _son_saat_uyarisi
+    fark = gunluk.saat_farki((getattr(r, "headers", None) or {}).get("Date"), time.time())
+    if fark is None or abs(fark) <= gunluk.SAAT_TOLERANS_SN:
+        return
+    simdi = time.monotonic()
+    if _son_saat_uyarisi is not None and simdi - _son_saat_uyarisi < 3600:
+        return
+    _son_saat_uyarisi = simdi
+    print(f"[!] {gunluk.SAAT_ISARETI}: {gunluk.saat_farki_metni(fark)} — Windows "
+          "saatini otomatik ayarlayın, yoksa araçlar yanlış ücretlendirilir", flush=True)
 
 
 # Whether the server's last answer was a refusal of this bridge itself. Only
-# ever touched through ret_kaydet, from the capture thread (kalp) and the
+# ever touched through ret_kaydet, from the heartbeat thread (kalp) and the
 # sender thread (gonder); the worst a race can do is print one line twice.
 _reddedildi = False
 
@@ -626,9 +679,11 @@ def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None) -> N
 # ------------------------------------------------------------------ kurulum ---
 
 
-def kamera_baglan() -> cv2.VideoCapture:
+def kamera_baglan(url: str | None = None) -> cv2.VideoCapture:
     """
-    The ONE place a capture is constructed.
+    The ONE place a capture is constructed — for the bridge AND for the
+    installer's crop page (kirpma_sunucu._kamera), so both reach the camera
+    the same way.
 
     main()'s reconnect used to build its own `cv2.VideoCapture(RTSP_URL)`, so
     anything configured here was silently dropped the first time the stream
@@ -636,7 +691,12 @@ def kamera_baglan() -> cv2.VideoCapture:
     Non-fatal on purpose: exiting is right at startup and wrong at 03:00, so
     the caller decides which it is.
     """
-    cap = cv2.VideoCapture(RTSP_URL)
+    # TCP is set HERE as well as at import: the installer's camera scan puts
+    # the variable back the way it found it, so in the installer process the
+    # import-time default may already be gone when the crop page connects.
+    # FFMPEG reads it when the capture is constructed. `setdefault`, as above.
+    os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+    cap = cv2.VideoCapture(url or RTSP_URL)
     # Keep only the newest frame. Without this OpenCV hands back whatever
     # queued up while we were busy, so the frame we judged "settled" can be
     # seconds stale — the wrong moment, and blurrier than the one we wanted.
@@ -789,7 +849,11 @@ def main() -> None:
     onceki: np.ndarray | None = None
     son_hareket = 0.0        # monotonic, last time the scene moved
     durgun_sayaci = 0        # consecutive still frames
-    son_kalp = 0.0
+    # -inf, not 0.0: monotonic() counts from boot, so 0.0 delayed the first
+    # heartbeat until the PC had been up five minutes — after a power cut the
+    # server heard nothing for that long. The first frame now sends one.
+    son_kalp = float("-inf")
+    kalp_isi: threading.Thread | None = None
     uyarildi = False
     kare_sayaci = 0          # yalnızca düzenli "çalışıyor" satırı için
     gonderim_sayaci = 0
@@ -834,7 +898,15 @@ def main() -> None:
         simdi = time.monotonic()
         kare_sayaci += 1
         if simdi - son_kalp > KALP_ARALIGI_SN:
-            kalp()
+            # WHEN to beat stays here, below the reconnect `continue`: no
+            # frames, no heartbeat — a dead camera must go quiet, that is all
+            # the server watchdog sees. Only the network call leaves this
+            # thread; a slow answer used to freeze the camera for up to 20 s
+            # and a car arriving meanwhile was never seen. One in flight at
+            # most.
+            if kalp_isi is None or not kalp_isi.is_alive():
+                kalp_isi = threading.Thread(target=kalp, daemon=True)
+                kalp_isi.start()
             son_kalp = simdi
             # Sağlıklı bir köprü saatlerce TEK SATIR yazmayabilir: boş bir
             # otoparkta ne gönderim olur ne hata. O sessizlik ölü bir köprüden

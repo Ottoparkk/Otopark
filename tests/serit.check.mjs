@@ -5,7 +5,13 @@
 // Gerçek dosyayı içe aktarır (supabase/functions/_shared/serit.ts). Bu makinede
 // Deno yok; yardımcı bilerek içe aktarmasız yazıldı ki Node onu doğrudan
 // çalıştırabilsin.
-import { seritKarari, tekKapiCevabi } from '../supabase/functions/_shared/serit.ts'
+import {
+  hamFotosuz,
+  okunamadiKaydedilir,
+  seritKarari,
+  sonGonderimMi,
+  tekKapiCevabi,
+} from '../supabase/functions/_shared/serit.ts'
 
 let gecen = 0
 let kalan = 0
@@ -136,6 +142,37 @@ for (const bozuk of [null, undefined, {}, 'GIRIS', [], { karar: 'ACIK' }, { kara
 esit('cevap: biletsiz GIRIS → ret', tekKapiCevabi({ karar: 'GIRIS', bilet_id: null }), { ok: false })
 esit('cevap: biletsiz CIKIS → ret', tekKapiCevabi({ karar: 'CIKIS' }), { ok: false })
 esit('cevap: bilet metin değilse → ret', tekKapiCevabi({ karar: 'GIRIS', bilet_id: 5 }), { ok: false })
+
+// --- Okunamayan plaka (039) ---------------------------------------------------
+// Bir aracın plakası okunamadığında "çözülmemiş kayıt" yazılır — ama yalnızca
+// giriş ve tek kapıda (çıkışta para zaten insanda), yalnızca bir fotoğraf
+// gerçekten okunduysa, ve ASLA model "görüntüde araç yok" dediyse: köprü her
+// araç gittikten sonra boş şeridin fotoğrafını da gönderir ve her biri
+// "okunamadı" kaydı olsaydı liste boş yollarla dolardı.
+esit('okunamadı: giriş', okunamadiKaydedilir('GIRIS', true, false), true)
+esit('okunamadı: tek kapı', okunamadiKaydedilir('ORTAK', true, false), true)
+esit('okunamadı: çıkış yazmaz', okunamadiKaydedilir('CIKIS', true, false), false)
+esit('okunamadı: boş şerit yazmaz', okunamadiKaydedilir('GIRIS', true, true), false)
+esit('okunamadı: tek kapıda boş şerit yazmaz', okunamadiKaydedilir('ORTAK', true, true), false)
+esit('okunamadı: fotoğraf okunmadıysa yazmaz', okunamadiKaydedilir('GIRIS', false, false), false)
+
+// Köprünün SON denemesi (1.2.1): yalnızca tam olarak "1". Okuma servisi
+// çöktüğünde araç başına kayıt yalnızca o denemede yazılır — daha erken
+// yazılan kayıt, aynı islem_id'li başarılı bir yeniden denemeyi tek kapıda
+// "ISTISNA TEKRAR" diye keserdi.
+esit('son gönderim: "1"', sonGonderimMi('1'), true)
+esit('son gönderim: başlık yok', sonGonderimMi(null), false)
+esit('son gönderim: "0"', sonGonderimMi('0'), false)
+esit('son gönderim: boş', sonGonderimMi(''), false)
+esit('son gönderim: "true" değil', sonGonderimMi('true'), false)
+
+// Saklanan ham gövde fotoğrafı TAŞIMAZ: köprünün gövdesi `foto_base64` içerir
+// ve kayıt başına yüzlerce KB olurdu. Girdi değiştirilmez (webhook onu okumaya
+// devam ediyor).
+const govde = { yon: 'GIRIS', cihaz: 'k1', foto_base64: 'QUJD' }
+esit('ham: fotoğraf çıkar', hamFotosuz(govde), { yon: 'GIRIS', cihaz: 'k1' })
+esit('ham: girdi değişmez', govde.foto_base64, 'QUJD')
+esit('ham: fotoğrafsız gövde aynen', hamFotosuz({ plaka: '34AB12' }), { plaka: '34AB12' })
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 process.exit(kalan === 0 ? 0 : 1)

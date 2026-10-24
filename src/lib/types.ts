@@ -22,6 +22,9 @@ export type IstisnaTur =
   | 'COKLU_ESLESME'
   // 037: a single-gate camera could not tell an arrival from a departure.
   | 'YON_BELIRSIZ'
+  // 039: a camera saw a car but its plate could not be read, or plate
+  // reading itself was down. Entrance and single-gate lanes only.
+  | 'OKUNAMADI'
 export type HesapDurum = 'AKTIF' | 'PASIF'
 export type PuanHareketTur = 'KAZANIM' | 'KULLANIM' | 'IPTAL' | 'DUZELTME'
 export type KasaTur = 'GELIR' | 'GIDER'
@@ -120,6 +123,7 @@ export const ISTISNA_ETIKET: Record<IstisnaTur, string> = {
   ACIK_BILET_YOK: 'Açık bilet yok',
   COKLU_ESLESME: 'Birden fazla eşleşme',
   YON_BELIRSIZ: 'Giriş mi çıkış mı belirsiz',
+  OKUNAMADI: 'Plaka okunamadı',
 }
 
 /**

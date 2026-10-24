@@ -18,6 +18,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -291,17 +292,29 @@ def dosyadan_kod() -> tuple[str, str] | None:
     karakterin birinde yapılan hata, kurulumun sonunda "gizli anahtar yanlış"
     olarak çıkıyor ve sebebi görünmüyor. Yöneticinin tek satırlık bir dosya
     göndermesi, telefonda anahtar okutmaktan hem kolay hem güvenli.
+
+    EN YENİ `kurulum-kodu*.txt` okunur: tarayıcı ikinci indirmeyi "kurulum-kodu
+    (1).txt" diye kaydeder. Yalnızca tam ad aranırken yeni kod ya hiç
+    bulunmuyor ya da yanındaki ESKİ, süresi dolmuş dosya okunup "kodun süresi
+    dolmuş" deniyordu. Boş bir dosya atlanır.
     """
+    import glob
+
+    adaylar: list[tuple[float, str]] = []
     for klasor in kod_klasorleri():
-        yol = os.path.join(klasor, KOD_DOSYASI)
-        if os.path.isfile(yol):
+        for yol in glob.glob(os.path.join(glob.escape(klasor), "kurulum-kodu*.txt")):
             try:
-                with open(yol, encoding="utf-8-sig") as f:
-                    kod = f.read().strip()
-                if kod:
-                    return kod, yol
-            except Exception:
+                adaylar.append((os.path.getmtime(yol), yol))
+            except OSError:
                 pass
+    for _, yol in sorted(set(adaylar), reverse=True):
+        try:
+            with open(yol, encoding="utf-8-sig") as f:
+                kod = f.read().strip()
+        except Exception:
+            continue
+        if kod:
+            return kod, yol
     return None
 
 
@@ -406,6 +419,9 @@ def kamera_bilgisi() -> tuple[str, tuple[int, int]]:
         print("    - kamera kapalı ya da bu bilgisayarla aynı ağda değil")
         print("    - RTSP kameranın ayarlarında kapalı ya da port farklı")
     else:
+        # Şifre ÖNCE ve tek istekle sınanır: tarama her yolu ayrı bir giriş
+        # denemesi olarak yapıyor ve yanlış bir şifre kamerayı kilitlerdi.
+        kullanici, sifre = kamera_kimligi_dogrula(kesif, ip, port, kullanici, sifre)
         print("\n  RTSP adresi aranıyor (markaya göre deneniyor)…", flush=True)
         sonuc = kesif.rtsp_bul(ip, kullanici, sifre, port, bildir)
         if not sonuc:
@@ -413,16 +429,93 @@ def kamera_bilgisi() -> tuple[str, tuple[int, int]]:
             print("    - kullanıcı adı ya da şifre yanlış")
             print("    - kamera bu listede olmayan bir adres kullanıyor")
     if not sonuc:
-        elle = sor("RTSP adresini elle yazın (boş = çık)", "")
-        if not elle:
+        elle = elle_rtsp_sor()
+        if elle is None:
             sys.exit("  Kurulum durduruldu.")
-        return elle, (0, 0)
+        return elle
 
     url, marka, boyut = sonuc
     gizlenmis = url.replace(urllib.parse.quote(sifre, safe=""), "•••") if sifre else url
     print(f"\n  ✓ {marka} — {boyut[0]}×{boyut[1]}")
     print(f"    {gizlenmis}")
     return url, boyut
+
+
+SIFRE_DENEME = 3
+
+
+def kamera_kimligi_dogrula(kesif, ip: str, port: int, kullanici: str,
+                           sifre: str) -> tuple[str, str]:
+    """
+    Kameranın kullanıcı adını ve şifresini taramadan ÖNCE sınar; doğrulanan
+    (ya da sınanamayan) çifti döndürür.
+
+    Tarama on yolu aynı şifreyle deniyor ve yanlış şifreyi yanlış yoldan
+    ayıramıyordu: tek bir yazım hatası on başarısız giriş, kamera da (Dahua
+    beş, Hikvision yedi yanlıştan sonra) hesabı kilitliyordu. Kişi doğru
+    şifreyle yeniden denediğinde kilit hâlâ sürüyor ve yine "şifre yanlış"
+    görüyordu.
+
+    KURULUMU KENDİ BAŞINA DURDURMAZ: kişi aynı bilgilerde ısrar ederse (iki
+    soruda da Enter) tarama o bilgilerle sürer — kontrol bir kameranın
+    tuhaflığı yüzünden yanılırsa doğru şifre reddedilmiş olmasın. Yalnızca üç
+    FARKLI şifre de reddedilirse, kilit uyarısıyla durulur.
+    """
+    for deneme in range(1, SIFRE_DENEME + 1):
+        durum = kesif.kimlik_dogrula(ip, port, kullanici, sifre)
+        if durum == "tamam":
+            print("  ✓ Kamera kullanıcı adı ve şifresi doğru.")
+            return kullanici, sifre
+        if durum != "yanlis":
+            # Kamera bu kontrolü desteklemiyor: tarama eskisi gibi.
+            return kullanici, sifre
+        if deneme == SIFRE_DENEME:
+            sys.exit(
+                "\n  ✗ Kamera şifreyi üç kez kabul etmedi. Kamera bu noktada girişleri\n"
+                "    bir süre kilitlemiş olabilir. Yaklaşık 30 dakika bekleyin, doğru\n"
+                "    şifreyi kameranın kurulum notundan bulun ve bu programı yeniden\n"
+                "    çalıştırın — yeni kurulum kodu GEREKMEZ.")
+        print("\n  ✗ Kamera bu kullanıcı adını ya da şifreyi kabul etmedi.")
+        print("    Dikkat: kamera birkaç yanlış denemeden sonra girişleri bir süre kilitler.")
+        print("    Bilgilerden eminseniz iki soruda da Enter'a basın; aynılarıyla devam edilir.")
+        yeni_kullanici = sor("Kamera kullanıcı adı", kullanici)
+        yeni_sifre = sor("Kamera şifresi (aynısıysa Enter)", "")
+        if yeni_kullanici == kullanici and (not yeni_sifre or yeni_sifre == sifre):
+            print("  · Aynı bilgilerle devam ediliyor.")
+            return kullanici, sifre
+        kullanici = yeni_kullanici
+        if yeni_sifre:
+            sifre = yeni_sifre
+    return kullanici, sifre
+
+
+def elle_rtsp_sor() -> tuple[str, tuple[int, int]] | None:
+    """
+    RTSP adresini elle alır, KABUL ETMEDEN ÖNCE dener. (adres, boyut) ya da
+    boş girilirse None.
+
+    Eskiden yazılan adres denenmeden kabul ediliyordu. Hemen öncesinde IP
+    sorulduğu için kişi çoğu kez yalnızca IP yazar; kırpma sayfası sonra
+    sonsuza dek kare bekliyordu. Denemede, tarama ile aynı yol kullanılır
+    (TCP, kısa zaman aşımı) ve şifre ekrana yazılmaz.
+    """
+    import kesif
+
+    print("  RTSP adresi biçimi:  rtsp://kullanici:sifre@IP:554/yol")
+    while True:
+        url = sor("RTSP adresini elle yazın (boş = çık)", "")
+        if not url:
+            return None
+        if not url.lower().startswith("rtsp://"):
+            print("  ! Adres rtsp:// ile başlamalı — yalnızca IP yetmez.")
+            continue
+        print("  Adres deneniyor…", flush=True)
+        ok, boyut = kesif.dene(url)
+        if ok and boyut:
+            print(f"  ✓ Kare alındı — {boyut[0]}×{boyut[1]}")
+            return url, boyut
+        print(f"  ! Bu adresten kare alınamadı: {gunluk.gizle(url)}")
+        print("    Adresi, kullanıcı adını ve şifreyi kontrol edip yeniden yazın.")
 
 
 def port_sor() -> int:
@@ -454,6 +547,10 @@ def kirpma_ve_esikler(rtsp: str) -> dict:
         ayar["KIRPMA"] = ",".join(str(v) for v in kutu)
         print(f"  ✓ Kırpma: {ayar['KIRPMA']}")
     else:
+        # AÇIKÇA boş: kayıtlı kimlikle yeniden kurulumda ayar eski dosyadan
+        # gelir ve eski kutuyu taşır. Yazılmasaydı "tüm kare" denirken eski
+        # kutu — artık plakayı içermeyen bir bölge — köprüye geri giderdi.
+        ayar["KIRPMA"] = ""
         print("  ! Kırpma seçilmedi — tüm kare gönderilecek, okuma daha kötü olur.")
 
     durgun, hareket = kirpma_sunucu.esik_oner(olcumler)
@@ -486,7 +583,7 @@ def baglanti_testi(ayar: dict) -> bool:
     kurulum, kasada silinmesi gereken bir kayıt bırakmamalı.
     """
     baslik(4, "Bağlantı testi")
-    kod, ayrinti = webhook_yokla(ayar)
+    kod, ayrinti, tarih = webhook_yokla(ayar)
     if kod is None:
         print(f"  ✗ Sunucuya ulaşılamadı: {ayrinti}")
         print("    Bu bilgisayarın internet bağlantısını kontrol edin.")
@@ -494,7 +591,7 @@ def baglanti_testi(ayar: dict) -> bool:
 
     if kod == 400:
         print("  ✓ Bağlantı ve gizli anahtar doğru.")
-        return True
+        return saat_dogru_mu(tarih)
     if kod in TESHIS:
         print(f"  ✗ {TESHIS[kod]}")
         return False
@@ -502,9 +599,33 @@ def baglanti_testi(ayar: dict) -> bool:
     return False
 
 
-def webhook_yokla(ayar: dict) -> tuple[int | None, str]:
+def saat_dogru_mu(tarih: str | None) -> bool:
     """
-    Boş POST'un durum kodu; sunucuya ulaşılamadıysa (None, sebep).
+    Bu bilgisayarın saati sunucununkiyle uyuşuyor mu (HTTP `Date`)?
+
+    Köprü her aracı BU bilgisayarın saatiyle damgalar ve ücret o damgadan
+    hesaplanır: beş dakikadan fazla ileri saatte her giriş "ileri tarihli"
+    kayda düşer, geri saatte her araç fazla ücretlendirilir. Başlık yoksa
+    sınanamaz ve kurulum durdurulmaz.
+    """
+    fark = gunluk.saat_farki(tarih, time.time())
+    if fark is None:
+        return True
+    if abs(fark) <= gunluk.SAAT_TOLERANS_SN:
+        print("  ✓ Bu bilgisayarın saati doğru.")
+        return True
+    print(f"  ✗ Bu bilgisayarın saati sunucudan {gunluk.saat_farki_metni(fark)}.")
+    print("    Köprü her aracı bu saatle damgalar; ücret o damgadan hesaplanır.")
+    print("    Ayarlar → Saat ve dil → 'Saati otomatik olarak ayarla'yı açın ve")
+    print("    'Şimdi eşitle'ye basın; sonra bu programı yeniden çalıştırın")
+    print("    (yeni kurulum kodu GEREKMEZ).")
+    return False
+
+
+def webhook_yokla(ayar: dict) -> tuple[int | None, str, str | None]:
+    """
+    Boş POST'un (durum kodu, gövde, sunucunun `Date` başlığı); sunucuya
+    ulaşılamadıysa (None, sebep, None).
 
     Bağlantı testi ve "kayıtlı kimlik hâlâ geçerli mi" sorusu aynı yoklamayı
     kullanıyor — ikisi ayrı yazılsaydı biri 400'ü başarı sayarken öbürü
@@ -523,8 +644,9 @@ def webhook_yokla(ayar: dict) -> tuple[int | None, str]:
                                    "x-kamera-deneme": "1"},
                           timeout=20)
     except Exception as e:
-        return None, str(e)
-    return r.status_code, str(getattr(r, "text", "") or "")
+        return None, str(e), None
+    basliklar = getattr(r, "headers", None) or {}
+    return r.status_code, str(getattr(r, "text", "") or ""), basliklar.get("Date")
 
 
 # Webhook'un YALNIZCA kimliği kabul ettikten sonra verdiği cevaplar. 403
@@ -577,7 +699,7 @@ def mevcut_kimlik_sor() -> dict | None:
 
     for veri in kayitli_kimlikler():
         yon = veri["YON"]
-        kod, _ = webhook_yokla(veri)
+        kod, _, _ = webhook_yokla(veri)
         if kod == 401:
             print(f"  ! {yon} şeridi için kayıtlı kimlik artık geçerli değil "
                   "(kamera uygulamadan kaldırılmış olabilir).")
@@ -655,7 +777,7 @@ def ayari_yaz(ayar: dict) -> str:
     return yol
 
 
-def yalniz_yonetici(yol: str, klasor: bool = False) -> bool:
+def yalniz_yonetici(yol: str, klasor: bool = False, herkes_okur: bool = False) -> bool:
     """
     Devralınan izinleri kaldırır; yalnızca SYSTEM ve yöneticiler erişir.
 
@@ -672,6 +794,12 @@ def yalniz_yonetici(yol: str, klasor: bool = False) -> bool:
     komut = ["icacls", yol, "/inheritance:r",
              "/grant:r", f"*S-1-5-18:{hak}",
              "/grant:r", f"*S-1-5-32-544:{hak}"]
+    # `herkes_okur`: program klasörü için. S-1-5-32-545 yerleşik Users grubu,
+    # yalnızca okuma ve çalıştırma. Bu olmadan Explorer klasörü açan herkese
+    # "Devam" düğmesi gösterir ve o düğme kişiye klasörde YAZMA izni ekler —
+    # kısıtlamanın kapattığı kapıyı yeniden açar.
+    if herkes_okur:
+        komut += ["/grant:r", f"*S-1-5-32-545:{'(OI)(CI)(RX)' if klasor else '(RX)'}"]
     # Yönetici OLMADAN çalıştırılan kurulum ("yine de devam et") yöneticiler
     # grubunun üyesi değildir: yalnızca yukarıdaki ikisine izin verilseydi
     # kısıtladığımız dosyaya BİZ de yazamazdık. O durumda dosyayı oluşturan
@@ -683,6 +811,63 @@ def yalniz_yonetici(yol: str, klasor: bool = False) -> bool:
             komut += ["/grant:r", f"{alan + chr(92) if alan else ''}{kullanici}:{hak}"]
     ok, _ = calistir(komut)
     return ok
+
+
+# Paketin kendi klasöründe bulunabilecek her şey (küçük harf). Başka bir şey
+# varsa klasör bizim değildir ve izinlerine dokunulmaz. desktop.ini ve
+# thumbs.db'yi Windows'un kendisi yazar.
+PAKET_DOSYALARI = frozenset({
+    "otoparkkamera.exe", "_internal", "oku-beni.txt",
+    "kare.jpg", "kirpik.jpg", "bos.jpg",            # --kare / --test / --bos
+    "desktop.ini", "thumbs.db",
+})
+
+
+def program_klasorunu_kisitla() -> bool | None:
+    """
+    Paketlenmiş programın klasörünü yalnızca SYSTEM ve yöneticilere yazılabilir
+    yapar. Kısıtlandıysa True, dokunulmadıysa ya da olmadıysa False, kaynaktan
+    çalışırken (paketsiz) None.
+
+    NEDEN: görev her açılışta bu klasördeki OtoparkKamera.exe'yi SYSTEM olarak
+    çalıştırıyor. OKU-BENI'nin önerdiği C:\\Otopark, C:\\'den "Authenticated
+    Users: Değiştir" devralır: o bilgisayardaki HERHANGİ bir hesap .exe'yi ya da
+    _internal'daki bir DLL'i değiştirip bir sonraki açılışta SYSTEM olarak
+    çalıştırabilirdi.
+
+    ASLA BİZİM OLMAYAN BİR KLASÖRE DOKUNULMAZ. Program Masaüstü'ne ya da
+    İndirilenler'e çıkarılmışsa o klasörü kısıtlamak kişiyi kendi klasörünün
+    dışında bırakırdı. Yalnızca adı OtoparkKamera olan (ZIP'in kendi klasörü)
+    ve içinde yalnızca paket dosyaları bulunan klasör kısıtlanır; değilse
+    hiçbir şey değişmez, yalnızca uyarılır ve kurulum sürer.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    klasor = os.path.dirname(os.path.abspath(sys.executable))
+    try:
+        icerik = os.listdir(klasor)
+    except OSError:
+        icerik = None
+    bizim = (
+        os.path.basename(klasor).lower() == "otoparkkamera"
+        and icerik is not None
+        and all(ad.lower() in PAKET_DOSYALARI
+                or re.fullmatch(r"kurulum-kodu.*\.txt", ad.lower())
+                for ad in icerik)
+    )
+    if not bizim:
+        print("  ! Program klasörünün izinleri DEĞİŞTİRİLMEDİ: klasör yalnızca bu")
+        print("    programa ait görünmüyor (adı OtoparkKamera değil ya da içinde başka")
+        print("    dosyalar var). Güvenlik için OtoparkKamera klasörünü tek başına")
+        print(r"    C:\Otopark altına taşıyıp kurulumu oradan yeniden çalıştırın.")
+        return False
+    if yalniz_yonetici(klasor, klasor=True, herkes_okur=True):
+        print("  ✓ Program klasörü yalnızca yöneticiler tarafından değiştirilebilir.")
+        return True
+    print("  ! Program klasörünün izinleri kısıtlanamadı: bu bilgisayardaki diğer")
+    print("    hesaplar programı değiştirebilir. Kurulumu 'Yönetici olarak")
+    print("    çalıştır' ile tekrarlayın.")
+    return False
 
 
 def gorev_komutu(ayar_yolu: str) -> str:
@@ -793,6 +978,10 @@ def gorev_kur(ayar_yolu: str, yon: str) -> bool:
     # köprü ESKİ ayarla koşmaya devam eder. Görev yoksa bu komut zararsız.
     calistir(["schtasks", "/end", "/tn", ad])
 
+    # Görev bu klasördeki programı SYSTEM olarak çalıştıracak: başka hesaplar
+    # onu değiştirememeli (bkz. program_klasorunu_kisitla).
+    program_klasorunu_kisitla()
+
     # schtasks tanım dosyasını UTF-16 bekler.
     tutamac, xml_yolu = tempfile.mkstemp(prefix="otopark-gorev-", suffix=".xml")
     try:
@@ -901,19 +1090,31 @@ def baslangic_dogrula(yon: str, azami_sn: float = 30, kamera_sn: float = 45,
             print("  ✗ Köprü çalışıyor ama sunucu onu kabul etmiyor:")
             son_uyarilar()
             return False
+        if any(gunluk.KALP_YOK_ISARETI in s for s in satirlar):
+            print("  ✗ Köprü çalışıyor ama sunucuya ulaşamıyor:")
+            son_uyarilar()
+            print("    Bu bilgisayarın internet bağlantısını kontrol edin; köprü")
+            print("    denemeye devam ediyor.")
+            return False
         if baglandi_at is None and any(gunluk.KAMERA_VAR_ISARETI in s for s in satirlar):
             baglandi_at = time.monotonic()
-        # Kamera açıldıktan sonra kısa bir süre daha: ilk kalp atışı hemen
-        # ardından gider ve sunucunun reddi orada görünür.
-        if baglandi_at is not None and time.monotonic() - baglandi_at >= min(2.0, kamera_sn):
-            print("  ✓ Köprü çalışıyor: kamera bağlandı.")
+        # Başarı = kamera bağlandı VE sunucu ilk kalp atışını KABUL ETTİ
+        # (1.2.1). Eskiden kamera bağlandıktan iki saniye sonra "çalışıyor"
+        # deniyordu; ilk kalp atışının cevabı (TLS + soğuk başlangıç) daha geç
+        # gelirse sunucunun reddi görülmeden kurulum "tamamlandı" oluyordu.
+        if baglandi_at is not None and any(gunluk.SUNUCU_TAMAM_ISARETI in s for s in satirlar):
+            print("  ✓ Köprü çalışıyor: kamera bağlandı, sunucu kabul etti.")
             return True
         if time.monotonic() >= bitis:
             break
         time.sleep(0.5)
         satirlar = _son_baslangic(yol, basladi) or satirlar
 
-    print("  ✗ Köprü başladı ama kamera bağlantısı doğrulanamadı.")
+    if baglandi_at is not None:
+        print("  ✗ Kamera bağlandı ama sunucudan cevap gelmedi.")
+        print("    Bu bilgisayarın internet bağlantısını kontrol edin.")
+    else:
+        print("  ✗ Köprü başladı ama kamera bağlantısı doğrulanamadı.")
     print(f"    Kayıt dosyası: {yol}")
     print("    Birkaç dakika sonra bu programı açıp 'Durum' seçeneğine bakın.")
     return False
@@ -1030,8 +1231,10 @@ def main() -> int:
     print("  Kurulum tamamlandı.")
     print(f"{'─' * 64}")
     print("  · Uygulamada Yönetim → Otopark Ayarları → 'Kamera girişi' açık olmalı.")
-    print("  · Kameranın saatini NTP'ye bağlayın — saati kaymış kamera her aracı")
-    print("    sessizce yanlış ücretlendirir.")
+    # Araçlar KAMERANIN değil bu bilgisayarın saatiyle damgalanır (köprü).
+    print("  · Bu bilgisayarın saati otomatik ayarlı kalmalı (Ayarlar → Saat ve")
+    print("    dil → 'Saati otomatik olarak ayarla') — saati kaymış bilgisayar her")
+    print("    aracı sessizce yanlış ücretlendirir.")
     print(f"  · Kayıt dosyası: {gunluk.kayit_yolu(ayar['YON'])}")
     print("  · Çalışıp çalışmadığını görmek için bu programı tekrar açıp")
     print("    'Durum' seçeneğini seçin. İlk gün bir kez bakmakta fayda var.")
