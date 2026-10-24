@@ -468,11 +468,14 @@ checked by `node tests/vlm.check.mjs`:
   `temperature` (they refuse it).
 - Haiku 5.5 can decline a request for safety reasons and has no automatic
   fallback; a declined read is retried once on Haiku 4.5.
-- **Second opinion:** a read that is close but under the bar (confidence
-  0.50–0.75, or 0.50–0.92 for a non-standard plate) is asked again of **Claude
-  Sonnet 5.5** (about $0.005 a time). Its answer is used only if it clears the
-  bar by itself; if that second read fails, the first answer stands. The log row
-  keeps both answers (`ham_yanit.onceki_okuma` / `ham_yanit.ikinci_gorus`).
+- **Second opinion:** a read under the bar with confidence **0.50–0.65** (both
+  ends included, any plate shape) is asked again of **Claude Sonnet 5.5**
+  (about $0.005 a time). Its answer is used only if it clears the bar by itself;
+  if that second read fails, the first answer stands. The log row keeps both
+  answers (`ham_yanit.onceki_okuma` / `ham_yanit.ikinci_gorus`). A read above
+  0.65 that is still under the bar (0.75, or 0.92 for a non-standard plate) is
+  not asked again and goes to manual entry: Sonnet costs about 20× a Haiku 5.5
+  read (owner decision 2026-10-24; the band is `IKINCI_GORUS_UST`).
 - The answer now also says `arac_yok` ("no vehicle in the picture"). The camera
   webhook passes it back on a 422 so the bridge (1.2.0+) can learn what the
   empty gate looks like and stop paying to send it.

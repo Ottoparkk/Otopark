@@ -102,6 +102,14 @@ export const GUVEN_ESIGI_BICIMSIZ = 0.92
 export const CELISKI_TAVANI = 0.5
 
 /**
+ * Upper edge of the second-opinion band, inclusive. A Sonnet read costs about
+ * 20× a Haiku 5.5 read, so only the low part of the borderline band is asked
+ * again (owner decision 2026-10-24); from here up to the bar, an unsure read
+ * costs a manual entry instead.
+ */
+export const IKINCI_GORUS_UST = 0.65
+
+/**
  * Turkish civilian plate grammar: a province code 01-81, then letters, then
  * digits — 5 or 6 characters after the code, in one of three shapes.
  *
@@ -350,12 +358,16 @@ export function aracYokMu(p: { arac_yok?: boolean; plaka: string }): boolean {
 /**
  * Whether a read is worth a second opinion from IKINCI_GORUS.
  *
- * Only the borderline band: a plate-length answer the model was not sure
+ * Only the band CELISKI_TAVANI..IKINCI_GORUS_UST (0.50–0.65, both ends
+ * included, every plate shape): a plate-length answer the model was not sure
  * enough of, but not a guess (below CELISKI_TAVANI the model itself says
  * several characters are doubtful). Self-contradicting reads are capped at
  * exactly CELISKI_TAVANI, so they are included — they are the clearest case
- * of "two plausible readings". Never for an empty scene or an unreadable
- * plate, and never when the first reader already was the second-opinion model.
+ * of "two plausible readings". Above IKINCI_GORUS_UST an unsure read goes to
+ * manual entry unasked, to keep the cost down. Never for an empty scene or an
+ * unreadable plate, and never when the first reader already was the
+ * second-opinion model. The okumaGuvenilir guard stays even though the band
+ * sits under both bars today: a read that already passes is never re-read.
  */
 export function ikinciGorusGerekir(
   plaka: string,
@@ -368,5 +380,5 @@ export function ikinciGorusGerekir(
   if (okunamadi || aracYok) return false
   if (plaka.length < 4) return false
   if (okumaGuvenilir(plaka, guven, okunamadi)) return false
-  return guven >= CELISKI_TAVANI
+  return guven >= CELISKI_TAVANI && guven <= IKINCI_GORUS_UST
 }

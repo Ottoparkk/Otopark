@@ -10,6 +10,7 @@ import {
   DEFAULT_VLM,
   REDDE_YEDEK,
   IKINCI_GORUS,
+  IKINCI_GORUS_UST,
   PLAKA_SEMASI,
   ISTEM,
   istekGovdesi,
@@ -61,6 +62,8 @@ esit('varsayılan değişmedi', DEFAULT_VLM, 'claude-haiku-4-5')
 esit('redde yedek', REDDE_YEDEK, 'claude-haiku-4-5')
 esit('ikinci görüş', IKINCI_GORUS, 'claude-sonnet-5-5')
 esit('ikinci görüş izinli', VLM_MODELS.has(IKINCI_GORUS), true)
+// Sahip kararı 2026-10-24 (maliyet): Sonnet yalnızca 0.50–0.65 bandında sorulur.
+esit('ikinci görüş üst sınırı', IKINCI_GORUS_UST, 0.65)
 esit('yedek izinli', VLM_MODELS.has(REDDE_YEDEK), true)
 
 // --- istek gövdesi: Haiku 4.5 bugünkünün aynısı -----------------------------
@@ -193,7 +196,14 @@ esit('2. görüş: zaten güvenilir', ikinciGorusGerekir('34ABC123', 0.8, false,
 esit('2. görüş: okunamadı', ikinciGorusGerekir('34ABC123', 0.6, true, false, H55), false)
 esit('2. görüş: araç yok', ikinciGorusGerekir('', 0.9, false, true, H55), false)
 esit('2. görüş: kısa', ikinciGorusGerekir('34A', 0.6, false, false, H55), false)
-esit('2. görüş: biçimsiz 0.85', ikinciGorusGerekir('CD1234X', 0.85, false, false, H55), true)
+// Bant 0.50–0.65, iki uç dâhil, her plaka biçimi için. Üstü (kapının altında
+// kalsa bile) Sonnet'e gitmez, doğrudan elle girişe düşer.
+esit('2. görüş: üst uç dâhil (0.65)', ikinciGorusGerekir('34ABC123', 0.65, false, false, H55), true)
+esit('2. görüş: bant dışı (0.66)', ikinciGorusGerekir('34ABC123', 0.66, false, false, H55), false)
+esit('2. görüş: kapı altı ama bant dışı (0.70)', ikinciGorusGerekir('34ABC123', 0.7, false, false, H55), false)
+esit('2. görüş: kapı altı ama bant dışı (0.74)', ikinciGorusGerekir('34ABC123', 0.74, false, false, H55), false)
+esit('2. görüş: biçimsiz 0.60', ikinciGorusGerekir('CD1234X', 0.6, false, false, H55), true)
+esit('2. görüş: biçimsiz 0.85 bant dışı', ikinciGorusGerekir('CD1234X', 0.85, false, false, H55), false)
 esit('2. görüş: zaten Sonnet 5.5', ikinciGorusGerekir('34ABC123', 0.6, false, false, IKINCI_GORUS), false)
 esit('2. görüş: Haiku 4.5 de alır', ikinciGorusGerekir('34ABC123', 0.6, false, false, 'claude-haiku-4-5'), true)
 
