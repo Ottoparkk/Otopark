@@ -36,6 +36,16 @@ KURULUM
      "Daha fazla bilgi" → "Yine de çalıştır".
      Bu uyarı, programın imzalı olmamasından kaynaklanıyor; yaygındır.
 
+     Windows programı "Yine de çalıştır" seçeneği hiç sunmadan
+     engelliyorsa "Akıllı Uygulama Denetimi" açıktır (yeni kurulmuş
+     Windows 11'de olur): Windows Güvenliği → Uygulama ve tarayıcı
+     denetimi → Akıllı Uygulama Denetimi. Onu kapatmak bir güvenlik
+     kararıdır; bilgisayarın sahibi verir.
+
+     Kurulumdan sonra Windows Güvenliği → Koruma geçmişi'ne bakın.
+     OtoparkKamera orada "tehdit" diye engellenmiş ya da karantinaya
+     alınmışsa köprü çalışmaz; bu tür programlarda yanlış alarm olur.
+
   4. Sorulan dört şeyi girin. Gerisini program kendisi yapar.
 
 
@@ -74,6 +84,11 @@ ELİNİZDE HAZIR OLSUN
 
   · Kameranın kullanıcı adı ve şifresi — DİKKATLE yazın. Kamera birkaç
     yanlış denemeden sonra girişleri yaklaşık yarım saat kilitler.
+
+    ÖNERİ: kameranın web arayüzünde yalnızca canlı görüntü yetkisi olan
+    AYRI bir kullanıcı açın ve programa onu verin. "admin" böylece hep
+    sizde kalır: programın kullandığı hesap bir gün kilitlense bile
+    kameranın ayarlarına girebilirsiniz.
 
   · Bu bilgisayarın saati doğru olmalı (Ayarlar → Saat ve dil → "Saati
     otomatik olarak ayarla"). Araçların giriş saati BU bilgisayarın
@@ -161,6 +176,20 @@ BİR ŞEY TERS GİDERSE
       Program çalışıyor ama kameradan görüntü alamıyor. Kameranın fişini
       ve ağ kablosunu kontrol edin. Kamera geri geldiğinde program
       kendiliğinden bağlanır; yeniden kurmanız gerekmez.
+
+  Durum ekranı "KAMERA ŞİFRESİ REDDEDİLDİ" diyor
+      Kamera, programın kayıtlı şifresini kabul etmiyor — çoğu zaman
+      kameranın şifresi değiştirildiği için. Aşağıdaki "Kameranın şifresini
+      değiştirirseniz" adımlarını yapın. Program bu sırada kamerayı
+      kilitlemez: eski şifreyi en fazla 10 dakikada bir dener ve şifre
+      yeniden kabul edilirse kendiliğinden devam eder.
+
+  Kameranın şifresini değiştirirseniz
+      Programı açın → "2) Yeniden kur" → "... şeridi bu kimlikle yeniden
+      kurulsun mu" sorusuna "e" (yeni kurulum kodu GEREKMEZ) → kamera
+      adımında YENİ şifreyi girin. Program, o şeridin çalışan köprüsünü
+      kurulum boyunca kendisi durdurur; kurulum yarıda kalırsa eskisini
+      yeniden başlatır.
 
   Durum ekranı "KİMLİK REDDEDİLDİ" diyor
       Kamera uygulamadan kaldırılmış ya da devre dışı bırakılmış.

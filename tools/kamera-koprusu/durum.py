@@ -116,6 +116,32 @@ def sunucu_reddi(satirlar: list[str]) -> str | None:
     return None
 
 
+def _son_kamera_sozu(satirlar: list[str]) -> str | None:
+    """
+    Kamera hakkındaki SON söz: "sifre" (kamera şifreyi reddetti), "yok"
+    (görüntü alınamıyor), "var" ya da None (bu başlangıçtan beri söz yok).
+
+    kamera_kopuk ve kamera_sifre_reddi aynı taramayı kullanır; iki ayrı liste
+    olsaydı biri yeni bir "kamera çalışıyor" satırını tanırken öbürü
+    tanımayabilirdi.
+    """
+    for satir in reversed(satirlar):
+        if gunluk.SIFRE_RED_ISARETI in satir:
+            return "sifre"
+        if gunluk.KAMERA_YOK_ISARETI in satir or gunluk.KARE_YOK_ISARETI in satir:
+            return "yok"
+        # A skipped empty-lane picture is a picture too: a quiet night can be
+        # nothing but those, and that is a working camera (1.2.0).
+        if (gunluk.KAMERA_VAR_ISARETI in satir or "[i] çalışıyor" in satir
+                or "[i] araç durdu" in satir
+                or gunluk.BOS_ATLANDI_ISARETI in satir
+                or gunluk.BOS_GORUNTU_ISARETI in satir):
+            return "var"
+        if "köprü başladı" in satir:
+            return None
+    return None
+
+
 def kamera_kopuk(satirlar: list[str]) -> bool:
     """
     Köprü koşuyor ama kameradan görüntü alamıyor mu?
@@ -123,21 +149,22 @@ def kamera_kopuk(satirlar: list[str]) -> bool:
     Kamerası olmayan köprü ölmez: açılışta bekler, çalışırken yeniden bağlanır
     ve her denemede bir satır yazar. Kayıt bu yüzden TAZE kalır ve tazelik
     ölçütü onu sağlıklı gösterirdi. Yine son söz geçerli: "çalışıyor" satırı
-    yalnızca kare okunabildiğinde yazılır.
+    yalnızca kare okunabildiğinde yazılır. Şifre reddi de görüntüsüzlüktür.
     """
-    for satir in reversed(satirlar):
-        if gunluk.KAMERA_YOK_ISARETI in satir or gunluk.KARE_YOK_ISARETI in satir:
-            return True
-        # A skipped empty-lane picture is a picture too: a quiet night can be
-        # nothing but those, and that is a working camera (1.2.0).
-        if (gunluk.KAMERA_VAR_ISARETI in satir or "[i] çalışıyor" in satir
-                or "[i] araç durdu" in satir
-                or gunluk.BOS_ATLANDI_ISARETI in satir
-                or gunluk.BOS_GORUNTU_ISARETI in satir):
-            return False
-        if "köprü başladı" in satir:
-            return False
-    return False
+    return _son_kamera_sozu(satirlar) in ("yok", "sifre")
+
+
+# 1.2.2. Köprü, kamera şifreyi reddettiği sürece akışı hiç açmaz ve uzun
+# bekler (kopru.SIFRE_RED_BEKLEME_SN). Sebebi kablo değil şifre olduğu için
+# "KAMERA YOK" kişiyi yanlış yere gönderirdi. Kurulumun son adımı da aynı
+# cümleyi söyler (kurulum.baslangic_dogrula).
+SIFRE_RED_HALI = ("KAMERA ŞİFRESİ REDDEDİLDİ — kameranın şifresi değiştiyse "
+                  "programı açıp 'Yeniden kur' deyin.")
+
+
+def kamera_sifre_reddi(satirlar: list[str]) -> bool:
+    """Kamera hakkındaki son söz "şifre reddedildi" mi?"""
+    return _son_kamera_sozu(satirlar) == "sifre"
 
 
 def ozet(satirlar: list[str]) -> tuple[int, int, str | None]:
@@ -233,6 +260,8 @@ def serit_durumu(ayar_yolu: str) -> bool:
         hal = "DURMUŞ — köprü kapandı, son satırlara bakın."
     elif not taze:
         hal = "DURMUŞ — beş dakikadır yazması gerekiyordu."
+    elif kamera_yok and kamera_sifre_reddi(satirlar):
+        hal = SIFRE_RED_HALI
     elif kamera_yok:
         hal = ("KAMERA YOK — köprü çalışıyor ama kameradan görüntü alamıyor. "
                "Kameranın fişini, ağ kablosunu ve şifresini kontrol edin.")

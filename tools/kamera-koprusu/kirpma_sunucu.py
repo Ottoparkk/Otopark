@@ -159,6 +159,13 @@ yenile();
 
 BELIRTEC_BASLIGI = "X-Otopark-Belirtec"
 
+# /kaydet gövdesinin üst sınırı. Bir kutu en çok birkaç on bayttır; sınırsız
+# okuma yok — reddedilen isteğin gövdesi de en çok bu kadar okunup atılır.
+GOVDE_EN_COK = 4096
+# Reddedilen isteğin gövdesini beklemenin üst sınırı (sn): gövdeyi hiç
+# göndermeyen bir istemci bir iş parçacığını sonsuza dek tutmasın.
+GOVDE_BEKLEME_SN = 2.0
+
 # Kutu kaydedildikten sonra KIRPMA üzerinde hareket ölçülen süre.
 KIRPIK_OLCUM_SN = 6.0
 
@@ -327,6 +334,27 @@ def sunucu_baslat(d: _Durum, port: int = 0):
         def _red(self):
             self._yaz(403, "text/plain; charset=utf-8", "reddedildi".encode())
 
+        def _govdeyi_at(self) -> None:
+            """
+            Reddedilecek bir POST'un gövdesini okuyup atar (1.2.2).
+
+            403 gövde okunmadan yazılıp bağlantı kapanınca Windows, okunmamış
+            veri bekleyen soketi SIFIRLIYORDU (RST) ve istemci 403'ü okuyamadan
+            "bağlantı kesildi" alıyordu. Gövde GOVDE_EN_COK'u aşıyorsa ya da
+            GOVDE_BEKLEME_SN içinde gelmezse okunmaz — reddin kendisi değişmez.
+            """
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return
+            if not 0 < n <= GOVDE_EN_COK:
+                return
+            try:
+                self.connection.settimeout(GOVDE_BEKLEME_SN)
+                self.rfile.read(n)
+            except OSError:
+                pass
+
         def do_GET(self):
             if not self._yerel_mi():
                 self._red()
@@ -359,12 +387,12 @@ def sunucu_baslat(d: _Durum, port: int = 0):
                         f"http://127.0.0.1:{p}", f"http://localhost:{p}"))
                     or not hmac.compare_digest(
                         self.headers.get(BELIRTEC_BASLIGI, ""), belirtec)):
+                self._govdeyi_at()
                 self._red()
                 return
             try:
                 n = int(self.headers.get("Content-Length", "0"))
-                # Bir kutu en çok birkaç on bayttır; sınırsız okuma yok.
-                if n < 0 or n > 4096:
+                if n < 0 or n > GOVDE_EN_COK:
                     raise ValueError("gövde boyutu")
                 veri = json.loads(self.rfile.read(n) or b"null")
             except Exception:

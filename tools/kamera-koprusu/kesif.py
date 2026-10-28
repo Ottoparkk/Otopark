@@ -55,6 +55,28 @@ def rtsp_adresi(ip: str, kullanici: str, sifre: str, yol: str, port: int = 554) 
     return f"rtsp://{kimlik}{ip}:{port}{yol}"
 
 
+def rtsp_parcala(url: str) -> tuple[str, int, str, str, str] | None:
+    """
+    rtsp_adresi'nin tersi: (ip, port, kullanıcı, şifre, yol?sorgu) ya da None.
+
+    Köprü bununla kendi adresindeki kimliği kameraya sorar (1.2.2). Kullanıcı
+    adı ve şifre URL-kodlu yazıldığı için çözülür; yanlış çözülen bir şifre
+    doğru şifreyi "yanlış" gösterirdi. Kullanıcı adı yoksa None: sınanacak
+    kimlik yok, ve boş kimlikle cevap vermek kendi başına başarısız bir giriş
+    olurdu.
+    """
+    try:
+        u = urllib.parse.urlsplit((url or "").strip())
+        port = u.port or 554                     # aralık dışı port ValueError
+    except ValueError:
+        return None
+    if u.scheme.lower() != "rtsp" or not u.hostname or not u.username:
+        return None
+    yol = (u.path or "/") + (f"?{u.query}" if u.query else "")
+    return (u.hostname, port, urllib.parse.unquote(u.username),
+            urllib.parse.unquote(u.password or ""), yol)
+
+
 def _kare_alinabiliyor_mu(url: str) -> tuple[bool, tuple[int, int] | None]:
     cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, [
         cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, ACMA_ZAMAN_ASIMI_MS,
@@ -213,7 +235,7 @@ def _yetki_basligi(meydanlar: list[str], kullanici: str, sifre: str,
 
 
 def kimlik_dogrula(ip: str, port: int, kullanici: str, sifre: str,
-                   zaman_asimi: float = 4.0) -> str:
+                   zaman_asimi: float = 4.0, yol: str = "/") -> str:
     """
     Kameranın kullanıcı adını ve şifresini TEK bir kimlikli istekle sınar:
     "tamam" | "yanlis" | "bilinmiyor".
@@ -225,14 +247,48 @@ def kimlik_dogrula(ip: str, port: int, kullanici: str, sifre: str,
     yine "şifre yanlış" görüyordu ve kameranın web arayüzü de onu içeri
     almıyordu.
 
-    Kökte bir DESCRIBE: kamera kimlik isterse (401) aynı isteği kimlikle bir
-    kez daha gönderir. 401/403 → "yanlis". Başka her cevap → "tamam" (kimlik
-    geçti; kökte yayın olmaması, 404, beklenen şeydir). Kimlik istemeyen, anlaşılmaz
-    cevap veren ya da ulaşılamayan kamera → "bilinmiyor" ve tarama bugünkü
-    gibi sürer: bu kontrol yalnızca bir yanlışı ERKEN yakalamak için var,
-    kurulumu hiçbir zaman kendi başına durdurmaz.
+    `yol`da bir DESCRIBE (varsayılan kök; köprü kendi akış yolunu verir):
+    kamera kimlik isterse (401) aynı isteği kimlikle bir kez daha gönderir.
+    401/403 → "yanlis". Başka her cevap → "tamam" (kimlik geçti; kökte yayın
+    olmaması, 404, beklenen şeydir). Kimlik istemeyen, anlaşılmaz cevap veren
+    ya da ulaşılamayan kamera → "bilinmiyor" ve tarama bugünkü gibi sürer: bu
+    kontrol yalnızca bir yanlışı ERKEN yakalamak için var, kurulumu hiçbir
+    zaman kendi başına durdurmaz.
     """
-    uri = f"rtsp://{ip}:{port}/"
+    sonuc = _kimlik_sina(ip, port, kullanici, sifre, yol, zaman_asimi)
+    return "bilinmiyor" if sonuc == "meydan_yok" else sonuc
+
+
+def kimlik_dogrula_yollar(ip: str, port: int, kullanici: str, sifre: str,
+                          zaman_asimi: float = 4.0) -> str:
+    """
+    kimlik_dogrula, ama kamera kökte şifre İSTEMİYORSA akış yollarında da
+    (1.2.2): "tamam" | "yanlis" | "bilinmiyor".
+
+    Kökte şifre istemeyen bir kamerada kök sınaması "bilinmiyor" diyordu ve
+    tarama on yolu yazılan şifreyle deniyordu — bir yazım hatası yine on
+    başarısız giriş. Burada her yolun İLK isteği şifresizdir (bu hiçbir zaman
+    başarısız giriş sayılmaz); şifre isteyen İLK yola tek kimlikli istek gider
+    ve onun cevabı kesindir. "bilinmiyor" yalnızca hiçbir yol şifre istemezse
+    ya da kameraya ulaşılamazsa.
+    """
+    for yol in ["/"] + [y for _, y in RTSP_YOLLARI]:
+        sonuc = _kimlik_sina(ip, port, kullanici, sifre, yol, zaman_asimi)
+        if sonuc != "meydan_yok":
+            return sonuc
+    return "bilinmiyor"
+
+
+def _kimlik_sina(ip: str, port: int, kullanici: str, sifre: str, yol: str,
+                 zaman_asimi: float) -> str:
+    """
+    Tek yolda sınama: "tamam" | "yanlis" | "meydan_yok" | "bilinmiyor".
+
+    "meydan_yok" = kamera cevap verdi ama bu yolda kimlik İSTEMEDİ (sonraki
+    yol denenebilir). "bilinmiyor" = ulaşılamadı, cevap anlaşılmadı ya da
+    istenen kimlik biçimi desteklenmiyor (başka yol denemenin anlamı yok).
+    """
+    uri = f"rtsp://{ip}:{port}{yol}"
 
     def istek(soket: socket.socket, cseq: int, yetki: str | None):
         metin = (f"DESCRIBE {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n"
@@ -249,8 +305,10 @@ def kimlik_dogrula(ip: str, port: int, kullanici: str, sifre: str,
     try:
         soket.settimeout(zaman_asimi)
         ilk = istek(soket, 1, None)
-        if ilk is None or ilk[0] != 401:
+        if ilk is None:
             return "bilinmiyor"
+        if ilk[0] != 401:
+            return "meydan_yok"
         yetki = _yetki_basligi(ilk[1].get("www-authenticate", []), kullanici, sifre, uri)
         if yetki is None:
             return "bilinmiyor"
@@ -307,6 +365,28 @@ http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action>
 </e:Envelope>"""
 
 
+_ONVIF_GRUBU = ("239.255.255.250", 3702)
+
+
+def yerel_ipv4() -> list[str]:
+    """
+    Bu bilgisayarın IPv4 adresleri (127.x hariç) — her bağlı ağ bağdaştırıcısı
+    bir. Ağ geçidi olmayan statik kablo adresinin (kamera öyle bağlı) burada
+    olması beklenir; tek ağlı geliştirme bilgisayarında DOĞRULANAMADI, sahada
+    bakılacak. Listede yoksa arama eskisi gibi varsayılan ağdan gider.
+    """
+    try:
+        bilgi = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return []
+    return sorted({b[4][0] for b in bilgi if not b[4][0].startswith("127.")})
+
+
+def _udp_soketi() -> socket.socket:
+    """Arama soketi. Ayrı fonksiyon: test sahte soket verip ağa hiç çıkmaz."""
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+
 def kameralari_ara(saniye: float = 3.0) -> list[str]:
     """
     ONVIF WS-Discovery: ağa çok noktaya yayın yapıp cevap veren kameraların
@@ -315,15 +395,37 @@ def kameralari_ara(saniye: float = 3.0) -> list[str]:
     Cevap gövdesi ayrıştırılmıyor, yalnızca GÖNDEREN adresi alınıyor: bize
     lazım olan tek şey IP, ve cihazın kendi bildirdiği servis adresi çoğu kez
     NAT arkası ya da yanlış oluyor.
+
+    Arama bilgisayarın HER ağından ayrı ayrı gönderilir (1.2.2). Tek
+    gönderimde ağı Windows rota ölçüsüne göre seçiyordu: kamera kabloda,
+    internet Wi-Fi'de olunca arama Wi-Fi'den çıkıyor ve kamera onu hiç
+    duymuyordu. Bir ağın hata vermesi ötekileri durdurmaz; hiçbirinden
+    gidemezse eskisi gibi varsayılan ağdan bir kez gönderilir. Cevaplar aynı
+    soketten, hangi ağdan gelirse gelsin, toplanır.
     """
     ip_ler: set[str] = set()
     mesaj = _PROBE.format(mid=uuid.uuid4()).encode()
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s = _udp_soketi()
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         s.settimeout(0.5)
-        s.sendto(mesaj, ("239.255.255.250", 3702))
+        gonderildi = False
+        for adres in yerel_ipv4():
+            try:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                             socket.inet_aton(adres))
+                s.sendto(mesaj, _ONVIF_GRUBU)
+                gonderildi = True
+            except OSError:
+                continue
+        if not gonderildi:
+            try:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                             socket.inet_aton("0.0.0.0"))
+            except OSError:
+                pass
+            s.sendto(mesaj, _ONVIF_GRUBU)
         import time
         bitis = time.monotonic() + saniye
         while time.monotonic() < bitis:

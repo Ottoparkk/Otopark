@@ -61,6 +61,12 @@ Dört soru sorar, ikisi kameranın kendi kullanıcı adı ve şifresi:
    Hikvision yedi yanlıştan sonra) kilitlerdi. Kabul edilmezse yeniden sorulur;
    iki soruda da Enter = aynı bilgilerle devam (kontrol asla tek başına
    durdurmaz). Elle yazılan RTSP adresi kabul edilmeden önce denenir.
+   1.2.2: kamera kökte (`/`) şifre istemiyorsa sınama marka yollarında sürer —
+   her yolun ilk isteği şifresiz, şifre isteyen ilk yola tek kimlikli istek;
+   yani bir yazım hatası yine tek başarısız giriş. Arama bilgisayarın HER
+   ağından ayrı gönderilir (tek gönderimde Windows çoğu kez Wi-Fi'yi seçiyor,
+   kablodaki kamera aramayı hiç duymuyordu); birden çok cihaz cevap verirse
+   Enter hiçbirini seçmez.
 3. **Kırpma kutusu** — tarayıcıda canlı görüntü açılır, plakanın etrafını
    **fareyle sürüklersiniz**. Kutu 200 pikselin altına düşerse kırmızıya döner
 4. **Test** — bağlantı ve gizli anahtar doğrulanır; 1.2.1'den beri bu
@@ -73,6 +79,12 @@ klasörünün kendisinden çalışıyorsa (ZIP'in klasörü, içinde yalnızca p
 dosyaları) o klasör yalnızca yöneticilerin değiştirebileceği hâle getirilir:
 görev oradaki programı SYSTEM olarak çalıştırıyor. Başka bir klasörde (Masaüstü,
 İndirilenler) izinlere DOKUNULMAZ, yalnızca uyarılır.
+
+Yeniden kurulumda (1.2.2) o şeridin çalışan köprüsü, şerit belli olur olmaz —
+kamera adımından ÖNCE — durdurulur; eskiden ancak 5. adımda duruyordu ve eski
+şifreyle giriş denemeye devam edip sihirbazın şifre sınamasını kilide
+sokuyordu. Kurulum yeni görevi kuramadan biterse (bırakıldı, Ctrl+C, hata,
+görev oluşturulamadı) eskisi yeniden başlatılır. Öbür şeritlere dokunulmaz.
 
 ### Kurulum kodu neden var
 
@@ -195,7 +207,9 @@ kapatıyor:
 
 - **kamera görüntü veriyor mu** — kamerası olmayan köprü ölmez: açılışta
   kamerayı bekler, çalışırken yeniden bağlanır ve her denemede bir satır yazar,
-  yani kayıt taze kalır. Durum ekranı `KAMERA YOK` der
+  yani kayıt taze kalır. Durum ekranı `KAMERA YOK` der. Kamera köprünün
+  şifresini reddediyorsa (1.2.2, `kamera şifreyi reddetti`) `KAMERA ŞİFRESİ
+  REDDEDİLDİ` der ve "programı açıp Yeniden kur" der — sebep kablo değil
 
 - **sunucu köprüyü reddetmiyor mu** — uygulamadan kaldırılan ya da devre dışı
   bırakılan kameranın köprüsü çalışmaya ve kayıt yazmaya devam eder; her isteği
@@ -213,6 +227,14 @@ kapatıyor:
 
 Yanlış yönde yanılan bir sağlık göstergesi, göstergesizlikten kötüdür: kimse
 bakmayı bırakmaz, herkes yanlış cevaba güvenir.
+
+Köprü her yeniden bağlanmadan önce kameraya TEK bir şifre sınaması yapar
+(1.2.2): her bağlanma bir giriştir ve eski sürüm şifresi değişmiş bir kamerayı
+~3 sn'de bir deneyip Dahua hesabını kilitli tutuyordu. Sınama reddederse akış
+hiç açılmaz ve `SIFRE_RED_BEKLEME_SN` (10 dk) beklenir — en çok 10 dakikada bir
+başarısız giriş. Kalıcı durmaz: başkasının yol açtığı kilit de aynı cevabı
+verir ve kilit bitince şerit kendiliğinden dönmeli. Başka her kopmada bekleme
+3 sn'den 60 sn'ye katlanır, ilk iyi karede sıfırlanır.
 
 ### Kayıtlar
 
@@ -408,14 +430,20 @@ and a missed car costs a free park while a repeat costs a fraction of a kuruş.
 | `BOS_REFERANS` | *(none)* | Path to an empty-lane frame from `--bos`. Optional since 1.2.0 (references are learned). |
 | `BOS_ESIGI` | `3.0` | How close to a reference counts as "empty" — for learned and manual references alike. |
 | `BOS_OGREN` | `1` | `0` turns empty-lane learning off (behaviour of 1.1.0). |
+| `YENIDEN_BAGLAN_SN` / `YENIDEN_BAGLAN_MAX_SN` | `3` / `60` | Wait before reconnecting after the stream drops; doubles up to the cap, back to the base on the first good frame (1.2.2). |
+| `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. |
 
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 14 senaryo, ~3 dk
+python test_kopru.py            # yakalama döngüsü, 17 senaryo, ~4 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
+
+Her çalıştırma bütün geçici dosyalarını `%TEMP%` altında TEK klasörde toplar
+(`otopark-test-kurulum-…` / `otopark-test-kopru-…`) ve sonunda yolunu yazar.
+Klasör silinmez; elle temizlenir.
 
 Gerçek `main()` döngüsünü sahte bir kamera ve sahte bir ağ ile çalıştırır —
 karar mantığı taklit edilmez. `requests` kurulu olmasa da koşar.
@@ -445,7 +473,16 @@ gönderildiğini; `bos_belirsiz` (arac_yok yok), `bos_arada_okuma_yok` (arada
 okunan araç yok) ve `bos_ogren_kapali` (`BOS_OGREN=0`) hiçbir şeyin
 öğrenilmediğini sınıyor.
 
-`test_kurulum.py`'deki 99 birim testi kurulum tarafını tutuyor — ayar yükleme,
+Üç senaryo 1.2.2'den, kameranın hesabını kilitlememek için. Şifre sınaması
+taklit edilir ve her açma denemesi kaydedilir (gerçekte her biri bir giriş):
+`sifre_degisti` — akış koptu ve kamera eski şifreyi reddediyor: o süre boyunca
+akış HİÇ açılmamalı, sınamalar seyrek olmalı, sınama düzelince köprü kendisi
+dönmeli ve sonraki araç gönderilmeli (eski kod aynı pencerede akışı eski
+şifreyle iki kez açıyordu). `sifre_acilista` — aynısı açılışta.
+`kopma_geri_cekilme` — kamera gitti, sınama bir şey söyleyemiyor: aralıklar
+tabandan ikiye katlanıp tavanda durmalı ve kamera dönünce tabana sıfırlanmalı.
+
+`test_kurulum.py`'deki 110 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
 **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.
@@ -501,6 +538,12 @@ Yerel sayfa boş bir porta bağlanır (sabit 8099 doluysa sihirbaz çöküyordu)
 rastgele bir belirteç ister — aynı tarayıcıda açık başka bir site kırpma kutusunu
 değiştiremez. Kare gelene kadar "Kameradan görüntü bekleniyor…" yazar; akış
 koparsa yeniden bağlanır.
+
+Reddedilen bir `/kaydet` isteğinin gövdesi 403'ten ÖNCE okunup atılır (1.2.2,
+en çok 4096 bayt / 2 sn): Windows, okunmamış veri bekleyen soketi kapatırken
+bağlantıyı sıfırlıyor ve istemci 403'ü okuyamadan "bağlantı kesildi"
+alıyordu. Gerçek kullanımda yalnızca reddedilen istekler o yoldan geçer; testte
+`test_kirpma_sunucusu_bos_port_ve_belirtec` bu yüzden ara sıra düşüyordu.
 
 Eşikler **seçilen kutunun içinde** ölçülür: köprü hareketi kırpılmış görüntüde
 ölçtüğü için tüm kareden çıkarılan eşik başka bir sinyalden çıkarılmış olurdu.

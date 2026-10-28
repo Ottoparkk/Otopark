@@ -42,6 +42,13 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 # çekilmeyen araç ise hatadır.
 BOS, GELIYOR, DURDU = "bos", "geliyor", "durdu"
 
+# Kimlik taşıyan bir köprü adresi, sihirbazın yazdığı gibi URL-kodlu ('@' ve
+# ':' şifrenin içinde). Köprünün şifre sınaması bunu ÇÖZÜP kendi yoluna sormalı.
+_KIMLIKLI_RTSP = ("rtsp://admin:Gizli%40Sifre%3A1@10.0.0.5:554"
+                  "/cam/realmonitor?channel=1&subtype=0")
+_KIMLIKLI_SINAMA = ("10.0.0.5", 554, "admin", "Gizli@Sifre:1",
+                    "/cam/realmonitor?channel=1&subtype=0")
+
 SENARYOLAR = {
     # Asıl regresyon: 60sn'lik sabit bekleme, 12sn'lik hareket penceresini
     # aşıyordu; ikinci araç ikisinin arasına düşüp tamamen kayboluyordu.
@@ -171,6 +178,44 @@ SENARYOLAR = {
         sure=11.0, pencereler=[(1.8, 3.0)], kodlar=[502, 502, 502, 502], tekrar=4,
         son_baslik=True,
     ),
+    # 1.2.2 (A). Kameranın şifresi değişti: akış koptu ve kamera eski şifreyle
+    # bir daha AÇILMIYOR. Köprü eskiden ~3 sn'de bir eski şifreyle giriş
+    # deniyordu; Dahua beş yanlışta hesabı kilitler ve köprü onu sonsuza dek
+    # kilitli tutardı. Artık önce TEK bir şifre sınaması: "yanlis" ise akış hiç
+    # açılmaz, SIFRE_RED_BEKLEME_SN beklenir (gerçekte 10 dk'da en çok bir
+    # başarısız giriş). Kalıcı durmaz: sınama "tamam"a dönünce (kilit bitti,
+    # şifre geri alındı) köprü kendiliğinden döner ve sonraki araç gönderilir.
+    "sifre_degisti": dict(
+        sahne=[(0, 10.5, BOS), (10.5, 11.3, GELIYOR), (11.3, 15, DURDU)],
+        sure=15.0, pencereler=[(11.3, 15.0)],
+        rtsp=_KIMLIKLI_RTSP, gitti=[(2.0, 9.0)],
+        sifre=[(2.0, "tamam"), (9.0, "yanlis"), (99.0, "tamam")], sifre_bekleme="1.0",
+        yeniden_baglan=("0.2", "1.6"),
+        sifreyle_acilmaz=(2.0, 9.0), sinama_en_cok=(2.0, 9.0, 8),
+        kayitta_sirayla=["kare alınamadı", "kamera şifreyi reddetti",
+                         "kamera bağlandı"],
+    ),
+    # Aynı kural açılışta (kamera_ac): kamera eski şifreyi reddediyorsa köprü
+    # açılışta da akışı hiç açmaz; sınama düzelince kendiliğinden başlar.
+    "sifre_acilista": dict(
+        sahne=[(0, 6, BOS), (6, 6.8, GELIYOR), (6.8, 10, DURDU)],
+        sure=10.0, pencereler=[(6.8, 10.0)],
+        rtsp=_KIMLIKLI_RTSP, gitti=[(0.0, 4.0)],
+        sifre=[(4.0, "yanlis"), (99.0, "tamam")], sifre_bekleme="1.0",
+        acilis_bekleme="0.5",
+        sifreyle_acilmaz=(0.0, 4.0), sinama_en_cok=(0.0, 4.0, 5),
+        kayitta_sirayla=["kamera şifreyi reddetti", "kamera bağlandı"],
+    ),
+    # 1.2.2 (A). Kamera tamamen gitti (fiş, kablo) ve şifre sınaması bir şey
+    # söyleyemiyor ("bilinmiyor"): yeniden bağlanma aralığı her denemede ikiye
+    # katlanır ve tavanda durur. İlk iyi karede TABANA döner: sonraki kopmada
+    # köprü yine hızlı dener, tavan kadar beklemez.
+    "kopma_geri_cekilme": dict(
+        sahne=[(0, 99, BOS)], sure=12.0, pencereler=[],
+        rtsp=_KIMLIKLI_RTSP, gitti=[(2.0, 7.2), (10.0, 99.0)],
+        sifre=[(99.0, "bilinmiyor")], yeniden_baglan=("0.2", "1.6"),
+        geri_cekilme=(2.0, 7.2), sifirlama=10.0,
+    ),
     # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
     "bos_ogren_kapali": dict(
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
@@ -187,14 +232,22 @@ SENARYOLAR = {
 
 
 def hepsini_kos() -> int:
+    # Her senaryo kendi PROGRAMDATA klasörünü açar (kaydı orada). Hepsi bu
+    # çalıştırmanın TEK klasöründe toplanır — eskiden her senaryo %TEMP%'e ayrı
+    # bir klasör bırakıyordu. Klasör SİLİNMEZ; sonunda yolu yazılır. Python önce
+    # TMPDIR'a bakar (Git Bash onu kurabilir), o yüzden üçü birden verilir.
+    import tempfile
+    kok = tempfile.mkdtemp(prefix="otopark-test-kopru-")
     kotu = []
     for ad in SENARYOLAR:
         print(f"\n{'=' * 62}\n{ad}\n{'=' * 62}", flush=True)
         r = subprocess.run([sys.executable, os.path.abspath(__file__), ad],
-                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8",
+                                "TMPDIR": kok, "TEMP": kok, "TMP": kok})
         if r.returncode:
             kotu.append(ad)
     print("\n" + "=" * 62)
+    print(f"Geçici dosyalar: {kok}")
     if kotu:
         print("BAŞARISIZ: " + ", ".join(kotu))
         return 1
@@ -266,22 +319,44 @@ def tek_kos(ad: str) -> int:
     import tempfile
     os.environ["PROGRAMDATA"] = tempfile.mkdtemp(prefix="otopark-test-")
 
+    # Kimliksiz adreste ("rtsp://stub/1") köprü şifre sınaması YAPMAZ — eski
+    # senaryolar bu yüzden ağa çıkmadan aynen koşar.
     os.environ.update(WEBHOOK_URL="http://stub/kamera-webhook",
                       KAMERA_SECRET="x" * 32,
-                      RTSP_URL="rtsp://stub/1", YON=S.get("yon", "GIRIS"))
+                      RTSP_URL=S.get("rtsp", "rtsp://stub/1"), YON=S.get("yon", "GIRIS"))
     if S.get("max_bekleme"):
         os.environ["MAX_BEKLEME_SN"] = S["max_bekleme"]
     if S.get("acilis_bekleme"):
         os.environ["ACILIS_BEKLEME_SN"] = S["acilis_bekleme"]
     if S.get("bos_ogren"):
         os.environ["BOS_OGREN"] = S["bos_ogren"]
+    if S.get("sifre_bekleme"):
+        os.environ["SIFRE_RED_BEKLEME_SN"] = S["sifre_bekleme"]
+    if S.get("yeniden_baglan"):
+        os.environ["YENIDEN_BAGLAN_SN"], os.environ["YENIDEN_BAGLAN_MAX_SN"] = S["yeniden_baglan"]
 
     sys.path.insert(0, BURASI)
     import cv2
     import kopru
+    import kesif
 
     global T0
     T0 = time.monotonic()
+
+    # Kameranın şifre sınaması (RTSP DESCRIBE) taklit edilir: sonucu saate göre
+    # S["sifre"]'den gelir — [(şu ana kadar, sonuç), ...]. Her çağrı kaydedilir;
+    # gerçekte her "yanlis" kamerada bir başarısız giriştir.
+    sinamalar: list[tuple[float, tuple]] = []
+
+    def sahte_sinama(ip, port, kullanici, sifre, zaman_asimi=4.0, yol="/"):
+        t = time.monotonic() - T0
+        sinamalar.append((t, (ip, port, kullanici, sifre, yol)))
+        for son, sonuc in S.get("sifre", []):
+            if t < son:
+                return sonuc
+        return "bilinmiyor"
+
+    kesif.kimlik_dogrula = sahte_sinama
 
     def evre(t):
         for a, b, e in S["sahne"]:
@@ -303,18 +378,33 @@ def tek_kos(ad: str) -> int:
 
     acilis = S.get("acilis", 0.0)
 
+    def gitti_mi(t: float) -> bool:
+        return any(a <= t < b for a, b in S.get("gitti", []))
+
+    # Her açma denemesinin anı. Gerçek kamerada kimlikli bir adresle açmak bir
+    # GİRİŞ demektir; eski şifreyle her biri başarısız giriş.
+    acilislar: list[float] = []
+
     class SahteKamera:
+        def __init__(self):
+            t = time.monotonic() - T0
+            acilislar.append(t)
+            # `gitti` penceresinde açılan bağlantı ölü doğar ve ölü kalır —
+            # kamera sonra gelse de (FFmpeg'in açamadığı akış gibi).
+            self.olu = gitti_mi(t)
+
         def isOpened(self):
             # Kamera `acilis` saniyesinden once HIC acilmiyor.
-            return time.monotonic() - T0 >= acilis
+            return not self.olu and time.monotonic() - T0 >= acilis
 
         def set(self, *a):
             return True
 
         def read(self):
             time.sleep(0.04)          # ~25 fps, gerçek zamanlı
+            t = time.monotonic() - T0
             a, b = S.get("kopuk", (0, 0))
-            if a <= time.monotonic() - T0 < b:
+            if self.olu or a <= t < b or gitti_mi(t):
                 return False, None
             return True, kare()
 
@@ -392,6 +482,52 @@ def tek_kos(ad: str) -> int:
                     for g in sorted(gonderimler, key=lambda g: g["t"])]
         if isaretli != [False] * (len(isaretli) - 1) + [True]:
             print(f"FAIL: yalnızca son deneme işaretli olmalıydı: {isaretli}")
+            hata = 1
+    # 1.2.2 (A): kamera şifreyi reddederken akış HİÇ açılmamalı ve sınama
+    # seyrek olmalı (her sınama gerçekte bir başarısız giriş).
+    if S.get("sifreyle_acilmaz"):
+        a, b = S["sifreyle_acilmaz"]
+        acilan = [t for t in acilislar if a < t < b]
+        if acilan:
+            print(f"FAIL: kamera şifreyi reddederken akış {len(acilan)} kez açıldı "
+                  f"(t={', '.join(f'{t:.2f}' for t in acilan)}) — her biri eski "
+                  "şifreyle bir giriş denemesi")
+            hata = 1
+    if S.get("sinama_en_cok"):
+        a, b, n = S["sinama_en_cok"]
+        say = len([t for t, _ in sinamalar if a < t < b])
+        if not 1 <= say <= n:
+            print(f"FAIL: {a}-{b}s arasında 1..{n} şifre sınaması bekleniyordu, {say}")
+            hata = 1
+    if S.get("rtsp") == _KIMLIKLI_RTSP and S.get("sifre"):
+        yanlis_arg = sorted({str(x) for _, x in sinamalar if x != _KIMLIKLI_SINAMA})
+        if not sinamalar or yanlis_arg:
+            print(f"FAIL: şifre sınaması köprünün kendi adresini çözüp sormalıydı "
+                  f"{_KIMLIKLI_SINAMA}; gelen: {yanlis_arg or 'hiç sınama yok'}")
+            hata = 1
+    if S.get("geri_cekilme"):
+        # Akış `a`da koptu: açma denemeleri arasındaki boşluklar tabandan
+        # başlayıp ikiye katlanmalı, tavanda durmalı.
+        a, b = S["geri_cekilme"]
+        taban, tavan = (float(x) for x in S["yeniden_baglan"])
+        anlar = [t for t in acilislar if a < t < b]
+        bosluklar = [y - x for x, y in zip([a] + anlar, anlar)]
+        beklenen = [min(taban * 2 ** k, tavan) for k in range(len(bosluklar))]
+        uymayan = [(round(g, 2), e) for g, e in zip(bosluklar, beklenen)
+                   if not e * 0.75 <= g <= e + 0.5]
+        if len(anlar) < 5 or uymayan:
+            print(f"FAIL: yeniden bağlanma aralıkları {[round(g, 2) for g in bosluklar]}, "
+                  f"beklenen ~{beklenen} (uymayan: {uymayan})")
+            hata = 1
+    if S.get("sifirlama"):
+        # Kamera döndükten sonraki İLK kopma: bekleme tabana dönmüş olmalı.
+        x = S["sifirlama"]
+        taban = float(S["yeniden_baglan"][0])
+        sonraki = [t for t in acilislar if t > x]
+        if not sonraki or not x + taban * 0.75 <= sonraki[0] <= x + taban + 0.5:
+            ilk = f"{sonraki[0]:.2f}" if sonraki else "yok"
+            print(f"FAIL: {x}s'deki kopmadan sonra ilk deneme ~{x + taban:.2f}s "
+                  f"bekleniyordu, {ilk} — bekleme iyi karede sıfırlanmamış")
             hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")

@@ -395,7 +395,15 @@ def kamera_bilgisi() -> tuple[str, tuple[int, int]]:
     if bulunan:
         for i, ip in enumerate(bulunan, 1):
             print(f"    {i}) {ip}")
-        secim = sor("Numara seçin ya da IP yazın", "1")
+        # Enter yalnızca TEK cihaz cevap verdiyse onu seçer (1.2.2). Arama
+        # artık her ağdan gidiyor; site Wi-Fi'sindeki başka bir ONVIF cihazı
+        # listenin başına düşebilir ve Enter kameranın şifresini ONA denerdi.
+        varsayilan = "1" if len(bulunan) == 1 else ""
+        if not varsayilan:
+            print("  Birden çok cihaz cevap verdi: kameranın IP'sini kontrol edip seçin.")
+        secim = ""
+        while not secim:
+            secim = sor("Numara seçin ya da IP yazın", varsayilan)
         ip = bulunan[int(secim) - 1] if secim.isdigit() and \
             1 <= int(secim) <= len(bulunan) else secim
     else:
@@ -460,9 +468,13 @@ def kamera_kimligi_dogrula(kesif, ip: str, port: int, kullanici: str,
     soruda da Enter) tarama o bilgilerle sürer — kontrol bir kameranın
     tuhaflığı yüzünden yanılırsa doğru şifre reddedilmiş olmasın. Yalnızca üç
     FARKLI şifre de reddedilirse, kilit uyarısıyla durulur.
+
+    Kamera kökte şifre istemiyorsa sınama akış yollarında yapılır (1.2.2,
+    kimlik_dogrula_yollar): yoksa sonuç "bilinmiyor" olur ve yanlış şifre on
+    yolluk taramaya, yani on başarısız girişe giderdi.
     """
     for deneme in range(1, SIFRE_DENEME + 1):
-        durum = kesif.kimlik_dogrula(ip, port, kullanici, sifre)
+        durum = kesif.kimlik_dogrula_yollar(ip, port, kullanici, sifre)
         if durum == "tamam":
             print("  ✓ Kamera kullanıcı adı ve şifresi doğru.")
             return kullanici, sifre
@@ -967,10 +979,61 @@ def gorev_xml(program: str, argumanlar: str) -> str:
 """
 
 
-def gorev_kur(ayar_yolu: str, yon: str) -> bool:
+def gorev_adi(yon: str) -> str:
+    return f"Otopark Kamera Koprusu ({yon})"
+
+
+class EskiKopru:
+    """
+    Yeniden kurulumda o şeridin ÇALIŞAN köprüsü (1.2.2).
+
+    Eski köprü eskiden ancak 5. adımda (gorev_kur) durduruluyordu. Sihirbaz
+    çoğu kez kameranın şifresi değiştiği için açılır; o durumda eski köprü 2.-3.
+    adımlar boyunca eski şifreyle giriş denemeye devam ediyor ve kamerayı
+    kilitli tutuyordu: sihirbazın şifre sınaması üç kez reddediliyor, "30
+    dakika bekleyin" deniyor ve beklemek de işe yaramıyordu.
+
+    Bu yüzden şerit belli olur olmaz durdurulur — yalnızca BU şeridin görevi;
+    öbür şeritlere dokunulmaz. Kurulum yeni görevi KURAMADAN biterse (bırakıldı,
+    Ctrl+C, hata, görev oluşturulamadı) eskisi yeniden başlatılır: yarıda kalan
+    bir kurulum şeridi karanlıkta bırakmamalı.
+    """
+
+    def __init__(self, yon: str) -> None:
+        self.ad = gorev_adi(yon)
+        self.durduruldu = False
+        self.yenisi_kuruldu = False
+
+    def durdur(self) -> None:
+        if not WINDOWS:
+            return
+        # Yalnızca çıkış kodu: schtasks'ın çıktısı makinenin diline göre değişir.
+        var, _ = calistir(["schtasks", "/query", "/tn", self.ad])
+        if not var:
+            return
+        calistir(["schtasks", "/end", "/tn", self.ad])
+        self.durduruldu = True
+        print("  · Bu şeridin çalışan köprüsü kurulum süresince durduruldu "
+              "(kameraya eski şifreyle bağlanmaya çalışmasın).")
+
+    def yenisi_kuruldu_isaretle(self) -> None:
+        self.yenisi_kuruldu = True
+
+    def gerekirse_yeniden_baslat(self) -> None:
+        if self.durduruldu and not self.yenisi_kuruldu:
+            calistir(["schtasks", "/run", "/tn", self.ad])
+            print("  · Kurulum tamamlanmadı — bu şeridin köprüsü önceki kamera "
+                  "ayarlarıyla yeniden başlatıldı.")
+
+
+def gorev_kur(ayar_yolu: str, yon: str, olusturuldu=None) -> bool:
+    """
+    Görevi kurar ve başlatır; köprü doğrulanırsa True. `olusturuldu`, görev
+    tanımı yazıldığı anda çağrılır (EskiKopru: artık eskisini geri başlatma).
+    """
     import tempfile
 
-    ad = f"Otopark Kamera Koprusu ({yon})"
+    ad = gorev_adi(yon)
     program, argumanlar = gorev_parcalari(ayar_yolu)
 
     # Yeniden kurulumda eski süreç hâlâ koşuyor olabilir. Durdurulmazsa yeni
@@ -997,6 +1060,8 @@ def gorev_kur(ayar_yolu: str, yon: str) -> bool:
     if not ok:
         print(f"  ✗ Görev oluşturulamadı: {cikti.strip()[:200]}")
         return False
+    if olusturuldu is not None:
+        olusturuldu()
 
     print(f"  ✓ Otomatik başlatma kuruldu: {ad}")
     # Zaman penceresi başlatmadan ÖNCE açılır: `schtasks /run` yavaş dönerse
@@ -1069,6 +1134,10 @@ def baslangic_dogrula(yon: str, azami_sn: float = 30, kamera_sn: float = 45,
     while True:
         if durum.durduruldu_mu(satirlar):
             print("  ✗ Köprü başladı ama hemen durdu:")
+            son_uyarilar()
+            return False
+        if durum.kamera_sifre_reddi(satirlar):
+            print(f"  ✗ {durum.SIFRE_RED_HALI}")
             son_uyarilar()
             return False
         if durum.kamera_kopuk(satirlar):
@@ -1183,6 +1252,19 @@ def main() -> int:
     ayar = mevcut_kimlik_sor() or sunucu_bilgisi()
     ayar.setdefault("CIHAZ", f"kopru-{ayar['YON'].lower()}")
 
+    # Şerit artık belli: o şeridin çalışan köprüsü kamera adımından ÖNCE
+    # durdurulur ve kurulum yeni görevi kuramadan biterse geri başlatılır
+    # (bkz. EskiKopru). `finally`: sys.exit, Ctrl+C ve hata da dâhil.
+    eski = EskiKopru(ayar["YON"])
+    eski.durdur()
+    try:
+        return kurulumu_tamamla(ayar, eski)
+    finally:
+        eski.gerekirse_yeniden_baslat()
+
+
+def kurulumu_tamamla(ayar: dict, eski: EskiKopru) -> int:
+    """main'in şerit belli olduktan sonraki kısmı: 1. adımdan sonrası."""
     # Kimlik ELDE EDİLİR EDİLMEZ yazılıyor, kamera ve kırpma adımlarından
     # ÖNCE. Eşleştirme kodu tek kullanımlıktır ve bu noktada harcanmıştır:
     # sihirbaz RTSP adımında yarıda bırakılırsa, dosya olmadan o kimlik
@@ -1209,7 +1291,7 @@ def main() -> int:
     calisiyor = True
     if WINDOWS:
         guc_ayarlari()
-        calisiyor = gorev_kur(yol, ayar["YON"])
+        calisiyor = gorev_kur(yol, ayar["YON"], olusturuldu=eski.yenisi_kuruldu_isaretle)
     else:
         print("  ! Windows değil — systemd birimi için README'ye bakın.")
 

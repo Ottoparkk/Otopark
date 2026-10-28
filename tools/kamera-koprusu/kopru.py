@@ -53,6 +53,7 @@ import numpy as np
 import requests
 
 import gunluk
+import kesif
 
 # Read by FFMPEG when a VideoCapture is CONSTRUCTED, so it has to be set before
 # the first one exists. The default is UDP, which drops packets on a busy link
@@ -208,6 +209,23 @@ SAHNE_ESIGI = float(os.environ.get("SAHNE_ESIGI", "6.0"))
 # answering yet, doubling up to the cap. See kamera_ac.
 ACILIS_BEKLEME_SN = float(os.environ.get("ACILIS_BEKLEME_SN", "5"))
 ACILIS_BEKLEME_MAX_SN = float(os.environ.get("ACILIS_BEKLEME_MAX_SN", "60"))
+
+# Running: after the stream drops, the wait before reconnecting doubles from
+# YENIDEN_BAGLAN_SN up to the cap and goes back to the base on the first good
+# frame. It used to be a flat 3 s forever — and every reconnect is a camera
+# LOGIN, so a camera whose password had changed got ~20 failed logins a
+# minute. Dahua locks the account after five and the bridge kept it locked.
+YENIDEN_BAGLAN_SN = float(os.environ.get("YENIDEN_BAGLAN_SN", "3"))
+YENIDEN_BAGLAN_MAX_SN = float(os.environ.get("YENIDEN_BAGLAN_MAX_SN", "60"))
+
+# Before each (re)connect the bridge asks the camera ONE question: does it
+# accept the stored password (kesif.kimlik_dogrula, one authenticated RTSP
+# DESCRIBE on our own stream path)? If not, the stream is not opened at all
+# and this long wait follows — at most one failed login per wait. NOT a
+# permanent stop: a lockout caused by someone else answers the same way, and
+# the lane must come back by itself once it ends. Keep it under durum's
+# 15-minute staleness limit: each wait writes one log line.
+SIFRE_RED_BEKLEME_SN = float(os.environ.get("SIFRE_RED_BEKLEME_SN", "600"))
 
 # Motion, as mean absolute pixel difference between consecutive crops.
 # Above HAREKET_ESIGI something is moving; below DURGUN_ESIGI the scene is
@@ -705,6 +723,44 @@ def kamera_baglan(url: str | None = None) -> cv2.VideoCapture:
     return cap
 
 
+def _sure(saniye: float) -> str:
+    return f"{saniye / 60:.0f} dakika" if saniye >= 60 else f"{saniye:.0f} sn"
+
+
+def kamera_sifresi_kontrol(url: str | None = None) -> str:
+    """
+    Does the camera accept the password in our RTSP address? "tamam" |
+    "yanlis" | "bilinmiyor".
+
+    Asked on our OWN stream path, with the credentials decoded (the installer
+    stores them percent-encoded). No credentials in the address → nothing to
+    check and no network at all: answering a challenge with empty credentials
+    would itself be a failed login. Any error → "bilinmiyor", which means
+    "connect the way we always did" — this check must never kill the bridge.
+    """
+    parca = kesif.rtsp_parcala(url or RTSP_URL)
+    if parca is None:
+        return "bilinmiyor"
+    ip, port, kullanici, sifre, yol = parca
+    try:
+        return kesif.kimlik_dogrula(ip, port, kullanici, sifre, yol=yol)
+    except Exception:
+        return "bilinmiyor"
+
+
+def sifre_kabul_edilene_kadar_bekle() -> None:
+    """
+    Blocks while the camera rejects our password: one check, then a long
+    wait, never an open (see SIFRE_RED_BEKLEME_SN). Logged on every round so
+    `durum` shows the reason and the log stays fresh.
+    """
+    while kamera_sifresi_kontrol() == "yanlis":
+        print(f"[!] {gunluk.SIFRE_RED_ISARETI} — {_sure(SIFRE_RED_BEKLEME_SN)} sonra "
+              "yeniden denenecek. Kameranın şifresi değiştiyse programı açıp "
+              "'Yeniden kur' deyin.", flush=True)
+        time.sleep(SIFRE_RED_BEKLEME_SN)
+
+
 def kamera_ac(bekle: bool = False) -> cv2.VideoCapture:
     """
     Startup path.
@@ -720,11 +776,17 @@ def kamera_ac(bekle: bool = False) -> cv2.VideoCapture:
     a camera that is not there must stay visible to the server watchdog.
 
     A missing RTSP_URL is fatal either way; waiting cannot fix a config.
+
+    While waiting, every attempt is preceded by the password check: a bridge
+    started at boot with a changed camera password must not lock the account
+    (1.2.2). The setup modes skip it — one attempt, then they exit anyway.
     """
     if not RTSP_URL:
         sys.exit("RTSP_URL tanımlı değil — kameranın RTSP adresini verin.")
     bekleme = ACILIS_BEKLEME_SN
     while True:
+        if bekle:
+            sifre_kabul_edilene_kadar_bekle()
         cap = kamera_baglan()
         if cap.isOpened():
             return cap
@@ -877,6 +939,9 @@ def main() -> None:
     # and `durum` reports KAMERA YOK for up to five minutes (until the next
     # "çalışıyor" line) about a camera that came back three seconds later.
     kopuk = False
+    # Wait before the next reconnect: doubles while the camera stays away,
+    # back to the base on the first good frame (see YENIDEN_BAGLAN_SN).
+    bekleme = YENIDEN_BAGLAN_SN
 
     while True:
         ok, frame = cap.read()
@@ -884,15 +949,21 @@ def main() -> None:
             # An RTSP stream drops. Reconnecting beats exiting: nobody is
             # watching this process at 03:00, and a bridge that dies silently
             # looks exactly like a car park with no cars.
-            print(f"[!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor", flush=True)
+            print(f"[!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor "
+                  f"({_sure(bekleme)} sonra)", flush=True)
             kopuk = True
             cap.release()
-            time.sleep(3)
+            time.sleep(bekleme)
+            bekleme = min(bekleme * 2, YENIDEN_BAGLAN_MAX_SN)
+            # Every reconnect is a login. Ask about the password once first;
+            # a rejected one is never tried on the stream (1.2.2).
+            sifre_kabul_edilene_kadar_bekle()
             cap = kamera_baglan()
             onceki = None
             continue
         if kopuk:
             kopuk = False
+            bekleme = YENIDEN_BAGLAN_SN
             print(f"[i] {gunluk.KAMERA_VAR_ISARETI} (yeniden)", flush=True)
 
         simdi = time.monotonic()

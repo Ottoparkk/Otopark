@@ -87,6 +87,10 @@ SERIT_ISARETI = "sunucu şeridi reddetti"
 KAMERA_YOK_ISARETI = "kamera açılamadı"
 KARE_YOK_ISARETI = "kare alınamadı"
 KAMERA_VAR_ISARETI = "kamera bağlandı"
+# 1.2.2: kamera, köprünün kayıtlı şifresini REDDETTİ (tek bir RTSP sınaması
+# 401 aldı). Köprü o zaman akışı hiç açmaz ve uzun bekler — eski şifreyle
+# her birkaç saniyede bir giriş denemek kameranın hesabını kilitli tutuyordu.
+SIFRE_RED_ISARETI = "kamera şifreyi reddetti"
 # Boş şerit öğrenme (1.2.0). Hata DEĞİLLER — "[i]" ile yazılır; `durum` onları
 # ayrı sayar ve atlanan satırı kameranın görüntü verdiğinin kanıtı sayar.
 BOS_GORUNTU_ISARETI = "boş şerit görüntüsü (sunucu: araç yok)"   # 422 + arac_yok
