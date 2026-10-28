@@ -14,7 +14,7 @@
  *   A10  Request hosts are hardcoded in _shared/ocr.ts. The database supplies
  *        which model to use, never where to send it.
  */
-import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
+import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { z } from 'npm:zod@4.4.3'
 import { corsHeaders, json } from '../_shared/http.ts'
 import { normalizeImage, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
@@ -42,7 +42,7 @@ Deno.serve(async (req: Request) => {
   // operators just type plates, which is what they would do anyway, so the
   // failure is invisible to everyone including the query that measures
   // accuracy. Same class of silent failure the camera heartbeat exists for.
-  let admin: ReturnType<typeof createClient> | null = null
+  let admin: SupabaseClient | null = null
   let saglayiciAdi: string | null = null
   let userId: string | null = null
 

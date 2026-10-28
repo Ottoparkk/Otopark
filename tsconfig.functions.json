@@ -1,0 +1,27 @@
+{
+  // Typecheck for the Edge Functions (Deno), run with `npm run typecheck:functions`.
+  // The npm: imports are mapped to this repo's node_modules — the versions here must
+  // match the ones the functions import, or the import fails loudly.
+  // send-push is left out: npm:web-push is not installed in this repo.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "types": [],
+    "paths": {
+      "npm:zod@4.4.3": ["./node_modules/zod"],
+      "npm:@supabase/supabase-js@2.112.3": ["./node_modules/@supabase/supabase-js"]
+    }
+  },
+  "files": [
+    "tests/deno-shim.d.ts",
+    "supabase/functions/plaka-oku/index.ts",
+    "supabase/functions/kamera-webhook/index.ts",
+    "supabase/functions/kamera-eslestir/index.ts"
+  ]
+}

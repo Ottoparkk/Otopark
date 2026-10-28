@@ -136,6 +136,7 @@ hook; screens only lay out, and no component contains fee arithmetic.
 npm install
 npm run dev        # local development — copy .env.example to .env.local first
 npm run build      # tsc --noEmit && vite build — always before a push
+npm run typecheck:functions  # Edge Functions (not send-push) — before a function deploy
 npm run icons      # regenerate the PWA icons
 ```
 
