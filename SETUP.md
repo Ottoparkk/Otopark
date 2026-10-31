@@ -665,6 +665,20 @@ caller with a JWT. Camera exception rows no longer store the photo (`ham_yanit`
 dropped `foto_base64`; it made each row hundreds of KB). Deploy order: `039` →
 smoke test through **PASS 61** → `kamera-webhook` → frontend.
 
+**One-tap entry from an unreadable plate (044).** On *Çözülmemiş kayıtlar* an
+`OKUNAMADI` card shows the photo, one status line and the camera's guess in an
+editable plate field; **Giriş aç** calls `istisna_bilet_ac(p_id, p_plaka)`
+(staff, `is_staff`), which opens the entry ticket through the unchanged
+`bilet_ac` and closes the card in one transaction. The ticket starts **when the
+camera saw the car** (the row's `kaynak_zaman`, trusted only within
+[received − `kamera_gecikme_limiti_dk`, received + 5 min], else the receive
+time, never later than now); a card older than that limit is refused ("çok
+eski" — open it on Giriş instead). It reuses the event's `islem_id`, so a later
+camera retry of the same event replays onto this ticket; if the camera already
+opened it, the card closes with "Kamera bileti zaten açmış". Spot = first free
+one (like a camera ticket). Deploy order: `044` → smoke test through
+**PASS 66** → frontend.
+
 **Installer 1.2.1** (install this one, not 1.2.0): the camera password is
 checked with ONE request before the address scan (a typo used to cost up to ten
 failed logins and lock the camera); a typed RTSP address is tried before it is

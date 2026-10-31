@@ -365,7 +365,8 @@ export function useFotoUrl(path: string | null | undefined) {
 
 /* ============================================================ mutations === */
 
-function useGiseInvalidate() {
+/** Exported for istisna_bilet_ac (044), which opens a ticket from another screen. */
+export function useGiseInvalidate() {
   const qc = useQueryClient()
   return () => {
     void qc.invalidateQueries({ queryKey: ['acik_biletler'] })

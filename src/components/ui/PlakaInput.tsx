@@ -28,6 +28,12 @@ export function PlakaInput({
   autoFocus = false,
   error = null,
   onEnter,
+  /**
+   * An example plate is the right hint on an empty entry form, and the wrong
+   * one where the field sits under a photo of a real car: there a grey
+   * "34ABC123" reads as what the camera saw. Those screens pass words.
+   */
+  placeholder = '34ABC123',
 }: {
   value: string
   onChange: (v: string) => void
@@ -36,6 +42,7 @@ export function PlakaInput({
   autoFocus?: boolean
   error?: string | null
   onEnter?: () => void
+  placeholder?: string
 }) {
   const id = useId()
   const normalized = normalizePlaka(value)
@@ -64,7 +71,7 @@ export function PlakaInput({
         spellCheck={false}
         autoComplete="off"
         maxLength={15}
-        placeholder="34ABC123"
+        placeholder={placeholder}
         aria-invalid={error ? true : undefined}
         aria-describedby={olagansiz ? `${id}-uyari` : undefined}
         className={[

@@ -8,11 +8,13 @@ import {
   useBiletPlakaDogrula,
   useBiletPlakaDuzelt,
   useBiletTahsil,
+  useFotoUrl,
   useYerKodlari,
 } from './api'
 import { PlakaInput } from '../../components/ui/PlakaInput'
+import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
 import { BiletBilgileri, BiletEkleri, IptalButonu, useBiletAksiyonlari } from './components'
-import { formatPlaka } from '../../lib/plaka'
+import { formatPlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { biletBorcu, odemeAlindi } from '../../lib/bilet'
 import { rpcErrorText } from '../../lib/errors'
@@ -181,95 +183,73 @@ function DurumRozeti({ durum }: { durum: 'ACIK' | 'KAPALI' | 'IPTAL' }) {
  * "Plaka yanlış olabilir" — the read that produced this plate scored below
  * `plaka_supheli_esigi` and the operator accepted it unchanged (029).
  *
- * Two ways out and deliberately no third. There is no "dismiss": a badge that
- * can be waved away without a decision is a badge everybody waves away, and
- * the entire value here is catching a wrong plate BEFORE the car tries to
- * leave — after that it is a dispute with a queue forming behind it.
+ * Compact (2026-10-31): the entry photo, one line, and the plate already in
+ * an editable field. ONE button that follows the field — unchanged → "Doğru"
+ * (bilet_plaka_dogrula), edited → "Kaydet" (bilet_plaka_duzelt); both clear
+ * the flag server-side (029), so the card leaves on either.
+ *
+ * Still deliberately no dismiss that skips the check: "Doğru" IS the dismiss,
+ * and it is a decision. A badge that can be waved away without one is a badge
+ * everybody waves away, and the entire value here is catching a wrong plate
+ * BEFORE the car tries to leave — after that it is a dispute with a queue
+ * forming behind it.
  */
 function PlakaSuphesi({ bilet }: { bilet: Bilet }) {
   const dogrula = useBiletPlakaDogrula()
   const duzelt = useBiletPlakaDuzelt()
-  const [duzeltAcik, setDuzeltAcik] = useState(false)
+  const { data: fotoUrl } = useFotoUrl(bilet.giris_foto)
   const [yeni, setYeni] = useState(bilet.plaka)
   const [hata, setHata] = useState<string | null>(null)
   const calisiyor = dogrula.isPending || duzelt.isPending
+  const degisti = yeni !== bilet.plaka
 
-  async function kaydet() {
+  async function onayla() {
+    if (calisiyor) return
     setHata(null)
+    if (degisti && !plakaGecerli(yeni)) {
+      setHata('Geçerli bir plaka girin.')
+      return
+    }
     try {
-      await duzelt.mutateAsync({ bilet_id: bilet.id, plaka: yeni })
-      setDuzeltAcik(false)
+      if (degisti) await duzelt.mutateAsync({ bilet_id: bilet.id, plaka: yeni })
+      else await dogrula.mutateAsync(bilet.id)
     } catch (e) {
-      // Stays OPEN on failure. The likeliest error is "another open ticket
-      // already has this plate", and closing the field would hide the one
-      // sentence that explains what to do next.
-      setHata(rpcErrorText(e, 'Plaka değiştirilemedi.'))
+      // The field keeps what was typed. The likeliest error is "another open
+      // ticket already has this plate", and the sentence explains what next.
+      setHata(rpcErrorText(e, degisti ? 'Plaka değiştirilemedi.' : 'Doğrulanamadı.'))
     }
   }
 
   return (
-    <Card>
-      <div className="flex items-start gap-3">
-        <span
-          aria-hidden
-          className="mt-0.5 flex size-[26px] shrink-0 items-center justify-center rounded-full bg-warn-soft text-body font-bold text-warn"
-        >
-          !
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <p className="text-body font-semibold text-ink">Plaka yanlış olabilir</p>
-          <p className="mt-1 text-label text-soft">
-            Bu plaka fotoğraftan okundu ve okuma güveni düşüktü. Doğruluğu kontrol edilmeli.
-          </p>
-
-          {duzeltAcik ? (
-            <div className="mt-3 space-y-3">
-              <PlakaInput
-                value={yeni}
-                onChange={setYeni}
-                autoFocus
-                error={hata}
-                onEnter={() => void kaydet()}
-              />
-              <div className="flex gap-2">
-                <Button loading={duzelt.isPending} onClick={() => void kaydet()}>
-                  Kaydet
-                </Button>
-                <Button
-                  variant="ghost"
-                  disabled={calisiyor}
-                  onClick={() => {
-                    setDuzeltAcik(false)
-                    setHata(null)
-                    setYeni(bilet.plaka)
-                  }}
-                >
-                  Vazgeç
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button
-                loading={dogrula.isPending}
-                onClick={() => {
-                  setHata(null)
-                  dogrula.mutate(bilet.id, {
-                    onError: (e) => setHata(rpcErrorText(e, 'Doğrulanamadı.')),
-                  })
-                }}
-              >
-                Doğru
-              </Button>
-              <Button variant="soft" disabled={calisiyor} onClick={() => setDuzeltAcik(true)}>
-                Yanlış, düzelt
-              </Button>
-              {hata !== null && <p className="w-full text-label text-danger">{hata}</p>}
-            </div>
-          )}
-        </div>
+    <PlakaKontrol fotoUrl={fotoUrl} durum="Plaka tam olarak okunamadı — kontrol edin">
+      <PlakaInput
+        value={yeni}
+        onChange={(v) => {
+          setYeni(v)
+          setHata(null)
+        }}
+        hideLabel
+        placeholder="Plakayı yazın"
+        error={hata}
+        onEnter={() => void onayla()}
+      />
+      <div className="flex gap-2">
+        <Button className="flex-1" loading={calisiyor} onClick={() => void onayla()}>
+          {degisti ? 'Kaydet' : 'Doğru'}
+        </Button>
+        {degisti && (
+          <Button
+            variant="ghost"
+            disabled={calisiyor}
+            onClick={() => {
+              setYeni(bilet.plaka)
+              setHata(null)
+            }}
+          >
+            Geri al
+          </Button>
+        )}
       </div>
-    </Card>
+    </PlakaKontrol>
   )
 }

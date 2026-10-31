@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import {
@@ -57,6 +57,7 @@ import { useAdlar } from '../yonetim/api'
 import {
   IconAra,
   IconAraba,
+  IconCikis,
   IconCop,
   IconEtiket,
   IconIleri,
@@ -75,10 +76,13 @@ import { onayDurumu } from '../../lib/bilet'
 
 type Filtre = 'TUMU' | 'ICERIDE' | 'CIKAN'
 
-const FILTRELER: { deger: Filtre; etiket: string }[] = [
+// The icons are the ones the rows below already carry — a car on an open
+// ticket, the exit arrow on a closed one — so a chip looks like what it shows
+// (owner, 2026-10-31). "Tümü" has none: it is both.
+const FILTRELER: { deger: Filtre; etiket: string; ikon?: ReactNode }[] = [
   { deger: 'TUMU', etiket: 'Tümü' },
-  { deger: 'ICERIDE', etiket: 'İçeride' },
-  { deger: 'CIKAN', etiket: 'Çıkanlar' },
+  { deger: 'ICERIDE', etiket: 'İçeride', ikon: <IconAraba size={18} /> },
+  { deger: 'CIKAN', etiket: 'Çıkanlar', ikon: <IconCikis size={18} /> },
 ]
 
 /**
@@ -102,10 +106,13 @@ function FiltreChip({
   aktif,
   onClick,
   etiket,
+  ikon,
 }: {
   aktif: boolean
   onClick: () => void
   etiket: string
+  /** Decorative (the icons are aria-hidden); the label stays the name. */
+  ikon?: ReactNode
 }) {
   return (
     <button
@@ -113,10 +120,11 @@ function FiltreChip({
       aria-pressed={aktif}
       onClick={onClick}
       className={[
-        'min-h-[44px] shrink-0 rounded-chip px-4 text-body font-medium transition-colors',
+        'inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-chip px-4 text-body font-medium transition-colors',
         aktif ? 'bg-ink text-bg' : 'bg-field text-soft',
       ].join(' ')}
     >
+      {ikon}
       {etiket}
     </button>
   )
@@ -323,6 +331,7 @@ export function AracListesi({
             aktif={filtre === f.deger}
             onClick={() => setFiltre(f.deger)}
             etiket={f.etiket}
+            ikon={f.ikon}
           />
         ))}
       </div>

@@ -5323,6 +5323,268 @@ end if;
 
 raise notice 'PASS 65: fotoğraflar SQL ile değil Storage API ile silinir; liste saklama ayarına uyar; kurulum eksikliği ve hata Yöneticiye günde bir kez söylenir';
 
+-- =====================================================================
+-- 66  Okunamayan plakadan tek dokunuşla giriş (044)
+--     istisna_bilet_ac: personel plakayı yazar, bilet KAMERANIN gördüğü
+--     anda açılır ve kayıt aynı işlemde kapanır. Zamanı personel seçemez
+--     (kayıttan gelir, kayda personel yazamaz); saati bozuk kamera ya da
+--     günlerce açık kalmış kayıt bileti geçmişe yazamaz. Hata olursa ne
+--     bilet açılır ne kayıt kapanır.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.istisna_bilet_ac(uuid,text)') is null then
+  raise exception 'FAIL 66: istisna_bilet_ac yok — 044 çalıştırılmadı';
+end if;
+
+-- (a) Giriş şeridi, kamera 10 dk önce gördü: plaka normalleşir, bilet o
+--     ana yazılır, olayın işlem kimliğini ve fotoğrafını taşır, boş yere
+--     oturur; kayıt personel adına notla kapanır; bir denetim satırı.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() - interval '10 minutes',
+                               'ZZ66GR1O1', 0.42, null) into v_id;
+perform pg_temp.logout();
+update public.istisnalar set foto_path = 'kamera/' || v_islem || '.jpg' where id = v_id;
+v_yer := public.bos_park_yeri();
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, ' zz 66 gr 101 ') into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_bilet is null or (v_json ->> 'zaten_vardi')::boolean is distinct from false
+   or v_json ->> 'plaka' is distinct from 'ZZ66GR101' then
+  raise exception 'FAIL 66a: beklenmeyen dönüş %', v_json;
+end if;
+if not exists (
+  select 1 from public.biletler b
+   where b.id = v_bilet and b.durum = 'ACIK' and b.plaka = 'ZZ66GR101'
+     and b.islem_id = v_islem
+     and b.giris_at = now() - interval '10 minutes'
+     and b.kaynak_zaman = now() - interval '10 minutes'
+     and b.gecikmeli_kayit
+     and b.giris_by = u_personel and b.giris_kaynak = 'MOBIL'
+     and b.giris_foto = 'kamera/' || v_islem || '.jpg'
+     and b.park_yeri_id is not distinct from v_yer) then
+  raise exception 'FAIL 66a: bilet yanlış açıldı (zaman/kaynak/foto/yer)';
+end if;
+if (v_json ->> 'yer_kod') is distinct from (select p.kod from public.park_yerleri p where p.id = v_yer) then
+  raise exception 'FAIL 66a: yer kodu dönmedi (%)', v_json;
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_by = u_personel and cozuldu_at is not null
+                  and cozum_notu = 'Bilet açıldı: ZZ66GR101') then
+  raise exception 'FAIL 66a: kayıt personel adına notla kapanmadı';
+end if;
+select count(*) into v_n from public.audit_log
+ where action = 'istisna_bilet_acildi' and row_id = v_bilet and actor = u_personel;
+if v_n <> 1 then
+  raise exception 'FAIL 66a: % denetim satırı (1 beklenirdi)', v_n;
+end if;
+
+-- (b) Aynı dokunuş tekrar (cevap kaybolduysa): aynı bilet döner, ikinci
+--     bilet yok, başka plaka yazılsa bile hiçbir şey değişmez.
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ66FARK1') into v_json;
+perform pg_temp.logout();
+if (v_json ->> 'bilet_id')::uuid is distinct from v_bilet
+   or (v_json ->> 'zaten_vardi')::boolean is distinct from true then
+  raise exception 'FAIL 66b: tekrar dokunuş aynı bileti döndürmedi (%)', v_json;
+end if;
+select count(*) into v_n from public.biletler where islem_id = v_islem;
+if v_n <> 1 or exists (select 1 from public.biletler where plaka = 'ZZ66FARK1') then
+  raise exception 'FAIL 66b: tekrar dokunuş ikinci bilet açtı';
+end if;
+if (select cozum_notu from public.istisnalar where id = v_id) is distinct from 'Bilet açıldı: ZZ66GR101' then
+  raise exception 'FAIL 66b: tekrar dokunuş kapanış notunu değiştirdi';
+end if;
+
+-- (c) Onaysız ve devre dışı kullanıcı reddedilir; kayıt açık kalır.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
+perform pg_temp.logout();
+foreach v_txt in array array[u_pending::text, u_disabled::text] loop
+  perform pg_temp.login(v_txt::uuid);
+  begin
+    perform public.istisna_bilet_ac(v_id2, 'ZZ66YT202');
+    raise exception 'FAIL 66c: yetkisiz kullanıcı bilet açtı';
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if lower(sqlerrm) not like '%yetkiniz yok%' then
+      raise exception 'FAIL 66c: yanlış ret sebebi: %', sqlerrm;
+    end if;
+  end;
+  perform pg_temp.logout();
+end loop;
+if exists (select 1 from public.biletler where islem_id = v_islem)
+   or exists (select 1 from public.istisnalar where id = v_id2 and cozuldu_at is not null) then
+  raise exception 'FAIL 66c: reddedilen çağrı iz bıraktı';
+end if;
+
+-- (d) Okunamayan plaka dışındaki kayıttan giriş açılmaz; kayıt değişmez.
+select public.istisna_yaz('ACIK_BILET_YOK', 'CIKIS', 'ZZ66AB404', 'KAMERA',
+                          gen_random_uuid(), null, null, now()) into v_id;
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac(v_id, 'ZZ66AB404');
+  raise exception 'FAIL 66d: açık bilet yok kaydından giriş açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Bu kayıttan giriş açılamaz%' then
+    raise exception 'FAIL 66d: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where plaka = 'ZZ66AB404')
+   or exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 66d: reddedilen çağrı iz bıraktı';
+end if;
+
+-- (e) Plaka zaten içeride: bilet_ac'nin mesajı gelir; ne bilet açılır ne
+--     kayıt kapanır (tek işlem). (c)'nin açık kaydı kullanılır.
+perform pg_temp.login(u_personel);
+perform public.bilet_ac('ZZ66IC303', gen_random_uuid());
+begin
+  perform public.istisna_bilet_ac(v_id2, 'ZZ66IC303');
+  raise exception 'FAIL 66e: içerideki plakaya ikinci bilet açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten açık bir bilet var%' then
+    raise exception 'FAIL 66e: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where islem_id = v_islem)
+   or exists (select 1 from public.istisnalar where id = v_id2 and cozuldu_at is not null) then
+  raise exception 'FAIL 66e: başarısız çağrı bilet açtı ya da kaydı kapattı';
+end if;
+
+-- (f) Kamera aynı olayın biletini zaten açmış (yeniden deneme): kayıt
+--     "zaten açmış" notuyla kapanır, o bilete dokunulmaz, yeni bilet yok.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() - interval '3 minutes', null, null, null) into v_id;
+select public.bilet_ac('ZZ66KM505', v_islem, 'KAMERA', now() - interval '3 minutes') into v_bilet2;
+perform pg_temp.logout();
+select giris_at into v_ts from public.biletler where id = v_bilet2;
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ66XX999') into v_json;
+perform pg_temp.logout();
+if (v_json ->> 'bilet_id')::uuid is distinct from v_bilet2
+   or (v_json ->> 'zaten_vardi')::boolean is distinct from true
+   or v_json ->> 'plaka' is distinct from 'ZZ66KM505' then
+  raise exception 'FAIL 66f: kameranın bileti dönmedi (%)', v_json;
+end if;
+if exists (select 1 from public.biletler where plaka = 'ZZ66XX999')
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet2 and plaka = 'ZZ66KM505' and giris_at = v_ts
+                     and giris_kaynak = 'KAMERA') then
+  raise exception 'FAIL 66f: kameranın biletine dokunuldu ya da yeni bilet açıldı';
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_by = u_personel
+                  and cozum_notu = 'Kamera bileti zaten açmış: ZZ66KM505') then
+  raise exception 'FAIL 66f: kayıt "zaten açmış" notuyla kapanmadı';
+end if;
+
+-- (g) Kamera saati bozuk: 1 saat ileri ve gecikme sınırından eski olay
+--     zamanına güvenilmez, bilet sunucunun kaydı aldığı ana (burada now())
+--     yazılır; asla now()'dan ileri değil. Sınır canlı ayardan okunur.
+select coalesce(kamera_gecikme_limiti_dk, 720) into v_n2 from public.otopark_ayarlari where id = 1;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() + interval '1 hour', null, null, null) into v_id;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ66IL606') into v_json;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = (v_json ->> 'bilet_id')::uuid and giris_at = now()
+                  and not gecikmeli_kayit) then
+  raise exception 'FAIL 66g: ileri saatli olay bileti ileri tarihe yazdı';
+end if;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() - make_interval(mins => v_n2 + 60),
+                               null, null, null) into v_id;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ66GR707') into v_json;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = (v_json ->> 'bilet_id')::uuid and giris_at = now()) then
+  raise exception 'FAIL 66g: sınırdan eski saatli olay bileti geçmişe yazdı';
+end if;
+
+-- (g2) Günlerce açık kalmış kayıt: araç büyük olasılıkla çoktan çıktı.
+--      Kamera yolunun BAYAT sınırıyla aynı sınır (v_n2); bilet açılmaz.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now() - make_interval(mins => v_n2 + 60),
+                               null, null, null) into v_id;
+perform pg_temp.logout();
+update public.istisnalar set alindi_zaman = now() - make_interval(mins => v_n2 + 60) where id = v_id;
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac(v_id, 'ZZ66ES808');
+  raise exception 'FAIL 66g2: çok eski kayıttan bilet açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%çok eski%' then
+    raise exception 'FAIL 66g2: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where islem_id = v_islem)
+   or exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 66g2: reddedilen çağrı iz bıraktı';
+end if;
+
+-- (h) Biletsiz kapatılmış kayıttan giriş açılmaz.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.istisna_coz(v_id, 'Test 66h');
+begin
+  perform public.istisna_bilet_ac(v_id, 'ZZ66KP909');
+  raise exception 'FAIL 66h: kapatılmış kayıttan bilet açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten kapatılmış%' then
+    raise exception 'FAIL 66h: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where islem_id = v_islem) then
+  raise exception 'FAIL 66h: kapatılmış kayıttan bilet açıldı';
+end if;
+
+-- (i) Tek kapı kaydı da aynı yoldan açılır.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', v_islem, now() - interval '1 minute', null, null, null) into v_id;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ66TK111') into v_json;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ66TK111'
+                  and islem_id = v_islem and giris_at = now() - interval '1 minute'
+                  and not gecikmeli_kayit)
+   or not exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 66i: tek kapı kaydından giriş açılmadı';
+end if;
+
+-- (j) Yalnızca oturum açmış personel çağırabilir.
+if has_function_privilege('anon', 'public.istisna_bilet_ac(uuid,text)', 'execute')
+   or has_function_privilege('service_role', 'public.istisna_bilet_ac(uuid,text)', 'execute')
+   or not has_function_privilege('authenticated', 'public.istisna_bilet_ac(uuid,text)', 'execute') then
+  raise exception 'FAIL 66j: istisna_bilet_ac yetkileri yanlış';
+end if;
+
+raise notice 'PASS 66: okunamayan plakadan giriş tek işlemde açılır, kameranın gördüğü ana yazılır, saati bozuk/eski kayıt bileti geçmişe yazamaz, tekrar dokunuş ikinci bilet açmaz';
+
 perform pg_temp.logout();
 raise notice '';
 raise notice 'ALL TESTS PASSED (rolled back)';
