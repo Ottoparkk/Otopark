@@ -30,7 +30,7 @@
  *        fault's detail is logged and never sent to the unauthenticated caller.
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
-import { z } from 'npm:zod@4.4.3'
+import { z } from 'npm:zod@4.6.7'
 import { json } from '../_shared/http.ts'
 
 const MAX_BODY_BYTES = 4 * 1024

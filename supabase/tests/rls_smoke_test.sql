@@ -41,6 +41,9 @@
 --    • A camera car whose plate cannot be read, or that arrives while plate
 --      reading is down, is no longer lost silently (039): an exception row,
 --      and an hourly alert when the reading service fails
+--    • Paid camera reads are countable and capped (040): every camera read
+--      is tagged in the read log, nobody can forge or erase those rows from
+--      the client, and crossing the cap raises one alert an hour
 -- ============================================================
 
 begin;
@@ -1806,11 +1809,34 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
 --     ikisi de yalnızca "OKUNAMADI" türünde çözülmemiş kayıt ve Yönetici
 --     uyarısı yazar. Bilet açmaz, kapatmaz, para görmez; kayıt ve uyarı da
 --     zaten bu listedeki bilet_ac'ın istisna yolunun yazdığı türden şeyler.
+--
+--     `kamera_okuma_siniri` (040) de BİLEREK eklendi: yalnızca saatte en
+--     fazla bir Yönetici uyarısı yazar ("Kamera okuma sınırı aşıldı"). Bilet
+--     açmaz, kapatmaz, para görmez, hiçbir satırı değiştirmez; sayıları da
+--     çağırandan almaz, kendisi okuma günlüğünden sayar.
+--
+--     `kamera_foto_bagla` (042) de BİLEREK eklendi: yalnızca bir fotoğraf
+--     YOLU yazar, o da yalnızca bu olayın kendi yoluysa (`kamera/<islem_id>
+--     .jpg`), yalnızca boşsa ve yalnızca bu olayın açtığı/vurduğu/yazdığı
+--     yere (kamera bileti, "kapıda" damgası, kamera kaydı). Kapanmış bilete
+--     dokunmaz, para görmez, hiçbir şeyi silmez ya da ezmez (PASS 64).
+--
+--     `foto_temizlik_listesi` ve `foto_temizlik_hata` (043) de BİLEREK
+--     eklendi; çağıran kamera değil, gece fotoğraf temizliği (Edge Function
+--     foto-temizle). Sınırı genişletmiyorlar:
+--       · foto_temizlik_listesi yalnızca OKUR: `plaka-foto` kovasında saklama
+--         süresini (foto_saklama_gun) aşmış dosyaların ADLARINI verir, en
+--         fazla 1000. Hiçbir şey yazmaz, silmez. Asıl silme Storage API'si
+--         ile yapılır — SQL ile silmek dosyayı kovada yetim bırakıyordu.
+--       · foto_temizlik_hata yalnızca günde en fazla bir Yönetici uyarısı
+--         yazar ("Fotoğraf temizliği başarısız"). Para görmez, satır
+--         değiştirmez (PASS 65).
 v_beklenen := array[
   'bildirim_yonetici_turu', 'bilet_ac', 'biletler_immutable_guard',
-  'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_kalp',
-  'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
-  'kamera_okunamadi', 'kamera_tek_kapi'];
+  'foto_temizlik_hata', 'foto_temizlik_listesi',
+  'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_foto_bagla',
+  'kamera_kalp', 'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
+  'kamera_okuma_siniri', 'kamera_okunamadi', 'kamera_tek_kapi'];
 
 if exists (select 1 from unnest(v_liste) x where x <> all(v_beklenen)) then
   raise exception 'FAIL 41b: service_role fazladan fonksiyon çağırabiliyor: %',
@@ -1845,7 +1871,11 @@ foreach v_txt in array array[
   'public.okuma_supheli_mi(uuid, text)',
   -- 037: tek kapı kararının "bir karakter fark" yardımcısı. Zararsız bir
   -- metin karşılaştırması, ama kimsenin doğrudan çağırması için sebep yok.
-  'public.plaka_yakin(text, text)'
+  'public.plaka_yakin(text, text)',
+  -- 043: gece fotoğraf temizliğini tetikleyen yardımcı. Gizli anahtarı
+  -- okuyup Edge Function'a istek atar; açık kalsaydı istemci temizliği
+  -- istediği an tetikleyebilir ya da uyarı ürettirebilirdi.
+  'public.foto_temizlik_tetikle()'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -2107,29 +2137,51 @@ if v_n2 <> v_n then raise exception 'FAIL 45d: prim borcu değiştirdi'; end if;
 -- (f) Gece işi: ödeme günü bugünse öder, aynı ay ikinci kez ÖDEMEZ. Elle
 --     ödenmiş bir maaşın üstüne otomatik ikinci maaş yazmak, bu özelliğin
 --     tek gerçek tehlikesi.
-perform public.maas_guncelle(v_id, 3000000,
-  extract(day from (now() at time zone 'Europe/Istanbul'))::smallint, 'NAKIT');
--- Sayım cron'dan ÖNCE alınır: sonra alınsaydı ilk koşunun fazladan maaş
--- yazıp yazmadığı ölçülemezdi, ki asıl tehlike odur.
-select count(*) into v_n from public.personel_odemeler
- where profile_id = v_id and tur = 'MAAS';
-perform pg_temp.logout();
--- Bu ay (a)/(b)/(c)'de zaten elle ödendi; gece işi üstüne yazmamalı.
-perform public.maas_otomatik();
-perform public.maas_otomatik();
-select count(*) into v_n2 from public.personel_odemeler
- where profile_id = v_id and tur = 'MAAS';
-if v_n2 <> v_n then
-  raise exception 'FAIL 45f: gece işi aynı ay % fazladan maaş yazdı', v_n2 - v_n;
-end if;
+--
+--     Ödeme günü 1–28 ile sınırlı (her ayda o gün olsun diye) ve gece işi
+--     yalnızca `odeme_gunu = bugünün günü` olanlara öder (016). Ayın 29–31'inde
+--     "ödeme günü bugün" hiç kurulamaz — eskiden bu adım o üç günde
+--     "Ödeme günü 1 ile 28 arasında olmalı" ile patlıyordu (2026-10-31).
+--     O günlerde bunun yerine o günlerin gerçek kuralı sınanır: kimseye
+--     ödenmez. "Vadesi geleni öder" yarısı ayın 1–28'inde sınanır.
+if extract(day from (now() at time zone 'Europe/Istanbul')) <= 28 then
+  perform public.maas_guncelle(v_id, 3000000,
+    extract(day from (now() at time zone 'Europe/Istanbul'))::smallint, 'NAKIT');
+  -- Sayım cron'dan ÖNCE alınır: sonra alınsaydı ilk koşunun fazladan maaş
+  -- yazıp yazmadığı ölçülemezdi, ki asıl tehlike odur.
+  select count(*) into v_n from public.personel_odemeler
+   where profile_id = v_id and tur = 'MAAS';
+  perform pg_temp.logout();
+  -- Bu ay (a)/(b)/(c)'de zaten elle ödendi; gece işi üstüne yazmamalı.
+  perform public.maas_otomatik();
+  perform public.maas_otomatik();
+  select count(*) into v_n2 from public.personel_odemeler
+   where profile_id = v_id and tur = 'MAAS';
+  if v_n2 <> v_n then
+    raise exception 'FAIL 45f: gece işi aynı ay % fazladan maaş yazdı', v_n2 - v_n;
+  end if;
 
--- Ödenmemiş bir ay ise ÖDEMELİ: yalnızca "yazmıyor" demek, hiç çalışmayan
--- bir cron'la aynı sonucu verirdi.
-delete from public.personel_odemeler where profile_id = v_id and tur = 'MAAS';
-perform public.maas_otomatik();
-if not exists (select 1 from public.personel_odemeler
-                where profile_id = v_id and tur = 'MAAS') then
-  raise exception 'FAIL 45f: gece işi vadesi gelen maaşı ödemedi';
+  -- Ödenmemiş bir ay ise ÖDEMELİ: yalnızca "yazmıyor" demek, hiç çalışmayan
+  -- bir cron'la aynı sonucu verirdi.
+  delete from public.personel_odemeler where profile_id = v_id and tur = 'MAAS';
+  perform public.maas_otomatik();
+  if not exists (select 1 from public.personel_odemeler
+                  where profile_id = v_id and tur = 'MAAS') then
+    raise exception 'FAIL 45f: gece işi vadesi gelen maaşı ödemedi';
+  end if;
+else
+  -- Ayın 29–31'i: en geç ödeme günü (28) kurulu, bu ay ödenmemiş, yine de
+  -- gece işi ödememeli.
+  perform public.maas_guncelle(v_id, 3000000, 28::smallint, 'NAKIT');
+  perform pg_temp.logout();
+  delete from public.personel_odemeler where profile_id = v_id and tur = 'MAAS';
+  perform public.maas_otomatik();
+  if exists (select 1 from public.personel_odemeler
+              where profile_id = v_id and tur = 'MAAS') then
+    raise exception 'FAIL 45f: gece işi ayın 29–31''inde maaş ödedi';
+  end if;
+  raise notice '     (45f: bugün ayın %''i — ödeme günü 28 ile sınırlı; "vadesi geleni öder" kısmı ayın 1–28''inde sınanır)',
+    extract(day from (now() at time zone 'Europe/Istanbul'));
 end if;
 
 -- Ödeme günü boşaltılabilmeli: kurulan otomatik ödeme kapatılamıyorsa,
@@ -4365,6 +4417,911 @@ if v_json ->> 'karar' <> 'GIRIS' or (v_json ->> 'bilet_id') is null then
 end if;
 
 raise notice 'PASS 61: okuma servisi çöktüğünde saatte bir uyarı, son denemede araç başına kayıt';
+
+-- =====================================================================
+-- 62  Ücretli kamera okumalarına sınır (040)
+--     Kameradan gelen her fotoğraf parayla okunur. Webhook'un eski sınırı
+--     yalnızca BİLETLERİ sayıyordu; okumaların çoğu bilet açmaz (boş şerit,
+--     okunamayan plaka, okuma hatası, her çıkış, her yeniden deneme), yani
+--     sınırsızdı: bozulmuş bir köprü ya da sızmış bir kamera anahtarı
+--     faturayı istediği kadar büyütebilirdi. Artık webhook her kamera
+--     okumasını günlüğe `kaynak = 'KAMERA'` diye yazar, okumadan ÖNCE son
+--     1 dakikayı ve 24 saati sayar (sınır sayıları webhook'ta:
+--     _shared/serit.ts), sınırın üstünde 429 döner ve Yöneticiye saatte en
+--     fazla bir uyarı gider.
+--     Bu blok sınırın veritabanı yarısını sınar: sayılan satırlar doğru
+--     etiketleniyor, istemci onları ne sahteleyebiliyor ne silebiliyor,
+--     uyarı doğru sayıyla saatte bir kez gidiyor ve kamera nöbetçisinin
+--     uyarısını susturmuyor.
+-- =====================================================================
+
+perform pg_temp.logout();
+
+-- (a) Kolon `kaynak` enum'u, boş olabilir ve VARSAYILANSIZ: telefon okuması
+--     (plaka-oku kaynak yazmaz) kameranın sınırına sayılmamalı. Sayım kısmi
+--     indeksten okunur.
+if not exists (
+  select 1 from information_schema.columns c
+   where c.table_schema = 'public' and c.table_name = 'plaka_okuma_log'
+     and c.column_name = 'kaynak'
+     and c.udt_schema = 'public' and c.udt_name = 'kaynak'
+     and c.is_nullable = 'YES' and c.column_default is null
+) then
+  raise exception 'FAIL 62a: plaka_okuma_log.kaynak yok ya da biçimi yanlış (kaynak enum, boş olabilir, varsayılansız)';
+end if;
+if not exists (
+  select 1 from pg_indexes i
+   where i.schemaname = 'public' and i.tablename = 'plaka_okuma_log'
+     and i.indexdef like '%(created_at DESC)%'
+     and i.indexdef like '%WHERE%kaynak%KAMERA%'
+) then
+  raise exception 'FAIL 62a: kamera okumaları için kısmi indeks yok';
+end if;
+
+-- (b) Sınır grant'ta: yalnızca kamera (service_role) çağırır. İstemciye açık
+--     olsaydı herkes sahte "sınır aşıldı" uyarısı üretebilirdi.
+if not has_function_privilege('service_role', 'public.kamera_okuma_siniri()', 'execute') then
+  raise exception 'FAIL 62b: kamera_okuma_siniri service_role rolüne kapalı — webhook çağıramaz';
+end if;
+foreach v_txt in array array['anon', 'authenticated'] loop
+  if has_function_privilege(v_txt, 'public.kamera_okuma_siniri()', 'execute') then
+    raise exception 'FAIL 62b: kamera_okuma_siniri % rolüne açık', v_txt;
+  end if;
+end loop;
+
+-- (c) Webhook'un yazdığı biçim çalışır; telefonun biçimi kaynaksız kalır.
+--     Önce o anki kamera okumaları sayılır (canlıdan satır gelebilir); tek
+--     transaction'da now() sabittir, "şimdi" satırları tam now()'a düşer.
+select count(*) filter (where l.created_at >= now() - interval '60 seconds'),
+       count(*)
+  into v_n, v_n2
+  from public.plaka_okuma_log l
+ where l.kaynak = 'KAMERA' and l.created_at >= now() - interval '24 hours';
+
+perform pg_temp.kamera();
+insert into public.plaka_okuma_log (saglayici, ham_yanit, guven, onerilen, kaynak)
+values ('test-62', '{"test": 62}'::jsonb, 0.9, 'ZZ62AA001', 'KAMERA')
+returning id into v_id;
+insert into public.plaka_okuma_log (saglayici, ham_yanit, guven, onerilen)
+values ('test-62-telefon', '{}'::jsonb, 0.9, 'ZZ62AA002')
+returning id into v_id2;
+-- Pencerenin kenarları: 2 saat önceki iki okuma günün içinde, 25 saat önceki
+-- dışında.
+insert into public.plaka_okuma_log (saglayici, kaynak, created_at)
+values ('test-62', 'KAMERA', now() - interval '2 hours'),
+       ('test-62', 'KAMERA', now() - interval '2 hours'),
+       ('test-62', 'KAMERA', now() - interval '25 hours');
+perform pg_temp.logout();
+
+if (select l.kaynak::text from public.plaka_okuma_log l where l.id = v_id)
+     is distinct from 'KAMERA' then
+  raise exception 'FAIL 62c: kamera okuması KAMERA diye yazılamadı';
+end if;
+if (select l.kaynak from public.plaka_okuma_log l where l.id = v_id2) is not null then
+  raise exception 'FAIL 62c: kaynaksız (telefon) okuma kendiliğinden bir kaynak aldı';
+end if;
+
+-- (d) İstemci bu satırlara dokunamaz — Yönetici de. Sahte bir KAMERA satırı
+--     sınırı doldurup kamerayı kilitlerdi; silmek ya da etiketi değiştirmek
+--     sınırı sıfırlardı. Günlükte yalnızca SELECT politikası var (003).
+perform pg_temp.login(u_personel);
+begin
+  insert into public.plaka_okuma_log (saglayici, kaynak) values ('sahte-62', 'KAMERA');
+  raise exception 'FAIL 62d: personel okuma günlüğüne kamera satırı yazabildi';
+exception when insufficient_privilege then null;
+end;
+begin
+  update public.plaka_okuma_log set kaynak = null where id = v_id;
+exception when insufficient_privilege then null;
+end;
+begin
+  delete from public.plaka_okuma_log where id = v_id;
+exception when insufficient_privilege then null;
+end;
+perform pg_temp.login(u_yonetici);
+begin
+  insert into public.plaka_okuma_log (saglayici, kaynak) values ('sahte-62', 'KAMERA');
+  raise exception 'FAIL 62d: Yönetici okuma günlüğüne kamera satırı yazabildi';
+exception when insufficient_privilege then null;
+end;
+begin
+  update public.plaka_okuma_log set kaynak = null where id = v_id;
+exception when insufficient_privilege then null;
+end;
+begin
+  delete from public.plaka_okuma_log where id = v_id;
+exception when insufficient_privilege then null;
+end;
+perform pg_temp.logout();
+
+if (select l.kaynak::text from public.plaka_okuma_log l where l.id = v_id)
+     is distinct from 'KAMERA' then
+  raise exception 'FAIL 62d: istemci bir kamera okumasını sildi ya da etiketini değiştirdi';
+end if;
+if exists (select 1 from public.plaka_okuma_log where saglayici = 'sahte-62') then
+  raise exception 'FAIL 62d: istemcinin sahte satırı günlükte kaldı';
+end if;
+
+-- (e) Uyarı: tek, doğru sayılarla, yalnızca Yöneticiye. Okuma servisi
+--     uyarısıyla ("Plaka okuma çalışmıyor", 039) tekilleştirmesi AYRI: önce o
+--     uyarı yazılır, sınır uyarısı yine de gelmeli. Beklenen sayılar: son 1
+--     dakikada taban + 1 (şimdiki satır), son 24 saatte taban + 3 (şimdiki +
+--     2 saat önceki iki); 25 saatlik ve kaynaksız satır sayılmaz.
+delete from public.notifications
+ where tur = 'KAMERA'
+   and baslik in ('Plaka okuma çalışmıyor', 'Kamera okuma sınırı aşıldı');
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('CIKIS', gen_random_uuid(), now(), 'Anthropic 529', false, null);
+perform public.kamera_okuma_siniri();
+perform pg_temp.logout();
+
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Kamera okuma sınırı aşıldı'
+       and profile_id = u_yonetici
+       and govde like ('%son 1 dakikada ' || (v_n + 1) || ', son 24 saatte '
+                       || (v_n2 + 3) || ' okuma%')) <> 1 then
+  raise exception 'FAIL 62e: sınır uyarısı Yöneticiye doğru sayılarla tam bir kez gitmedi (beklenen % / %): %',
+    v_n + 1, v_n2 + 3,
+    (select string_agg(n.govde, ' | ') from public.notifications n
+      where n.tur = 'KAMERA' and n.baslik = 'Kamera okuma sınırı aşıldı'
+        and n.profile_id = u_yonetici);
+end if;
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Plaka okuma çalışmıyor'
+       and profile_id = u_yonetici) <> 1 then
+  raise exception 'FAIL 62e: okuma servisi uyarısı yazılmadı ya da kayboldu';
+end if;
+if exists (select 1 from public.notifications
+            where baslik = 'Kamera okuma sınırı aşıldı' and profile_id = u_personel) then
+  raise exception 'FAIL 62e: sınır uyarısı personele gitti';
+end if;
+
+-- (f) Kamera nöbetçisi (037) uyarılarını TAM link üzerinden tekilleştirir:
+--     '/yonetim/kameralar' (elle kurulmuş köprü) ve
+--     '/yonetim/kameralar?c=<id>' (eşleştirilmiş kamera). Sınır uyarısı
+--     bunlardan birini taşısaydı "kameradan haber yok" uyarısını bir saat
+--     susturabilirdi — tam da kameranın sorun çıkardığı saatte.
+select n.link into v_txt from public.notifications n
+ where n.tur = 'KAMERA' and n.baslik = 'Kamera okuma sınırı aşıldı'
+   and n.profile_id = u_yonetici;
+if v_txt is null or v_txt = '/yonetim/kameralar' or v_txt like '/yonetim/kameralar?c=%' then
+  raise exception 'FAIL 62f: sınır uyarısının linki kamera nöbetçisinin tekilleştirmesine çarpıyor (%)', v_txt;
+end if;
+
+-- (g) Aynı saat içinde ikinci uyarı yok; saat dolunca yeniden uyarır.
+--     (Tek transaction'da now() sabit: önceki uyarı geri çekilerek kurulur.)
+perform pg_temp.kamera();
+perform public.kamera_okuma_siniri();
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Kamera okuma sınırı aşıldı'
+       and profile_id = u_yonetici) <> 1 then
+  raise exception 'FAIL 62g: aynı saat içinde ikinci sınır uyarısı gönderildi';
+end if;
+update public.notifications set created_at = now() - interval '61 minutes'
+ where tur = 'KAMERA' and baslik = 'Kamera okuma sınırı aşıldı';
+perform pg_temp.kamera();
+perform public.kamera_okuma_siniri();
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and baslik = 'Kamera okuma sınırı aşıldı'
+       and profile_id = u_yonetici) <> 2 then
+  raise exception 'FAIL 62g: bir saat sonra sınır uyarısı yinelenmedi';
+end if;
+
+-- (h) JWT taşıyan çağıran — Yönetici bile — sahte uyarı üretemez. Kontrol
+--     tekilleştirmeden ÖNCE olmalı: şu an saat içinde bir uyarı var, kontrol
+--     sonra gelseydi çağrı sessizce dönerdi.
+perform set_config('request.jwt.claims',
+  json_build_object('sub', u_yonetici::text, 'role', 'authenticated')::text, true);
+begin
+  perform public.kamera_okuma_siniri();
+  raise exception 'FAIL 62h: JWT taşıyan çağıran sınır uyarısı üretebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 62h: beklenmeyen hata (jwt): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+raise notice 'PASS 62: kamera okumaları etiketli ve istemciye kapalı, sınır uyarısı saatte bir, nöbetçiyi susturmuyor';
+
+-- =====================================================================
+-- 63  Tek kapı: kaybolan 422'den sonraki yeniden deneme aracı işler (041)
+--     Model aracı gördü ama plakayı okuyamadı → OKUNAMADI kaydı İLK
+--     denemede yazılır ve webhook 422 döner (039). O cevap köprüye
+--     ulaşmazsa (okuma köprünün 30 sn'sini aştı, Wi-Fi koptu) köprü AYNI
+--     islem_id ile yeniden dener — ve sınırdaki okumalar tam da ikinci
+--     seferde okunanlardır. 037'de kamera_tek_kapi o islem_id'de bir kayıt
+--     görünce "ISTISNA TEKRAR" diye kısa kesiyordu: kameranın OKUDUĞU araç
+--     için ne giriş ne çıkış yazılıyordu. 041'de:
+--       · çözülmemiş OKUNAMADI kaydı kararı engellemez, karar verilir;
+--       · karar insan gerektirmiyorsa kayıt sistemce kapanır (cozuldu_by
+--         boş, notta okunan plaka ve karar); gerektiriyorsa açık kalır ve
+--         okunan plakayı taşır — ikinci kayıt da ikinci bildirim de yok;
+--       · insanın çözdüğü kayıt ve olayın kendi kaydı eskisi gibi kısa
+--         kesilir;
+--       · yavaş ilk istek, bilet açıldıktan SONRA "okunamadı" ile biterse
+--         kayıt yazılmaz.
+--     Bugünkü (037/039) fonksiyonlarla bu blok kırmızıdır: (a) ISTISNA/
+--     TEKRAR döner → FAIL 63a; (d) sebep TEKRAR, plaka boş → FAIL 63d;
+--     (e) ISTISNA/TEKRAR → FAIL 63e; (f) 039 kaydı yazar → FAIL 63f;
+--     (g) kamera_okunamadi tek kapı kilidini almaz → FAIL 63g. (b), (c) ve
+--     (g)'nin geri kalanı korumadır. Dosya ilk hatada durduğu için 040
+--     koşulmuş, 041 koşulmamış bir veritabanında koşu FAIL 63a ile durur —
+--     beklenen budur.
+--     Plakalar önceki blokların açık bıraktığı ZZ plakalarından ve
+--     birbirinden en az İKİ karakter uzak (BN üçlüsü hariç — o bilerek bir
+--     karakter fark). Örneğin "ZZ63TK001", 61h'nin açık bıraktığı
+--     ZZ61TK001'e bir karakter uzak olurdu ve karar benzer-plaka kuralına
+--     düşüp test yanlış sebepten kalırdı.
+-- =====================================================================
+
+perform pg_temp.logout();
+
+v_liste := array['ZZ63GR101', 'ZZ63CZ202', 'ZZ63BN303', 'ZZ63BN308', 'ZZ63BN309',
+                 'ZZ63CK404', 'ZZ63TS505'];
+if exists (select 1 from public.biletler b, unnest(v_liste) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 63: fixture — ZZ63 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- İçeride iki eski araç: BN303 (benzer-plaka için) ve CK404 (çıkış için).
+-- "Az önce girdi" sayılmasınlar diye created_at giriş süresinin ötesine
+-- çekilir (PASS 58 deseni; değişmezlik guard'ı AÇIK bileti serbest bırakır).
+select tek_kapi_giris_yoksay_dk into v_n2 from public.otopark_ayarlari where id = 1;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63BN303', gen_random_uuid(), now()) into v_json;
+v_bilet := case when v_json ->> 'karar' = 'GIRIS' then (v_json ->> 'bilet_id')::uuid end;
+select public.kamera_tek_kapi('ZZ63CK404', gen_random_uuid(), now()) into v_json;
+v_bilet2 := case when v_json ->> 'karar' = 'GIRIS' then (v_json ->> 'bilet_id')::uuid end;
+perform pg_temp.logout();
+if v_bilet is null or v_bilet2 is null then
+  raise exception 'FAIL 63: fixture — içerideki iki araç açılamadı (%)', v_json;
+end if;
+update public.biletler
+   set created_at = now() - make_interval(mins => v_n2 + 1)
+ where id in (v_bilet, v_bilet2);
+
+-- (a) Asıl kural. İlk deneme okuyamadı (kayıt + tek bildirim), cevap
+--     kayboldu, yeniden deneme okudu: araç YENİ — bilet bu olayın kimliğiyle
+--     açılır, önceki kayıt sistemce kapanır, ikinci bildirim gitmez.
+select count(*) into v_n from public.notifications
+ where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', v_islem, now(), 'ZZ63GR1O1', 0.58, null) into v_id;
+select public.kamera_tek_kapi('ZZ63GR101', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS'
+   or v_json ->> 'sebep' is distinct from 'YENI_ARAC' then
+  raise exception 'FAIL 63a: okunamayan ilk denemeden sonra okuyan deneme aracı işlemedi (%)', v_json;
+end if;
+v_id2 := (v_json ->> 'bilet_id')::uuid;
+if not exists (select 1 from public.biletler
+                where id = v_id2 and islem_id = v_islem and plaka = 'ZZ63GR101'
+                  and durum = 'ACIK' and giris_kaynak = 'KAMERA') then
+  raise exception 'FAIL 63a: bilet bu olayın kimliğiyle açılmadı';
+end if;
+if (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
+   or not exists (
+     select 1 from public.istisnalar
+      where id = v_id and tur::text = 'OKUNAMADI'
+        and cozuldu_at is not null and cozuldu_by is null
+        and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ63GR101 → GIRIS (YENI_ARAC)') then
+  raise exception 'FAIL 63a: önceki okunamadı kaydı sistemce kapanmadı';
+end if;
+if (select count(*) from public.notifications
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
+  raise exception 'FAIL 63a: tek bildirim beklenirdi (okunamadı) — yeniden deneme bildirim üretmemeli';
+end if;
+
+-- (b) Bu cevap da kaybolup deneme yine gelirse AYNI bilet döner; kapanış
+--     notu değişmez.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63GR101', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS'
+   or v_json ->> 'sebep' is distinct from 'TEKRAR'
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_id2
+   or (select count(*) from public.biletler where plaka = 'ZZ63GR101') <> 1 then
+  raise exception 'FAIL 63b: tekrar oynatma aynı bileti döndürmedi (%)', v_json;
+end if;
+if (select cozum_notu from public.istisnalar where id = v_id)
+     is distinct from 'Kamera yeniden denedi ve okudu: ZZ63GR101 → GIRIS (YENI_ARAC)' then
+  raise exception 'FAIL 63b: tekrar oynatma kapanış notunu değiştirdi';
+end if;
+
+-- (c) Kaydı bir insan zaten çözdüyse karar onundur: yeniden deneme eskisi
+--     gibi kısa kesilir, bilet açılmaz, kayıt olduğu gibi kalır.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', v_islem, now(), null, null, null) into v_id;
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+perform public.istisna_coz(v_id, 'Test 63c — kapıda bakıldı');
+perform pg_temp.logout();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63CZ202', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'TEKRAR' then
+  raise exception 'FAIL 63c: insanın çözdüğü kayıttan sonra karar yeniden verildi (%)', v_json;
+end if;
+if exists (select 1 from public.biletler where plaka = 'ZZ63CZ202') then
+  raise exception 'FAIL 63c: insanın çözdüğü olay için bilet açıldı';
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_by = u_yonetici and plaka is null
+                  and cozum_notu = 'Test 63c — kapıda bakıldı') then
+  raise exception 'FAIL 63c: insanın çözdüğü kayıt değiştirildi';
+end if;
+
+-- (d) Yeniden deneme okudu ama karar yine insanın: plaka içerideki eski bir
+--     araca (BN303) bir karakter uzak. İkinci kayıt AÇILMAZ — önceki kayıt
+--     açık kalır, okunan plakayı ve sebebi taşır, modelin ilk tahmini durur;
+--     ikinci bildirim yok, benzer bilet "kapıda" yapılmaz.
+select count(*) into v_n from public.notifications
+ where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', v_islem, now(), 'ZZ63BN3O8', 0.55, null) into v_id;
+select public.kamera_tek_kapi('ZZ63BN308', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'BENZER_ACIK' then
+  raise exception 'FAIL 63d: okuyan yeniden denemede belirsiz okuma kararı verilmedi (%)', v_json;
+end if;
+if (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
+   or not exists (
+     select 1 from public.istisnalar
+      where id = v_id and tur::text = 'OKUNAMADI' and cozuldu_at is null
+        and plaka = 'ZZ63BN308'
+        and ham_yanit ->> 'sonradan_okunan' = 'ZZ63BN308'
+        and ham_yanit ->> 'sonradan_sebep' = 'BENZER_ACIK'
+        and ham_yanit ->> 'tahmin' = 'ZZ63BN3O8') then
+  raise exception 'FAIL 63d: önceki kayıt açık kalıp okunan plakayı taşımadı';
+end if;
+if (select count(*) from public.notifications
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
+  raise exception 'FAIL 63d: yeniden deneme ikinci bildirim gönderdi';
+end if;
+if exists (select 1 from public.biletler where plaka = 'ZZ63BN308')
+   or (select cikis_bekliyor_at from public.biletler where id = v_bilet) is not null then
+  raise exception 'FAIL 63d: belirsiz okuma bilet açtı ya da benzer bileti "kapıda" yaptı';
+end if;
+
+-- (e) Yeniden deneme içerideki eski aracın (CK404) plakasını okudu: araç
+--     çıkıyor. Bilet "kapıda" damgalanır (AÇIK kalır, para insanda), önceki
+--     kayıt sistemce kapanır.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', v_islem, now(), null, null, null) into v_id;
+select public.kamera_tek_kapi('ZZ63CK404', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS'
+   or v_json ->> 'sebep' is distinct from 'ACIK_BILET'
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet2 then
+  raise exception 'FAIL 63e: okuyan yeniden deneme çıkışı işlemedi (%)', v_json;
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'ACIK' and cikis_at is null
+                  and cikis_bekliyor_at is not null) then
+  raise exception 'FAIL 63e: çıkan araç "kapıda" damgalanmadı ya da bileti kapandı';
+end if;
+if not exists (
+     select 1 from public.istisnalar
+      where id = v_id and cozuldu_at is not null and cozuldu_by is null
+        and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ63CK404 → CIKIS (ACIK_BILET)') then
+  raise exception 'FAIL 63e: önceki okunamadı kaydı sistemce kapanmadı';
+end if;
+
+-- (f) Ters sıra: yavaş ilk istek hâlâ okurken yeniden deneme aracı işleyip
+--     bileti açtı. İlk istek "okunamadı" ile bittiğinde kayıt YAZILMAZ —
+--     yazılsaydı bileti olan bir araç için açık kayıt ve bildirim kalırdı.
+select count(*) into v_n from public.notifications
+ where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63TS505', v_islem, now()) into v_json;
+select public.kamera_okunamadi('ORTAK', v_islem, now(), 'ZZ63TS5O5', 0.41, null) into v_id;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 63f: kurulum — ZZ63TS505 girişi açılmadı (%)', v_json;
+end if;
+if v_id is not null or exists (select 1 from public.istisnalar where islem_id = v_islem) then
+  raise exception 'FAIL 63f: bileti açılmış olay için okunamadı kaydı yazıldı';
+end if;
+if (select count(*) from public.notifications
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
+  raise exception 'FAIL 63f: bileti açılmış olay bildirim üretti';
+end if;
+
+-- (g) Değişmeyenler. Olayın KENDİ kaydı (burada YON_BELIRSIZ) yeniden
+--     denemede yine kısa kesilir ve dokunulmaz. İki fonksiyon da yalnızca
+--     kameraya açık. İkisi de aynı tek kapı kilidini alır: (f)'deki yarış
+--     ancak böyle tam kapanır — eşzamanlılığın kendisi tek transaction'da
+--     sınanamaz, kilidin varlığı sınanır (059 deseni).
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63BN309', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'BENZER_ACIK' then
+  raise exception 'FAIL 63g: kurulum — belirsiz okuma kaydı yazılmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ63BN309', v_islem, now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'TEKRAR'
+   or (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
+   or not exists (
+     select 1 from public.istisnalar
+      where islem_id = v_islem and tur::text = 'YON_BELIRSIZ'
+        and cozuldu_at is null and plaka = 'ZZ63BN309'
+        and not (coalesce(ham_yanit, '{}'::jsonb) ? 'sonradan_okunan')) then
+  raise exception 'FAIL 63g: olayın kendi kaydı yeniden denemede kısa kesilmedi ya da değişti (%)', v_json;
+end if;
+
+foreach v_txt in array array[
+  'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb)',
+  'public.kamera_okunamadi(text, uuid, timestamptz, text, numeric, jsonb)'
+] loop
+  if not has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 63g: % service_role rolüne kapalı — webhook çağıramaz', v_txt;
+  end if;
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute') then
+    raise exception 'FAIL 63g: % istemciye açık', v_txt;
+  end if;
+end loop;
+
+if (select count(distinct p.proname) from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.proname in ('kamera_tek_kapi', 'kamera_okunamadi')
+       and p.prosrc like '%pg_advisory_xact_lock(hashtext(''kamera_tek_kapi''))%') <> 2 then
+  raise exception 'FAIL 63g: kamera_okunamadi tek kapı kilidini almıyor — yeniden denemeyle yarışabilir';
+end if;
+
+raise notice 'PASS 63: tek kapıda kaybolan 422''den sonraki yeniden deneme aracı işliyor, okunamadı kaydı kendiliğinden kapanıyor';
+
+-- =====================================================================
+-- 64  Kamera fotoğrafı saklanır (042)
+--     Webhook HİÇBİR kamera fotoğrafını saklamıyordu (her çağrıda p_foto
+--     null): kameranın açtığı biletin, vurduğu "kapıda" damgasının ve
+--     yazdığı her kaydın fotoğrafı yoktu. Artık köprü (1.2.3), okuduğu
+--     plaka kesitinin sıkıştırılmış bir kopyasını (≤100 KB) da gönderir;
+--     webhook KARARDAN SONRA onu `kamera/<islem_id>.jpg` olarak yükler ve
+--     kamera_foto_bagla ile yalnızca BU olayın yazdığı yere bağlar:
+--       · olayın açtığı kamera biletinin giris_foto'su,
+--       · olayın yazdığı kamera kaydının foto_path'i,
+--       · olayın vurduğu "kapıda" damgasının cikis_foto'su (aynı bilet VE
+--         aynı zaman damgası).
+--     Yol olaya bağlıdır (başka bir olayın ya da telefonun fotoğrafı
+--     bağlanamaz), dolu yol asla ezilmez (ilk fotoğraf kalır), kapanmış ve
+--     kamerasız bilete dokunulmaz.
+--     042 koşulmamış bir veritabanında dosya PASS 41b'de durur (beklenen
+--     listede adı var); 41 atlanırsa 64a temiz bir FAIL verir. (h) 041'in
+--     davranışına dayanır: 040 → 041 → 042 sırayla koşulur.
+-- =====================================================================
+
+perform pg_temp.logout();
+
+-- (a) Fonksiyon var, yalnızca kamera (service_role) çağırır.
+if to_regprocedure('public.kamera_foto_bagla(uuid, uuid, timestamptz, text)') is null then
+  raise exception 'FAIL 64a: kamera_foto_bagla yok — 042 koşulmamış';
+end if;
+if not has_function_privilege('service_role',
+     'public.kamera_foto_bagla(uuid, uuid, timestamptz, text)', 'execute') then
+  raise exception 'FAIL 64a: kamera_foto_bagla service_role rolüne kapalı — webhook bağlayamaz';
+end if;
+foreach v_txt in array array['anon', 'authenticated'] loop
+  if has_function_privilege(v_txt,
+       'public.kamera_foto_bagla(uuid, uuid, timestamptz, text)', 'execute') then
+    raise exception 'FAIL 64a: kamera_foto_bagla % rolüne açık', v_txt;
+  end if;
+end loop;
+
+v_liste := array['ZZ64GA111', 'ZZ64CX222', 'ZZ64KP333', 'ZZ64MB444', 'ZZ64BY555',
+                 'ZZ64YB666', 'ZZ64YB668', 'ZZ64OT777'];
+if exists (select 1 from public.biletler b, unnest(v_liste) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 64: fixture — ZZ64 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- (b) JWT taşıyan çağıran (bir insan) reddedilir; olaya ait olmayan yol,
+--     boş yol ve kimliksiz çağrı reddedilir. Sabit, harf içeren bir kimlik:
+--     büyük harfli biçimin farklı olduğu kesin olsun.
+perform set_config('request.jwt.claims',
+  json_build_object('sub', u_personel::text, 'role', 'authenticated')::text, true);
+begin
+  perform public.kamera_foto_bagla(gen_random_uuid(), null, null, 'kamera/x.jpg');
+  raise exception 'FAIL 64b: JWT taşıyan çağıran fotoğraf bağlayabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if lower(sqlerrm) not like '%yetkiniz yok%' then
+    raise exception 'FAIL 64b: beklenmeyen hata (jwt): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+v_islem := 'abcdef12-3456-4789-abcd-ef1234567890'::uuid;
+perform pg_temp.kamera();
+foreach v_txt in array array[
+  'kamera/' || gen_random_uuid()::text || '.jpg',
+  'kamera/' || upper(v_islem::text) || '.jpg',
+  'kamera/' || v_islem::text || '.png',
+  '../kamera/' || v_islem::text || '.jpg',
+  '2026-10-28/giris-34ABC123-1a2b3c4d.jpg'
+] loop
+  begin
+    perform public.kamera_foto_bagla(v_islem, null, null, v_txt);
+    raise exception 'FAIL 64b: olaya ait olmayan yol kabul edildi: %', v_txt;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+  end;
+end loop;
+begin
+  perform public.kamera_foto_bagla(v_islem, null, null, null);
+  raise exception 'FAIL 64b: boş yol kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.kamera_foto_bagla(null, null, null, 'kamera/' || v_islem::text || '.jpg');
+  raise exception 'FAIL 64b: işlem kimliği olmadan kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Giriş kapısı: kameranın açtığı bilet fotoğrafını alır; ikinci çağrı
+--     hiçbir şey değiştirmez (ilk fotoğraf kalır). Giriş biletinde "kapıda"
+--     damgası olmadığı için çıkış fotoğrafı yazılmaz.
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+select public.bilet_ac('ZZ64GA111', v_islem, 'KAMERA', now()) into v_bilet;
+select public.kamera_foto_bagla(v_islem, v_bilet, now(), v_txt2) into v_n;
+select public.kamera_foto_bagla(v_islem, v_bilet, now(), v_txt2) into v_n2;
+perform pg_temp.logout();
+if v_bilet is null or v_n <> 1 or v_n2 <> 0
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and giris_foto = v_txt2 and cikis_foto is null) then
+  raise exception 'FAIL 64c: kamera bileti fotoğrafını almadı ya da ikinci çağrı değiştirdi (% / %)', v_n, v_n2;
+end if;
+
+-- (d) Çıkış kapısı: "kapıda" damgası fotoğrafını alır — ama yalnızca bu
+--     olayın vurduğu damga (aynı zaman). Başka zamanla çağrı 0 döner; giriş
+--     fotoğrafına dokunulmaz (biletin islem_id'si girişin kimliğidir).
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.bilet_ac('ZZ64CX222', v_islem, 'KAMERA', now()) into v_bilet2;
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+v_ts := now() - interval '10 seconds';
+select public.kamera_cikis_bildir('ZZ64CX222', v_islem, v_ts) into v_id;
+select public.kamera_foto_bagla(v_islem, v_bilet2, v_ts + interval '1 second', v_txt2) into v_n;
+select public.kamera_foto_bagla(v_islem, v_bilet2, v_ts, v_txt2) into v_n2;
+perform pg_temp.logout();
+if v_id is distinct from v_bilet2 or v_n <> 0 or v_n2 <> 1
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet2 and durum = 'ACIK' and cikis_foto = v_txt2
+                     and giris_foto is null and cikis_bekliyor_at = v_ts) then
+  raise exception 'FAIL 64d: çıkış damgasının fotoğrafı yanlış bağlandı (% / %)', v_n, v_n2;
+end if;
+perform pg_temp.kamera();
+select public.kamera_foto_bagla(v_islem, v_bilet2, v_ts, v_txt2) into v_n;
+perform pg_temp.logout();
+if v_n <> 0 then
+  raise exception 'FAIL 64d: dolu çıkış fotoğrafı yeniden yazıldı';
+end if;
+
+-- (e) Kapanmış bilete dokunulmaz — ve hata da vermez (değişmezlik guard'ı
+--     dolu bir foto yolunu reddederdi; fonksiyon oraya hiç gitmemeli).
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+select public.bilet_ac('ZZ64KP333', v_islem, 'KAMERA', now()) into v_bilet;
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal(v_bilet, 'Test — 64e');
+perform pg_temp.logout();
+perform pg_temp.kamera();
+select public.kamera_foto_bagla(v_islem, v_bilet, now(), v_txt2) into v_n;
+perform pg_temp.logout();
+if v_n <> 0 or (select giris_foto from public.biletler where id = v_bilet) is not null then
+  raise exception 'FAIL 64e: kapanmış bilete fotoğraf yazıldı';
+end if;
+
+-- (f) Telefonla açılmış bilet kameranın değildir: aynı kimlik gelse bile
+--     fotoğrafı yazılmaz.
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id)
+select v_islem, 'ZZ64MB444', now(), t.id from public.tarifeler t order by t.id limit 1
+returning id into v_bilet;
+perform pg_temp.kamera();
+select public.kamera_foto_bagla(v_islem, v_bilet, now(), v_txt2) into v_n;
+perform pg_temp.logout();
+if v_n <> 0 or (select giris_foto from public.biletler where id = v_bilet) is not null then
+  raise exception 'FAIL 64f: telefonla açılmış bilete kamera fotoğrafı yazıldı';
+end if;
+
+-- (g) Kamera kayıtları fotoğrafını alır: okunamayan plaka (giriş), bayat
+--     olay (bilet yerine kayıt) ve tek kapıda belirsiz okuma.
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id;
+select public.kamera_foto_bagla(v_islem, null, null, v_txt2) into v_n;
+select public.kamera_foto_bagla(v_islem, null, null, v_txt2) into v_n2;
+perform pg_temp.logout();
+if v_id is null or v_n <> 1 or v_n2 <> 0
+   or (select foto_path from public.istisnalar where id = v_id) is distinct from v_txt2 then
+  raise exception 'FAIL 64g: okunamayan plaka kaydı fotoğrafını almadı (% / %)', v_n, v_n2;
+end if;
+
+select kamera_gecikme_limiti_dk into v_n2 from public.otopark_ayarlari where id = 1;
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+select public.bilet_ac('ZZ64BY555', v_islem, 'KAMERA',
+         now() - make_interval(mins => coalesce(v_n2, 720) + 60)) into v_bilet;
+select public.kamera_foto_bagla(v_islem, v_bilet, now(), v_txt2) into v_n;
+perform pg_temp.logout();
+if v_bilet is not null or v_n <> 1
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'BAYAT' and foto_path = v_txt2) then
+  raise exception 'FAIL 64g: bayat olay kaydı fotoğrafını almadı (%)', v_n;
+end if;
+
+select tek_kapi_giris_yoksay_dk into v_n2 from public.otopark_ayarlari where id = 1;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ64YB666', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+v_bilet := case when v_json ->> 'karar' = 'GIRIS' then (v_json ->> 'bilet_id')::uuid end;
+if v_bilet is null then
+  raise exception 'FAIL 64: fixture — ZZ64YB666 girişi açılmadı (%)', v_json;
+end if;
+update public.biletler
+   set created_at = now() - make_interval(mins => v_n2 + 1) where id = v_bilet;
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ64YB668', v_islem, now()) into v_json;
+select public.kamera_foto_bagla(v_islem, (v_json ->> 'bilet_id')::uuid, now(), v_txt2) into v_n;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'BENZER_ACIK' or v_n <> 1
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'YON_BELIRSIZ' and foto_path = v_txt2)
+   or (select giris_foto from public.biletler where id = v_bilet) is not null then
+  raise exception 'FAIL 64g: tek kapıdaki belirsiz okuma kaydı fotoğrafını almadı (% / %)', v_json, v_n;
+end if;
+
+-- (h) 041 ile birlikte: tek kapıda ilk deneme okuyamadı, yeniden deneme
+--     okudu ve bileti açtı. Aynı olayın fotoğrafı İKİ yere de bağlanır: açılan
+--     bilete ve (sistemce kapanmış) okunamadı kaydına.
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+perform pg_temp.kamera();
+perform public.kamera_okunamadi('ORTAK', v_islem, now(), null, null, null);
+select public.kamera_tek_kapi('ZZ64OT777', v_islem, now()) into v_json;
+select public.kamera_foto_bagla(v_islem, (v_json ->> 'bilet_id')::uuid, now(), v_txt2) into v_n;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_n <> 2
+   or not exists (select 1 from public.biletler
+                   where islem_id = v_islem and giris_foto = v_txt2)
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'OKUNAMADI' and foto_path = v_txt2) then
+  raise exception 'FAIL 64h: tek kapıdaki okunamadı + yeniden deneme fotoğrafı iki yere bağlanmadı (% / %)', v_json, v_n;
+end if;
+
+-- (i) Hiçbir şeye ait olmayan olay: 0, hata yok.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_foto_bagla(v_islem, gen_random_uuid(), now(),
+         'kamera/' || v_islem::text || '.jpg') into v_n;
+perform pg_temp.logout();
+if v_n <> 0 then
+  raise exception 'FAIL 64i: hiçbir kayda ait olmayan olay % yere bağlandı', v_n;
+end if;
+
+raise notice 'PASS 64: kamera fotoğrafı yalnızca olayın kendi biletine, damgasına ya da kaydına, boşsa ve bir kez bağlanıyor';
+
+-- =====================================================================
+-- 65  Fotoğraf temizliği Storage API ile (043)
+-- =====================================================================
+-- 025'in gece işi saklama süresini aşan fotoğrafları `delete from
+-- storage.objects` ile siliyordu. Supabase'e göre bu yalnızca KAYIT satırını
+-- siler: dosya kovada YETİM kalır, ücretsiz 1 GB'a sayılmaya devam eder ve
+-- saklama süresinden sonra da durur (KVKK). 043 SQL silmeyi kaldırır; silme
+-- Edge Function foto-temizle'nin Storage API çağrısıdır (döngüsü:
+-- tests/temizlik.check.mjs). Bu blok veritabanı yarısını sınar: liste doğru
+-- dosyaları verir ve uygulamadaki saklama ayarına uyar, gece işi artık SQL
+-- ile hiçbir şey silmez, eksik kurulum ve hata Yöneticiye günde bir kez
+-- söylenir. Test dosyaları `zz-test-65/` önekli ve 2000 yılından: canlı
+-- kovadaki gerçek fotoğraflardan ayrılır, sıralamada hep en eskidir.
+-- 043'ten önce koşulursa dosya FAIL 41b'de durur (liste onu bekliyor).
+perform pg_temp.logout();
+
+if to_regprocedure('public.foto_temizlik_listesi(integer)') is null
+   or to_regprocedure('public.foto_temizlik_hata(text)') is null
+   or to_regprocedure('public.foto_temizlik_tetikle()') is null
+   or to_regclass('public.foto_temizlik_ayar') is null then
+  raise exception 'FAIL 65a: fotoğraf temizliği yok — 043 koşulmamış';
+end if;
+
+-- (b) Yetkiler: liste ve hata yalnızca service_role'e; ayar tablosu (gizli
+--     anahtar) hiçbir istemciye.
+foreach v_txt in array array['public.foto_temizlik_listesi(integer)',
+                             'public.foto_temizlik_hata(text)'] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute') then
+    raise exception 'FAIL 65b: % istemciye açık', v_txt;
+  end if;
+  if not has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 65b: % foto-temizle''ye (service_role) kapalı', v_txt;
+  end if;
+end loop;
+if has_table_privilege('anon', 'public.foto_temizlik_ayar', 'select')
+   or has_table_privilege('authenticated', 'public.foto_temizlik_ayar', 'select')
+   or has_table_privilege('authenticated', 'public.foto_temizlik_ayar', 'insert')
+   or has_table_privilege('authenticated', 'public.foto_temizlik_ayar', 'update') then
+  raise exception 'FAIL 65b: temizliğin gizli anahtarı istemciye açık';
+end if;
+
+-- (c) Gece işi artık SQL ile silmiyor, eski yolları hâlâ boşaltıyor ve
+--     temizliği tetikliyor. public şemasında SQL ile storage silen HİÇBİR
+--     fonksiyon kalmamalı.
+v_txt := pg_get_functiondef('public.run_gunluk_bakim()'::regprocedure);
+if v_txt ~* 'delete\s+from\s+storage\.objects' then
+  raise exception 'FAIL 65c: run_gunluk_bakim fotoğrafları hâlâ SQL ile siliyor';
+end if;
+if position('foto_temizlik_tetikle' in v_txt) = 0 then
+  raise exception 'FAIL 65c: run_gunluk_bakim fotoğraf temizliğini tetiklemiyor';
+end if;
+if v_txt !~* 'set\s+giris_foto\s*=\s*null' or v_txt !~* 'set\s+cikis_foto\s*=\s*null'
+   or v_txt !~* 'set\s+foto_path\s*=\s*null' then
+  raise exception 'FAIL 65c: run_gunluk_bakim eski fotoğraf yollarını artık boşaltmıyor';
+end if;
+select string_agg(p.proname, ', ') into v_txt2
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prokind in ('f', 'p')
+   and pg_get_functiondef(p.oid) ~* 'delete\s+from\s+storage\.objects';
+if v_txt2 is not null then
+  raise exception 'FAIL 65c: SQL ile storage silen fonksiyon kaldı: %', v_txt2;
+end if;
+
+-- (d) Liste: yalnızca plaka-foto, yalnızca saklama süresini aşanlar, en eski
+--     önce, en fazla 1000; uygulamadaki ayar (foto_saklama_gun) belirler.
+insert into storage.buckets (id, name, public)
+values ('zz-test-65', 'zz-test-65', false)
+on conflict (id) do nothing;
+insert into storage.objects (bucket_id, name, created_at, updated_at, metadata) values
+  ('plaka-foto', 'zz-test-65/a-cok-eski.jpg', '2000-01-01', '2000-01-01', '{"size": 100}'),
+  ('plaka-foto', 'zz-test-65/b-cok-eski.jpg', '2000-01-02', '2000-01-02', '{"size": 100}'),
+  ('plaka-foto', 'zz-test-65/c-11-gun.jpg', now() - interval '11 days',
+                 now() - interval '11 days', '{"size": 100}'),
+  ('plaka-foto', 'zz-test-65/d-9-gun.jpg', now() - interval '9 days',
+                 now() - interval '9 days', '{"size": 100}'),
+  ('zz-test-65', 'zz-test-65/e-baska-kova.jpg', '2000-01-01', '2000-01-01', '{"size": 100}');
+update public.otopark_ayarlari set foto_saklama_gun = 10 where id = 1;
+
+perform pg_temp.kamera();
+select coalesce(array_agg(x), '{}'::text[]) into v_liste
+  from public.foto_temizlik_listesi(5000) as t(x);
+perform pg_temp.logout();
+if not ('zz-test-65/a-cok-eski.jpg' = any(v_liste)
+        and 'zz-test-65/b-cok-eski.jpg' = any(v_liste)
+        and 'zz-test-65/c-11-gun.jpg' = any(v_liste)) then
+  raise exception 'FAIL 65d: saklama süresini (10 gün) aşan fotoğraf listede yok';
+end if;
+if 'zz-test-65/d-9-gun.jpg' = any(v_liste) then
+  raise exception 'FAIL 65d: saklama süresi dolmamış (9 gün) fotoğraf silinecekler listesinde';
+end if;
+if 'zz-test-65/e-baska-kova.jpg' = any(v_liste) then
+  raise exception 'FAIL 65d: başka kovadaki dosya silinecekler listesinde';
+end if;
+if cardinality(v_liste) > 1000 then
+  raise exception 'FAIL 65d: liste 1000''i aştı (%)', cardinality(v_liste);
+end if;
+
+perform pg_temp.kamera();
+select array_agg(x order by o) into v_liste
+  from public.foto_temizlik_listesi(2) with ordinality as t(x, o);
+select count(*) into v_n from public.foto_temizlik_listesi(-5);
+perform pg_temp.logout();
+if v_liste is distinct from array['zz-test-65/a-cok-eski.jpg', 'zz-test-65/b-cok-eski.jpg'] then
+  raise exception 'FAIL 65d: limit/sıra yanlış — en eski ikisi beklenirken %', v_liste;
+end if;
+if v_n <> 0 then
+  raise exception 'FAIL 65d: eksi limit % satır döndürdü', v_n;
+end if;
+
+update public.otopark_ayarlari set foto_saklama_gun = 30 where id = 1;
+perform pg_temp.kamera();
+select coalesce(array_agg(x), '{}'::text[]) into v_liste
+  from public.foto_temizlik_listesi(1000) as t(x);
+perform pg_temp.logout();
+if 'zz-test-65/c-11-gun.jpg' = any(v_liste) then
+  raise exception 'FAIL 65d: ayar 30 gün iken 11 günlük fotoğraf listede — ayara uyulmuyor';
+end if;
+
+-- (e) Gece işi koşar ve storage.objects'ten HİÇBİR satırı SQL ile silmez.
+--     (Tetiklenen istek, varsa, pg_net kuyruğuna yazılır ve bu işlem geri
+--     alındığı için hiç gönderilmez.)
+update public.otopark_ayarlari set foto_saklama_gun = 1 where id = 1;
+select count(*) into v_n from storage.objects where name like 'zz-test-65/%';
+perform public.run_gunluk_bakim();
+select count(*) into v_n2 from storage.objects where name like 'zz-test-65/%';
+if v_n2 <> v_n then
+  raise exception 'FAIL 65e: gece işi storage.objects''ten SQL ile % satır sildi', v_n - v_n2;
+end if;
+update public.otopark_ayarlari set foto_saklama_gun = 30 where id = 1;
+
+-- (f) Kurulmamışsa Yöneticiye söylenir — günde bir kez, Personele değil.
+delete from public.foto_temizlik_ayar;
+delete from public.notifications
+ where tur = 'KAMERA' and baslik in ('Fotoğraf temizliği kurulmamış',
+                                     'Fotoğraf temizliği başarısız');
+perform public.foto_temizlik_tetikle();
+perform public.foto_temizlik_tetikle();
+select count(*) into v_n from public.notifications
+ where profile_id = u_yonetici and tur = 'KAMERA'
+   and baslik = 'Fotoğraf temizliği kurulmamış';
+if v_n <> 1 then
+  raise exception 'FAIL 65f: kurulmamış temizlik için % uyarı (1 beklenirdi)', v_n;
+end if;
+select count(*) into v_n from public.notifications
+ where profile_id = u_personel and baslik like 'Fotoğraf temizliği%';
+if v_n <> 0 then
+  raise exception 'FAIL 65f: temizlik uyarısı Personele gitti';
+end if;
+
+-- (g) Kuruluysa uyarı yok; istek gizli başlıkla kuyruğa girer.
+delete from public.notifications where baslik = 'Fotoğraf temizliği kurulmamış';
+insert into public.foto_temizlik_ayar (id, url, gizli)
+values (1, 'https://zz-test-65.invalid/functions/v1/foto-temizle', repeat('x', 32));
+perform public.foto_temizlik_tetikle();
+select count(*) into v_n from public.notifications
+ where baslik = 'Fotoğraf temizliği kurulmamış';
+if v_n <> 0 then
+  raise exception 'FAIL 65g: kurulu temizlik yine de "kurulmamış" uyarısı yazdı';
+end if;
+if to_regclass('net.http_request_queue') is not null then
+  execute 'select count(*), max(headers ->> ''x-temizlik-secret'')
+             from net.http_request_queue where url = $1'
+    into v_n, v_txt
+    using 'https://zz-test-65.invalid/functions/v1/foto-temizle';
+  if v_n <> 1 or v_txt is distinct from repeat('x', 32) then
+    raise exception 'FAIL 65g: istek kuyruğa gizli başlıkla girmedi (% satır)', v_n;
+  end if;
+else
+  raise notice '     (65g: net.http_request_queue yok — kuyruk kontrolü atlandı)';
+end if;
+
+-- (h) Temizlik hatası Yöneticiye günde bir kez, mesajıyla; uzun mesaj kısalır.
+perform pg_temp.kamera();
+perform public.foto_temizlik_hata('Storage 503 ' || repeat('y', 1000));
+perform public.foto_temizlik_hata('ikinci hata');
+perform pg_temp.logout();
+select count(*), max(govde) into v_n, v_txt from public.notifications
+ where profile_id = u_yonetici and tur = 'KAMERA'
+   and baslik = 'Fotoğraf temizliği başarısız';
+if v_n <> 1 then
+  raise exception 'FAIL 65h: temizlik hatası için % uyarı (1 beklenirdi)', v_n;
+end if;
+if position('Storage 503' in v_txt) = 0 or length(v_txt) > 400 then
+  raise exception 'FAIL 65h: uyarı metni hatayı taşımıyor ya da çok uzun (% karakter)', length(v_txt);
+end if;
+
+raise notice 'PASS 65: fotoğraflar SQL ile değil Storage API ile silinir; liste saklama ayarına uyar; kurulum eksikliği ve hata Yöneticiye günde bir kez söylenir';
 
 perform pg_temp.logout();
 raise notice '';

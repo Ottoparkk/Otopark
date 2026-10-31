@@ -14,7 +14,7 @@
     "allowImportingTsExtensions": true,
     "types": [],
     "paths": {
-      "npm:zod@4.4.3": ["./node_modules/zod"],
+      "npm:zod@4.6.7": ["./node_modules/zod"],
       "npm:@supabase/supabase-js@2.112.3": ["./node_modules/@supabase/supabase-js"]
     }
   },
@@ -22,6 +22,7 @@
     "tests/deno-shim.d.ts",
     "supabase/functions/plaka-oku/index.ts",
     "supabase/functions/kamera-webhook/index.ts",
-    "supabase/functions/kamera-eslestir/index.ts"
+    "supabase/functions/kamera-eslestir/index.ts",
+    "supabase/functions/foto-temizle/index.ts"
   ]
 }

@@ -382,3 +382,64 @@ export function ikinciGorusGerekir(
   if (okumaGuvenilir(plaka, guven, okunamadi)) return false
   return guven >= CELISKI_TAVANI && guven <= IKINCI_GORUS_UST
 }
+
+/**
+ * Time budget for ONE read (every provider call of it together: the first
+ * read, the structured-outputs fallback, the refusal fallback and the second
+ * opinion). Before this the calls had no limit: a provider that hung kept the
+ * camera webhook waiting until Supabase killed the function, so its error
+ * path — the exception row and the alert — never ran, the bridge gave up
+ * after four 30 s tries and the car was lost without a trace. 20 s leaves
+ * about 10 s of the bridge's 30 s for the database work, the 5 s photo upload
+ * and the reply, so a timeout reaches the bridge as an ordinary 502.
+ */
+export const OKUMA_BUTCE_MS = 20_000
+
+/**
+ * The second opinion is asked only if at least this much of the budget is
+ * left (a Sonnet read takes several seconds). Otherwise the first read is
+ * kept — a manual entry, never an error.
+ */
+export const IKINCI_GORUS_EN_AZ_MS = 8_000
+
+/** The read did not finish inside its budget. Thrown like any provider error. */
+export class OkumaSuresiDoldu extends Error {
+  constructor() {
+    super(`Plaka okuma süresi doldu (${OKUMA_BUTCE_MS / 1000} sn).`)
+    this.name = 'OkumaSuresiDoldu'
+  }
+}
+
+/** Is there time left for a second opinion before `bitis` (epoch ms)? */
+export function ikinciGorusSuresiVar(bitis: number, simdi: number = Date.now()): boolean {
+  return bitis - simdi >= IKINCI_GORUS_EN_AZ_MS
+}
+
+/**
+ * Runs `is(signal)` and ends by `bitis` (epoch ms) at the latest. At the
+ * deadline the signal is aborted (a real fetch then stops, body included)
+ * AND the call rejects with `OkumaSuresiDoldu` on its own timer — so it ends
+ * on time even if something ignores the abort. Any other error passes
+ * through as itself. No time left: rejects at once, `is` is never called.
+ */
+export function sureliCagri<T>(
+  bitis: number,
+  is: (signal: AbortSignal) => Promise<T>,
+  simdi: () => number = Date.now,
+): Promise<T> {
+  const kalan = bitis - simdi()
+  if (kalan <= 0) return Promise.reject(new OkumaSuresiDoldu())
+  const iptal = new AbortController()
+  let zamanlayici: ReturnType<typeof setTimeout> | undefined
+  const sure = new Promise<never>((_, reddet) => {
+    zamanlayici = setTimeout(() => {
+      iptal.abort()
+      reddet(new OkumaSuresiDoldu())
+    }, kalan)
+  })
+  // The timer rejects in the same tick it aborts, so the race always settles
+  // with OkumaSuresiDoldu — the work's own late AbortError is ignored (race
+  // has already subscribed to it, so it is not an unhandled rejection).
+  const calisan = Promise.resolve().then(() => is(iptal.signal))
+  return Promise.race([calisan, sure]).finally(() => clearTimeout(zamanlayici))
+}

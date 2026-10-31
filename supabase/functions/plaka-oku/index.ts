@@ -15,7 +15,7 @@
  *        which model to use, never where to send it.
  */
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.112.3'
-import { z } from 'npm:zod@4.4.3'
+import { z } from 'npm:zod@4.6.7'
 import { corsHeaders, json } from '../_shared/http.ts'
 import { normalizeImage, okumaGuvenilir, plakaOku, tidyPlaka } from '../_shared/ocr.ts'
 

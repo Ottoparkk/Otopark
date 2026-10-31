@@ -379,11 +379,12 @@ supabase functions deploy plaka-oku
 supabase functions deploy kamera-webhook --no-verify-jwt
 supabase functions deploy kamera-eslestir --no-verify-jwt
 supabase functions deploy send-push --no-verify-jwt
+supabase functions deploy foto-temizle --no-verify-jwt
 ```
 
-`--no-verify-jwt` is **required** for those three: a camera, the installer
-before it has any credential at all, and a database webhook cannot present a
-JWT. Their boundary is a secret or a single-use code instead.
+`--no-verify-jwt` is **required** for those four: a camera, the installer
+before it has any credential at all, and the database (a webhook or pg_net)
+cannot present a JWT. Their boundary is a secret or a single-use code instead.
 
 **Order matters for `kamera-eslestir`:** migration `036` must be applied first —
 the function calls `kamera_eslestir`, which does not exist before it. Deploying
@@ -399,6 +400,7 @@ Secrets (**Edge Functions → Secrets**):
 | `KAMERA_WEBHOOK_SECRET` | kamera-webhook | **At least 16 characters**, random |
 | `KAMERA_WEBHOOK_SECRET_ESKI` | kamera-webhook | Only during rotation |
 | `PUSH_SECRET` | send-push | At least 16 characters, random |
+| `FOTO_TEMIZLIK_SECRET` | foto-temizle | At least 16 characters, random — step 8a |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | send-push | Step 9 |
 | `PLATE_RECOGNIZER_TOKEN` | plaka-oku | Only if switching to `ALPR` mode |
 
@@ -407,6 +409,44 @@ To generate a random key:
 ```bash
 openssl rand -base64 32
 ```
+
+### 8a. Photo cleanup (migration 043)
+
+Photos older than the app's **Fotoğraf saklama** setting (1–30 days) are
+deleted every night. The nightly job decides which ones; the Edge Function
+`foto-temizle` deletes the files through the **Storage API**. (Before 043 they
+were deleted with SQL, which removes only the metadata row — Supabase keeps
+the file, still counted against the 1 GB.)
+
+1. Secret `FOTO_TEMIZLIK_SECRET` (random, ≥ 16 characters) and deploy:
+   ```bash
+   npx supabase secrets set FOTO_TEMIZLIK_SECRET=<random>
+   npx supabase functions deploy foto-temizle --no-verify-jwt
+   ```
+2. Point the nightly job at it — inserted by hand, so the secret is not in git:
+   ```sql
+   insert into public.foto_temizlik_ayar (id, url, gizli)
+   values (1,
+     'https://<project-ref>.supabase.co/functions/v1/foto-temizle',
+     '<FOTO_TEMIZLIK_SECRET>')
+   on conflict (id) do update
+     set url = excluded.url, gizli = excluded.gizli, updated_at = now();
+   ```
+3. Run it once now instead of waiting for the night, then check the answer
+   (pg_net keeps responses for a few hours):
+   ```sql
+   select public.foto_temizlik_tetikle();
+   ```
+   ```sql
+   select status_code, content, created from net._http_response order by created desc limit 3;
+   ```
+   Expect `200` with `{"silinen":…,"tur":…,"bitti":true}`. A `401` means the
+   two secrets differ.
+
+Without step 2 nothing is deleted and the Yönetici gets a daily
+"Fotoğraf temizliği kurulmamış" alert; a failed run sends
+"Fotoğraf temizliği başarısız". Storage size checks:
+`supabase/sorgular/foto_depolama.sql`.
 
 ## 9. Web Push
 

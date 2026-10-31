@@ -25,3 +25,9 @@ verify_jwt = false
 # Deploy with:  supabase functions deploy kamera-eslestir --no-verify-jwt
 [functions.kamera-eslestir]
 verify_jwt = false
+
+# Nightly photo cleanup (043), called by the database through pg_net, which
+# cannot present a JWT. Guarded by the x-temizlik-secret header.
+# Deploy with:  supabase functions deploy foto-temizle --no-verify-jwt
+[functions.foto-temizle]
+verify_jwt = false

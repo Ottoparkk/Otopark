@@ -56,8 +56,11 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
     'Kamera bir araç gördü ama plakasını okuyamadı; bilet açılmadı. Araç içerideyse ve bileti yoksa girişini elle açın. Zaten bileti varsa kaydı çözüldü olarak işaretleyin.',
 }
 
+// The last sentence matches the entrance text's "Zaten bileti varsa…": a later
+// photo of the same car is a new event, opens its ticket and leaves this row
+// open (see KENDILIGINDEN_COZULMEZ below).
 const OKUNAMADI_TEK_KAPI =
-  'Tek kapıda bir araç görüldü ama plakası okunamadı; girdiği mi çıktığı mı bilinmiyor. İçeride bileti olmayan bir araç varsa girişini elle açın; çıkan bir araçsa kaydı çözüldü olarak işaretleyin.'
+  'Tek kapıda bir araç görüldü ama plakası okunamadı; girdiği mi çıktığı mı bilinmiyor. İçeride bileti olmayan bir araç varsa girişini elle açın; çıkan bir araçsa kaydı çözüldü olarak işaretleyin. Kamera plakayı başka bir karede okumuş olabilir: aracın zaten bileti varsa kaydı çözüldü olarak işaretleyin.'
 
 function aciklama(i: Istisna): string {
   return i.tur === 'OKUNAMADI' && i.yon === 'ORTAK' ? OKUNAMADI_TEK_KAPI : TUR_ACIKLAMA[i.tur]
@@ -78,11 +81,19 @@ function okumaBilgisi(i: Istisna): { tahmin: string | null; guven: number | null
 }
 
 /**
- * Exceptions nothing will ever resolve on its own. The camera deliberately
- * declined to act, so no retry is coming — the "do not enter it by hand" note
- * below would be exactly the wrong advice for these. An unreadable plate is
- * one: the bridge does not retry it (and a failed read is only recorded on its
- * last attempt).
+ * Exceptions a person has to act on. The camera deliberately declined to act,
+ * so the "do not enter it by hand" note below would be exactly the wrong
+ * advice for these. An unreadable plate is one: the bridge does not retry a
+ * 422 it receives, and a failed read is only recorded on its last attempt.
+ * The car CAN be read later, but rarely and not in a way worth waiting for:
+ *   - if the 422 reply is lost, the bridge retries the same event within
+ *     about two minutes; on the single gate 041 then closes this row (or adds
+ *     the plate), on the entrance lane the retry opens the ticket and this
+ *     row stays open;
+ *   - a later photo of the same car is a new event: it opens the ticket and
+ *     leaves this row open.
+ * That is why both OKUNAMADI texts above end by telling staff to mark the row
+ * resolved when the car already has a ticket.
  */
 const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set(['YON_BELIRSIZ', 'OKUNAMADI'])
 

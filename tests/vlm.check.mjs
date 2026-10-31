@@ -20,6 +20,11 @@ import {
   okumaGuvenilir,
   plakaBicimiUygun,
   tidyPlaka,
+  OKUMA_BUTCE_MS,
+  IKINCI_GORUS_EN_AZ_MS,
+  OkumaSuresiDoldu,
+  sureliCagri,
+  ikinciGorusSuresiVar,
 } from '../supabase/functions/_shared/vlm.ts'
 import { PLAKA_MODELLERI } from '../src/lib/plakaModelleri.ts'
 
@@ -223,6 +228,62 @@ esit(
   PLAKA_MODELLERI.filter((m) => m.onerilen).map((m) => m.id),
   ['claude-haiku-5-5'],
 )
+
+// --- okuma süresi ------------------------------------------------------------
+// Sağlayıcı asılı kalırsa okuma ASLA bitmiyordu: kamera-webhook'un hata dalı
+// (istisna satırı + uyarı) hiç çalışmıyor, köprü 4 denemeden sonra aracı
+// kayıtsız bırakıyordu. Her okuma artık ya sonuçla ya da hatayla bitmeli.
+esit('okuma bütçesi 20 sn', OKUMA_BUTCE_MS, 20_000)
+esit('ikinci görüş için en az 8 sn', IKINCI_GORUS_EN_AZ_MS, 8_000)
+esit('ikinci görüş: 8 sn kaldı', ikinciGorusSuresiVar(18_000, 10_000), true)
+esit('ikinci görüş: 9 sn kaldı', ikinciGorusSuresiVar(19_000, 10_000), true)
+esit('ikinci görüş: 7,99 sn kaldı', ikinciGorusSuresiVar(17_990, 10_000), false)
+esit('ikinci görüş: süre geçmiş', ikinciGorusSuresiVar(5_000, 10_000), false)
+
+async function sureliDene(ad, bitisMs, is) {
+  const t0 = Date.now()
+  try {
+    const sonuc = await sureliCagri(t0 + bitisMs, is)
+    return { ad, sonuc, ms: Date.now() - t0 }
+  } catch (hata) {
+    return { ad, hata, ms: Date.now() - t0 }
+  }
+}
+
+{
+  const r = await sureliDene('zamanında', 200, async () => 'tamam')
+  esit('süreli: zamanında biten sonucu döner', r.sonuc, 'tamam')
+
+  let sinyal = null
+  const dinler = await sureliDene('iptali dinleyen', 80, (s) => {
+    sinyal = s
+    return new Promise((_, ret) =>
+      s.addEventListener('abort', () => ret(new DOMException('aborted', 'AbortError'))),
+    )
+  })
+  esit('süreli: asılı iş (iptali dinliyor) → süre doldu', dinler.hata instanceof OkumaSuresiDoldu, true)
+  esit('süreli: istek iptal edildi', sinyal?.aborted, true)
+  esit('süreli: zamanında bitti (iptali dinleyen)', dinler.ms >= 70 && dinler.ms < 500, true)
+
+  const dinlemez = await sureliDene('iptali dinlemeyen', 80, () => new Promise(() => {}))
+  esit('süreli: iptali DİNLEMEYEN iş de → süre doldu', dinlemez.hata instanceof OkumaSuresiDoldu, true)
+  esit('süreli: zamanında bitti (iptali dinlemeyen)', dinlemez.ms >= 70 && dinlemez.ms < 500, true)
+
+  const ozel = new Error('Anthropic 529')
+  const baska = await sureliDene('başka hata', 200, async () => {
+    throw ozel
+  })
+  esit('süreli: başka hata aynen geçer', baska.hata === ozel, true)
+
+  let cagrildi = false
+  const gecmis = await sureliDene('süre geçmiş', -1, async () => {
+    cagrildi = true
+    return 'x'
+  })
+  esit('süreli: süre geçmişse hemen hata', gecmis.hata instanceof OkumaSuresiDoldu, true)
+  esit('süreli: süre geçmişse istek hiç gitmez', cagrildi, false)
+  esit('süreli: hata metni Türkçe', /süresi doldu/.test(String(gecmis.hata?.message)), true)
+}
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

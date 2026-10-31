@@ -9,22 +9,32 @@
  * SSRF control: every host below is a hardcoded constant. The database says
  * WHICH model to use; it never says where to send the request.
  *
+ * Time limit: every read ends within OKUMA_BUTCE_MS (vlm.ts), with a result
+ * or a thrown `OkumaSuresiDoldu`. All of a read's provider calls share ONE
+ * deadline and every fetch carries its abort signal. Without it a hung
+ * provider kept the camera webhook waiting past the bridge's 30 s, its error
+ * path (exception row + alert) never ran and the car was lost silently.
+ * Tested on this very file by tests/ocr.check.mjs.
+ *
  * The pure half — allowlist, request bodies, answer reading, thresholds,
  * prompt and schema — lives in vlm.ts so it can be tested with plain Node.
  * It is re-exported here, so callers import from this file as before.
  */
-import { z } from 'npm:zod@4.4.3'
+import { z } from 'npm:zod@4.6.7'
 import {
   CELISKI_TAVANI,
   DEFAULT_VLM,
   IKINCI_GORUS,
+  OKUMA_BUTCE_MS,
   REDDE_YEDEK,
   VLM_MODELS,
   aracYokMu,
   ikinciGorusGerekir,
+  ikinciGorusSuresiVar,
   istekGovdesi,
   okumaGuvenilir,
   plakaBicimiUygun,
+  sureliCagri,
   tidyPlaka,
   yanitOku,
 } from './vlm.ts'
@@ -140,39 +150,47 @@ function notEkle(raw: unknown, anahtar: string, not: unknown): Record<string, un
   return { ...taban, [anahtar]: not }
 }
 
-/** One read with one model. Throws on any failure, including a refusal. */
+/**
+ * One read with one model. Throws on any failure, including a refusal and
+ * `OkumaSuresiDoldu` at `bitis` — the deadline covers both calls and the
+ * body, which is why the whole exchange sits inside one sureliCagri.
+ */
 async function anthropicOku(
   model: string,
   image: string,
   mediaType: string,
   apiKey: string,
+  bitis: number,
 ): Promise<OkumaSonucu> {
-  const call = (yapisal: boolean) =>
-    fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        ...(yapisal ? { 'anthropic-beta': 'structured-outputs-2025-11-13' } : {}),
-      },
-      body: JSON.stringify(istekGovdesi(model, image, mediaType, yapisal)),
-    })
+  const raw = await sureliCagri(bitis, async (signal) => {
+    const call = (yapisal: boolean) =>
+      fetch(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          ...(yapisal ? { 'anthropic-beta': 'structured-outputs-2025-11-13' } : {}),
+        },
+        body: JSON.stringify(istekGovdesi(model, image, mediaType, yapisal)),
+        signal,
+      })
 
-  // Structured outputs is the guarantee we want. If this account rejects the
-  // beta, fall back to prompt-only JSON rather than failing an operator at the
-  // gate — zod validates the shape either way. A rejected request is not
-  // billed, so the retry costs a moment, not money.
-  let res = await call(true)
-  if (res.status === 400) {
-    console.warn('structured outputs reddedildi, düz JSON ile tekrar deneniyor')
-    res = await call(false)
-  }
-  if (!res.ok) {
-    throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`)
-  }
+    // Structured outputs is the guarantee we want. If this account rejects the
+    // beta, fall back to prompt-only JSON rather than failing an operator at
+    // the gate — zod validates the shape either way. A rejected request is
+    // not billed, so the retry costs a moment, not money.
+    let res = await call(true)
+    if (res.status === 400) {
+      console.warn('structured outputs reddedildi, düz JSON ile tekrar deneniyor')
+      res = await call(false)
+    }
+    if (!res.ok) {
+      throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    }
+    return (await res.json()) as unknown
+  })
 
-  const raw = await res.json()
   const yanit = yanitOku(raw)
   if (yanit.tur === 'red') throw new ModelReddetti(model, raw)
   if (yanit.tur === 'kesik') throw new Error(`${model} yanıtı kesildi (max_tokens)`)
@@ -197,13 +215,15 @@ async function readWithAnthropic(
   image: string,
   mediaType: string,
   apiKey: string,
+  bitis: number,
 ): Promise<OkumaSonucu> {
   try {
-    return await anthropicOku(model, image, mediaType, apiKey)
+    return await anthropicOku(model, image, mediaType, apiKey, bitis)
   } catch (err) {
     if (!(err instanceof ModelReddetti) || model === REDDE_YEDEK) throw err
     console.warn(`${model} reddetti, ${REDDE_YEDEK} ile tekrar okunuyor`)
-    const yedek = await anthropicOku(REDDE_YEDEK, image, mediaType, apiKey)
+    // Same deadline: the fallback spends what is left, it gets no fresh budget.
+    const yedek = await anthropicOku(REDDE_YEDEK, image, mediaType, apiKey, bitis)
     return {
       ...yedek,
       raw: notEkle(yedek.raw, 'onceki_okuma', { saglayici: model, ham_yanit: err.ham }),
@@ -225,15 +245,21 @@ async function vlmOku(
   image: string,
   mediaType: string,
   apiKey: string,
+  bitis: number,
 ): Promise<OkumaSonucu> {
-  const ilk = await readWithAnthropic(model, image, mediaType, apiKey)
+  const ilk = await readWithAnthropic(model, image, mediaType, apiKey, bitis)
   const p = ilk.parsed
   if (!ikinciGorusGerekir(p.plaka, p.guven, p.okunamadi, aracYokMu(p), ilk.saglayici)) {
     return ilk
   }
+  // Not enough budget left for a Sonnet read: keep the first answer (a manual
+  // entry at worst) instead of risking the whole read's deadline.
+  if (!ikinciGorusSuresiVar(bitis)) {
+    return { ...ilk, raw: notEkle(ilk.raw, 'ikinci_gorus', { saglayici: IKINCI_GORUS, atlandi: 'süre' }) }
+  }
 
   try {
-    const ikinci = await anthropicOku(IKINCI_GORUS, image, mediaType, apiKey)
+    const ikinci = await anthropicOku(IKINCI_GORUS, image, mediaType, apiKey, bitis)
     const q = ikinci.parsed
     if (okumaGuvenilir(q.plaka, q.guven, q.okunamadi)) {
       return {
@@ -257,20 +283,27 @@ async function vlmOku(
   }
 }
 
-async function readWithPlateRecognizer(image: string, token: string): Promise<OkumaSonucu> {
+async function readWithPlateRecognizer(
+  image: string,
+  token: string,
+  bitis: number,
+): Promise<OkumaSonucu> {
   const form = new FormData()
   form.append('upload', `data:image/jpeg;base64,${image}`)
   form.append('regions', 'tr')
 
-  const res = await fetch(PLATE_RECOGNIZER_URL, {
-    method: 'POST',
-    headers: { Authorization: `Token ${token}` },
-    body: form,
+  const raw = await sureliCagri(bitis, async (signal) => {
+    const res = await fetch(PLATE_RECOGNIZER_URL, {
+      method: 'POST',
+      headers: { Authorization: `Token ${token}` },
+      body: form,
+      signal,
+    })
+    if (!res.ok) {
+      throw new Error(`PlateRecognizer ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    }
+    return await res.json()
   })
-  if (!res.ok) {
-    throw new Error(`PlateRecognizer ${res.status}: ${(await res.text()).slice(0, 300)}`)
-  }
-  const raw = await res.json()
   const best = raw?.results?.[0]
   return {
     parsed: {
@@ -295,23 +328,28 @@ async function readWithPlateRecognizer(image: string, token: string): Promise<Ok
  * Dispatches to whichever provider the settings row names. `saglayici` is the
  * mode (KAPALI/VLM/ALPR); `model` is the concrete vendor and is validated
  * against the allowlist above, never trusted straight from the database.
+ *
+ * Ends within `butceMs` (default OKUMA_BUTCE_MS) — the parameter exists only
+ * so tests/ocr.check.mjs need not wait 20 s; both callers omit it.
  */
 export async function plakaOku(
   saglayici: string,
   model: string | null,
   image: string,
   mediaType: string,
+  butceMs: number = OKUMA_BUTCE_MS,
 ): Promise<OkumaSonucu> {
+  const bitis = Date.now() + butceMs
   if (saglayici === 'VLM') {
     const apiKey = Deno.env.get('ANTHROPIC_API_KEY')
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY tanımlı değil.')
     const chosen = model && VLM_MODELS.has(model) ? model : DEFAULT_VLM
-    return vlmOku(chosen, image, mediaType, apiKey)
+    return vlmOku(chosen, image, mediaType, apiKey, bitis)
   }
   if (saglayici === 'ALPR') {
     const token = Deno.env.get('PLATE_RECOGNIZER_TOKEN')
     if (!token) throw new Error('PLATE_RECOGNIZER_TOKEN tanımlı değil.')
-    return readWithPlateRecognizer(image, token)
+    return readWithPlateRecognizer(image, token, bitis)
   }
   throw new Error('Plaka okuma kapalı.')
 }
