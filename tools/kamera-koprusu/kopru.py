@@ -242,6 +242,17 @@ YENIDEN_BAGLAN_MAX_SN = float(os.environ.get("YENIDEN_BAGLAN_MAX_SN", "60"))
 # 15-minute staleness limit: each wait writes one log line.
 SIFRE_RED_BEKLEME_SN = float(os.environ.get("SIFRE_RED_BEKLEME_SN", "600"))
 
+# Watchdog (1.2.4). A process that is alive but no longer looping — a read
+# blocked past FFmpeg's own timeout, a deadlock — used to sit there forever:
+# Task Scheduler sees it running and IgnoreNew refuses a fresh copy. If the
+# capture loop has not moved for BEKCI_SN, the process exits and the task's
+# one-minute repetition starts a new one. Legitimate long waits (reconnect,
+# the 10-minute password wait) go through uyu(), which keeps stamping, so the
+# limit only has to beat a genuinely stuck call — FFmpeg gives up on a dead
+# socket in ~30 s, 15 minutes is far beyond any honest stall.
+BEKCI_SN = max(float(os.environ.get("BEKCI_SN", "900")), 0.3)
+BEKCI_ARALIK_SN = min(30.0, BEKCI_SN / 3)
+
 # Motion, as mean absolute pixel difference between consecutive crops.
 # Above HAREKET_ESIGI something is moving; below DURGUN_ESIGI the scene is
 # still. Both are scene-dependent — `--test` prints live values so they can be
@@ -547,6 +558,7 @@ def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None,
                 headers=basliklar,
                 timeout=30,  # a plate read happens server-side inside this call
             )
+            _ag_geldi()
             # Before anything else: a refused bridge must be visible to `durum`
             # whichever request discovers it, and an accepted one must clear it.
             ret_kaydet(r.status_code, getattr(r, "text", "") or "")
@@ -580,7 +592,8 @@ def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None,
             else:
                 print(f"[!] sunucu {r.status_code}, tekrar denenecek", flush=True)
         except requests.RequestException as e:
-            print(f"[!] ağ hatası: {e}", flush=True)
+            print(f"[!] {gunluk.AG_HATASI_ISARETI}: {e}", flush=True)
+            _ag_gitti()
         time.sleep(2**deneme)
 
     print("[!] gönderilemedi — araç elle girilmeli", flush=True)
@@ -610,7 +623,9 @@ def kalp() -> None:
         # bridge, and whoever is reading this console is the only one who can
         # tell the difference.
         print(f"[!] {gunluk.KALP_YOK_ISARETI}: {e}", flush=True)
+        _ag_gitti()
         return
+    _ag_geldi()
     kod = getattr(r, "status_code", None)
     ret_kaydet(kod, getattr(r, "text", "") or "")
     # Said ONCE, the first time the server accepts this bridge: the installer
@@ -626,6 +641,32 @@ def kalp() -> None:
 
 # Whether the server has accepted a heartbeat since start (one log line).
 _sunucu_dogrulandi = False
+
+# 1.2.4. True from a request that never reached the server (no Wi-Fi, no DNS,
+# timeout) until the next one that got ANY answer. The return is logged once
+# (gunluk.AG_DONDU_ISARETI): without it the last network word in the log
+# stayed the failure and `durum` could not tell a past outage from a current
+# one. Both the heartbeat thread and the sender call these, hence the lock —
+# exactly one "back" line per outage.
+_ag_yok = False
+_ag_kilit = threading.Lock()
+
+
+def _ag_gitti() -> None:
+    global _ag_yok
+    with _ag_kilit:
+        _ag_yok = True
+
+
+def _ag_geldi() -> None:
+    global _ag_yok
+    with _ag_kilit:
+        if not _ag_yok:
+            return
+        _ag_yok = False
+    print(f"[i] {gunluk.AG_DONDU_ISARETI}", flush=True)
+
+
 # Monotonic time of the last clock warning: at most one an hour.
 _son_saat_uyarisi: float | None = None
 
@@ -746,6 +787,78 @@ def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None,
         print("[!] gönderim kuyruğu dolu — bu araç atlandı", flush=True)
 
 
+# ------------------------------------------------------------------- bekçi ---
+
+# Monotonic time the capture side last proved it is moving (see BEKCI_SN).
+_son_canli = time.monotonic()
+
+
+def canli() -> None:
+    """The capture loop is moving. Called every frame and by uyu()."""
+    global _son_canli
+    _son_canli = time.monotonic()
+
+
+def uyu(saniye: float) -> None:
+    """
+    time.sleep for the bridge's own waits — in slices, stamping liveness on
+    each, so a legitimate long wait (the 10-minute password wait) never looks
+    stuck to the watchdog.
+    """
+    bitis = time.monotonic() + saniye
+    while True:
+        canli()
+        kalan = bitis - time.monotonic()
+        if kalan <= 0:
+            return
+        time.sleep(min(kalan, BEKCI_ARALIK_SN))
+
+
+def bekci_karari(simdi: float, son_canli: float, son_kontrol: float,
+                 esik: float, aralik: float) -> str:
+    """
+    "tamam" | "uyandi" | "takildi". Pure, so it is tested without a camera.
+
+    "uyandi" comes FIRST: if the watchdog itself woke far later than its own
+    interval, the whole machine was asleep (lid, hibernate) or starved, and the
+    capture loop could not have stamped either. Killing a sound bridge on
+    resume would be a false alarm — the window starts again instead. Whether
+    Windows' monotonic clock counts sleep does not matter: either way this
+    check, or the loop's own first frame, resets the window.
+    """
+    if simdi - son_kontrol > 3 * aralik:
+        return "uyandi"
+    if simdi - son_canli > esik:
+        return "takildi"
+    return "tamam"
+
+
+def _bekci_cik() -> None:
+    # os._exit, not sys.exit: this runs on the watchdog thread, and the stuck
+    # main thread is exactly what a normal shutdown would wait on. The log
+    # line is already on disk (gunluk flushes every write). Replaced in tests.
+    os._exit(3)
+
+
+def bekci() -> None:
+    """Watchdog thread (1.2.4): exits the process if the capture loop is stuck."""
+    global _son_canli
+    son_kontrol = time.monotonic()
+    while True:
+        time.sleep(BEKCI_ARALIK_SN)
+        simdi = time.monotonic()
+        karar = bekci_karari(simdi, _son_canli, son_kontrol, BEKCI_SN, BEKCI_ARALIK_SN)
+        son_kontrol = simdi
+        if karar == "uyandi":
+            _son_canli = simdi
+            print("[i] bekçi geç uyandı (bilgisayar uykudaydı ya da çok yoğundu) — "
+                  "süre yeniden başladı", flush=True)
+        elif karar == "takildi":
+            print(f"[!] {gunluk.TAKILDI_ISARETI} — yakalama {_sure(simdi - _son_canli)} "
+                  "ilerlemedi; süreç kapanıyor, görev yeniden başlatacak", flush=True)
+            _bekci_cik()
+
+
 # ------------------------------------------------------------------ kurulum ---
 
 
@@ -810,7 +923,7 @@ def sifre_kabul_edilene_kadar_bekle() -> None:
         print(f"[!] {gunluk.SIFRE_RED_ISARETI} — {_sure(SIFRE_RED_BEKLEME_SN)} sonra "
               "yeniden denenecek. Kameranın şifresi değiştiyse programı açıp "
               "'Yeniden kur' deyin.", flush=True)
-        time.sleep(SIFRE_RED_BEKLEME_SN)
+        uyu(SIFRE_RED_BEKLEME_SN)
 
 
 def kamera_ac(bekle: bool = False) -> cv2.VideoCapture:
@@ -849,7 +962,7 @@ def kamera_ac(bekle: bool = False) -> cv2.VideoCapture:
             sys.exit(f"{gunluk.KAMERA_YOK_ISARETI}: {gunluk.gizle(RTSP_URL)}")
         print(f"[!] {gunluk.KAMERA_YOK_ISARETI}: {gunluk.gizle(RTSP_URL)} — "
               f"{bekleme:.0f} sn sonra tekrar denenecek", flush=True)
-        time.sleep(bekleme)
+        uyu(bekleme)
         bekleme = min(bekleme * 2, ACILIS_BEKLEME_MAX_SN)
 
 
@@ -956,6 +1069,11 @@ def main() -> None:
     if not BOS_OGREN:
         print("[i] boş şerit öğrenme kapalı (BOS_OGREN=0)", flush=True)
 
+    # Before the first camera wait: a startup that hangs is as blind as a loop
+    # that hangs. The waits themselves stamp through uyu().
+    canli()
+    threading.Thread(target=bekci, daemon=True).start()
+
     print(f"[i] kamera açılıyor ({YON})", flush=True)
     cap = kamera_ac(bekle=True)
     print(f"[i] {gunluk.KAMERA_VAR_ISARETI}", flush=True)
@@ -998,6 +1116,7 @@ def main() -> None:
     bekleme = YENIDEN_BAGLAN_SN
 
     while True:
+        canli()
         ok, frame = cap.read()
         if not ok:
             # An RTSP stream drops. Reconnecting beats exiting: nobody is
@@ -1007,7 +1126,7 @@ def main() -> None:
                   f"({_sure(bekleme)} sonra)", flush=True)
             kopuk = True
             cap.release()
-            time.sleep(bekleme)
+            uyu(bekleme)
             bekleme = min(bekleme * 2, YENIDEN_BAGLAN_MAX_SN)
             # Every reconnect is a login. Ask about the password once first;
             # a rejected one is never tried on the stream (1.2.2).

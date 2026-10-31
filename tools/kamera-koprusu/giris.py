@@ -45,7 +45,9 @@ def _ayar_klasoru() -> str:
 def bekle() -> None:
     """
     Çift tıklanan pencere iş bitince kapanır ve okunacak şey ekranda kalmaz —
-    hata mesajı da dâhil. Görev Zamanlayıcı'nın başlattığı köprüde çağrılmaz.
+    hata mesajı da dâhil. Görev Zamanlayıcı'nın başlattığı köprüde (`--kopru`)
+    ASLA çağrılmaz — çökme yolu dâhil (1.2.4): orada Enter'a basacak kimse
+    yok ve beklemek süreci sonsuza dek "çalışıyor" bırakırdı.
     """
     try:
         input("\n  Kapatmak için Enter'a basın… ")
@@ -123,6 +125,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Read BEFORE main(): the --kopru branch deletes argv[1] before importing
+    # kopru, so afterwards nothing says which mode crashed.
+    KOPRU_KIPI = len(sys.argv) > 1 and sys.argv[1] == "--kopru"
     try:
         kod = main()
     except KeyboardInterrupt:
@@ -134,8 +139,16 @@ if __name__ == "__main__":
         import traceback
         print("\n  ! Beklenmeyen bir hata oluştu:\n")
         traceback.print_exc()
-        print("\n  Bu ekranın fotoğrafını çekip iletin.")
-        if DONMUS:
-            bekle()
+        if KOPRU_KIPI:
+            # The bridge itself (Task Scheduler, SYSTEM): nobody is there to
+            # press Enter. Waiting here kept a crashed bridge "running" forever
+            # — IgnoreNew then blocked a fresh copy and the lane stayed blind
+            # until a reboot. Exit instead; the task starts it again within a
+            # minute (1.2.4). The traceback above is already in the log.
+            print("\n  Köprü durdu; Görev Zamanlayıcı yeniden başlatacak.")
+        else:
+            print("\n  Bu ekranın fotoğrafını çekip iletin.")
+            if DONMUS:
+                bekle()
         kod = 1
     sys.exit(kod)

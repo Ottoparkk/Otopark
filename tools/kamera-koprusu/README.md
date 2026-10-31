@@ -182,6 +182,11 @@ O üç güç ayarı kurulumları haftalar sonra sessizce öldüren şeylerdir ve
 teknik olmayan birinin aklına gelmez — özellikle kapak ayarı, çünkü önerilen
 kutu eski bir dizüstü ve ilk yapılan şey kapağını kapatmaktır.
 
+Yalnızca **prizdeyken** (AC) değerleri değişir; pil (DC) değerlerine bilerek
+dokunulmaz (sahibin kararı). Pille çalışan dizüstü Windows varsayılanıyla
+uyuyabilir ve elektrik gelince kendiliğinden uyanmaz — `OKU-BENI.txt` bunu
+söyler.
+
 Bağlantı testi bilerek **fotoğraf göndermez**: gerçek bir kare gerçek bir bilet
 açardı ve kurulum, kasada silinmesi gereken bir kayıt bırakmamalı.
 
@@ -202,7 +207,7 @@ bağlanamadan ölebilir ve `schtasks` bunu **başarı** olarak bildirir; kurulum
      Bugün        : 143 gönderim, 0 reddedilme
 ```
 
-Beş koşulun **beşi birden** aranır, çünkü her biri ötekinin kör noktasını
+Altı koşulun **altısı birden** aranır, çünkü her biri ötekinin kör noktasını
 kapatıyor:
 
 - **kamera görüntü veriyor mu** — kamerası olmayan köprü ölmez: açılışta
@@ -224,6 +229,16 @@ kapatıyor:
   gösterirdi
 - **görev kurulu mu** — şu an koşan ama açılışta dönmeyen bir köprü, ilk
   elektrik kesintisinde sessizce biter
+- **internet var mı** (1.2.4) — internet gidince köprü ve kamera çalışmaya ve
+  kayıt yazmaya devam eder, yani tazelik ölçütü kesintiyi görmez; oysa o sırada
+  geçen hiçbir araç sunucuya ulaşmaz. Son ağ sözü `kalp gönderilemedi` ya da
+  `ağ hatası` ise durum ekranı `İNTERNET YOK` der. Köprü ağ hatasından sonraki
+  ilk sunucu cevabında bir kez `internet bağlantısı geri geldi` yazar; o,
+  başarılı bir gönderim, sunucunun herhangi bir cevabı ya da yeniden başlama
+  kesintiyi bitirir. **Kesinti sırasında görülen araçlar saklanmaz ve sonradan
+  gönderilmez** (4 deneme, ~15 sn – ~2,5 dk, sonra `gönderilemedi — araç elle
+  girilmeli`) — çevrimdışı tampon bilerek yok (sahibin kararı, 2026-10-31).
+  Kamera yoksa önce `KAMERA YOK` söylenir.
 
 Yanlış yönde yanılan bir sağlık göstergesi, göstergesizlikten kötüdür: kimse
 bakmayı bırakmaz, herkes yanlış cevaba güvenir.
@@ -455,7 +470,7 @@ an older webhook does not strip it and would copy it into exception rows.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 18 senaryo, ~4 dk
+python test_kopru.py            # yakalama döngüsü, 19 senaryo, ~4 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
@@ -553,6 +568,36 @@ değiştirilemedikleri için sihirbaz görevi bir XML tanımından kurar
 sonra yeniden başlar**, açılışta 30 sn gecikmeyle başlar, aynı şerit için ikinci
 kopya başlamaz. Yeniden kurulumda eski süreç önce durdurulur; yoksa köprü eski
 ayarla koşmaya devam ederdi.
+
+### Kendini toparlama (1.2.4)
+
+Üç parça birlikte çalışır; biri olmadan öbürleri yetmez:
+
+- **Çökme beklemez.** Beklenmeyen bir hata `giris.py`'de yakalanır, kayda yazılır
+  ve süreç 1 ile çıkar. Eskiden paketlenmiş exe burada "Kapatmak için Enter'a
+  basın" deyip bekliyordu — SYSTEM görevinde basacak kimse yok, süreç
+  "çalışıyor" kalıyor, `IgnoreNew` yeni kopyayı engelliyordu. Çift tıklanan
+  pencere beklemeye devam eder.
+- **Dakikada bir yeniden başlatma.** Açılış tetiği dakikada bir, süresiz tekrar
+  eder (`Repetition PT1M`). Köprü koşarken `IgnoreNew` tekrarı yok sayar;
+  ölmüşse en geç bir dakikada başlar. `RestartOnFailure` tek başına yetmez:
+  Görev Zamanlayıcı çalışmaya başlayıp sonra hata koduyla çıkan programı çoğu
+  zaman "başarısız" saymaz ve 999 deneme sınırı vardır. Yan etki: ayar hatasıyla
+  çıkan köprü dakikada bir yeniden dener ve her seferinde kayda yazar (kayıt
+  boyutla döner).
+- **Bekçi.** Yakalama döngüsü her karede canlılık damgası basar; uzun meşru
+  beklemeler (`uyu`: yeniden bağlanma, 10 dk'lık şifre beklemesi, açılışta kamera
+  beklemesi) dilim dilim basar. Damga `BEKCI_SN` (900 sn) boyunca hiç
+  yenilenmezse — FFmpeg'in kendi ~30 sn'lik zaman aşımını da aşan ölü bir okuma,
+  kilitlenme — bekçi `köprü takıldı` yazar ve `os._exit(3)` ile çıkar; tekrar
+  tetiği yenisini başlatır. Bekçinin KENDİSİ zamanında uyanmadıysa bilgisayar
+  uyumuştur: o zaman öldürmez, süreyi sıfırlar (`bekci_karari`, uykudan dönen
+  sağlam köprü öldürülmez).
+
+Uykudan dönüş (prizdeyken uyku kapalı; pil ya da elle uyutma): süreç uykudan
+sağ çıkar, ölü okuma en geç FFmpeg zaman aşımında biter, yeniden bağlanma devreye
+girer, kalp atışı en geç beş dakika içinde gider. Wi‑Fi gidip gelirse köprü
+hiç durmaz; kalp atışı beş dakikalık sırasında kendiliğinden döner.
 
 Kurulumun son adımı "köprü başladı" satırıyla yetinmez: köprü durmamış, kamerayı
 açmış ve sunucu tarafından reddedilmemiş olmalı — Durum ekranıyla aynı ölçütler.

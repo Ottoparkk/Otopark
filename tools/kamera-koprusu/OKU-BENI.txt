@@ -182,6 +182,14 @@ BİR ŞEY TERS GİDERSE
       ve ağ kablosunu kontrol edin. Kamera geri geldiğinde program
       kendiliğinden bağlanır; yeniden kurmanız gerekmez.
 
+  Durum ekranı "İNTERNET YOK" diyor
+      Program ve kamera çalışıyor ama bu bilgisayar internete
+      ulaşamıyor. Modemi ve Wi-Fi'yi kontrol edin. İnternet dönünce
+      program kendiliğinden devam eder; bir şey yapmanız gerekmez.
+      DİKKAT: internet yokken kameranın gördüğü araçlar uygulamaya
+      gitmez ve sonradan da gönderilmez — o sırada gelen araçları
+      uygulamadan elle girin.
+
   Durum ekranı "KAMERA ŞİFRESİ REDDEDİLDİ" diyor
       Kamera, programın kayıtlı şifresini kabul etmiyor — çoğu zaman
       kameranın şifresi değiştirildiği için. Aşağıdaki "Kameranın şifresini
@@ -215,7 +223,19 @@ BİR ŞEY TERS GİDERSE
   Bu bilgisayar açık kaldığı sürece kamera çalışır. Kapatılırsa ya da
   fişi çekilirse girişler kaydedilmez.
 
-  Dizüstü bilgisayarsa kapağını kapatabilirsiniz — kurulum, kapak
-  kapanınca uyumaması için gerekli ayarı zaten yaptı.
+  Dizüstü bilgisayarsa, PRİZE TAKILIYKEN kapağını kapatabilirsiniz —
+  kurulum, prizdeyken kapak kapanınca uyumaması için gerekli ayarı
+  yaptı. Pille çalışırken (fiş çekik, elektrik kesik) bu ayar geçerli
+  değildir: kapak kapanınca ya da bir süre sonra uyuyabilir ve
+  elektrik gelince kendiliğinden uyanmaz — açma düğmesine basın.
 
   Yeniden başlatmak sorun değil: köprü açılışta kendiliğinden başlar.
+  Program bir hatayla kapanırsa ya da takılırsa da en geç bir dakika
+  içinde kendiliğinden yeniden başlar.
+
+  Kameranın adresi SABİT olmalı. Kamera doğrudan bu bilgisayara kabloyla
+  bağlıysa bu, kurulumda kameranın kendi ayarlarında yapılır (sabit IP);
+  başka bir şey gerekmez. Kamera modeme / switch'e bağlıysa modemden de
+  sabit adres verin ("DHCP rezervasyonu"). Adres değişirse program
+  kamerayı bulamaz ve durum ekranı "KAMERA YOK" der; o zaman programı
+  açıp "Yeniden kur" deyin.

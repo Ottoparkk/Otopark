@@ -723,6 +723,7 @@ def _kalp_ciktisi(kodlar: list[int], tarih: str | None = None) -> str:
     """
     Ayrı süreçte kopru.kalp()'i verilen durum kodlarıyla sırayla çağırır.
     `tarih`: cevabın HTTP `Date` başlığı (saat kayması testi için).
+    Kod 0: sunucuya hiç ulaşılamadı (internet yok) — istek hata fırlatır.
     """
     kod = (
         "import sys,types\n"
@@ -735,7 +736,12 @@ def _kalp_ciktisi(kodlar: list[int], tarih: str | None = None) -> str:
         "        self.status_code=k\n"
         "        self.text=''\n"
         "        self.headers={'Date': _t} if _t else {}\n"
-        "r.post=lambda *a,**k: Y(_k.pop(0))\n"
+        "def _post(*a,**k):\n"
+        "    c=_k.pop(0)\n"
+        "    if c==0:\n"
+        "        raise r.RequestException('ağ yok (test)')\n"
+        "    return Y(c)\n"
+        "r.post=_post\n"
         "sys.modules['requests']=r\n"
         f"sys.path.insert(0, {BURASI!r})\n"
         "import kopru\n"
@@ -784,6 +790,252 @@ def test_kalp_duzelince_bildirir() -> None:
     assert durum.RED_ISARETI in c and durum.KABUL_ISARETI in c, c
     assert c.count(durum.KABUL_ISARETI) == 1, c        # her kalp atışında değil
     assert c.index(durum.RED_ISARETI) < c.index(durum.KABUL_ISARETI), c
+
+
+# ------------------------------------------- kendini toparlama (1.2.4) ---
+
+def test_kalp_ag_donunce_bildirir() -> None:
+    """
+    İnternet giderse kalp atışı bunu yazıyordu ama DÖNDÜĞÜNÜ yazmıyordu:
+    kayıttaki son ağ sözü "kalp gönderilemedi" olarak kalıyor, `durum` ise ağ
+    kesintisini hiç görmüyordu (ÇALIŞIYOR). Artık ilk cevapta bir kez
+    "internet bağlantısı geri geldi" yazılır; kesinti yokken hiç yazılmaz.
+    """
+    import gunluk
+    c = _kalp_ciktisi([0, 400])
+    assert gunluk.KALP_YOK_ISARETI in c and gunluk.AG_DONDU_ISARETI in c, c
+    assert c.index(gunluk.KALP_YOK_ISARETI) < c.index(gunluk.AG_DONDU_ISARETI), c
+    c = _kalp_ciktisi([0, 0, 400, 400])
+    assert c.count(gunluk.AG_DONDU_ISARETI) == 1, c          # her seferinde değil
+    c = _kalp_ciktisi([0])
+    assert gunluk.AG_DONDU_ISARETI not in c, c                # dönmedi
+    c = _kalp_ciktisi([400, 400])
+    assert gunluk.AG_DONDU_ISARETI not in c, c                # hiç gitmedi
+
+
+def _gonder_ciktisi(kodlar: list[int]) -> str:
+    """Ayrı süreçte kopru.gonder()'i bir kez çağırır; kod 0 = ağ yok."""
+    kod = (
+        "import sys,types\n"
+        "r=types.ModuleType('requests')\n"
+        "r.RequestException=Exception\n"
+        f"_k={kodlar!r}\n"
+        "class Y:\n"
+        "    def __init__(self,k):\n"
+        "        self.status_code=k\n"
+        "        self.text='{}'\n"
+        "def _post(*a,**k):\n"
+        "    c=_k.pop(0)\n"
+        "    if c==0:\n"
+        "        raise r.RequestException('ağ yok (test)')\n"
+        "    return Y(c)\n"
+        "r.post=_post\n"
+        "sys.modules['requests']=r\n"
+        f"sys.path.insert(0, {BURASI!r})\n"
+        "import kopru, time\n"
+        "time.sleep=lambda s: None\n"
+        "from datetime import datetime, timezone\n"
+        "kopru.gonder('AAAA', datetime.now(timezone.utc))\n"
+    )
+    gecici = tempfile.mkdtemp()
+    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": gecici,
+             "WEBHOOK_URL": "http://stub/kamera-webhook", "KAMERA_SECRET": "x" * 32,
+             "YON": "GIRIS", "OTOPARK_AYAR": os.path.join(gecici, "yok.json")}
+    for a in ("RTSP_URL", "CIHAZ"):
+        ortam.pop(a, None)
+    r = subprocess.run([sys.executable, "-c", kod], capture_output=True,
+                       text=True, encoding="utf-8", env=ortam)
+    if r.returncode:
+        raise AssertionError(f"alt süreç hata verdi:\n{r.stderr[-800:]}")
+    return r.stdout
+
+
+def test_gonderim_ag_donunce_bildirir() -> None:
+    """Araç gönderimi de aynı: ağ hatasından sonraki ilk cevap dönüşü yazar."""
+    import gunluk
+    c = _gonder_ciktisi([0, 200])
+    assert gunluk.AG_HATASI_ISARETI in c and gunluk.AG_DONDU_ISARETI in c, c
+    assert c.index(gunluk.AG_DONDU_ISARETI) < c.index("[+] gönderildi"), c
+    c = _gonder_ciktisi([200])
+    assert gunluk.AG_DONDU_ISARETI not in c, c
+
+
+def test_durum_internet_yok() -> None:
+    """
+    Köprü ve kamera çalışırken internet giderse `durum` ÇALIŞIYOR diyordu —
+    oysa o sırada geçen araçların hiçbiri sunucuya ulaşmıyor. Artık İNTERNET
+    YOK (sağlıksız); dönüş, başarılı gönderim ya da yeniden başlama bunu bitirir.
+    """
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = [f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+           f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}"]
+    kalp_yok = f"{bugun} 09:05:01  [!] {gunluk.KALP_YOK_ISARETI}: zaman aşımı"
+    ag_hatasi = f"{bugun} 09:05:02  [!] {gunluk.AG_HATASI_ISARETI}: DNS"
+
+    for satir in (kalp_yok, ag_hatasi):
+        ok, cikti = _durum_senaryosu(bas + [satir])
+        assert ok is False and "İNTERNET YOK" in cikti, cikti
+
+    # Döndü: açık satır, başarılı gönderim ya da sunucunun her cevabı.
+    for sonra in (f"{bugun} 09:10:01  [i] {gunluk.AG_DONDU_ISARETI}",
+                  f"{bugun} 09:10:01  [+] gönderildi -> {{}}",
+                  f"{bugun} 09:10:01  [i] {gunluk.BOS_GORUNTU_ISARETI}"):
+        ok, cikti = _durum_senaryosu(bas + [kalp_yok, sonra])
+        assert ok is True and "ÇALIŞIYOR" in cikti, (sonra, cikti)
+
+    # Yeniden başlayan köprü eski kesintiyi taşımaz.
+    ok, cikti = _durum_senaryosu(bas + [kalp_yok] + bas)
+    assert ok is True and "ÇALIŞIYOR" in cikti, cikti
+
+    # Kamera da yoksa önce kamera söylenir (kişiyi önce oraya göndermeli).
+    ok, cikti = _durum_senaryosu(
+        bas + [kalp_yok, f"{bugun} 09:06:00  [!] {gunluk.KARE_YOK_ISARETI}, yeniden"])
+    assert ok is False and "KAMERA YOK" in cikti, cikti
+
+
+def test_durum_takilan_kopru() -> None:
+    """Bekçinin kapattığı köprü, yeniden başlamadıysa DURMUŞ görünmeli."""
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    ok, cikti = _durum_senaryosu([
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}",
+        f"{bugun} 09:20:00  [!] {gunluk.TAKILDI_ISARETI} — 15 dakika",
+    ])
+    assert ok is False and "DURMUŞ" in cikti, cikti
+    ok, cikti = _durum_senaryosu([
+        f"{bugun} 09:20:00  [!] {gunluk.TAKILDI_ISARETI} — 15 dakika",
+        f"{bugun} 09:21:00  [i] ——— köprü başladı (GIRIS) — pid 2 ———",
+        f"{bugun} 09:21:05  [i] {gunluk.KAMERA_VAR_ISARETI}",
+    ])
+    assert ok is True and "ÇALIŞIYOR" in cikti, cikti
+
+
+def _kopru_kos(govde: str, env: dict | None = None) -> list[str]:
+    """Ayrı süreçte kopru'yu içe aktarır, `govde`yi çalıştırır, çıktı satırları."""
+    gecici = tempfile.mkdtemp()
+    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": gecici,
+             "OTOPARK_AYAR": os.path.join(gecici, "yok.json")}
+    for a in ("WEBHOOK_URL", "KAMERA_SECRET", "RTSP_URL", "YON", "CIHAZ", "BEKCI_SN"):
+        ortam.pop(a, None)
+    ortam.update(env or {})
+    r = subprocess.run([sys.executable, "-c", ONYUK + "import kopru\n" + govde],
+                       capture_output=True, text=True, encoding="utf-8", env=ortam)
+    if r.returncode:
+        raise AssertionError(f"alt süreç hata verdi:\n{r.stderr[-800:]}")
+    return r.stdout.strip().splitlines()
+
+
+def test_bekci_karari() -> None:
+    """
+    Bekçi (1.2.4): yakalama döngüsü BEKCI_SN boyunca hiç ilerlemezse köprü
+    takılmıştır — süreç kapanır ve görev onu bir dakika içinde yeniden başlatır.
+    Ama bekçinin KENDİSİ de zamanında uyanmadıysa bilgisayar uyumuştur: o zaman
+    takılma yok, süre sıfırlanır (uykudan dönen sağlam bir köprü öldürülmez).
+    """
+    satirlar = _kopru_kos(
+        "k = kopru.bekci_karari\n"
+        "print(k(1000, 990, 970, 900, 30))\n"     # her şey yolunda
+        "print(k(2000, 1000, 1990, 900, 30))\n"   # 1000 sn ilerleme yok → takıldı
+        "print(k(5000, 1000, 1000, 900, 30))\n"   # bekçi de 4000 sn uyumamış → uyku
+        "print(k(1900, 1000, 1880, 900, 30))\n"   # tam eşik: henüz değil
+        "print(k(1000, 900, 910, 900, 30))\n"     # bekçi 90 sn = 3 aralık: uyku değil
+        "print(kopru.BEKCI_SN, kopru.BEKCI_ARALIK_SN)\n"
+    )
+    assert satirlar[:5] == ["tamam", "takildi", "uyandi", "tamam", "tamam"], satirlar
+    assert satirlar[5] == "900.0 30.0", satirlar
+    satirlar = _kopru_kos("print(kopru.BEKCI_SN, kopru.BEKCI_ARALIK_SN)\n",
+                          env={"BEKCI_SN": "6"})
+    assert satirlar == ["6.0 2.0"], satirlar
+
+
+def test_uyu_canlilik_damgalar() -> None:
+    """
+    Uzun meşru beklemeler (yeniden bağlanma, 10 dk'lık şifre beklemesi) bekçiyi
+    tetiklememeli: `uyu` beklerken dilim dilim canlılık damgası basar.
+    """
+    satirlar = _kopru_kos(
+        "import time\n"
+        "kopru._son_canli = 0.0\n"
+        "t = time.monotonic()\n"
+        "kopru.uyu(0.3)\n"
+        "print(kopru._son_canli > 0, round(time.monotonic() - t, 1) >= 0.3)\n",
+        env={"BEKCI_SN": "0.3"})                    # aralık 0.1 sn → birkaç dilim
+    assert satirlar == ["True True"], satirlar
+
+
+def _giris_kos(argv: list[str]) -> tuple[str, str]:
+    """
+    giris.py'yi PAKETLENMİŞ gibi (sys.frozen) ayrı süreçte koşturur. kopru
+    taklittir ve cli() beklenmeyen bir hata fırlatır; input() sayılır.
+    """
+    giris = os.path.join(BURASI, "giris.py")
+    kod = (
+        "import sys, types, builtins, runpy\n"
+        "sys.frozen = True\n"
+        "_n = [0]\n"
+        "def _input(*a):\n"
+        "    _n[0] += 1\n"
+        "    return ''\n"
+        "builtins.input = _input\n"
+        "k = types.ModuleType('kopru')\n"
+        "def _cli():\n"
+        "    raise RuntimeError('test: beklenmeyen hata')\n"
+        "k.cli = _cli\n"
+        "sys.modules['kopru'] = k\n"
+        f"sys.argv = [{giris!r}] + {argv!r}\n"
+        "kod = None\n"
+        "try:\n"
+        f"    runpy.run_path({giris!r}, run_name='__main__')\n"
+        "except SystemExit as e:\n"
+        "    kod = e.code\n"
+        "print('KOD=%s INPUT=%d' % (kod, _n[0]))\n"
+    )
+    ortam = {**os.environ, "PYTHONIOENCODING": "utf-8",
+             "PROGRAMDATA": tempfile.mkdtemp()}
+    r = subprocess.run([sys.executable, "-c", kod], capture_output=True, text=True,
+                       encoding="utf-8", env=ortam, timeout=60)
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", r.stdout + r.stderr
+
+
+def test_kopru_cokerse_tusa_basilmayi_beklemez() -> None:
+    """
+    Görev Zamanlayıcı'nın başlattığı köprü beklenmeyen bir hatayla çökerse
+    eskiden "Kapatmak için Enter'a basın" deyip SONSUZA DEK bekliyordu: kimse
+    basmaz, süreç "çalışıyor" görünür, IgnoreNew ikinci kopyayı engeller ve
+    şerit yeniden başlatılana kadar kördür. Artık hatayı yazar ve 1 ile çıkar
+    — görev onu yeniden başlatır. Çift tıklanan pencere ise beklemeye devam
+    eder (yazılanı okuyabilsin).
+    """
+    son, tumu = _giris_kos(["--kopru", "--ayar", "x.json"])
+    assert son == "KOD=1 INPUT=0", tumu
+    assert "test: beklenmeyen hata" in tumu, tumu          # sebep kayda düşer
+    son, tumu = _giris_kos(["--yok-boyle-bir-kip"])
+    assert son == "KOD=2 INPUT=1", tumu
+
+
+def test_gorev_olu_kopruyu_dakikada_bir_baslatir() -> None:
+    """
+    RestartOnFailure, çalışmaya BAŞLAYIP sonra hata koduyla çıkan bir programı
+    çoğu zaman "başarısız" saymaz — yani çöken köprü yeniden başlamayabilir.
+    Açılış tetiğinin dakikada bir, süresiz tekrarı + IgnoreNew bunu kapatır:
+    köprü koşarken tekrar yok sayılır, ölmüşse en geç bir dakikada başlar.
+    Öğe sırası Görev Zamanlayıcı şeması için önemli: Repetition önce.
+    """
+    import xml.etree.ElementTree as ET
+    import kurulum
+
+    kok = ET.fromstring(kurulum.gorev_xml("C:\\x\\OtoparkKamera.exe", "--kopru"))
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    bt = kok.find("t:Triggers/t:BootTrigger", ns)
+    assert bt is not None
+    sira = [c.tag.split("}")[1] for c in bt]
+    assert sira == ["Repetition", "Enabled", "Delay"], sira
+    assert bt.find("t:Repetition/t:Interval", ns).text == "PT1M"
+    assert bt.find("t:Repetition/t:StopAtDurationEnd", ns).text == "false"
+    assert bt.find("t:Repetition/t:Duration", ns) is None          # süresiz
+    assert kok.find("t:Settings/t:MultipleInstancesPolicy", ns).text == "IgnoreNew"
 
 
 def test_durum_kimlik_reddi_saglikli_degil() -> None:

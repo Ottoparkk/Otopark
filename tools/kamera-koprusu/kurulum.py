@@ -926,6 +926,14 @@ def gorev_xml(program: str, argumanlar: str) -> str:
       Delay PT30S        açılışta ağ ve kamera ayağa kalksın (köprü zaten
                          kamerayı bekler; bu yalnızca ilk denemeleri azaltır)
       IgnoreNew          aynı şerit için ikinci bir kopya başlamaz
+      Repetition PT1M    (1.2.4) açılış tetiği dakikada bir, süresiz tekrar
+                         eder. Köprü koşarken IgnoreNew tekrarı yok sayar;
+                         ölmüşse — çökme, bekçinin kapatması, elle sonlandırma
+                         — en geç bir dakikada yeniden başlar. RestartOnFailure
+                         tek başına yetmez: çalışmaya BAŞLAYIP sonra hata
+                         koduyla çıkan programı Görev Zamanlayıcı çoğu zaman
+                         "başarısız" saymaz, 999 deneme sınırı da var.
+                         Repetition şemada tetiğin İLK öğesi olmak zorunda.
     """
     from xml.sax.saxutils import escape
 
@@ -936,6 +944,10 @@ def gorev_xml(program: str, argumanlar: str) -> str:
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
       <Enabled>true</Enabled>
       <Delay>PT30S</Delay>
     </BootTrigger>

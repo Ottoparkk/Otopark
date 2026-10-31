@@ -79,9 +79,36 @@ def durduruldu_mu(satirlar: list[str]) -> bool:
     dakika boyunca "ÇALIŞIYOR" görünüyordu.
     """
     for satir in reversed(satirlar):
-        if "köprü durdu" in satir:
+        # The watchdog's exit (1.2.4) skips the "durdu" line (os._exit), so it
+        # counts as one: until the task restarts it, the lane is down.
+        if "köprü durdu" in satir or gunluk.TAKILDI_ISARETI in satir:
             return True
         if "köprü başladı" in satir:
+            return False
+    return False
+
+
+def internet_yok(satirlar: list[str]) -> bool:
+    """
+    Köprü sunucuya ulaşamıyor mu (1.2.4)? Son ağ sözü geçerli.
+
+    Tazelik ölçütü bunu da YAKALAYAMIYORDU: internet gidince köprü ve kamera
+    çalışmaya, kayıt yazmaya devam eder — `durum` ÇALIŞIYOR derdi, oysa o
+    sırada geçen hiçbir araç sunucuya ulaşmaz (bkz. README, kesinti). Ağ
+    hatasından sonra gelen HERHANGİ bir sunucu cevabı (dönüş satırı, gönderim,
+    ret, boş şerit cevabı) ya da yeniden başlama, kesintinin bittiği demektir.
+    """
+    for satir in reversed(satirlar):
+        if gunluk.KALP_YOK_ISARETI in satir or gunluk.AG_HATASI_ISARETI in satir:
+            return True
+        if (gunluk.AG_DONDU_ISARETI in satir or "[+] gönderildi" in satir
+                or "[!] reddedildi" in satir or "[!] sunucu " in satir
+                or "hız sınırı" in satir
+                or gunluk.SUNUCU_TAMAM_ISARETI in satir
+                or gunluk.BOS_GORUNTU_ISARETI in satir
+                or RED_ISARETI in satir or KAPALI_ISARETI in satir
+                or KABUL_ISARETI in satir or gunluk.SERIT_ISARETI in satir
+                or "köprü başladı" in satir):
             return False
     return False
 
@@ -252,7 +279,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
     durdu = durduruldu_mu(satirlar)
     ret = sunucu_reddi(satirlar)
     kamera_yok = kamera_kopuk(satirlar)
-    saglikli = taze and not durdu and gorev and ret is None and not kamera_yok
+    ag_yok = internet_yok(satirlar)
+    saglikli = (taze and not durdu and gorev and ret is None and not kamera_yok
+                and not ag_yok)
 
     print(f"     Kayıt dosyası: {yol}")
     print(f"     Son hareket  : {sure_metni(yas)}")
@@ -265,6 +294,13 @@ def serit_durumu(ayar_yolu: str) -> bool:
     elif kamera_yok:
         hal = ("KAMERA YOK — köprü çalışıyor ama kameradan görüntü alamıyor. "
                "Kameranın fişini, ağ kablosunu ve şifresini kontrol edin.")
+    elif ag_yok:
+        # After the camera (send the person there first), before the server's
+        # verdicts: with no connection there is no verdict to read.
+        hal = ("İNTERNET YOK — köprü ve kamera çalışıyor ama sunucuya "
+               "ulaşılamıyor. Bu sırada geçen araçlar gönderilemez, elle girin. "
+               "Modemi / Wi-Fi'yi kontrol edin; internet dönünce kendiliğinden "
+               "düzelir.")
     elif ret == "kimlik":
         hal = ("KİMLİK REDDEDİLDİ — sunucu bu kamerayı tanımıyor. Uygulamada "
                "Kamera Kurulumu'ndan yeni kod alıp kurulumu tekrarlayın.")

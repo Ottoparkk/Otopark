@@ -101,6 +101,16 @@ BOS_ATLANDI_ISARETI = "boş şerit — gönderilmedi"
 SUNUCU_TAMAM_ISARETI = "sunucu bağlantısı doğrulandı"
 # Kalp atışı sunucuya hiç ulaşamadı (ağ / internet).
 KALP_YOK_ISARETI = "kalp gönderilemedi"
+# Araç gönderimi sunucuya hiç ulaşamadı (ağ / internet). Metin 1.2.4'ten önce
+# de buydu; sabit olması `durum`un aynı kelimeyi araması için.
+AG_HATASI_ISARETI = "ağ hatası"
+# 1.2.4: ağ hatasından sonra sunucudan İLK cevap geldi (bir kez yazılır).
+# Olmasaydı kayıttaki son ağ sözü hata olarak kalır, `durum` interneti dönmüş
+# bir köprüyü "İNTERNET YOK" gösterirdi.
+AG_DONDU_ISARETI = "internet bağlantısı geri geldi"
+# 1.2.4: bekçi, yakalama döngüsünün BEKCI_SN boyunca hiç ilerlemediğini gördü
+# ve süreci kapattı (görev onu bir dakika içinde yeniden başlatır).
+TAKILDI_ISARETI = "köprü takıldı"
 # Bu bilgisayarın saati sunucununkinden SAAT_TOLERANS_SN'den fazla farklı.
 # Köprü her aracı bu saatle damgalar ve ücret o damgadan hesaplanır.
 SAAT_ISARETI = "bilgisayarın saati sunucudan farklı"

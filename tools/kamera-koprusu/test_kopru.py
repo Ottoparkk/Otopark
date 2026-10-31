@@ -227,6 +227,19 @@ SENARYOLAR = {
         sifre=[(99.0, "bilinmiyor")], yeniden_baglan=("0.2", "1.6"),
         geri_cekilme=(2.0, 7.2), sifirlama=10.0,
     ),
+    # 1.2.4 bekçi. Kameranın okuması bir anda SONSUZA DEK takılıyor (FFmpeg'in
+    # kendi zaman aşımını da aşan ölü bir soket). Süreç canlı ama döngü durdu:
+    # eskiden Görev Zamanlayıcı onu "çalışıyor" görüyor, IgnoreNew yeni kopyayı
+    # engelliyordu — şerit yeniden başlatılana kadar kör. Bekçi bunu
+    # BEKCI_SN içinde görüp süreci kapatmalı (testte kapatma yerine kaydedilir)
+    # ve kayda "köprü takıldı" yazmalı. Öbür bütün senaryolar bekçi KISA (3 sn)
+    # iken koşar ve onu HİÇ tetiklememeli — uzun meşru beklemeler (yeniden
+    # bağlanma, şifre beklemesi) yanlış alarm vermesin.
+    "takilma": dict(
+        sahne=[(0, 99, BOS)], sure=8.0, pencereler=[],
+        takilir=2.0, bekci="2", bekci_beklenir=(3.5, 7.5),
+        kayitta_sirayla=["kamera bağlandı", "köprü takıldı"],
+    ),
     # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
     "bos_ogren_kapali": dict(
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
@@ -352,6 +365,9 @@ def tek_kos(ad: str) -> int:
         os.environ["SIFRE_RED_BEKLEME_SN"] = S["sifre_bekleme"]
     if S.get("yeniden_baglan"):
         os.environ["YENIDEN_BAGLAN_SN"], os.environ["YENIDEN_BAGLAN_MAX_SN"] = S["yeniden_baglan"]
+    # Bekçi (1.2.4) her senaryoda kısa süreyle açık: takılmayan bir döngüde
+    # hiç tetiklenmemeli. Gerçek değer 900 sn.
+    os.environ["BEKCI_SN"] = S.get("bekci", "3")
 
     sys.path.insert(0, BURASI)
     import cv2
@@ -360,6 +376,10 @@ def tek_kos(ad: str) -> int:
 
     global T0
     T0 = time.monotonic()
+
+    # Bekçinin os._exit(3)'ü test sürecini öldürürdü; yerine an kaydedilir.
+    bekci_cagrilari: list[float] = []
+    kopru._bekci_cik = lambda: bekci_cagrilari.append(time.monotonic() - T0)
 
     # Kameranın şifre sınaması (RTSP DESCRIBE) taklit edilir: sonucu saate göre
     # S["sifre"]'den gelir — [(şu ana kadar, sonuç), ...]. Her çağrı kaydedilir;
@@ -421,6 +441,8 @@ def tek_kos(ad: str) -> int:
         def read(self):
             time.sleep(0.04)          # ~25 fps, gerçek zamanlı
             t = time.monotonic() - T0
+            if S.get("takilir") is not None and t >= S["takilir"]:
+                threading.Event().wait()      # ölü soket: hiç dönmez
             a, b = S.get("kopuk", (0, 0))
             if self.olu or a <= t < b or gitti_mi(t):
                 return False, None
@@ -580,6 +602,16 @@ def tek_kos(ad: str) -> int:
             print(f"FAIL: kırpma kutusu yokken {len(olan)} gönderim kanıt fotoğrafı "
                   "taşıdı — kutusuz şeritte fotoğraf saklanmamalı")
             hata = 1
+    if S.get("bekci_beklenir"):
+        a, b = S["bekci_beklenir"]
+        if not bekci_cagrilari or not a <= bekci_cagrilari[0] <= b:
+            ilk = f"{bekci_cagrilari[0]:.2f}s" if bekci_cagrilari else "hiç"
+            print(f"FAIL: bekçi takılan döngüyü {a}-{b}s içinde kapatmalıydı, {ilk}")
+            hata = 1
+    elif bekci_cagrilari:
+        print(f"FAIL: bekçi takılmayan döngüde tetiklendi (t={bekci_cagrilari[0]:.2f}s) "
+              "— meşru bir bekleme canlılık damgası basmıyor")
+        hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")
         hata = 1
