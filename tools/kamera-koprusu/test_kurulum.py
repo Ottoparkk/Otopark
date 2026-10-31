@@ -2116,6 +2116,126 @@ assert kopru.gonder('eA==', simdi, bos) is False
     assert cikti.count("[!] reddedildi 422") == 2, cikti
 
 
+# 1.2.3: her araçla birlikte plakanın SIKIŞTIRILMIŞ bir kopyası gider
+# (`foto_kanit_base64`); sunucu onu bilete/istisnaya fotoğraf olarak bağlar (042).
+# Okuma kopyası (`foto_base64`) değişmez — ağır sıkıştırma okumayı bozardı.
+_KANIT_HAZIRLIK = r"""
+import base64 as _b64
+import cv2, numpy as np
+def coz(s):
+    b = _b64.b64decode(s, validate=True)
+    assert b[:3] == b'\xff\xd8\xff', b[:3]
+    assert len(b) <= 102_400, len(b)
+    img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+    assert img is not None
+    return img
+"""
+
+
+def _kanit_kos(govde: str) -> str:
+    kod, cikti = _kopru_calistir(_KANIT_HAZIRLIK + govde + "\nprint('TAMAM')\n")
+    assert kod == 0 and "TAMAM" in cikti, cikti
+    return cikti
+
+
+def test_kanit_fotografi_sinirda() -> None:
+    """
+    Kanıt kopyası her zaman sunucunun kabul ettiği şeydir: geçerli JPEG,
+    en fazla 100 KB, uzun kenarı en fazla 1280, en-boy oranı korunur. Gürültü
+    gibi sıkışmayan bir görüntü de kalite/boyut düşürülerek sığdırılır. Aynı
+    kırpık okuma kopyasını da beslediği için girdi DEĞİŞTİRİLMEZ.
+    """
+    _kanit_kos(r"""
+rng = np.random.default_rng(7)
+kirpik = rng.integers(0, 255, (220, 600, 3), dtype=np.uint8)
+kirpik[60:160, 100:500] = 235
+once = kirpik.copy()
+img = coz(kopru.kanit_base64(kirpik))
+assert img.shape[:2] == (220, 600), img.shape
+assert np.array_equal(kirpik, once), 'girdi değişti'
+
+buyuk = np.full((1520, 2688, 3), 90, np.uint8)
+img = coz(kopru.kanit_base64(buyuk))
+assert max(img.shape[:2]) == 1280, img.shape
+assert abs(img.shape[1] / img.shape[0] - 2688 / 1520) < 0.01, img.shape
+
+gurultu = rng.integers(0, 255, (900, 1568, 3), dtype=np.uint8)
+ilk = cv2.imencode('.jpg', kopru.olcekle(gurultu), [int(cv2.IMWRITE_JPEG_QUALITY), 80])[1]
+assert len(ilk) > 102_400, 'gürültü sınırı aşmıyor — test kademeyi sınamıyor'
+coz(kopru.kanit_base64(gurultu))
+assert kopru.KANIT_EN_COK_BAYT == 102_400
+""")
+
+
+def test_kanit_fotografi_sigmazsa_yok() -> None:
+    """
+    Sığmayan ya da kodlanamayan fotoğraf None'dır, ASLA istisna değil:
+    fotoğraf yüzünden araç kaybedilmez, yalnızca fotoğrafsız gider.
+    """
+    _kanit_kos(r"""
+img = np.full((220, 600, 3), 120, np.uint8)
+kopru.KANIT_EN_COK_BAYT = 50
+assert kopru.kanit_base64(img) is None
+kopru.KANIT_EN_COK_BAYT = 102_400
+gercek = kopru.cv2.imencode
+kopru.cv2.imencode = lambda *a, **k: (False, None)
+assert kopru.kanit_base64(img) is None
+def patla(*a, **k): raise RuntimeError('kodlayıcı yok')
+kopru.cv2.imencode = patla
+assert kopru.kanit_base64(img) is None
+kopru.cv2.imencode = gercek
+assert kopru.kanit_base64(None) is None
+assert kopru.kanit_base64(img) is not None
+""")
+
+
+def test_kanit_siniri_sunucuyla_ayni() -> None:
+    """
+    Köprü sınırı sunucunun sınırıyla AYNI sayı olmalı: köprü daha büyüğüne izin
+    verirse sunucu fotoğrafı sessizce atar (kanitFotoCoz), personel hiç görmez.
+    """
+    import re
+    yol = os.path.join(BURASI, "..", "..", "supabase", "functions", "_shared", "serit.ts")
+    with open(yol, encoding="utf-8") as f:
+        m = re.search(r"export const KANIT_FOTO_EN_COK_BAYT = ([\d_]+)", f.read())
+    assert m, "serit.ts içinde KANIT_FOTO_EN_COK_BAYT bulunamadı"
+    sunucu = int(m.group(1).replace("_", ""))
+    deger = kopru_degeri(["KANIT_EN_COK_BAYT"], None)
+    assert deger == [str(sunucu)], (deger, sunucu)
+
+
+def test_gonder_kanit_alani() -> None:
+    """
+    Kanıt kopyası verilirse HER denemede aynısı gider (gövde bir kez kurulur);
+    verilmezse alan hiç gönderilmez. Okuma kopyası her durumda aynı kalır.
+    """
+    _kanit_kos(r"""
+from datetime import datetime, timezone
+class Y:
+    def __init__(s, kod): s.status_code = kod; s.text = '{"ok":true}'
+cevap, giden = [], []
+def post(*a, json=None, **k):
+    giden.append(dict(json)); return cevap.pop(0)
+kopru.requests.post = post
+kopru.time.sleep = lambda s: None
+simdi = datetime.now(timezone.utc)
+
+cevap.extend([Y(503), Y(500), Y(200)])
+assert kopru.gonder('b2t1bWE=', simdi, None, 'a2FuaXQ=') is True
+assert len(giden) == 3, giden
+assert all(g.get('foto_kanit_base64') == 'a2FuaXQ=' for g in giden), giden
+assert all(g['foto_base64'] == 'b2t1bWE=' for g in giden), giden
+assert len({g['islem_id'] for g in giden}) == 1
+
+giden.clear(); cevap.append(Y(200))
+assert kopru.gonder('b2t1bWE=', simdi) is True
+assert 'foto_kanit_base64' not in giden[0], giden[0]
+giden.clear(); cevap.append(Y(200))
+assert kopru.gonder('b2t1bWE=', simdi, None, None) is True
+assert 'foto_kanit_base64' not in giden[0], giden[0]
+""")
+
+
 def test_durum_bos_serit_satirlari() -> None:
     """
     Gece boyunca yalnızca atlanan boş şerit satırları olabilir: bu, kameranın

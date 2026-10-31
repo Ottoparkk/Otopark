@@ -175,6 +175,21 @@ MAX_KENAR = int(os.environ.get("MAX_KENAR", "1568"))
 # text reading. This is the same reasoning as compressForOcr() in the app.
 JPEG_KALITE = int(os.environ.get("JPEG_KALITE", "92"))
 
+# 1.2.3: the COMPRESSED copy of the same crop, stored by the server as the
+# ticket / exception photo (042, `foto_kanit_base64`). The phone's model: the
+# device compresses, the server only stores. Not settable from the
+# environment on purpose — KANIT_EN_COK_BAYT is the SAME number as
+# KANIT_FOTO_EN_COK_BAYT in supabase/functions/_shared/serit.ts, which drops a
+# larger photo, so a bigger setting here would only lose photos silently.
+# Measured 2026-10-28 on 4 MP-like scenes: plate crops 13–56 KB at the first
+# quality; pure noise needs the step-down. Sent ONLY with a KIRPMA box (owner,
+# KVKK): no box means the whole street view, so no photo at all.
+KANIT_EN_COK_BAYT = 102_400
+KANIT_MAX_KENAR = 1280
+KANIT_KALITELER = (80, 70, 60, 50, 40)
+KANIT_KUCULTME = 0.75
+KANIT_TUR = 4
+
 # Below this the crop is too small to read reliably — the vision docs name
 # images under 200 px as a hallucination risk. Warned about at startup, not
 # enforced, because a wrong warning must never stop a barrier working.
@@ -310,6 +325,33 @@ def jpeg_base64(img: np.ndarray) -> str:
     if not ok:
         raise RuntimeError("JPEG kodlanamadı")
     return base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def kanit_base64(img: np.ndarray | None) -> str | None:
+    """
+    The stored photo: at most KANIT_MAX_KENAR px and KANIT_EN_COK_BAYT bytes.
+    Each quality in turn, then shrink by KANIT_KUCULTME and try again, at most
+    KANIT_TUR rounds. None when nothing fits or encoding fails — NEVER raises:
+    a missing photo must not cost the car its ticket. `img` is not modified
+    (the same crop also makes the reading copy).
+    """
+    try:
+        if img is None:
+            return None
+        yh, yw = img.shape[:2]
+        k = min(1.0, KANIT_MAX_KENAR / max(yh, yw))
+        for _ in range(KANIT_TUR):
+            w, h = max(1, int(yw * k)), max(1, int(yh * k))
+            kopya = img if (w, h) == (yw, yh) else cv2.resize(
+                img, (w, h), interpolation=cv2.INTER_AREA)
+            for kalite in KANIT_KALITELER:
+                ok, buf = cv2.imencode(".jpg", kopya, [int(cv2.IMWRITE_JPEG_QUALITY), kalite])
+                if ok and buf is not None and len(buf) <= KANIT_EN_COK_BAYT:
+                    return base64.b64encode(buf.tobytes()).decode("ascii")
+            k *= KANIT_KUCULTME
+    except Exception:
+        pass
+    return None
 
 
 def fark(a: np.ndarray, b: np.ndarray) -> float:
@@ -451,7 +493,8 @@ def _arac_yok_mu(govde: str) -> bool:
         return False
 
 
-def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None) -> bool:
+def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None,
+           kanit_base64: str | None = None) -> bool:
     """
     One vehicle, one POST.
 
@@ -472,6 +515,10 @@ def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None) -
     there the server ignores a plate whose ticket was opened or closed in the
     last few minutes (037 kamera_tek_kapi), so a repeat send is neither a
     second ticket nor a false "leaving" flag.
+
+    `kanit_base64` (1.2.3) is the compressed copy the server stores as the
+    photo; absent when there is none, and the server then simply stores no
+    photo. Built into the body once, so every retry carries the same one.
     """
     islem_id = str(uuid.uuid4())
     govde = {
@@ -481,6 +528,8 @@ def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None) -
         "cihaz": CIHAZ,
         "foto_base64": foto_base64,
     }
+    if kanit_base64 is not None:
+        govde["foto_kanit_base64"] = kanit_base64
 
     for deneme in range(DENEME_SAYISI):
         basliklar = {"x-kamera-secret": KAMERA_SECRET}
@@ -664,21 +713,23 @@ def ret_kaydet(kod: int | None, govde: str = "") -> None:
 #
 # Bounded, and full means DROP rather than block: falling behind must never
 # turn back into the capture loop stalling, which is the whole point of this.
-_kuyruk: "queue.Queue[tuple[str, datetime, np.ndarray | None]]" = queue.Queue(maxsize=4)
+_kuyruk: "queue.Queue[tuple[str, datetime, np.ndarray | None, str | None]]" = \
+    queue.Queue(maxsize=4)
 
 
 def gonderici() -> None:
     while True:
-        foto, gorulme, gri = _kuyruk.get()
+        foto, gorulme, gri, kanit = _kuyruk.get()
         try:
-            gonder(foto, gorulme, gri)
+            gonder(foto, gorulme, gri, kanit)
         except Exception as e:  # one bad send must never kill the worker
             print(f"[!] gönderim hatası: {e}", flush=True)
         finally:
             _kuyruk.task_done()
 
 
-def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None) -> None:
+def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None,
+               kanit: str | None = None) -> None:
     """
     `gorulme` is stamped by the CALLER, at the moment the car settled — never
     by the worker. The server bills from this timestamp, so letting a queued
@@ -686,10 +737,11 @@ def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None) -> N
     stay by however long the backlog happened to be.
 
     `gri` is the small grey version of the SAME picture, so the answer can be
-    learned against exactly what was sent (BosOgrenme).
+    learned against exactly what was sent (BosOgrenme). `kanit` is the
+    compressed copy of the same picture, or None (see kanit_base64).
     """
     try:
-        _kuyruk.put_nowait((foto, gorulme, gri))
+        _kuyruk.put_nowait((foto, gorulme, gri, kanit))
     except queue.Full:
         print("[!] gönderim kuyruğu dolu — bu araç atlandı", flush=True)
 
@@ -885,6 +937,8 @@ def main() -> None:
     kutu = kirpma_kutusu()
     if kutu is None:
         print("[!] KIRPMA verilmedi — tüm kare gönderilecek, okuma daha kötü olur", flush=True)
+        # `[i]`: not a fault, durum must not show it as the last error.
+        print("[i] kırpma kutusu yok — bu şeritte araç fotoğrafı saklanmayacak", flush=True)
 
     # Tam kare olarak saklanır ve burada aynı kutuyla kırpılır: KIRPMA
     # değişirse referans yeniden çekilmek zorunda kalmaz.
@@ -1049,7 +1103,13 @@ def main() -> None:
             print(f"[i] araç durdu (fark={d:.2f}) — gönderiliyor", flush=True)
             gonderim_sayaci += 1
             try:
-                kuyruga_al(jpeg_base64(kirpik), datetime.now(timezone.utc), gri)
+                foto = jpeg_base64(kirpik)
+                # Only with a box: without one the crop IS the whole frame.
+                kanit = kanit_base64(kirpik) if kutu is not None else None
+                if kutu is not None and kanit is None:
+                    print("[i] kanıt fotoğrafı 100 KB'a sığmadı — fotoğrafsız "
+                          "gönderiliyor", flush=True)
+                kuyruga_al(foto, datetime.now(timezone.utc), gri, kanit)
             except Exception as e:  # encoding, not network — never kill the loop
                 print(f"[!] gönderilemedi: {e}", flush=True)
             # Disarmed until this vehicle leaves the frame, not until a clock

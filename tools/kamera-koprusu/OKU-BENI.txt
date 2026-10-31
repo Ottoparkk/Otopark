@@ -115,6 +115,11 @@ ELİNİZDE HAZIR OLSUN
   "Boş şerit : ... okundu, ... atlandı" olarak sayılır. Hiçbir ayar
   gerekmez.
 
+  FOTOĞRAF: program her aracın plaka bölgesinin küçük bir fotoğrafını da
+  gönderir; uygulamada biletin ve istisnanın üstünde görünür ve
+  uygulamadaki fotoğraf saklama süresi dolunca silinir. Kırpma kutusu
+  seçilmediyse fotoğraf gönderilmez (tüm kare sokağı da gösterirdi).
+
 
 BİR ŞEY TERS GİDERSE
 ------------------------------------------------------------------------

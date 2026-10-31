@@ -414,6 +414,25 @@ is one wasted read and a 409 from the webhook — never a wrong ticket. Every
 guard that would suppress it also risks suppressing a genuinely new vehicle,
 and a missed car costs a free park while a repeat costs a fraction of a kuruş.
 
+### The stored photo (1.2.3)
+
+Each send carries two copies of the same crop: the reading copy
+(`foto_base64`, quality 92, ≤ `MAX_KENAR`) and a **compressed** copy
+(`foto_kanit_base64`) that the server stores as the ticket / exit / exception
+photo (migration 042). The compressed copy is ≤ 1280 px and ≤ 100 KB
+(102,400 bytes — the same number as `KANIT_FOTO_EN_COK_BAYT` in
+`supabase/functions/_shared/serit.ts`; a test keeps the two equal). JPEG
+quality 80 → 40, then the picture shrinks by ×0.75, at most four rounds; if it
+still does not fit the car goes **without** a photo (`kanıt fotoğrafı 100 KB'a
+sığmadı`), never without its ticket. Normal plate crops fit at the first
+quality (13–56 KB measured).
+
+**No `KIRPMA` box → no photo** (owner decision, KVKK): without a box the crop is
+the whole street view. The bridge says so once at startup.
+
+Deploy the `kamera-webhook` that knows this field **before** installing 1.2.3:
+an older webhook does not strip it and would copy it into exception rows.
+
 ### Tuning
 
 | Variable | Default | What it does |
@@ -436,7 +455,7 @@ and a missed car costs a free park while a repeat costs a fraction of a kuruş.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 17 senaryo, ~4 dk
+python test_kopru.py            # yakalama döngüsü, 18 senaryo, ~4 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
@@ -482,7 +501,15 @@ dönmeli ve sonraki araç gönderilmeli (eski kod aynı pencerede akışı eski
 `kopma_geri_cekilme` — kamera gitti, sınama bir şey söyleyemiyor: aralıklar
 tabandan ikiye katlanıp tavanda durmalı ve kamera dönünce tabana sıfırlanmalı.
 
-`test_kurulum.py`'deki 110 birim testi kurulum tarafını tutuyor — ayar yükleme,
+Bir senaryo 1.2.3'ten: `kanit_fotografi` — kırpma kutusuyla her gönderim
+geçerli bir JPEG (≤ 100 KB) taşımalı ve okuma kopyasıyla aynı boyutta olmalı
+(ikisi aynı kırpıktan). Kutusu olmayan BÜTÜN senaryolarda bu alan hiç
+gönderilmemeli. `test_kurulum.py`'de dört test kanıt kopyasını sıkıştırmayı,
+sığmayan/kodlanamayan fotoğrafta istisna değil None dönmesini, sınırın
+`serit.ts` ile aynı sayı olmasını ve her denemede aynı kopyanın gitmesini
+tutuyor.
+
+`test_kurulum.py`'deki 114 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
 **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.

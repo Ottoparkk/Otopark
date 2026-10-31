@@ -111,6 +111,17 @@ SENARYOLAR = {
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 6, DURDU)],
         sure=7.0, pencereler=[(1.8, 6.0)], yon="ORTAK",
     ),
+    # 1.2.3: kırpma kutusu varsa her araçla plakanın sıkıştırılmış bir kopyası
+    # da gider (042 onu bilete/istisnaya bağlar). İki kopya AYNI kırpıktan
+    # doğar. Kutusuz senaryoların hiçbiri bu alanı göndermemeli (genel kontrol,
+    # aşağıda): sahibin kararı, kutu yoksa fotoğraf yok — sokak görüntüsü değil.
+    "kanit_fotografi": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
+               (3.5, 4.2, GELIYOR), (4.2, 8, BOS),
+               (8, 8.8, GELIYOR), (8.8, 12, DURDU)],
+        sure=12.5, pencereler=[(1.8, 3.6), (8.8, 12.1)],
+        kirpma="100,80,400,300",
+    ),
     # Boş şerit öğrenme (1.2.0). Sunucu fotoğrafa bakıp karar veriyor (araç
     # varsa 200; yoksa 422 + arac_yok). Üç araç gelip gidiyor; her gidişin
     # ardında boş şerit yerleşiyor. Birinci boş fotoğraf ADAY olur, ikincisi
@@ -293,7 +304,10 @@ def tek_kos(ad: str) -> int:
         # Yapay gecikmeden ÖNCE kaydedilir: ölçtüğümüz şey köprünün göndermeye
         # karar verdiği an, taklit ağın yavaşlığı değil.
         gonderimler.append({"t": time.monotonic() - T0, "id": json["islem_id"],
-                            "yon": json.get("yon"), "basliklar": dict(headers or {})})
+                            "yon": json.get("yon"), "basliklar": dict(headers or {}),
+                            "foto": json["foto_base64"],
+                            "kanit_var": "foto_kanit_base64" in json,
+                            "kanit": json.get("foto_kanit_base64")})
         if S.get("yavas"):
             time.sleep(S["yavas"])
         if S.get("goruntu_sunucu"):
@@ -324,6 +338,10 @@ def tek_kos(ad: str) -> int:
     os.environ.update(WEBHOOK_URL="http://stub/kamera-webhook",
                       KAMERA_SECRET="x" * 32,
                       RTSP_URL=S.get("rtsp", "rtsp://stub/1"), YON=S.get("yon", "GIRIS"))
+    if S.get("kirpma"):
+        os.environ["KIRPMA"] = S["kirpma"]
+    else:
+        os.environ.pop("KIRPMA", None)
     if S.get("max_bekleme"):
         os.environ["MAX_BEKLEME_SN"] = S["max_bekleme"]
     if S.get("acilis_bekleme"):
@@ -528,6 +546,39 @@ def tek_kos(ad: str) -> int:
             ilk = f"{sonraki[0]:.2f}" if sonraki else "yok"
             print(f"FAIL: {x}s'deki kopmadan sonra ilk deneme ~{x + taban:.2f}s "
                   f"bekleniyordu, {ilk} — bekleme iyi karede sıfırlanmamış")
+            hata = 1
+    # 1.2.3 kanıt fotoğrafı: kutu varsa HER gönderimde geçerli bir JPEG
+    # (≤ 100 KB, sunucunun sınırı) ve okuma kopyasıyla aynı boyutta; kutu
+    # yoksa alan hiç yok.
+    if S.get("kirpma"):
+        import base64 as _b64
+        import cv2 as _cv2
+
+        def _coz(s: str):
+            b = _b64.b64decode(s, validate=True)
+            img = _cv2.imdecode(np.frombuffer(b, np.uint8), _cv2.IMREAD_COLOR)
+            return b, img
+
+        for g in gonderimler:
+            if not g["kanit"]:
+                print(f"FAIL: t={g['t']:.2f}s gönderiminde kanıt fotoğrafı yok")
+                hata = 1
+                continue
+            b, img = _coz(g["kanit"])
+            _, okuma = _coz(g["foto"])
+            if b[:3] != b"\xff\xd8\xff" or len(b) > 102_400 or img is None:
+                print(f"FAIL: t={g['t']:.2f}s kanıt fotoğrafı geçersiz "
+                      f"({len(b)} bayt, başı {b[:3]!r})")
+                hata = 1
+            elif img.shape[:2] != okuma.shape[:2]:
+                print(f"FAIL: kanıt {img.shape[:2]} okuma kopyası {okuma.shape[:2]} "
+                      "ile aynı kırpıktan gelmiyor")
+                hata = 1
+    else:
+        olan = [g for g in gonderimler if g["kanit_var"]]
+        if olan:
+            print(f"FAIL: kırpma kutusu yokken {len(olan)} gönderim kanıt fotoğrafı "
+                  "taşıdı — kutusuz şeritte fotoğraf saklanmamalı")
             hata = 1
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")
