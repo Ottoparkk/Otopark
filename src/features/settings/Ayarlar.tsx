@@ -29,11 +29,16 @@ const TERCIH_TURLERI: BildirimTur[] = [
   'PUAN_KULLANIM',
 ]
 
+// 045: the only type sent to Personel (unread plates, after the bridge's
+// retries). Every other type above is Yönetici-only — a Personel switch for
+// those would be a dead control.
+const PERSONEL_TERCIH_TURLERI: BildirimTur[] = ['ISTISNA']
+
 export default function Ayarlar() {
   const { profile, refreshProfile, signOut } = useAuth()
   const guncelle = useProfilGuncelle()
   const yonetici = isYonetici(profile)
-  const { data: okunmamis = 0 } = useOkunmamisSayisi(yonetici)
+  const { data: okunmamis = 0 } = useOkunmamisSayisi(true)
 
   const [ad, setAd] = useState(profile?.ad_soyad ?? '')
   const [karanlik, setKaranlik] = useState(isDarkMode())
@@ -142,50 +147,55 @@ export default function Ayarlar() {
         </Card>
 
         {/* ---- push ---------------------------------------------------- */}
-        {yonetici && (
-          <Card>
-            <p className="mb-1 text-label font-medium tracking-wide text-faint uppercase">
-              Bildirimler
-            </p>
-            <Toggle
-              checked={pushAcik}
-              onChange={(v) => void pushDegistir(v)}
-              label="Anlık bildirim"
-              hint="Vardiya farkı ve ücret değişikliği telefona düşer."
-              disabled={!pushSupported()}
-            />
-            {pushMesaj && <p className="mt-1 text-label text-warn">{pushMesaj}</p>}
+        {/* Every role since 045: Personel is told about unread plates too,
+            so they need the phone switch, their one preference and the
+            feed. */}
+        <Card>
+          <p className="mb-1 text-label font-medium tracking-wide text-faint uppercase">
+            Bildirimler
+          </p>
+          <Toggle
+            checked={pushAcik}
+            onChange={(v) => void pushDegistir(v)}
+            label="Anlık bildirim"
+            hint={
+              yonetici
+                ? 'Vardiya farkı ve ücret değişikliği telefona düşer.'
+                : 'Okunamayan plakalar telefona düşer.'
+            }
+            disabled={!pushSupported()}
+          />
+          {pushMesaj && <p className="mt-1 text-label text-warn">{pushMesaj}</p>}
 
-            <div className="mt-3 space-y-0.5 border-t border-divider pt-2">
-              {TERCIH_TURLERI.map((t) => (
-                <Toggle
-                  key={t}
-                  checked={prefs[t] !== false}
-                  onChange={(v) => void tercihDegistir(t, v)}
-                  label={BILDIRIM_ETIKET[t]}
-                />
-              ))}
-            </div>
+          <div className="mt-3 space-y-0.5 border-t border-divider pt-2">
+            {(yonetici ? TERCIH_TURLERI : PERSONEL_TERCIH_TURLERI).map((t) => (
+              <Toggle
+                key={t}
+                checked={prefs[t] !== false}
+                onChange={(v) => void tercihDegistir(t, v)}
+                label={BILDIRIM_ETIKET[t]}
+              />
+            ))}
+          </div>
 
-            {/* The feed itself, one tap from the switches that decide what
-                lands in it. It keeps its own screen — the bell in the desktop
-                bar still goes straight there — but it no longer needs a menu
-                row of its own. */}
-            <Link
-              to="/bildirimler"
-              className="mt-3 flex min-h-[44px] items-center gap-3 rounded-field bg-field px-3.5"
-            >
-              <IconZil size={18} className="shrink-0 text-soft" />
-              <span className="flex-1 text-body font-medium text-ink">Gelen bildirimler</span>
-              {okunmamis > 0 && (
-                <span className="rounded-chip bg-accent px-2 py-0.5 text-micro font-semibold text-accent-ink tnum">
-                  {okunmamis}
-                </span>
-              )}
-              <IconIleri size={16} className="shrink-0 text-faint" />
-            </Link>
-          </Card>
-        )}
+          {/* The feed itself, one tap from the switches that decide what
+              lands in it. It keeps its own screen — the bell in the desktop
+              bar still goes straight there — but it no longer needs a menu
+              row of its own. */}
+          <Link
+            to="/bildirimler"
+            className="mt-3 flex min-h-[44px] items-center gap-3 rounded-field bg-field px-3.5"
+          >
+            <IconZil size={18} className="shrink-0 text-soft" />
+            <span className="flex-1 text-body font-medium text-ink">Gelen bildirimler</span>
+            {okunmamis > 0 && (
+              <span className="rounded-chip bg-accent px-2 py-0.5 text-micro font-semibold text-accent-ink tnum">
+                {okunmamis}
+              </span>
+            )}
+            <IconIleri size={16} className="shrink-0 text-faint" />
+          </Link>
+        </Card>
 
         {hata && (
           <p role="alert" className="rounded-card bg-danger-soft px-4 py-3 text-body text-danger">

@@ -1875,7 +1875,13 @@ foreach v_txt in array array[
   -- 043: gece fotoğraf temizliğini tetikleyen yardımcı. Gizli anahtarı
   -- okuyup Edge Function'a istek atar; açık kalsaydı istemci temizliği
   -- istediği an tetikleyebilir ya da uyarı ürettirebilirdi.
-  'public.foto_temizlik_tetikle()'
+  'public.foto_temizlik_tetikle()',
+  -- 045: herkese bildirim yazan yardımcı, gecikmeli bildirim işi ve kamera
+  -- biletiyle okunamadı kaydını kapatan tetik. Açık kalsaydı istemci herkese
+  -- bildirim yazdırabilir ya da bekleyen bildirimleri erken gönderttirebilirdi.
+  'public.notify_herkes(public.bildirim_tur, text, text, text)',
+  'public.istisna_bildirim_gonder()',
+  'public.kamera_okunamadi_kapat()'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -4173,8 +4179,10 @@ foreach v_txt in array array['anon', 'authenticated'] loop
   end if;
 end loop;
 
--- (b) Giriş şeridinde okunamayan araç: TEK kayıt, TEK bildirim. Fotoğraf
---     ham yanıtta SAKLANMAZ (her satırı yüzlerce KB yapıyordu).
+-- (b) Giriş şeridinde okunamayan araç: TEK kayıt. Fotoğraf ham yanıtta
+--     SAKLANMAZ (her satırı yüzlerce KB yapıyordu). 045'ten beri bildirim
+--     HEMEN gitmez: kayıt "bildirim bekliyor" işaretlenir, köprünün yeniden
+--     denemeleri bitince (3 dk) hâlâ açıksa herkese gider — bkz. PASS 67.
 select count(*) into v_n from public.notifications
  where tur = 'ISTISNA' and profile_id = u_yonetici;
 v_islem := gen_random_uuid();
@@ -4195,18 +4203,19 @@ if v_id is null or not exists (
   raise exception 'FAIL 60b: okunamayan araç doğru kaydedilmedi';
 end if;
 if (select count(*) from public.notifications
-     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
-  raise exception 'FAIL 60b: Yöneticiye tam bir bildirim gitmedi';
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n
+   or not (select bildirim_bekliyor from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 60b: bildirim hemen gitti ya da kayıt "bildirim bekliyor" değil (045)';
 end if;
 
--- (c) Aynı olay yeniden gelirse ikinci kayıt ve ikinci bildirim olmaz.
+-- (c) Aynı olay yeniden gelirse ikinci kayıt ve bildirim olmaz.
 perform pg_temp.kamera();
 select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
 perform pg_temp.logout();
 if v_id2 is distinct from v_id
    or (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
    or (select count(*) from public.notifications
-        where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
+        where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
   raise exception 'FAIL 60c: tekrarlanan olay ikinci kayıt ya da bildirim üretti';
 end if;
 
@@ -4684,9 +4693,11 @@ update public.biletler
    set created_at = now() - make_interval(mins => v_n2 + 1)
  where id in (v_bilet, v_bilet2);
 
--- (a) Asıl kural. İlk deneme okuyamadı (kayıt + tek bildirim), cevap
---     kayboldu, yeniden deneme okudu: araç YENİ — bilet bu olayın kimliğiyle
---     açılır, önceki kayıt sistemce kapanır, ikinci bildirim gitmez.
+-- (a) Asıl kural. İlk deneme okuyamadı (kayıt), cevap kayboldu, yeniden
+--     deneme okudu: araç YENİ — bilet bu olayın kimliğiyle açılır, önceki
+--     kayıt sistemce kapanır. 045'ten beri HİÇ bildirim gitmez: bildirim
+--     3 dk bekler ve kayıt o sırada kapanmışsa gönderilmez (sahibin isteği:
+--     kendiliğinden düzelen şey için kimse uyarılmasın — PASS 67).
 select count(*) into v_n from public.notifications
  where tur = 'ISTISNA' and profile_id = u_yonetici;
 v_islem := gen_random_uuid();
@@ -4713,8 +4724,8 @@ if (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
   raise exception 'FAIL 63a: önceki okunamadı kaydı sistemce kapanmadı';
 end if;
 if (select count(*) from public.notifications
-     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
-  raise exception 'FAIL 63a: tek bildirim beklenirdi (okunamadı) — yeniden deneme bildirim üretmemeli';
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
+  raise exception 'FAIL 63a: bildirim gitti — kendiliğinden kapanan kayıt için hiç bildirim gitmemeli (045)';
 end if;
 
 -- (b) Bu cevap da kaybolup deneme yine gelirse AYNI bilet döner; kapanış
@@ -4761,7 +4772,9 @@ end if;
 -- (d) Yeniden deneme okudu ama karar yine insanın: plaka içerideki eski bir
 --     araca (BN303) bir karakter uzak. İkinci kayıt AÇILMAZ — önceki kayıt
 --     açık kalır, okunan plakayı ve sebebi taşır, modelin ilk tahmini durur;
---     ikinci bildirim yok, benzer bilet "kapıda" yapılmaz.
+--     şimdilik bildirim yok (045: kayıt açık kaldığı için 3 dk sonra TEK
+--     bildirim gider — "bildirim bekliyor" işareti durur), benzer bilet
+--     "kapıda" yapılmaz.
 select count(*) into v_n from public.notifications
  where tur = 'ISTISNA' and profile_id = u_yonetici;
 v_islem := gen_random_uuid();
@@ -4784,8 +4797,9 @@ if (select count(*) from public.istisnalar where islem_id = v_islem) <> 1
   raise exception 'FAIL 63d: önceki kayıt açık kalıp okunan plakayı taşımadı';
 end if;
 if (select count(*) from public.notifications
-     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1 then
-  raise exception 'FAIL 63d: yeniden deneme ikinci bildirim gönderdi';
+     where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n
+   or not (select bildirim_bekliyor from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 63d: bildirim hemen gitti ya da açık kayıt "bildirim bekliyor" değil (045)';
 end if;
 if exists (select 1 from public.biletler where plaka = 'ZZ63BN308')
    or (select cikis_bekliyor_at from public.biletler where id = v_bilet) is not null then
@@ -5458,8 +5472,10 @@ if exists (select 1 from public.biletler where islem_id = v_islem)
   raise exception 'FAIL 66e: başarısız çağrı bilet açtı ya da kaydı kapattı';
 end if;
 
--- (f) Kamera aynı olayın biletini zaten açmış (yeniden deneme): kayıt
---     "zaten açmış" notuyla kapanır, o bilete dokunulmaz, yeni bilet yok.
+-- (f) Kamera aynı olayın biletini zaten açmış (yeniden deneme). 045'ten beri
+--     giriş şeridinde kayıt o anda KENDİLİĞİNDEN kapanır (kamera notuyla,
+--     cozuldu_by boş); personelin dokunuşu yine kameranın biletini döner,
+--     o bilete dokunulmaz, yeni bilet yok, kapanış notu değişmez.
 v_islem := gen_random_uuid();
 perform pg_temp.kamera();
 select public.kamera_okunamadi('GIRIS', v_islem, now() - interval '3 minutes', null, null, null) into v_id;
@@ -5481,9 +5497,9 @@ if exists (select 1 from public.biletler where plaka = 'ZZ66XX999')
   raise exception 'FAIL 66f: kameranın biletine dokunuldu ya da yeni bilet açıldı';
 end if;
 if not exists (select 1 from public.istisnalar
-                where id = v_id and cozuldu_by = u_personel
-                  and cozum_notu = 'Kamera bileti zaten açmış: ZZ66KM505') then
-  raise exception 'FAIL 66f: kayıt "zaten açmış" notuyla kapanmadı';
+                where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                  and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ66KM505 → GIRIS') then
+  raise exception 'FAIL 66f: kayıt kamera notuyla kendiliğinden kapanmadı (045)';
 end if;
 
 -- (g) Kamera saati bozuk: 1 saat ileri ve gecikme sınırından eski olay
@@ -5584,6 +5600,186 @@ if has_function_privilege('anon', 'public.istisna_bilet_ac(uuid,text)', 'execute
 end if;
 
 raise notice 'PASS 66: okunamayan plakadan giriş tek işlemde açılır, kameranın gördüğü ana yazılır, saati bozuk/eski kayıt bileti geçmişe yazamaz, tekrar dokunuş ikinci bilet açmaz';
+
+-- =====================================================================
+-- 67  Okunamayan plaka bildirimi: yeniden denemelerden SONRA, herkese (045)
+--     Eskiden "Çözülmemiş kayıt — OKUNAMADI" bildirimi kayıt yazıldığı an
+--     Yöneticiye gidiyordu. Webhook'un cevabı köprüye ulaşmazsa köprü aynı
+--     olayı yeniden dener ve okuyabilir; o zaman kayıt kendiliğinden kapanıyor
+--     ama bildirim çoktan gitmiş oluyordu. Sahibin kuralı (2026-10-31):
+--       · bildirim köprünün denemeleri bitince gider — 3 dk (1.2.4'ün en kötü
+--         hâli ≈ 2 dk 7 sn: 4 × 30 sn + 1/2/4 sn), yalnızca kayıt HÂLÂ açıksa;
+--       · her role gider (Yönetici + Personel), tercihi kapalı olana gitmez;
+--       · giriş şeridinde de kameranın yeniden denemesi bileti açınca kayıt
+--         kendiliğinden kapanır (tek kapıda 041 zaten kapatıyordu).
+--     Okuma servisi arızası kayıtları (039) araç başına hiç bildirim üretmez;
+--     öbür kayıt türleri eskisi gibi HEMEN ve yalnızca Yöneticiye gider.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.istisna_bildirim_gonder()') is null then
+  raise exception 'FAIL 67: istisna_bildirim_gonder yok — 045 çalıştırılmadı';
+end if;
+
+-- İş, bekleyen TÜM kayıtları işler: canlıdan kalmış bir bekleyen kayıt bu
+-- koşunun sayımlarını kirletmesin (işlem sonunda geri alınır).
+update public.istisnalar set bildirim_bekliyor = false where bildirim_bekliyor;
+update public.profiles set notif_prefs = coalesce(notif_prefs, '{}'::jsonb) - 'ISTISNA'
+ where id in (u_yonetici, u_personel, u_personel2);
+
+-- Kişi başı ISTISNA bildirimi sayısı (y: Yönetici, p/p2: personel,
+-- b: onay bekleyen, d: devre dışı).
+select jsonb_build_object(
+         'y',  count(*) filter (where profile_id = u_yonetici),
+         'p',  count(*) filter (where profile_id = u_personel),
+         'p2', count(*) filter (where profile_id = u_personel2),
+         'b',  count(*) filter (where profile_id = u_pending),
+         'd',  count(*) filter (where profile_id = u_disabled))
+  into v_json
+  from public.notifications where tur = 'ISTISNA';
+
+-- (a) Okunamadı: kayıt yazılır, bildirim YOK, "bildirim bekliyor" işareti var.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id;
+perform pg_temp.logout();
+if (select count(*) from public.notifications where tur = 'ISTISNA'
+     and profile_id in (u_yonetici, u_personel, u_personel2))
+   <> (v_json ->> 'y')::int + (v_json ->> 'p')::int + (v_json ->> 'p2')::int
+   or not (select bildirim_bekliyor from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 67a: bildirim hemen gitti ya da kayıt bekliyor işaretli değil';
+end if;
+
+-- (b) 3 dk dolmadan iş çalışırsa hiçbir şey olmaz.
+perform public.istisna_bildirim_gonder();
+if (select count(*) from public.notifications where tur = 'ISTISNA'
+     and profile_id in (u_yonetici, u_personel, u_personel2))
+   <> (v_json ->> 'y')::int + (v_json ->> 'p')::int + (v_json ->> 'p2')::int
+   or not (select bildirim_bekliyor from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 67b: 3 dakika dolmadan bildirim gitti';
+end if;
+
+-- (c) 3 dk geçti, kayıt hâlâ açık: herkese TEK bildirim; tercihi kapalı
+--     olana, onay bekleyene ve devre dışı olana gitmez; işaret iner; ikinci
+--     koşu bir şey yapmaz.
+update public.istisnalar set created_at = now() - interval '4 minutes' where id = v_id;
+update public.profiles set notif_prefs = coalesce(notif_prefs, '{}'::jsonb) || '{"ISTISNA": false}'::jsonb
+ where id = u_personel2;
+perform public.istisna_bildirim_gonder();
+perform public.istisna_bildirim_gonder();
+if (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici
+      and baslik = 'Çözülmemiş kayıt' and govde = 'OKUNAMADI — plaka okunamadı' and link = '/istisnalar')
+     < 1
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici)
+     <> (v_json ->> 'y')::int + 1
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_personel)
+     <> (v_json ->> 'p')::int + 1
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_personel2)
+     <> (v_json ->> 'p2')::int
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_pending)
+     <> (v_json ->> 'b')::int
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_disabled)
+     <> (v_json ->> 'd')::int then
+  raise exception 'FAIL 67c: bildirim herkese tek kez gitmedi (ya da gitmemesi gerekene gitti)';
+end if;
+if (select bildirim_bekliyor from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 67c: gönderilen bildirimin işareti inmedi';
+end if;
+
+-- (d) Personel kendi bildirimini OKUYABİLİR (ISTISNA artık yalnızca
+--     Yönetici türü değil — RLS ve send-push aynı listeye bakar).
+if public.bildirim_yonetici_turu('ISTISNA') then
+  raise exception 'FAIL 67d: ISTISNA hâlâ yalnızca Yönetici türü';
+end if;
+perform pg_temp.login(u_personel);
+select count(*) into v_n from public.notifications where tur = 'ISTISNA';
+perform pg_temp.logout();
+if v_n < 1 then
+  raise exception 'FAIL 67d: personel kendi ISTISNA bildirimini göremiyor';
+end if;
+
+-- (e) 3 dk dolmadan biri kaydı kapattıysa bildirim hiç gitmez.
+select count(*) into v_n from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.istisna_coz(v_id2, 'Test 67e');
+perform pg_temp.logout();
+update public.istisnalar set created_at = now() - interval '4 minutes' where id = v_id2;
+perform public.istisna_bildirim_gonder();
+if (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n
+   or (select bildirim_bekliyor from public.istisnalar where id = v_id2) then
+  raise exception 'FAIL 67e: kapatılmış kayıt için bildirim gitti ya da işaret inmedi';
+end if;
+
+-- (f) Okuma servisi arızası kaydı araç başına HİÇ bildirim üretmez (039).
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+perform public.kamera_okuma_hatasi('GIRIS', v_islem, now(), 'Test 67f', true, null);
+perform pg_temp.logout();
+select id into v_id2 from public.istisnalar where islem_id = v_islem;
+if v_id2 is null or (select bildirim_bekliyor from public.istisnalar where id = v_id2) then
+  raise exception 'FAIL 67f: arıza kaydı yazılmadı ya da bildirim bekliyor işaretli';
+end if;
+update public.istisnalar set created_at = now() - interval '4 minutes' where id = v_id2;
+perform public.istisna_bildirim_gonder();
+if (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
+  raise exception 'FAIL 67f: arıza kaydı araç başına bildirim üretti';
+end if;
+
+-- (g) Öbür türler değişmedi: HEMEN ve yalnızca Yöneticiye.
+select count(*) into v_n2 from public.notifications where tur = 'ISTISNA' and profile_id = u_personel;
+select public.istisna_yaz('ACIK_BILET_YOK', 'CIKIS', 'ZZ67AB707', 'KAMERA',
+                          gen_random_uuid(), null, null, now()) into v_id2;
+if (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n + 1
+   or (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_personel) <> v_n2
+   or (select bildirim_bekliyor from public.istisnalar where id = v_id2) then
+  raise exception 'FAIL 67g: açık bilet yok kaydı hemen ve yalnızca Yöneticiye gitmedi';
+end if;
+
+-- (h) Giriş şeridi: kameranın yeniden denemesi bileti açınca kayıt
+--     kendiliğinden kapanır; bekleyen bildirim de hiç gitmez.
+select count(*) into v_n from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
+select public.bilet_ac('ZZ67GR808', v_islem, 'KAMERA', now()) into v_bilet;
+perform pg_temp.logout();
+if v_bilet is null or not exists (
+     select 1 from public.istisnalar
+      where id = v_id2 and cozuldu_at is not null and cozuldu_by is null
+        and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ67GR808 → GIRIS') then
+  raise exception 'FAIL 67h: giriş şeridinde kameranın açtığı bilet kaydı kapatmadı';
+end if;
+update public.istisnalar set created_at = now() - interval '4 minutes' where id = v_id2;
+perform public.istisna_bildirim_gonder();
+if (select count(*) from public.notifications where tur = 'ISTISNA' and profile_id = u_yonetici) <> v_n then
+  raise exception 'FAIL 67h: kendiliğinden kapanan kayıt için bildirim gitti';
+end if;
+
+-- (i) Personelin elle açtığı bilet (MOBIL) kaydı tetikle kapatmaz — onu
+--     istisna_bilet_ac kendisi kapatır (044).
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_okunamadi('GIRIS', v_islem, now(), null, null, null) into v_id2;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.bilet_ac('ZZ67MB909', v_islem);
+perform pg_temp.logout();
+if (select cozuldu_at from public.istisnalar where id = v_id2) is not null then
+  raise exception 'FAIL 67i: elle açılan bilet kaydı tetikle kapattı';
+end if;
+
+-- (j) Her dakika koşan iş kurulu.
+if to_regclass('cron.job') is not null and not exists (
+     select 1 from cron.job
+      where jobname = 'otopark-istisna-bildirim' and schedule = '* * * * *'
+        and command like '%istisna_bildirim_gonder%') then
+  raise exception 'FAIL 67j: otopark-istisna-bildirim işi kurulu değil';
+end if;
+
+raise notice 'PASS 67: okunamayan plaka bildirimi 3 dk bekler, kayıt hâlâ açıksa herkese bir kez gider; kendiliğinden kapanan kayıt (giriş şeridi dâhil) hiç bildirim üretmez';
 
 perform pg_temp.logout();
 raise notice '';

@@ -5,10 +5,10 @@ import type { Bildirim, Profile } from '../../lib/types'
 /**
  * Unread badge count.
  *
- * `enabled` is passed in rather than checked here: every notification type is
- * currently Yönetici-only, and the RLS policy re-checks the CURRENT role on
- * every read — so a demoted user correctly sees zero. Skipping the query for
- * Personel just avoids a pointless round trip on every app open.
+ * `enabled` is passed in rather than checked here. Since 045 Personel receive
+ * notifications too (unread plates), so every caller passes true; the RLS
+ * policy re-checks the CURRENT role on every read, so a demoted user still
+ * sees only what their role may see.
  */
 export function useOkunmamisSayisi(enabled: boolean) {
   return useQuery({

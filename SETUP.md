@@ -149,7 +149,9 @@ select jobid, jobname, schedule, active from cron.job;
 ```
 
 You want `otopark-gunluk` (`5 21 * * *` = 00:05 Istanbul) and `otopark-kamera`
-(`*/10 * * * *`). If they are missing, `pg_cron` is not enabled and subscription
+(`*/10 * * * *`) — and, from later migrations, `otopark-kasa-tekrar`,
+`otopark-maas`, `otopark-vardiya`, `otopark-vardiya-ac` and (045)
+`otopark-istisna-bildirim` (`* * * * *`). If they are missing, `pg_cron` is not enabled and subscription
 expiry, KVKK photo retention and abandoned-vehicle alerts **never run** — which
 you would discover weeks later.
 
@@ -678,6 +680,22 @@ camera retry of the same event replays onto this ticket; if the camera already
 opened it, the card closes with "Kamera bileti zaten açmış". Spot = first free
 one (like a camera ticket). Deploy order: `044` → smoke test through
 **PASS 66** → frontend.
+
+**Unreadable-plate notification after the retries, to everyone (045).** The
+"Çözülmemiş kayıt — OKUNAMADI" notification no longer goes out the moment the
+record is written: the record is marked `bildirim_bekliyor`, and the cron job
+`otopark-istisna-bildirim` (every minute, `istisna_bildirim_gonder()`) sends it
+**3 minutes later, only if the record is still open** — so a camera retry
+after a lost answer (bridge 1.2.4 worst case ≈ 2 min 7 s) that reads the plate
+never notifies anyone. It goes to **every active staff member** (`notify_herkes`,
+respecting each person's "Çözülmemiş kayıt" switch); `ISTISNA` is no longer a
+Yönetici-only type, so Personel see it in the feed and get it as a push. Other
+exception kinds are unchanged (immediately, Yönetici only); service-down rows
+still never notify per car. On the entrance lane a camera retry that opens the
+ticket now closes the record too (trigger `kamera_okunamadi_kapat_tg`; the
+single gate already did, 041). Ayarlar shows Personel the phone switch, that
+one preference and the feed. Deploy order: `045` → smoke test through
+**PASS 67** → frontend.
 
 **Installer 1.2.1** (install this one, not 1.2.0): the camera password is
 checked with ONE request before the address scan (a typo used to cost up to ten

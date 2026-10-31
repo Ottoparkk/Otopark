@@ -103,8 +103,9 @@ export function eylemler(i: Istisna): { girisAc: boolean; cikis: boolean; kapat:
  * CAN be read later, but rarely and not in a way worth waiting for:
  *   - if the 422 reply is lost, the bridge retries the same event within
  *     about two minutes; on the single gate 041 then closes this row (or adds
- *     the plate), on the entrance lane the retry opens the ticket and this
- *     row stays open;
+ *     the plate), on the entrance lane the retry opens the ticket and 045's
+ *     trigger closes this row — either way nobody is notified, since the
+ *     notification waits 3 minutes and goes only for rows still open;
  *   - a later photo of the same car is a new event: it opens the ticket and
  *     leaves this row open.
  */

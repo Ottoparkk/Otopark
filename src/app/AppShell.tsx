@@ -28,7 +28,8 @@ interface NavItem {
 export function AppShell() {
   const { profile } = useAuth()
   const yonetici = isYonetici(profile)
-  const { data: okunmamis = 0 } = useOkunmamisSayisi(yonetici)
+  // Every role since 045 (Personel is told about unread plates too).
+  const { data: okunmamis = 0 } = useOkunmamisSayisi(true)
 
   const items: NavItem[] = [
     // One slot, not three: Giriş, Çıkış and the vehicle list are modes of
@@ -80,21 +81,19 @@ export function AppShell() {
               </NavLink>
             ))}
           </nav>
-          {yonetici && (
-            <NavLink
-              to="/bildirimler"
-              aria-label="Bildirimler"
-              className={({ isActive }) =>
-                [
-                  'relative flex size-11 items-center justify-center rounded-chip transition-colors',
-                  isActive ? 'bg-accent-soft text-accent' : 'text-soft hover:bg-field',
-                ].join(' ')
-              }
-            >
-              <IconZil size={20} />
-              {okunmamis > 0 && <Rozet sayi={okunmamis} />}
-            </NavLink>
-          )}
+          <NavLink
+            to="/bildirimler"
+            aria-label="Bildirimler"
+            className={({ isActive }) =>
+              [
+                'relative flex size-11 items-center justify-center rounded-chip transition-colors',
+                isActive ? 'bg-accent-soft text-accent' : 'text-soft hover:bg-field',
+              ].join(' ')
+            }
+          >
+            <IconZil size={20} />
+            {okunmamis > 0 && <Rozet sayi={okunmamis} />}
+          </NavLink>
         </div>
       </header>
 
