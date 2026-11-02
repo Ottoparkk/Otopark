@@ -1,17 +1,32 @@
 import { useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import { Button, Chip, IconTile, Input, Label } from '../../components/ui/primitives'
+import { Button, Card, Chip, IconTile, Input, Label } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
-import { useBiletIptal, useFotoUrl } from './api'
+import { FormModal } from '../../components/ui/FormModal'
+import { PlakaInput } from '../../components/ui/PlakaInput'
+import {
+  useBiletGirisDuzelt,
+  useBiletIptal,
+  useBiletMusteriGuncelle,
+  useBiletPlakaDuzelt,
+  useFotoUrl,
+} from './api'
 import { useBiletSil } from '../cop/api'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { formatTam } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
-import { formatPlaka } from '../../lib/plaka'
-import { formatTel, normalizeTel } from '../../lib/telefon'
+import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
+import { formatTel, normalizeTel, telGonderilebilir } from '../../lib/telefon'
 import { formatGoreceli } from '../../lib/dates'
-import { formatTL } from '../../lib/money'
+import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
+import {
+  degisiklikler,
+  degistirBaslangic,
+  type DegistirAlan,
+  type DegistirAraclari,
+  type DegistirTaslak,
+} from './degistir'
 import { sureMetni } from '../../lib/sure'
 import { biletBorcu, odemeAlindi } from '../../lib/bilet'
 import {
@@ -28,6 +43,7 @@ import {
   IconAraba,
   IconCikis,
   IconIleri,
+  IconKalem,
   IconKamera,
   IconNot,
   IconUyari,
@@ -382,12 +398,12 @@ export function FotoOnizleme({ url, onKaldir }: { url: string; onKaldir: () => v
 
 /* ======================================================= ticket detail === */
 /*
- * The ticket's facts, its warnings and its two undo actions, split so that
- * BOTH the detail screen and the inline panel on Tahsilat can compose them.
+ * The ticket screen's parts, shared by Tahsilat (car inside) and Bilet Detay
+ * (any ticket) so the two never drift: a warning that shows on one and not the
+ * other is how an operator collects a fee somebody already flagged.
  *
- * Shared rather than copied because the two places must never drift: a
- * warning that shows on one and not the other is how an operator collects a
- * fee somebody already flagged.
+ * Both screens read top to bottom in the same order (owner, 2026-11-02):
+ *   photo → plate → fee + stay → ticket facts │ müşteri → Değiştir → undo.
  */
 
 function Satir({ k, v }: { k: string; v: string }) {
@@ -399,7 +415,10 @@ function Satir({ k, v }: { k: string; v: string }) {
   )
 }
 
-/** Everything known about the ticket, as a definition list. */
+/**
+ * The ticket's facts, as a definition list. Not the stay (shown big beside the
+ * fee) and not the customer (its own part below the separator).
+ */
 export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: string | null }) {
   // Subscribing here is fine, unlike in the row components: this renders once
   // per screen, so there is no fifty-cards-fifty-subscriptions problem to
@@ -409,7 +428,6 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
     <dl className="space-y-2.5">
       <Satir k="Giriş" v={formatTam(bilet.giris_at)} />
       {bilet.cikis_at && <Satir k="Çıkış" v={formatTam(bilet.cikis_at)} />}
-      <Satir k="Süre" v={sureMetni(bilet.giris_at, bilet.cikis_at)} />
       {/* Only while the bay still exists: a retired spot leaves the id on the
           ticket, and "Park yeri —" says less than nothing. */}
       {yerKod && <Satir k="Park yeri" v={yerKod} />}
@@ -449,57 +467,18 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
       )}
       {bilet.abonman_id && <Satir k="Abonman" v="Ücretsiz giriş" />}
       {bilet.kayip_bilet && <Satir k="Kayıp bilet" v="Evet" />}
-
-      {/* Optional (008), so each row appears only when it has something to
-          say — a list of empty labels reads as missing data rather than as
-          data nobody was asked for. */}
-      {bilet.arac_bilgi && <Satir k="Araç" v={bilet.arac_bilgi} />}
-      {bilet.musteri_ad && <Satir k="Müşteri" v={bilet.musteri_ad} />}
-      {bilet.notlar && (
-        <div className="flex items-baseline justify-between gap-3">
-          <dt className="shrink-0 text-body text-faint">Not</dt>
-          {/* whitespace-pre-line: a note is typed with line breaks and losing
-              them turns two remarks into one run-on sentence. */}
-          <dd className="text-right text-body whitespace-pre-line text-ink">{bilet.notlar}</dd>
-        </div>
-      )}
-      {bilet.musteri_tel && (
-        <div className="flex items-baseline justify-between gap-3">
-          <dt className="shrink-0 text-body text-faint">Telefon</dt>
-          <dd>
-            {/* Tappable: the usual reason to look this up at a barrier is that
-                the car is blocking someone and its driver is not in it. */}
-            <a
-              href={`tel:+90${bilet.musteri_tel}`}
-              className="text-body font-medium text-accent tnum underline"
-            >
-              {formatTel(bilet.musteri_tel)}
-            </a>
-          </dd>
-        </div>
-      )}
     </dl>
   )
 }
 
-function Foto({ url, etiket }: { url: string; etiket: string }) {
-  return (
-    <figure>
-      <img src={url} alt={`${etiket} fotoğrafı`} className="w-full rounded-card object-cover" />
-      <figcaption className="mt-1.5 text-label text-faint">{etiket}</figcaption>
-    </figure>
-  )
-}
-
-/** The flags that change how a ticket should be read, plus its photos. */
-export function BiletEkleri({ bilet }: { bilet: Bilet }) {
-  const { data: girisFoto } = useFotoUrl(bilet.giris_foto)
-  const { data: cikisFoto } = useFotoUrl(bilet.cikis_foto)
-
+/** The flags that change how a ticket should be read. */
+export function BiletUyarilari({ bilet }: { bilet: Bilet }) {
   return (
     <>
+      {/* rounded-field, not rounded-card: these now sit INSIDE the details
+          card, and a nested radius has to be the smaller one. */}
       {bilet.ucret_degistirildi && (
-        <div className="rounded-card bg-warn-soft px-4 py-3">
+        <div className="rounded-field bg-warn-soft px-3.5 py-3">
           <p className="text-body font-medium text-warn">Ücret elle değiştirilmiş</p>
           {bilet.ucret_sebep && (
             <p className="mt-1 text-label text-warn opacity-90">{bilet.ucret_sebep}</p>
@@ -508,19 +487,450 @@ export function BiletEkleri({ bilet }: { bilet: Bilet }) {
       )}
 
       {bilet.durum === 'IPTAL' && bilet.iptal_sebep && (
-        <div className="rounded-card bg-danger-soft px-4 py-3">
+        <div className="rounded-field bg-danger-soft px-3.5 py-3">
           <p className="text-body font-medium text-danger">İptal edildi</p>
           <p className="mt-1 text-label text-danger opacity-90">{bilet.iptal_sebep}</p>
         </div>
       )}
-
-      {(girisFoto || cikisFoto) && (
-        <div className="grid grid-cols-2 gap-3">
-          {girisFoto && <Foto url={girisFoto} etiket="Giriş" />}
-          {cikisFoto && <Foto url={cikisFoto} etiket="Çıkış" />}
-        </div>
-      )}
     </>
+  )
+}
+
+/**
+ * The car's photo(s), first thing on the screen — the plate in the picture is
+ * what the plate text below it is checked against.
+ *
+ * `object-contain` on a field-coloured well, never `object-cover`: a camera
+ * crop is wide and a phone photo is tall, and cover would cut either one —
+ * possibly right through the plate this photo exists to show.
+ *
+ * One photo spans the width. Entry + exit sit side by side, captioned, because
+ * then the reader has to know which is which. No photo at all → nothing, not
+ * an empty frame: a manual entry has no picture and that is not an error. A
+ * photo whose link failed (retention purge, storage hiccup) drops out the same
+ * way rather than leaving a broken image.
+ */
+export function BiletFoto({ bilet }: { bilet: Pick<Bilet, 'giris_foto' | 'cikis_foto'> }) {
+  const giris = useFotoUrl(bilet.giris_foto)
+  const cikis = useFotoUrl(bilet.cikis_foto)
+
+  // `isPending` is only meaningful when there is a path: a disabled query
+  // (no path) also reports pending, which is why the path is checked first.
+  const kareler = [
+    { etiket: 'Giriş', path: bilet.giris_foto, q: giris },
+    { etiket: 'Çıkış', path: bilet.cikis_foto, q: cikis },
+  ].filter((k) => k.path && (k.q.isPending || k.q.data))
+
+  if (kareler.length === 0) return null
+  const tek = kareler.length === 1
+
+  return (
+    <div className={tek ? '' : 'grid grid-cols-2 gap-3'}>
+      {kareler.map((k) => (
+        <figure key={k.etiket}>
+          <div
+            className={`overflow-hidden rounded-card bg-field ${tek ? 'aspect-video' : 'aspect-[4/3]'}`}
+          >
+            {k.q.data ? (
+              <img
+                src={k.q.data}
+                alt={`${k.etiket} fotoğrafı`}
+                className="size-full object-contain"
+              />
+            ) : (
+              // Holds the space while the signed link loads, so the plate and
+              // the fee below do not jump down the moment it arrives.
+              <div className="size-full animate-pulse" aria-hidden="true" />
+            )}
+          </div>
+          {/* A lone entry photo needs no caption — it is the default. */}
+          {(!tek || k.etiket === 'Çıkış') && (
+            <figcaption className="mt-1.5 text-label text-faint">{k.etiket}</figcaption>
+          )}
+        </figure>
+      ))}
+    </div>
+  )
+}
+
+/** The ticket's state as one chip — same words as the vehicle list. */
+export function DurumChip({
+  durum,
+  kapida = false,
+}: {
+  durum: Bilet['durum']
+  /** Camera saw it at the exit (038): the half of "inside" that needs action. */
+  kapida?: boolean
+}) {
+  if (durum === 'IPTAL') return <Chip tone="danger">İptal</Chip>
+  if (durum === 'KAPALI') return <Chip tone="success">Çıktı</Chip>
+  return <Chip tone="accent">{kapida ? 'Kapıda' : 'İçeride'}</Chip>
+}
+
+/**
+ * The plate as text, right under the photo it is read against.
+ *
+ * Same size and tracking as the plate entry field (28px, wide, tabular): the
+ * plate is the ticket's identity, so it reads louder than the screen title and
+ * looks the same wherever it is typed or shown. `break-all` rather than
+ * truncate — a plate is never worth hiding a character of.
+ */
+export function PlakaBasligi({
+  plaka,
+  durum,
+  kapida = false,
+}: {
+  plaka: string
+  durum: Bilet['durum']
+  kapida?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <p className="min-w-0 text-[28px] leading-tight font-semibold tracking-[0.06em] break-all text-ink tnum">
+        {formatPlaka(plaka)}
+      </p>
+      <DurumChip durum={durum} kapida={kapida} />
+    </div>
+  )
+}
+
+function BolumBasligi({ children, sag }: { children: ReactNode; sag?: ReactNode }) {
+  return (
+    // min-h-11: the row is as tall as the 44px icon button that may sit in it,
+    // so the two halves of the card start their lists at the same rhythm.
+    <div className="flex min-h-11 items-center justify-between gap-3">
+      <h2 className="text-label font-medium tracking-wide text-faint uppercase">{children}</h2>
+      {sag}
+    </div>
+  )
+}
+
+/**
+ * Ticket facts, one hairline, then the customer — ONE card, so the separator
+ * says "same ticket, other half" rather than starting a new thing.
+ */
+export function BiletDetayKarti({ bilet, yerKod }: { bilet: Bilet; yerKod?: string | null }) {
+  return (
+    <Card>
+      <BolumBasligi>Bilet</BolumBasligi>
+      <div className="mt-1 space-y-4">
+        <BiletUyarilari bilet={bilet} />
+        <BiletBilgileri bilet={bilet} yerKod={yerKod} />
+      </div>
+
+      <div className="-mx-4 my-4 border-t border-divider" />
+
+      <MusteriBolumu bilet={bilet} />
+    </Card>
+  )
+}
+
+/**
+ * Who the car belongs to, with an icon-only edit button beside the heading.
+ *
+ * The pencil shows only while the car is inside: bilet_musteri_guncelle
+ * refuses a closed ticket, and a button that can only fail is worse than none.
+ * The form is a modal, so the list stays readable and the edit is one tap away
+ * on both screens. It is handed a ticket that has already LOADED — the old
+ * inline form had to guard against saving three blanks over a real name after
+ * a failed load; here there is nothing to open until the row exists.
+ */
+export function MusteriBolumu({ bilet }: { bilet: Bilet }) {
+  const [duzenle, setDuzenle] = useState(false)
+  const duzenlenebilir = bilet.durum === 'ACIK'
+  const bos = !bilet.arac_bilgi && !bilet.musteri_ad && !bilet.musteri_tel && !bilet.notlar
+
+  return (
+    <section>
+      <BolumBasligi
+        sag={
+          duzenlenebilir ? (
+            <button
+              type="button"
+              onClick={() => setDuzenle(true)}
+              aria-label="Müşteri bilgilerini düzenle"
+              title="Müşteri bilgilerini düzenle"
+              className="-mr-2 flex size-11 shrink-0 items-center justify-center rounded-chip text-accent active:bg-field"
+            >
+              <IconKalem size={20} />
+            </button>
+          ) : undefined
+        }
+      >
+        Müşteri
+      </BolumBasligi>
+
+      {bos ? (
+        <p className="mt-1 text-body text-faint">Bilgi eklenmemiş</p>
+      ) : (
+        // Optional fields (008): each row only when it has something to say —
+        // a list of empty labels reads as missing data.
+        <dl className="mt-1 space-y-2.5">
+          {bilet.musteri_ad && <Satir k="Ad" v={bilet.musteri_ad} />}
+          {bilet.musteri_tel && (
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="shrink-0 text-body text-faint">Telefon</dt>
+              <dd>
+                {/* Tappable: the usual reason to look this up at a barrier is
+                    that the car is blocking someone and its driver is not in it. */}
+                <a
+                  href={`tel:+90${bilet.musteri_tel}`}
+                  className="text-body font-medium text-accent tnum underline"
+                >
+                  {formatTel(bilet.musteri_tel)}
+                </a>
+              </dd>
+            </div>
+          )}
+          {bilet.arac_bilgi && <Satir k="Araç" v={bilet.arac_bilgi} />}
+          {bilet.notlar && (
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="shrink-0 text-body text-faint">Not</dt>
+              {/* whitespace-pre-line: a note is typed with line breaks and
+                  losing them turns two remarks into one run-on sentence. */}
+              <dd className="text-right text-body whitespace-pre-line text-ink">{bilet.notlar}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+
+      {/* Mounted only while open: every opening starts from what is saved,
+          never from a half-typed draft somebody walked away from. */}
+      {duzenle && <MusteriFormu bilet={bilet} onKapat={() => setDuzenle(false)} />}
+    </section>
+  )
+}
+
+function MusteriFormu({ bilet, onKapat }: { bilet: Bilet; onKapat: () => void }) {
+  const guncelle = useBiletMusteriGuncelle()
+  const [taslak, setTaslak] = useState<EkBilgiler>(() => ekBilgiAlanlari(bilet))
+  const [telHata, setTelHata] = useState<string | null>(null)
+  const [hata, setHata] = useState<string | null>(null)
+
+  return (
+    <FormModal
+      open
+      onOpenChange={(o) => {
+        if (!o) onKapat()
+      }}
+      title="Müşteri bilgileri"
+      loading={guncelle.isPending}
+      error={hata}
+      onSubmit={() => {
+        setHata(null)
+        setTelHata(null)
+        if (!telGonderilebilir(taslak.tel)) {
+          setTelHata('10 hane girin ya da alanı boş bırakın.')
+          return
+        }
+        void guncelle
+          .mutateAsync({ bilet_id: bilet.id, ...ekBilgiGonder(taslak) })
+          .then(onKapat)
+          .catch((e) => setHata(rpcErrorText(e, 'Kaydedilemedi.')))
+      }}
+    >
+      <EkBilgiFormu
+        deger={taslak}
+        onChange={(m) => {
+          setTaslak(m)
+          setTelHata(null)
+        }}
+        telHatasi={telHata}
+      />
+    </FormModal>
+  )
+}
+
+/* ============================================================ Değiştir === */
+
+/** The real helpers, handed to the pure rules (see degistir.ts for why). */
+const DEGISTIR_ARACLARI: DegistirAraclari = {
+  normalizePlaka,
+  plakaGecerli,
+  parseTLToKurus,
+  kurusToInput,
+}
+
+/** The fee half of the form — Tahsilat only, where an override can be applied. */
+export interface DegistirUcret {
+  /** Gross fee the field starts from: the override if one is set, else the computed fee. */
+  kurus: number
+  /** The computed fee, for the hint. */
+  hesaplanan: number
+  onUygula: (kurus: number, sebep: string) => void
+}
+
+/**
+ * "Değiştir": plate, entry time and (on Tahsilat) the fee of an OPEN ticket.
+ *
+ * Only what changed is sent, in order plate → time → fee, and the modal stays
+ * open on any error with the server's own sentence in it. A retry after a
+ * partial save re-sends nothing that already landed (the baseline moves with
+ * each success), and the server treats a repeat as a no-op anyway.
+ */
+export function BiletDegistirModal({
+  open,
+  ...rest
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  bilet: { id: string; plaka: string; giris_at: string; indirim_kurus: number }
+  /** null: the fee is not editable here — say why in `ucretNotu`, or say nothing. */
+  ucret: DegistirUcret | null
+  ucretNotu?: string
+}) {
+  // Mounted only while open, so the form always starts from the ticket as it
+  // is NOW — not from the values of the last time it was opened.
+  if (!open) return null
+  return <DegistirFormu {...rest} />
+}
+
+function DegistirFormu({
+  onOpenChange,
+  bilet,
+  ucret,
+  ucretNotu,
+}: {
+  onOpenChange: (open: boolean) => void
+  bilet: { id: string; plaka: string; giris_at: string; indirim_kurus: number }
+  ucret: DegistirUcret | null
+  ucretNotu?: string
+}) {
+  const yonetici = isYonetici(useAuth().profile)
+  const plakaDuzelt = useBiletPlakaDuzelt()
+  const girisDuzelt = useBiletGirisDuzelt()
+
+  const [bas, setBas] = useState(() =>
+    degistirBaslangic(bilet, ucret?.kurus ?? null, DEGISTIR_ARACLARI),
+  )
+  const [taslak, setTaslak] = useState<DegistirTaslak>(() => ({
+    plaka: bas.plaka,
+    girisYerel: bas.girisYerel,
+    ucretMetni: bas.ucretMetni ?? '',
+    sebep: '',
+  }))
+  const [alanHata, setAlanHata] = useState<{ alan: DegistirAlan; metin: string } | null>(null)
+  const [hata, setHata] = useState<string | null>(null)
+  const [calisiyor, setCalisiyor] = useState(false)
+
+  const set = (yama: Partial<DegistirTaslak>) => {
+    setTaslak((t) => ({ ...t, ...yama }))
+    setAlanHata(null)
+    setHata(null)
+  }
+  const hataOf = (alan: DegistirAlan) => (alanHata?.alan === alan ? alanHata.metin : null)
+
+  async function kaydet() {
+    if (calisiyor) return
+    setHata(null)
+    setAlanHata(null)
+    const s = degisiklikler(bas, taslak, new Date(), DEGISTIR_ARACLARI)
+    if (s.hata !== null) {
+      setAlanHata({ alan: s.alan, metin: s.hata })
+      return
+    }
+    if (s.bos) {
+      onOpenChange(false)
+      return
+    }
+    setCalisiyor(true)
+    try {
+      if (s.plaka !== null) {
+        await plakaDuzelt.mutateAsync({ bilet_id: bilet.id, plaka: s.plaka })
+        const plaka = s.plaka
+        setBas((b) => ({ ...b, plaka }))
+      }
+      if (s.girisISO !== null) {
+        await girisDuzelt.mutateAsync({
+          bilet_id: bilet.id,
+          giris_at: s.girisISO,
+          sebep: s.sebep ?? '',
+        })
+        const girisYerel = taslak.girisYerel
+        setBas((b) => ({ ...b, girisYerel }))
+      }
+      // Last, and local: it only takes effect when the car is let out, so it
+      // must not be applied if a server step above failed.
+      if (s.ucretKurus !== null && ucret) ucret.onUygula(s.ucretKurus, s.sebep ?? '')
+      onOpenChange(false)
+    } catch (e) {
+      setHata(rpcErrorText(e, 'Değişiklik kaydedilemedi.'))
+    } finally {
+      setCalisiyor(false)
+    }
+  }
+
+  return (
+    <FormModal
+      open
+      onOpenChange={onOpenChange}
+      title="Bileti değiştir"
+      submitLabel="Kaydet"
+      loading={calisiyor}
+      error={hata}
+      onSubmit={() => void kaydet()}
+    >
+      {/* Words, not the "34ABC123" example: on a ticket screen a grey sample
+          plate would read as what the camera saw (see PlakaInput). */}
+      <PlakaInput
+        value={taslak.plaka}
+        onChange={(v) => set({ plaka: v })}
+        error={hataOf('plaka')}
+        placeholder="Plakayı yazın"
+      />
+
+      {/* No min/max attributes on purpose: the browser enforces them on submit
+          with its own English tooltip, and a `max` fixed when the form opened
+          would reject "now" a minute later. The rules live in degistir.ts and
+          answer in Turkish; the server re-checks them. */}
+      <Input
+        label="Giriş tarihi ve saati"
+        type="datetime-local"
+        // The calendar icon and the picker are drawn by the browser, in the
+        // page's colour scheme — "light" unless told otherwise, which left a
+        // dark glyph on the dark field. Scoped to this field on purpose.
+        className="tnum dark:[color-scheme:dark]"
+        value={taslak.girisYerel}
+        onChange={(e) => set({ girisYerel: e.target.value })}
+        error={hataOf('giris')}
+        hint="İstanbul saati. Değişirse ücret yeniden hesaplanır."
+      />
+
+      {ucret ? (
+        <Input
+          label="Ücret (₺)"
+          value={taslak.ucretMetni}
+          onChange={(e) => set({ ucretMetni: e.target.value })}
+          inputMode="decimal"
+          className="tnum"
+          error={hataOf('ucret')}
+          hint={
+            `Hesaplanan ücret ${formatTL(ucret.hesaplanan)}.` +
+            (bilet.indirim_kurus > 0
+              ? ` Kullanılan puan (−${formatTL(bilet.indirim_kurus)}) bundan ayrıca düşülür.`
+              : '')
+          }
+        />
+      ) : ucretNotu ? (
+        <p className="text-label text-faint">{ucretNotu}</p>
+      ) : null}
+
+      <Input
+        label="Sebep"
+        value={taslak.sebep}
+        onChange={(e) => set({ sebep: e.target.value })}
+        maxLength={200}
+        placeholder="Örn. kamera geç okudu, müşteri itirazı"
+        error={hataOf('sebep')}
+        hint={
+          // A Yönetici is not notified of their own change (notify_yonetici
+          // excludes the caller), so promising them a notification is false.
+          yonetici
+            ? 'Saat ya da ücret değişirse zorunlu — denetim kaydına yazılır.'
+            : 'Saat ya da ücret değişirse zorunlu — Yöneticiye bildirilir.'
+        }
+      />
+    </FormModal>
   )
 }
 
@@ -667,21 +1077,6 @@ export function ekBilgiAlanlari(bilet: Bilet): EkBilgiler {
     tel: bilet.musteri_tel ?? '',
     not: bilet.notlar ?? '',
   }
-}
-
-/**
- * One line for a collapsed header — what is on file, or that nothing is.
- *
- * The note goes LAST and only if nothing else is set: it is the one field that
- * can run to 500 characters, and a summary that opens with half a sentence
- * tells you less at a glance than a name does.
- */
-export function ekBilgiOzet(m: EkBilgiler): string {
-  const parcalar = [m.ad.trim(), m.arac.trim(), formatTel(m.tel)].filter(Boolean)
-  if (parcalar.length) return parcalar.join(' · ')
-  const not = m.not.trim()
-  if (not) return not
-  return 'Bilgi eklenmemiş'
 }
 
 /**

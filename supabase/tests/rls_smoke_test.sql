@@ -44,6 +44,9 @@
 --    • Paid camera reads are countable and capped (040): every camera read
 --      is tagged in the read log, nobody can forge or erase those rows from
 --      the client, and crossing the cap raises one alert an hour
+--    • The entry time of an open ticket can be corrected (046) — active staff
+--      only, with a reason, never into the future or past a year, never below
+--      the points already used; audited and reported to the Yönetici
 -- ============================================================
 
 begin;
@@ -1283,6 +1286,31 @@ raise notice 'PASS 37: müşteri bilgisi ve not normalize ediliyor, liste ücret
 --     more — which means one bad call could retire every bay in it. These
 --     checks are about what it REFUSES to do.
 -- =====================================================================
+
+-- Fixture: boş bir otopark. 38 ve 39 P-01…P-05'te yalnızca testin kendi
+-- koyduklarının durduğunu varsayar; ama dosya CANLI veritabanında koşar.
+-- 2026-10-31 tezgâh kurulumundan beri kamera gerçek biletler açıyor ve kamera
+-- bileti ilk boş yeri (P-01) alıyor — 39c bu yüzden "P-02" ile patladı.
+-- Uygulama doğru çalışıyordu; testin şu an park etmiş araçlara bağlı olmaması
+-- gerekir. Canlı açık biletler yerlerinden alınır, güncel/gelecek
+-- rezervasyonlar 1900'e (her biri kendi günü — çakışma kısıtı tutmasın)
+-- taşınır. Hiçbir şey silinmez; dosyanın sonundaki ROLLBACK hepsini geri alır.
+perform pg_temp.logout();
+update public.biletler
+   set park_yeri_id = null
+ where durum = 'ACIK' and park_yeri_id is not null;
+update public.rezervasyonlar r
+   set gecerlilik = tstzrange(timestamptz '1900-01-01 00:00+00' + make_interval(days => s.rn),
+                              timestamptz '1900-01-01 01:00+00' + make_interval(days => s.rn))
+  from (select x.id, row_number() over (order by x.id)::int as rn
+          from public.rezervasyonlar x
+         where upper(x.gecerlilik) is null or upper(x.gecerlilik) > now()) s
+ where r.id = s.id;
+if exists (select 1 from public.biletler where durum = 'ACIK' and park_yeri_id is not null)
+   or exists (select 1 from public.rezervasyonlar
+               where upper(gecerlilik) is null or upper(gecerlilik) > now()) then
+  raise exception 'FAIL 38: fixture — otopark boşaltılamadı (yerde açık bilet ya da güncel rezervasyon kaldı)';
+end if;
 
 -- (a) Personel cannot run it. The settings screen is Yönetici-only, but a
 --     hidden screen has never been the boundary.
@@ -5780,6 +5808,228 @@ if to_regclass('cron.job') is not null and not exists (
 end if;
 
 raise notice 'PASS 67: okunamayan plaka bildirimi 3 dk bekler, kayıt hâlâ açıksa herkese bir kez gider; kendiliğinden kapanan kayıt (giriş şeridi dâhil) hiç bildirim üretmez';
+
+-- =====================================================================
+-- 68  Giriş saatini düzelt (046)
+--     Bilet ekranındaki "Değiştir": araç içerideyken giriş saati düzeltilir.
+--     Saati geri almak ücreti artırır, ileri almak düşürür — yani bu PARA:
+--       · yalnızca aktif personel (is_staff), yalnızca AÇIK bilet;
+--       · ileri bir zaman ve bir yıldan eski saat reddedilir;
+--       · sebep zorunlu; her değişiklik audit_log'a eski/yeni/sebep ile
+--         yazılır ve Yöneticiye "Ücret değişikliği" bildirimi gider
+--         (değiştiren Yöneticinin kendisine gitmez — notify_yonetici);
+--       · aynı saat zararsız: iz ve bildirim yazılmaz;
+--       · kullanılan puan yeni ücreti aşarsa reddedilir (bilet_kapat çıkışta
+--         zaten reddederdi — sorun kapıda değil burada söylenmeli).
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.bilet_giris_duzelt(uuid, timestamptz, text)') is null then
+  raise exception 'FAIL 68: bilet_giris_duzelt yok — 046 çalıştırılmadı';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 68: fixture — u_personel aktif bir Personel değil';
+end if;
+
+-- Yöneticilerin bu tür bildirimi kapalı olmasın (bir tercih sayımı bozmasın).
+-- u_personel2 de dâhil: PASS 31 onu BİLEREK Yönetici bırakır.
+update public.profiles set notif_prefs = coalesce(notif_prefs, '{}'::jsonb) - 'UCRET_DEGISIKLIGI'
+ where id in (u_yonetici, u_personel2);
+
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ68GRS01', now() - interval '2 hours', t.id, 'ACIK'
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id, giris_at into v_bilet, v_ts;
+
+-- (a) Rolü olmayan ve devre dışı kullanıcı değiştiremez.
+foreach v_id in array array[u_pending, u_disabled] loop
+  perform pg_temp.login(v_id);
+  begin
+    perform public.bilet_giris_duzelt(v_bilet, now() - interval '3 hours', 'Test 68a');
+    raise exception 'FAIL 68a: rolsüz/devre dışı kullanıcı giriş saatini değiştirdi';
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if sqlerrm not like '%Yetkiniz yok%' then
+      raise exception 'FAIL 68a: beklenmeyen hata: %', sqlerrm;
+    end if;
+  end;
+  perform pg_temp.logout();
+end loop;
+
+-- (b)–(e) Geçersiz girdiler, her biri kendi sebebiyle reddedilir.
+perform pg_temp.login(u_personel);
+foreach v_txt in array array['ileri', 'eski', 'sebep_bos', 'sebep_null', 'saat_null'] loop
+  begin
+    case v_txt
+      when 'ileri' then
+        perform public.bilet_giris_duzelt(v_bilet, now() + interval '5 minutes', 'Test 68b');
+      when 'eski' then
+        perform public.bilet_giris_duzelt(v_bilet, now() - interval '1 year 1 day', 'Test 68c');
+      when 'sebep_bos' then
+        perform public.bilet_giris_duzelt(v_bilet, now() - interval '3 hours', '   ');
+      when 'sebep_null' then
+        perform public.bilet_giris_duzelt(v_bilet, now() - interval '3 hours', null);
+      else
+        perform public.bilet_giris_duzelt(v_bilet, null, 'Test 68e');
+    end case;
+    raise exception 'FAIL 68b-e: % girdisi kabul edildi', v_txt;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    v_txt2 := case v_txt
+                when 'ileri'      then '%ileri bir zaman%'
+                when 'eski'       then '%bir yıldan eski%'
+                when 'saat_null'  then '%Giriş saati boş%'
+                else '%Sebep zorunlu%' end;
+    if sqlerrm not like v_txt2 then
+      raise exception 'FAIL 68b-e: % için beklenmeyen hata: %', v_txt, sqlerrm;
+    end if;
+  end;
+end loop;
+perform pg_temp.logout();
+if (select giris_at from public.biletler where id = v_bilet) is distinct from v_ts then
+  raise exception 'FAIL 68a-e: reddedilen çağrı giriş saatini değiştirdi';
+end if;
+if exists (select 1 from public.audit_log
+            where action = 'bilet_giris_duzeltildi' and row_id = v_bilet) then
+  raise exception 'FAIL 68a-e: reddedilen çağrı audit_log''a yazdı';
+end if;
+
+-- (f) Personel düzeltir: saat değişir, bir iz, Yöneticiye bir bildirim,
+--     öbür personele hiç.
+v_ts2 := date_trunc('minute', now()) - interval '3 hours';
+perform pg_temp.login(u_personel);
+perform public.bilet_giris_duzelt(v_bilet, v_ts2, '  Kamera geç okudu  ');
+perform pg_temp.logout();
+if (select giris_at from public.biletler where id = v_bilet) is distinct from v_ts2 then
+  raise exception 'FAIL 68f: giriş saati değişmedi';
+end if;
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 68f: bilet açık kalmadı';
+end if;
+if (select count(*) from public.audit_log
+     where action = 'bilet_giris_duzeltildi' and row_id = v_bilet and actor = u_personel
+       and (detay ->> 'eski')::timestamptz = v_ts
+       and (detay ->> 'yeni')::timestamptz = v_ts2
+       and detay ->> 'sebep' = 'Kamera geç okudu'
+       and detay ->> 'plaka' = 'ZZ68GRS01') <> 1 then
+  raise exception 'FAIL 68f: değişiklik audit_log''a eski/yeni/sebep ile yazılmadı';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur = 'UCRET_DEGISIKLIGI'
+       and link = '/gise/bilet/' || v_bilet
+       and baslik = 'Giriş saati değiştirildi'
+       and govde like 'ZZ68GRS01 — %Kamera geç okudu') <> 1 then
+  raise exception 'FAIL 68f: Yöneticiye tek bir giriş saati bildirimi gitmedi';
+end if;
+-- Rol, değişken adına göre değil O ANKİ role göre okunur: PASS 31 u_personel2'yi
+-- bilerek Yönetici bırakır, o yüzden o da bildirimi ALMALI. Personel kalan
+-- test kullanıcıları hiç almamalı — ve en az biri Personel olmalı, yoksa bu
+-- kontrol boşuna geçerdi.
+if not exists (select 1 from public.profiles
+                where id in (u_personel, u_personel2) and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 68f: fixture — Personel rolünde test kullanıcısı kalmadı';
+end if;
+if exists (select 1 from public.notifications n
+             join public.profiles p on p.id = n.profile_id
+            where p.id in (u_personel, u_personel2) and p.rol = 'PERSONEL'
+              and n.link = '/gise/bilet/' || v_bilet) then
+  raise exception 'FAIL 68f: Personel giriş saati bildirimi aldı';
+end if;
+-- Öbür aktif test Yöneticileri de birer tane almalı — bildirim tek kişiye değil
+-- bütün Yöneticilere gider.
+if exists (select 1 from public.profiles p
+            where p.id in (u_personel, u_personel2)
+              and p.rol = 'YONETICI' and p.durum = 'ACTIVE'
+              and (select count(*) from public.notifications n
+                    where n.profile_id = p.id and n.tur = 'UCRET_DEGISIKLIGI'
+                      and n.link = '/gise/bilet/' || v_bilet) <> 1) then
+  raise exception 'FAIL 68f: her aktif Yöneticiye tek bir giriş saati bildirimi gitmedi';
+end if;
+
+-- (g) Aynı saat: zararsız, ikinci iz ve bildirim yok.
+perform pg_temp.login(u_personel);
+perform public.bilet_giris_duzelt(v_bilet, v_ts2, 'Test 68g');
+perform pg_temp.logout();
+if (select count(*) from public.audit_log
+     where action = 'bilet_giris_duzeltildi' and row_id = v_bilet) <> 1
+   -- Yalnızca test Yöneticisi sayılır: canlıdaki gerçek Yönetici de bildirim alır.
+   or (select count(*) from public.notifications
+        where profile_id = u_yonetici and link = '/gise/bilet/' || v_bilet) <> 1 then
+  raise exception 'FAIL 68g: aynı saat ikinci iz ya da bildirim yazdı';
+end if;
+
+-- (h) Yönetici düzeltir: iz yazılır, kendine bildirim gitmez.
+perform pg_temp.login(u_yonetici);
+perform public.bilet_giris_duzelt(v_bilet, v_ts2 - interval '30 minutes', 'Test 68h');
+perform pg_temp.logout();
+if (select count(*) from public.audit_log
+     where action = 'bilet_giris_duzeltildi' and row_id = v_bilet) <> 2 then
+  raise exception 'FAIL 68h: Yöneticinin değişikliği audit_log''a yazılmadı';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and link = '/gise/bilet/' || v_bilet) <> 1 then
+  raise exception 'FAIL 68h: Yönetici kendi değişikliği için bildirim aldı';
+end if;
+
+-- (i) Kullanılan puan yeni ücreti aşarsa reddedilir.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum,
+                             indirim_kurus, puan_kullanilan)
+select gen_random_uuid(), 'ZZ68GRS02', now() - interval '5 hours', t.id, 'ACIK', 100000000, 1
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id, giris_at into v_bilet2, v_ts;
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_giris_duzelt(v_bilet2, now() - interval '1 minute', 'Test 68i');
+  raise exception 'FAIL 68i: puanı aşan ücrete düşüren saat kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%puan%' then
+    raise exception 'FAIL 68i: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if (select giris_at from public.biletler where id = v_bilet2) is distinct from v_ts then
+  raise exception 'FAIL 68i: reddedilen çağrı giriş saatini değiştirdi';
+end if;
+
+-- (j) Kapanmış bilet ve olmayan bilet açıkça reddedilir.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, iptal_sebep)
+select gen_random_uuid(), 'ZZ68GRS03', now() - interval '5 hours', t.id, 'IPTAL', 'Test 68j'
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id into v_id2;
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_giris_duzelt(v_id2, now() - interval '6 hours', 'Test 68j');
+  raise exception 'FAIL 68j: kapanmış biletin giriş saati değişti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%açık değil%' then
+    raise exception 'FAIL 68j: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_giris_duzelt(gen_random_uuid(), now() - interval '6 hours', 'Test 68j');
+  raise exception 'FAIL 68j: olmayan bilet için hata verilmedi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%bulunamadı%' then
+    raise exception 'FAIL 68j: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (k) Yalnızca giriş yapmış kullanıcıya açık; kamera ve anon kullanamaz.
+if not has_function_privilege('authenticated',
+     'public.bilet_giris_duzelt(uuid, timestamptz, text)', 'execute') then
+  raise exception 'FAIL 68k: bilet_giris_duzelt authenticated rolüne kapalı';
+end if;
+foreach v_txt in array array['anon', 'service_role'] loop
+  if has_function_privilege(v_txt, 'public.bilet_giris_duzelt(uuid, timestamptz, text)', 'execute') then
+    raise exception 'FAIL 68k: bilet_giris_duzelt % rolüne açık', v_txt;
+  end if;
+end loop;
+
+raise notice 'PASS 68: giriş saati yalnızca aktif personelce, yalnızca açık bilette, sebeple düzeltilir; ileri/çok eski saat ve puanı aşan ücret reddedilir; iz yazılır, Yöneticiye bildirim gider';
 
 perform pg_temp.logout();
 raise notice '';

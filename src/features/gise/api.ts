@@ -264,7 +264,9 @@ export function useGunlukOzet() {
  */
 export function useUcretOnizleme(bilet: AcikBilet | Bilet | null | undefined) {
   return useQuery({
-    queryKey: ['ucret', bilet?.id],
+    // giris_at is part of the key: a corrected entry time (046) must re-price
+    // at once rather than show the old fee until the next 30-second tick.
+    queryKey: ['ucret', bilet?.id, bilet?.giris_at],
     enabled: Boolean(bilet),
     queryFn: async (): Promise<number> => {
       // A subscriber's stay is free, and the RPC would price it as if it
@@ -687,6 +689,32 @@ export function useBiletPlakaDuzelt() {
     onSuccess: (_d, g) => {
       void qc.invalidateQueries({ queryKey: ['bilet', g.bilet_id] })
       void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+    },
+  })
+}
+
+/**
+ * "Değiştir" → giriş saati (046). Any active staff, open tickets only, reason
+ * required — re-checked server-side, audited, reported to the Yönetici.
+ * Not retried: a lost reply followed by a retry is harmless (the same time is
+ * a no-op), but a retry the operator did not ask for is not.
+ */
+export function useBiletGirisDuzelt() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (g: { bilet_id: string; giris_at: string; sebep: string }) => {
+      const { error } = await supabase.rpc('bilet_giris_duzelt', {
+        p_bilet_id: g.bilet_id,
+        p_giris_at: g.giris_at,
+        p_sebep: g.sebep,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, g) => {
+      void qc.invalidateQueries({ queryKey: ['bilet', g.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
+      void qc.invalidateQueries({ queryKey: ['ucret', g.bilet_id] })
     },
   })
 }

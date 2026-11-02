@@ -218,6 +218,14 @@ export const IconCop = (p: IconProps) => (
   </Icon>
 )
 
+/** Edit — a pencil. Used alone on an icon-only button, so the button carries the label. */
+export const IconKalem = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M15.2 4.8a2.1 2.1 0 0 1 3 3L8.5 17.5 4.5 18.5l1-4 9.7-9.7Z" />
+    <path d="M13.5 6.5l3 3" />
+  </Icon>
+)
+
 export const IconKisi = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="8" r="4" />

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Button, Card, LoadError, ScreenHeader } from '../../components/ui/primitives'
+import { Button, Card, DataPoint, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { YontemSecici } from '../../components/ui/YontemSecici'
 import {
@@ -9,37 +9,50 @@ import {
   useBiletPlakaDuzelt,
   useBiletTahsil,
   useFotoUrl,
+  useUcretOnizleme,
   useYerKodlari,
 } from './api'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
-import { BiletBilgileri, BiletEkleri, IptalButonu, useBiletAksiyonlari } from './components'
-import { formatPlaka, plakaGecerli } from '../../lib/plaka'
+import {
+  BiletDegistirModal,
+  BiletDetayKarti,
+  BiletFoto,
+  IptalButonu,
+  PlakaBasligi,
+  useBiletAksiyonlari,
+} from './components'
+import { plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
-import { biletBorcu, odemeAlindi } from '../../lib/bilet'
+import { sureMetni } from '../../lib/sure'
+import { biletBorcu, gosterilenUcret, odemeAlindi, sureBitisi } from '../../lib/bilet'
 import { rpcErrorText } from '../../lib/errors'
-import { IconCop } from '../../components/ui/icons'
+import { IconCop, IconKalem } from '../../components/ui/icons'
 import { ODEME_DURUM_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
 
-/** Full history of one ticket. Reached from the vehicles list and Finans. */
+/**
+ * Full history of one ticket. Reached from the vehicles list, Finans and
+ * Çözülmemiş kayıtlar (the last one opens it for a car still INSIDE).
+ *
+ * Same order as Tahsilat (owner, 2026-11-02): photo → plate → fee + stay →
+ * ticket facts │ müşteri → Değiştir → İptal.
+ */
 export default function BiletDetay() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { data: bilet, isPending, error, refetch } = useBilet(id)
   const yerKodlari = useYerKodlari()
 
-  // The hook must run on every render, so it is called before the early
-  // returns and simply gets `undefined` while the ticket is loading.
+  // Every hook runs on every render, so they all sit above the early returns
+  // and simply get `undefined` while the ticket is loading.
   const aksiyon = useBiletAksiyonlari(bilet, { onSilindi: () => navigate('/gise') })
-
-  // Declared before the early returns below, like the hook above: a hook that
-  // only runs on some renders changes the hook order between them.
   const tahsil = useBiletTahsil()
   const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
-
-  // `bilet` is undefined until the query settles, so this is computed after
-  // the early returns below rather than here.
+  const [degistirAcik, setDegistirAcik] = useState(false)
+  // An open ticket's stored fee is 0 until exit; the live price is the
+  // server's, the same one Tahsilat shows. Not fetched for a closed ticket.
+  const { data: canliUcret } = useUcretOnizleme(bilet?.durum === 'ACIK' ? bilet : null)
 
   if (isPending) {
     return (
@@ -57,6 +70,8 @@ export default function BiletDetay() {
     )
   }
 
+  const acik = bilet.durum === 'ACIK'
+  const ucret = gosterilenUcret(bilet, canliUcret)
   const borc = biletBorcu(bilet)
   const odenmedi = bilet.durum === 'KAPALI' && borc > 0 && !odemeAlindi(bilet)
 
@@ -68,7 +83,7 @@ export default function BiletDetay() {
           the record away, and a mis-tap between the two is not a mistake
           worth making easy. */}
       <ScreenHeader
-        title={formatPlaka(bilet.plaka)}
+        title="Bilet"
         back
         right={
           aksiyon.silinebilir ? (
@@ -87,34 +102,42 @@ export default function BiletDetay() {
         }
       />
 
-      <div className="space-y-4 px-5">
-        {/* Above the fee on purpose: if this plate is wrong, nothing below it
-            matters — the car cannot be found at exit. Only while the ticket is
-            open, which is the window where the correction is still cheap. */}
-        {bilet.durum === 'ACIK' && bilet.plaka_supheli && <PlakaSuphesi bilet={bilet} />}
+      <div className="space-y-4 px-5 pb-6">
+        <BiletFoto bilet={bilet} />
 
-        <Card>
-          <div className="flex items-baseline justify-between gap-3">
-            {/* The FEE, not what was collected: since 027 a closed ticket can
-                owe money, and showing ₺0,00 on a debt would read as "nothing
-                to pay". They are the same number on a paid ticket. */}
-            <span className="text-title font-semibold text-ink tnum">
-              {bilet.durum === 'IPTAL' ? '—' : formatTL(borc)}
-            </span>
-            <DurumRozeti durum={bilet.durum} />
-          </div>
+        <PlakaBasligi
+          plaka={bilet.plaka}
+          durum={bilet.durum}
+          kapida={Boolean(bilet.cikis_bekliyor_at)}
+        />
 
-          <div className="mt-4">
-            <BiletBilgileri
-              bilet={bilet}
-              yerKod={bilet.park_yeri_id ? (yerKodlari[bilet.park_yeri_id] ?? null) : null}
-            />
-          </div>
+        {/* Right under the plate on purpose: if this plate is wrong, nothing
+            below it matters — the car cannot be found at exit. Only while the
+            ticket is open, which is the window where the correction is still
+            cheap. */}
+        {acik && bilet.plaka_supheli && <PlakaSuphesi bilet={bilet} />}
+
+        {/* The FEE, not what was collected: since 027 a closed ticket can owe
+            money, and showing ₺0 on a debt would read as "nothing to pay".
+            They are the same number on a paid ticket. */}
+        <Card className="grid grid-cols-2 gap-4">
+          <DataPoint
+            size="lg"
+            value={<span className="tnum">{ucret === null ? '—' : formatTL(ucret)}</span>}
+            caption={acik ? 'Ücret (şu ana kadar)' : 'Ücret'}
+          />
+          <DataPoint
+            size="lg"
+            align="right"
+            value={<span className="tnum">{sureMetni(bilet.giris_at, sureBitisi(bilet))}</span>}
+            caption="Süre"
+          />
         </Card>
 
         {/* The other half of "Çıkış Ver": the car has gone, the money has
             not. Only ever shown on a closed ticket that owes something —
-            never on an open one, which is collected at the gate. */}
+            never on an open one, which is collected at the gate. Beside the
+            fee, because it is about the fee. */}
         {odenmedi && (
           <Card className="space-y-4">
             <div>
@@ -159,24 +182,46 @@ export default function BiletDetay() {
           </Card>
         )}
 
-        <BiletEkleri bilet={bilet} />
+        <BiletDetayKarti
+          bilet={bilet}
+          yerKod={bilet.park_yeri_id ? (yerKodlari[bilet.park_yeri_id] ?? null) : null}
+        />
 
-        <IptalButonu onClick={aksiyon.iptalAc} size="lg" />
+        {/* Only while the car is inside: after exit the money is in a shift,
+            and the way to undo it is İptal below (owner, 2026-11-02). */}
+        {acik && (
+          <Button variant="soft" block onClick={() => setDegistirAcik(true)}>
+            <IconKalem size={18} />
+            Değiştir
+          </Button>
+        )}
+
+        {/* Not on a ticket that is already cancelled — the server would only
+            refuse it. */}
+        {bilet.durum !== 'IPTAL' && (
+          <div className="border-t border-divider pt-4">
+            <IptalButonu onClick={aksiyon.iptalAc} size="lg" />
+          </div>
+        )}
       </div>
+
+      {acik && (
+        <BiletDegistirModal
+          open={degistirAcik}
+          onOpenChange={setDegistirAcik}
+          bilet={bilet}
+          // The fee of an open ticket is set at exit — that is where the
+          // override is applied (bilet_kapat). A subscriber has no fee.
+          ucret={null}
+          ucretNotu={
+            bilet.abonman_id ? undefined : 'Ücret, çıkışta Tahsilat ekranında değiştirilir.'
+          }
+        />
+      )}
 
       {aksiyon.dialoglar}
     </div>
   )
-}
-
-function DurumRozeti({ durum }: { durum: 'ACIK' | 'KAPALI' | 'IPTAL' }) {
-  const map = {
-    ACIK: { t: 'İçeride', c: 'bg-accent-soft text-accent' },
-    KAPALI: { t: 'Çıktı', c: 'bg-success-soft text-success' },
-    IPTAL: { t: 'İptal', c: 'bg-danger-soft text-danger' },
-  }
-  const { t, c } = map[durum]
-  return <span className={`rounded-chip px-2.5 py-1 text-label font-medium ${c}`}>{t}</span>
 }
 
 /**

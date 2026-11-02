@@ -697,6 +697,21 @@ single gate already did, 041). Ayarlar shows Personel the phone switch, that
 one preference and the feed. Deploy order: `045` → smoke test through
 **PASS 67** → frontend.
 
+**Ticket screen redesign + "Değiştir" (046).** Tahsilat and Bilet Detay now
+read in one order: photo → plate → fee + stay → ticket facts │ müşteri (pencil
+icon edits it) → **Değiştir** → İptal. Değiştir appears only while the car is
+inside and fixes the plate (`bilet_plaka_duzelt`, as before), the **entry
+time** (new `bilet_giris_duzelt(p_bilet_id, p_giris_at, p_sebep)`: any active
+staff, open tickets only, reason required, not in the future, not over a year
+back, never below the points already used; audited and sent to the Yönetici as
+an "Ücret değişikliği" notification) and, on Tahsilat, the fee (the existing
+override applied at exit). Two display fixes ride along: an open ticket on
+Bilet Detay showed ₺0 (or a negative amount with points) instead of its live
+fee, and a ticket cancelled while inside kept counting its stay forever. The
+old fee field pre-filled the net (after points) and saved it as gross, which
+charged the discount twice — it now starts from the gross fee. Deploy order:
+`046` → smoke test through **PASS 68** → frontend.
+
 **Installer 1.2.1** (install this one, not 1.2.0): the camera password is
 checked with ONE request before the address scan (a typo used to cost up to ten
 failed logins and lock the camera); a typed RTSP address is tried before it is

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import {
   BrandPanel,
   Button,
+  Card,
   EmptyState,
   FloatingBar,
   Input,
@@ -14,27 +15,21 @@ import { YontemSecici } from '../../components/ui/YontemSecici'
 import { FormModal } from '../../components/ui/FormModal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Spinner } from '../../components/ui/Spinner'
-import { LoadError } from '../../components/ui/primitives'
 import {
-  BOS_EK_BILGI,
-  BiletBilgileri,
-  BiletEkleri,
+  BiletDegistirModal,
+  BiletDetayKarti,
+  BiletFoto,
   BiletKart,
   CikanKart,
   IptalButonu,
-  EkBilgiFormu,
-  ekBilgiAlanlari,
-  ekBilgiGonder,
-  ekBilgiOzet,
+  PlakaBasligi,
   useBiletAksiyonlari,
-  type EkBilgiler,
 } from './components'
 import {
   useAyarlar,
   useBilet,
   useBiletKapat,
   useKapidaTemizle,
-  useBiletMusteriGuncelle,
   useCikanBiletler,
   type OdemeFiltre,
   type OnayFiltre,
@@ -46,10 +41,9 @@ import {
   useYerKodlari,
 } from './api'
 import { formatPlaka } from '../../lib/plaka'
-import { formatTutar, formatTL, digitsOnly, parseTLToKurus, kurusToInput } from '../../lib/money'
+import { formatTutar, formatTL, digitsOnly } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
 import { formatGoreceli } from '../../lib/dates'
-import { telGonderilebilir } from '../../lib/telefon'
 import { rpcErrorText } from '../../lib/errors'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
@@ -59,9 +53,7 @@ import {
   IconAraba,
   IconCikis,
   IconCop,
-  IconEtiket,
-  IconIleri,
-  IconKisi,
+  IconKalem,
   IconAsagi,
   IconTik,
   IconUyari,
@@ -472,11 +464,25 @@ export function AracListesi({
 
 /* ==================================================== the collect screen === */
 
+/**
+ * The screen a car on the İçeride list opens. Same order as Bilet Detay
+ * (owner, 2026-11-02): photo → plate → fee + stay → ticket facts │ müşteri →
+ * Değiştir → undo. Two money-flow exceptions, both deliberate:
+ *   · the payment method sits right under the fee, not at the bottom — with a
+ *     photo on top, "at the bottom" would mean a scroll on every collection;
+ *   · the collect buttons stay in the floating bar, always under the thumb.
+ */
 export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => void }) {
   const yonetici = isYonetici(useAuth().profile)
+  const yerKodlari = useYerKodlari()
   const { data: ayarlar } = useAyarlar()
   const { data: onizleme, isPending: ucretYukleniyor } = useUcretOnizleme(bilet)
   const { data: puan } = usePuanDurumu(bilet.plaka, Boolean(ayarlar?.puan_aktif))
+  // The full row — photos, facts, customer. `bilet` is the slim list
+  // projection (AcikBilet), which carries none of them.
+  const tamSorgu = useBilet(bilet.id)
+  const tam = tamSorgu.data
+  const aksiyon = useBiletAksiyonlari(tam, { onSilindi: onKapat })
 
   const kapat = useBiletKapat()
   const puanKullan = usePuanKullan()
@@ -487,10 +493,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const [puanModal, setPuanModal] = useState(false)
   const [puanGirdi, setPuanGirdi] = useState('')
   const [puanHata, setPuanHata] = useState<string | null>(null)
-  const [degistirModal, setDegistirModal] = useState(false)
-  const [yeniTutar, setYeniTutar] = useState('')
-  const [sebep, setSebep] = useState('')
-  const [degistirHata, setDegistirHata] = useState<string | null>(null)
+  const [degistirAcik, setDegistirAcik] = useState(false)
   const [override, setOverride] = useState<{ kurus: number; sebep: string } | null>(null)
   const [cikisOnay, setCikisOnay] = useState(false)
   const [sonuc, setSonuc] = useState<{ tahsil: number; ucret: number; indirim: number } | null>(
@@ -501,6 +504,9 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const brutKurus = override?.kurus ?? onizleme ?? 0
   const netKurus = Math.max(0, brutKurus - bilet.indirim_kurus)
   const odemeGerekli = netKurus > 0
+  // The fee field starts from the current fee, so it must exist first. A
+  // subscriber has no fee to change; an override already is the fee.
+  const degistirHazir = abonman || override !== null || onizleme !== undefined
 
   const kurusPerPuan = useMemo(() => {
     if (!puan || puan.bakiye <= 0) return 0
@@ -554,17 +560,17 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           search list. */}
       <ScreenHeader title="Tahsilat" onBack={onKapat} />
 
-      <div className="flex-1 space-y-5 px-5">
+      <div className="flex-1 space-y-4 px-5">
+        {tam && <BiletFoto bilet={tam} />}
+
+        <PlakaBasligi plaka={bilet.plaka} durum="ACIK" kapida={Boolean(bilet.cikis_bekliyor_at)} />
+
         {/* ---- the one thing at full contrast -------------------------- */}
         {/* The amount being collected is the single most important number in
             the whole app, so it gets the one branded surface. Everything on
             this panel is either the fee or an explanation of the fee. */}
         <BrandPanel className="text-center">
-          <p className="text-lead font-medium tracking-wide text-on-brand-soft tnum">
-            {formatPlaka(bilet.plaka)}
-          </p>
-
-          <div className="mt-3 mb-1 no-select">
+          <div className="no-select">
             {ucretYukleniyor && !override ? (
               <div className="py-3">
                 <Spinner label="Ücret hesaplanıyor" görünürEtiket tone="inherit" />
@@ -577,9 +583,9 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
             )}
           </div>
 
-          {/* Everything else steps down. No labels — a duration looks like a
-              duration and an entry time looks like an entry time. */}
-          <p className="text-label text-on-brand-soft">
+          {/* The stay, then when it started. No labels — a duration looks like
+              a duration and an entry time looks like an entry time. */}
+          <p className="mt-1 text-body font-medium text-on-brand-soft tnum">
             {sureMetni(bilet.giris_at)} · {formatGoreceli(bilet.giris_at)}
           </p>
 
@@ -607,7 +613,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           {override && (
             <p className="mt-3 rounded-field bg-warn-soft px-3 py-2 text-label text-warn">
               Ücret elle değiştirildi ({formatTL(onizleme ?? 0)} → {formatTL(override.kurus)}).
-              Yönetici bilgilendirilecek.
+              Çıkışta uygulanır{yonetici ? '.' : ', Yönetici bilgilendirilir.'}
             </p>
           )}
         </BrandPanel>
@@ -634,39 +640,61 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           </button>
         )}
 
-        {/* Above the method picker, not below it: changing the fee changes
-            what is being collected, so it belongs with the amount it edits —
-            and the last thing under the operator's thumb should be the choice
-            they actually make on every single ticket. */}
-        {!abonman && (
-          <button
-            type="button"
-            onClick={() => {
-              setYeniTutar(kurusToInput(netKurus))
-              setSebep('')
-              setDegistirHata(null)
-              setDegistirModal(true)
-            }}
-            className="min-h-[44px] w-full text-label text-faint underline"
-          >
-            Ücreti elle değiştir
-          </button>
-        )}
-
         {/* ---- payment ------------------------------------------------ */}
         {odemeGerekli && <YontemSecici value={yontem} onChange={setYontem} />}
 
-        {/* Staff-visible, unlike the Yönetici-only detail panel below: the
-            operator who typed the name at the barrier is the one standing
-            here when the driver corrects a digit of it. */}
-        <EkBilgiBolumu biletId={bilet.id} />
+        {/* ---- the ticket: facts │ müşteri ----------------------------- */}
+        {tam ? (
+          <BiletDetayKarti
+            bilet={tam}
+            yerKod={tam.park_yeri_id ? (yerKodlari[tam.park_yeri_id] ?? null) : null}
+          />
+        ) : (
+          <Card>
+            <ListeDurumu
+              pending={tamSorgu.isPending}
+              error={tamSorgu.error}
+              onRetry={() => void tamSorgu.refetch()}
+              // The ticket exists — we are collecting on it — so the empty
+              // branch is unreachable and carries no state.
+              empty={false}
+              bos={null}
+            >
+              {null}
+            </ListeDurumu>
+          </Card>
+        )}
 
-        {/* Tapping a car on the list opens THIS screen, so the ticket detail
-            — and with it cancelling and deleting — lives here rather than
-            behind a link that would take the operator off the collection they
-            are in the middle of. Yönetici only, exactly as the old link was:
-            this is a visibility change, not an RBAC one. */}
-        {yonetici && <BiletDetayBolumu bilet={bilet} onSilindi={onKapat} />}
+        {/* Every correction behind ONE button, after everything it corrects. */}
+        <Button
+          variant="soft"
+          block
+          disabled={!degistirHazir}
+          onClick={() => setDegistirAcik(true)}
+        >
+          <IconKalem size={18} />
+          Değiştir
+        </Button>
+
+        {/* Both undo paths last, below a divider and well clear of "Tahsil
+            Et". Yönetici only, exactly as before: this is a layout change, not
+            an RBAC one. Sil is the quiet one: İptal reverses the money and
+            keeps the history, deleting takes the record away. */}
+        {yonetici && tam && (
+          <div className="space-y-3 border-t border-divider pt-4">
+            <IptalButonu onClick={aksiyon.iptalAc} />
+            {aksiyon.silinebilir && (
+              <button
+                type="button"
+                onClick={aksiyon.silAc}
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 text-label font-medium text-faint"
+              >
+                <IconCop size={16} />
+                Bileti sil
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Not while the dialog is open: it shows the same message next to
             the button that failed, and a second copy behind the overlay is
@@ -753,58 +781,29 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         />
       </FormModal>
 
-      {/* ---- manual fee override -------------------------------------- */}
-      <FormModal
-        open={degistirModal}
-        onOpenChange={setDegistirModal}
-        title="Ücreti değiştir"
-        submitLabel="Uygula"
-        error={degistirHata}
-        onSubmit={() => {
-          const kurus = parseTLToKurus(yeniTutar)
-          if (kurus === null) {
-            setDegistirHata('Geçerli bir tutar girin (örn. 250 ya da 250,50).')
-            return
-          }
-          if (!sebep.trim()) {
-            // A Yönetici is not notified of their own override — notify_yonetici
-            // excludes auth.uid(), so the sole manager gets nothing at all.
-            // Promising them a notification was simply false; what the reason
-            // is actually FOR is the audit row, and that is written either way.
-            setDegistirHata(
-              yonetici
-                ? 'Sebep zorunludur — denetim kaydına yazılır.'
-                : 'Sebep zorunludur — bu değişiklik Yöneticiye bildirilir.',
-            )
-            return
-          }
-          if (kurus < bilet.indirim_kurus) {
-            setDegistirHata('Yeni ücret kullanılan puandan düşük olamaz.')
-            return
-          }
-          setOverride({ kurus, sebep: sebep.trim() })
-          setDegistirModal(false)
-        }}
-      >
-        <p className="text-body text-soft">
-          Hesaplanan ücret <strong className="text-ink">{formatTL(onizleme ?? 0)}</strong>. Bunu
-          değiştirmek denetim kaydına yazılır
-          {yonetici ? '.' : ' ve Yöneticiye bildirim gider.'}
-        </p>
-        <Input
-          label="Yeni tutar (₺)"
-          value={yeniTutar}
-          onChange={(e) => setYeniTutar(e.target.value)}
-          inputMode="decimal"
-        />
-        <Input
-          label="Sebep"
-          value={sebep}
-          onChange={(e) => setSebep(e.target.value)}
-          placeholder="Örn. cihaz arızası, müşteri itirazı"
-          maxLength={200}
-        />
-      </FormModal>
+      {/* ---- plate / entry time / fee --------------------------------- */}
+      {/* The fee is a LOCAL override, applied by bilet_kapat at exit (reason
+          checked and the Yönetici notified there) — the same mechanism the old
+          "Ücreti elle değiştir" link used, folded into this one form. It starts
+          from the GROSS fee (override ?? computed): the old link pre-filled
+          the net (after points) and saved it as gross, which charged the
+          discount twice on a ticket with points. */}
+      <BiletDegistirModal
+        open={degistirAcik}
+        onOpenChange={setDegistirAcik}
+        bilet={bilet}
+        ucret={
+          abonman
+            ? null
+            : {
+                kurus: override?.kurus ?? onizleme ?? 0,
+                hesaplanan: onizleme ?? 0,
+                onUygula: (kurus, sebep) => setOverride({ kurus, sebep }),
+              }
+        }
+      />
+
+      {aksiyon.dialoglar}
     </div>
   )
 }
@@ -995,224 +994,5 @@ function KayipBiletBolumu() {
         </div>
       </ConfirmDialog>
     </>
-  )
-}
-
-/**
- * The ticket's detail, inline on the collection screen.
- *
- * It expands in place rather than navigating: an operator is mid-collection
- * with a car at the barrier, and sending them to another route to check an
- * entry photo — or to cancel a ticket they just realised is wrong — loses the
- * screen they were on.
- *
- * Collapsed means NOT FETCHED. That mattered more before the customer panel
- * above began reading the same `['bilet', id]` row eagerly — the two now share
- * one cache entry, so opening this costs nothing either way, and the `enabled`
- * flag simply keeps the panel honest if that ever changes back. Tahsilat only
- * ever holds the slim AcikBilet projection, which carries neither the photos
- * nor the override flags, so the full row has to come from somewhere.
- */
-function BiletDetayBolumu({ bilet, onSilindi }: { bilet: AcikBilet; onSilindi: () => void }) {
-  const yerKodlari = useYerKodlari()
-  const [acik, setAcik] = useState(false)
-  const { data: tam, isPending, error, refetch } = useBilet(acik ? bilet.id : undefined)
-  const aksiyon = useBiletAksiyonlari(tam, { onSilindi })
-
-  return (
-    // ONE surface, header and body together — the same panel grows rather
-    // than dropping a second, unattached block onto the page background.
-    <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
-      <button
-        type="button"
-        onClick={() => setAcik((v) => !v)}
-        aria-expanded={acik}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-[filter] active:brightness-[0.97]"
-      >
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-field bg-accent-soft text-accent">
-          <IconEtiket size={20} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-body font-medium text-ink">Bilet detayı</span>
-          <span className="block text-label text-faint">Giriş, fotoğraflar, iptal ve silme</span>
-        </span>
-        {/* Closed points DOWN, at the content it will reveal; open points UP.
-            IconIleri is a right-pointing chevron, so neither state is the
-            unrotated one. */}
-        <IconIleri
-          size={18}
-          className={`shrink-0 text-faint transition-transform duration-150 ${
-            acik ? '-rotate-90' : 'rotate-90'
-          }`}
-        />
-      </button>
-
-      {acik && (
-        // A hairline, not a gap: the divider says "same panel, next part".
-        <div className="space-y-4 border-t border-divider px-4 pt-4 pb-5">
-          <ListeDurumu
-            pending={isPending}
-            error={error}
-            onRetry={() => void refetch()}
-            // A ticket always exists here — we were just collecting on it —
-            // so the empty branch is unreachable and carries no state.
-            empty={false}
-            bos={null}
-          >
-            {tam && (
-              <div className="space-y-4">
-                <BiletBilgileri
-                  bilet={tam}
-                  yerKod={tam.park_yeri_id ? (yerKodlari[tam.park_yeri_id] ?? null) : null}
-                />
-                <BiletEkleri bilet={tam} />
-
-                {/* Both undo paths, kept below a divider and well clear of
-                    "Tahsil Et" at the foot of the screen. Sil is the quiet
-                    one: İptal reverses the money and keeps the history,
-                    deleting takes the record away. */}
-                <div className="space-y-3 border-t border-divider pt-4">
-                  <IptalButonu onClick={aksiyon.iptalAc} />
-                  {aksiyon.silinebilir && (
-                    <button
-                      type="button"
-                      onClick={aksiyon.silAc}
-                      className="flex min-h-[44px] w-full items-center justify-center gap-2 text-label font-medium text-faint"
-                    >
-                      <IconCop size={16} />
-                      Bileti sil
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </ListeDurumu>
-        </div>
-      )}
-
-      {aksiyon.dialoglar}
-    </section>
-  )
-}
-
-/**
- * Customer details and the visit note, editable while the car is still inside.
- *
- * Fetched EAGERLY, unlike the ticket-detail panel below it: the collapsed
- * header has to say what is already on file, and "who is this" is worth a
- * glance before taking money. It is the same `['bilet', id]` row that panel
- * reads, so the two share one cache entry and the second one costs nothing.
- *
- * The Kaydet button is disabled until the row has actually arrived. That is
- * not politeness — the draft starts empty, so saving against a failed load
- * would write three NULLs over a real name and phone and look exactly like the
- * app had deleted them. Same trap the Mesai settings form hit in PilotGarage.
- */
-function EkBilgiBolumu({ biletId }: { biletId: string }) {
-  const [acik, setAcik] = useState(false)
-  const { data: bilet, isPending, error, refetch } = useBilet(biletId)
-  const guncelle = useBiletMusteriGuncelle()
-
-  const [taslak, setTaslak] = useState<EkBilgiler>(BOS_EK_BILGI)
-  const [telHata, setTelHata] = useState<string | null>(null)
-  const [hata, setHata] = useState<string | null>(null)
-  const [kaydedildi, setKaydedildi] = useState(false)
-
-  // Hydrate once per ticket, tracked by id rather than by object identity: a
-  // refetch after saving must not overwrite what is on screen, and collapsing
-  // the section must not throw away something typed but not yet saved.
-  const doldurulan = useRef<string | null>(null)
-  useEffect(() => {
-    if (bilet && doldurulan.current !== bilet.id) {
-      doldurulan.current = bilet.id
-      setTaslak(ekBilgiAlanlari(bilet))
-    }
-  }, [bilet])
-
-  useEffect(() => {
-    if (!kaydedildi) return
-    const t = setTimeout(() => setKaydedildi(false), 3000)
-    return () => clearTimeout(t)
-  }, [kaydedildi])
-
-  async function kaydet() {
-    if (!bilet) return
-    setHata(null)
-    setTelHata(null)
-    if (!telGonderilebilir(taslak.tel)) {
-      setTelHata('10 hane girin ya da alanı boş bırakın.')
-      return
-    }
-    try {
-      await guncelle.mutateAsync({ bilet_id: bilet.id, ...ekBilgiGonder(taslak) })
-      setKaydedildi(true)
-    } catch (err) {
-      setHata(rpcErrorText(err, 'Kaydedilemedi.'))
-    }
-  }
-
-  return (
-    <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
-      <button
-        type="button"
-        onClick={() => setAcik((v) => !v)}
-        aria-expanded={acik}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-[filter] active:brightness-[0.97]"
-      >
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-field bg-accent-soft text-accent">
-          <IconKisi size={20} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-body font-medium text-ink">Müşteri ve not</span>
-          <span className="block truncate text-label text-faint">
-            {error ? 'Yüklenemedi' : isPending ? 'Yükleniyor…' : ekBilgiOzet(taslak)}
-          </span>
-        </span>
-        <IconIleri
-          size={18}
-          className={`shrink-0 text-faint transition-transform duration-150 ${
-            acik ? '-rotate-90' : 'rotate-90'
-          }`}
-        />
-      </button>
-
-      {acik && (
-        <div className="border-t border-divider px-4 pt-4 pb-5">
-          {error ? (
-            <LoadError error={error} onRetry={() => void refetch()} />
-          ) : isPending ? (
-            <div className="py-6">
-              <Spinner label="Bilgiler yükleniyor" />
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <EkBilgiFormu deger={taslak} onChange={setTaslak} telHatasi={telHata} />
-
-              {hata && (
-                <p role="alert" className="rounded-field bg-danger-soft px-3 py-2.5 text-body text-danger">
-                  {hata}
-                </p>
-              )}
-
-              <div className="flex items-center gap-3">
-                <Button
-                  onClick={() => void kaydet()}
-                  loading={guncelle.isPending}
-                  disabled={!bilet}
-                >
-                  Kaydet
-                </Button>
-                {kaydedildi && (
-                  <span className="flex items-center gap-1.5 text-label font-medium text-success">
-                    <IconTik size={16} />
-                    Kaydedildi
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </section>
   )
 }
