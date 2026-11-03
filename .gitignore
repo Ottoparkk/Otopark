@@ -27,6 +27,11 @@ tools/kamera-koprusu/*.jpg
 tools/kamera-koprusu/yapi/
 tools/kamera-koprusu/dagitim/
 
+# Supabase CLI'nin yerel durumu: hangi projeye bağlı olduğunu (proje kimliği,
+# organizasyon, havuz adresi) tutar. Repoda kalırsa, projenin başka birinin
+# kopyasındaki CLI de BU projeye bağlı başlar.
+supabase/.temp/
+
 # Kurulum kodu dosyası: webhook gizli anahtarını taşır. Kuruluma yardım
 # ederken geçici olarak üretilir, asla işlenmez.
 kurulum-kodu.txt

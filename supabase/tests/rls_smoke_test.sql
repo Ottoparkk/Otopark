@@ -47,6 +47,9 @@
 --    • The entry time of an open ticket can be corrected (046) — active staff
 --      only, with a reason, never into the future or past a year, never below
 --      the points already used; audited and reported to the Yönetici
+--    • The tables the Edge Functions read and write directly are granted to
+--      service_role explicitly (047), so a project created after Supabase
+--      stopped auto-granting new tables (2026-10-30) still works
 -- ============================================================
 
 begin;
@@ -6030,6 +6033,36 @@ foreach v_txt in array array['anon', 'service_role'] loop
 end loop;
 
 raise notice 'PASS 68: giriş saati yalnızca aktif personelce, yalnızca açık bilette, sebeple düzeltilir; ileri/çok eski saat ve puanı aşan ücret reddedilir; iz yazılır, Yöneticiye bildirim gider';
+
+-- =====================================================================
+-- 69  Edge Function'ların tablo yetkileri yazılı (047)
+--     kamera-webhook, plaka-oku ve send-push service_role ile beş tabloya
+--     DOĞRUDAN dokunur. 2026-10-30'dan önce açılmış projelerde bu yetkiyi
+--     Supabase'in otomatik verdiği izin sağlıyordu; o tarihten sonra açılan
+--     YENİ bir projede (birinin kendi kopyası) otomatik izin yok — kamera
+--     girişi, plaka okuma ve anlık bildirim "permission denied" ile dururdu.
+--     047 tam gerekeni yazılı verir. Eski projede bu blok 047'den önce de
+--     geçer (otomatik izin duruyor); asıl görevi yeni kurulumu yakalamak.
+--     Fazla yetki aranmaz: eski projede otomatik izin ALL'dır ve kaldırılmaz.
+-- =====================================================================
+perform pg_temp.logout();
+foreach v_txt in array array[
+  'public.profiles:SELECT',            -- plaka-oku, send-push: rol/durum/tercih
+  'public.otopark_ayarlari:SELECT',    -- kamera-webhook, plaka-oku: ayarlar
+  'public.biletler:SELECT',            -- kamera-webhook: açık bilet sayımı
+  'public.plaka_okuma_log:SELECT',     -- okuma sınırı sayımı
+  'public.plaka_okuma_log:INSERT',     -- her okuma kaydı
+  'public.push_subscriptions:SELECT',  -- send-push: aboneler
+  'public.push_subscriptions:DELETE',  -- send-push: ölü abonelikleri temizler
+  'public.kamera_cihazlari:SELECT'     -- kamera-webhook: cihaz doğrulama (036)
+] loop
+  if not has_table_privilege('service_role', split_part(v_txt, ':', 1), split_part(v_txt, ':', 2)) then
+    raise exception 'FAIL 69: service_role % yetkisi yok — 047 çalıştırılmadı', v_txt;
+  end if;
+end loop;
+-- anon'un hiçbir tabloya dokunamadığını PASS 41(d) zaten bütün şema için sınar.
+
+raise notice 'PASS 69: Edge Function''ların ihtiyaç duyduğu tablo yetkileri service_role''e yazılı verilmiş';
 
 perform pg_temp.logout();
 raise notice '';

@@ -78,6 +78,37 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/026_odeme_yontemi_her_yerde.sql` | Every payment carries a method; automatic salary and recurring rules default to Nakit |
 | `supabase/migrations/027_odemesiz_cikis.sql` | Lets a car leave unpaid and the money be collected later, from the ticket detail |
 | `supabase/migrations/028_red_bileti_borclu_birakir.sql` | Rejecting a collection returns the ticket to owing, so the debt stays collectable |
+| `supabase/migrations/029_plaka_suphesi.sql` | Marks a ticket whose plate was read with low confidence |
+| `supabase/migrations/030_kasa_vardiyasi.sql` | One shared till shift, opened automatically at a chosen time |
+| `supabase/migrations/031_kaydi_kim_acti.sql` | The open-ticket list also carries who let the car in |
+| `supabase/migrations/032_vardiya_ozetim_yetkisi.sql` | Fixes a PUBLIC grant that came back on a re-created function |
+| `supabase/migrations/033_cron_yetkisi_service_role.sql` | Closes nightly-job functions to service_role too |
+| `supabase/migrations/034_bilet_tahsil_null_guard.sql` | Fixes a NULL comparison that let a collection skip its permission check |
+| `supabase/migrations/035_vardiya_kapatma_onayi.sql` | A Personel's shift count waits for the Yönetici's approval |
+| `supabase/migrations/036_kamera_eslestirme.sql` | Each camera gets its own key; each lane its own watchdog |
+| `supabase/migrations/037_tek_kapi.sql` | Single gate: entry and exit through one camera, direction from the ticket state |
+| `supabase/migrations/038_kapida_isareti_kaldir.sql` | Staff can clear a wrong "Kapıda" mark, with an audit row |
+| `supabase/migrations/039_plaka_okunamadi.sql` | An unreadable plate or a down reading service never loses a car silently |
+| `supabase/migrations/040_kamera_okuma_siniri.sql` | Paid camera plate reads are counted and capped |
+| `supabase/migrations/041_tek_kapi_okunamadi_tekrar.sql` | Single gate: a retry after a lost reply still handles the car |
+| `supabase/migrations/042_kamera_fotograf.sql` | The camera's compressed photo is attached to the ticket or record |
+| `supabase/migrations/043_foto_temizlik.sql` | Old photos are deleted through the Storage API, nightly |
+| `supabase/migrations/044_istisna_bilet_ac.sql` | One-tap entry from an unreadable-plate record |
+| `supabase/migrations/045_okunamadi_bildirim.sql` | Unreadable-plate notification waits for the camera's retries, then goes to everyone |
+| `supabase/migrations/046_bilet_giris_duzelt.sql` | "Değiştir" on the ticket screen: correct the entry time of a car still inside |
+| `supabase/migrations/047_edge_tablo_yetkileri.sql` | Explicit table grants for the Edge Functions — required on any project created after 2026-10-30 |
+
+**Run all of them, 001 through 047, in this order.** Stopping early leaves the
+app asking the database for things that do not exist yet. Each file is one
+transaction: if one fails it changes nothing — fix the cause and run the same
+file again, then continue.
+
+> **New project? `047` is not optional.** Since 2026-10-30 Supabase no longer
+> gives new tables automatic access for its built-in roles. The app's own
+> grants are written into the migrations, but before `047` the Edge Functions
+> (camera, plate reading, push) still leaned on that automatic access — on a
+> fresh project they stop with "permission denied" without it. Any new table
+> you add later must carry its own `grant` lines too.
 
 `017` changes what "revenue" means, and the split is deliberate: **Ciro, the
 daily chart and the payment-method breakdown count approved collections only,
@@ -138,7 +169,8 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-It stops at the first failure with `FAIL: <what broke>`. This file is the proof
+The last block before that line is **PASS 69** (as of migration 047). It stops
+at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.
 

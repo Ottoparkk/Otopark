@@ -9,10 +9,11 @@ hour or a "forgotten" ticket leaves no trace on paper, which makes it an
 invisible loss; here every entry, duration and collection becomes a durable
 server-side record.
 
-**Status:** database layer and UI are written; `npm run build` is clean. The
-migrations have **not been run yet** — no screen counts as tested against real
-data until `001` → `005` and then `rls_smoke_test.sql` have been run in the SQL
-editor and the result seen. Setup and verification: [SETUP.md](SETUP.md).
+**Status:** in use at one car park (app, database and camera bridge). A new
+installation runs migrations `001` → `047` in order, then
+`supabase/tests/rls_smoke_test.sql` must end with `ALL TESTS PASSED` — no
+screen counts as working until that has been seen. Setup and verification:
+[SETUP.md](SETUP.md). Rules for changing the code: [CLAUDE.md](CLAUDE.md).
 
 ---
 
