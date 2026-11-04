@@ -77,8 +77,11 @@ ELİNİZDE HAZIR OLSUN
 
     TEK KAPI: araçlar aynı kapıdan girip çıkıyorsa kamera "tek kapı"
     olarak tanımlanır. Sizin için kurulum aynıdır. Kamerayı, araçların
-    İKİ YÖNDE de kısa bir an durduğu noktaya çevirin ve plaka kutusunu
-    hem gelen hem giden aracın plakası içinde kalacak genişlikte çizin.
+    İKİ YÖNDE de geçtiği noktaya çevirin ve plaka kutusunu hem gelen hem
+    giden aracın plakası içinde kalacak genişlikte çizin. Araçların durması
+    gerekmez (1.2.5): durmadan geçen araç geçişin en net karesinden okunur.
+    Kamerada enstantaneyi hızlı ayarlayın (yaklaşık 1/500 sn); yoksa hareket
+    eden plaka bulanık çıkar.
     Araçların uzun süre beklediği ya da park ettiği bir yeri göstermesin:
     orada bekleyen araç yanlışlıkla "çıkıyor" diye işaretlenebilir.
 

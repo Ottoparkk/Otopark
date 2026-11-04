@@ -1773,9 +1773,15 @@ def test_durum_kamera_yoksa_saglikli_degil() -> None:
         ok, cikti = _durum_senaryosu([bas, kotu])
         assert ok is False, cikti
         assert "KAMERA YOK" in cikti, cikti
-    # Sonradan görüntü geldiyse sağlıklı.
+    # Sonradan görüntü geldiyse sağlıklı. Bir araç fotoğrafı da görüntüdür:
+    # duran araç ("araç durdu") ve 1.2.5'ten beri durmadan geçen araç
+    # ("araç geçti"). Bariyersiz bir kapıda kamera bütün gün yalnızca ikincisini
+    # yazabilir; sayılmasaydı çalışan kamera "KAMERA YOK" görünürdü.
     for iyi in (f"{bugun} 09:01:00  [i] {gunluk.KAMERA_VAR_ISARETI}",
-                f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"):
+                f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim",
+                f"{bugun} 09:05:00  [i] araç durdu (fark=0.40) — gönderiliyor",
+                f"{bugun} 09:05:00  [i] {gunluk.ARAC_GECTI_ISARETI} "
+                f"(keskinlik=812, fark=41.3, 6 aday) — gönderiliyor"):
         ok, cikti = _durum_senaryosu(
             [bas, f"{bugun} 09:00:05  [!] {gunluk.KARE_YOK_ISARETI}, yeniden", iyi])
         assert ok is True, cikti

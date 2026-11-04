@@ -39,7 +39,7 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.2.4"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı
+SURUM = "1.2.5"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
                   # 1.2.1: kurulum günü düzeltmeleri (şifre kilidi, saat, gece eşiği,
                   #        kalp atışı, kayıt döndürme, program klasörü, son deneme başlığı)
                   # 1.2.4: kendini toparlama (çökmede beklemez, dakikada bir yeniden

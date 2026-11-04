@@ -42,6 +42,17 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 # çekilmeyen araç ise hatadır.
 BOS, GELIYOR, DURDU = "bos", "geliyor", "durdu"
 
+# 1.2.5 — bariyersiz kapı: araç DURMADAN geçer (~10 km/sa).
+#   GECIYOR  araç kadrajın solundan girer, sağından çıkar; hiç durmaz. Yalnızca
+#            ortaya yakınken KESKİN, geri kalan her karede bulanık — köprünün
+#            en keskin kareyi seçtiği böylece ölçülebilir.
+#   GOLGE    araç OLMAYAN bir hareket (yürüyen biri, gölge): koyu, kadrajdan
+#            geçip gider. Sunucu ona "araç yok" der.
+#   GURULTU  araç gittikten sonra sahne hiç DURULMAZ (yağmur, gece kumlanması):
+#            kareler arası fark "durgun" eşiğinin üstünde, "hareket" eşiğinin
+#            altında kalır.
+GECIYOR, GOLGE, GURULTU = "geciyor", "golge", "gurultu"
+
 # Kimlik taşıyan bir köprü adresi, sihirbazın yazdığı gibi URL-kodlu ('@' ve
 # ':' şifrenin içinde). Köprünün şifre sınaması bunu ÇÖZÜP kendi yoluna sormalı.
 _KIMLIKLI_RTSP = ("rtsp://admin:Gizli%40Sifre%3A1@10.0.0.5:554"
@@ -139,6 +150,11 @@ SENARYOLAR = {
         goruntu_sunucu=True, arac_yok=True,
         bos_gonderilir=[(4.2, 7.0), (10.2, 13.0)],
         bos_gonderilmez=[(16.2, 19.5)],
+        # 1.2.5: üç araç, TAM üç araç fotoğrafı. Duran araç giderken köprü
+        # yeniden silahlanabiliyor; o gidişin karesi ikinci kez gönderilseydi
+        # (öğrenilmiş boş şeride "araç gitti" denip) tek kapıda girişin hemen
+        # ardından sahte bir çıkış olurdu.
+        arac_gonderim_sayisi=3,
         kayitta_sirayla=["boş şerit görüntüsü (sunucu: araç yok)",
                          "boş şerit öğrenildi",
                          "boş şerit — gönderilmedi"],
@@ -240,6 +256,58 @@ SENARYOLAR = {
         takilir=2.0, bekci="2", bekci_beklenir=(3.5, 7.5),
         kayitta_sirayla=["kamera bağlandı", "köprü takıldı"],
     ),
+    # 1.2.5. Bariyersiz kapı: araç durmadan geçiyor. 1.2.4 ancak sahne
+    # DURULUNCA gönderiyordu, o da araç gittikten SONRA oluyordu — boş şerit
+    # gidiyor, araç hiç okunmuyordu. Artık geçiş boyunca en keskin kare
+    # tutulur ve araç gidince O gönderilir: tam bir gönderim, içinde araç var,
+    # ve bulanık değil.
+    "gecen_arac": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)],
+        sure=6.0, pencereler=[(2.4, 3.8)], gonderim_sayisi=1, keskin=True,
+    ),
+    # Arka arkaya iki geçen araç (aralarında 3 sn'den fazla): ikisi de.
+    "gecen_iki_arac": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS),
+               (6, 6.9, GECIYOR), (6.9, 10, BOS)],
+        sure=10.0, pencereler=[(2.4, 3.8), (6.9, 8.3)], gonderim_sayisi=2, keskin=True,
+    ),
+    # Araç gitti ama sahne hiç durulmuyor: "durdu" anı hiç gelmez. Güvenlik
+    # ağı: sahne geçişten önceki hâline döndüyse ve 2 sn güçlü hareket yoksa
+    # tutulan kare yine gönderilir.
+    "gecen_gurultu": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 8, GURULTU)],
+        sure=8.0, pencereler=[(3.4, 5.2)], gonderim_sayisi=1, keskin=True,
+    ),
+    # Gerçek sunucu gibi cevap veren bir sunucuyla: geçen araçlar okunur;
+    # araç olmayan hareketin (gölge) "araç yok" cevabı, gölge değil gölge
+    # GİTTİKTEN SONRAKİ sahneyi (gerçekten boş şerit) öğretir — iki kez, arada
+    # okunan bir araçla, öğrenme kuralı gibi. Öğrenilmiş boş şerit sonraki
+    # geçen aracı GİZLEMEMELİ.
+    "gecen_bos_ogrenme": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 5, BOS),
+               (5, 5.9, GOLGE), (5.9, 8.5, BOS),
+               (8.5, 9.4, GECIYOR), (9.4, 12, BOS),
+               (12, 12.9, GOLGE), (12.9, 15.5, BOS),
+               (15.5, 16.4, GECIYOR), (16.4, 19, BOS)],
+        sure=19.0, pencereler=[(9.4, 10.8), (16.4, 17.8), (2.4, 3.8)],
+        goruntu_sunucu=True, arac_yok=True, keskin=True, arac_gonderim_sayisi=3,
+        kayitta_sirayla=["boş şerit görüntüsü (sunucu: araç yok)",
+                         "boş şerit öğrenildi"],
+    ),
+    # Duran araç değişmez: gelir, DURUR, sonra gider. 1.2.4 gibi TEK araç
+    # fotoğrafı (durduğu kare); giderken ikinci kez araç gönderilmemeli —
+    # tek kapıda bu, girişin hemen ardından sahte bir "çıkış" olurdu.
+    "duran_arac_degismez": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 4.5, DURDU),
+               (4.5, 5.2, GELIYOR), (5.2, 9, BOS)],
+        sure=9.0, pencereler=[(1.8, 3.0)], arac_gonderim_sayisi=1,
+    ),
+    # Sahada kapatma anahtarı: GECIS_YAKALA=0 → 1.2.4 davranışı aynen; geçen
+    # araç kaçırılır (eski hatanın belgesi).
+    "gecis_kapali": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)],
+        sure=6.0, pencereler=[], gecis_yakala="0", arac_gonderim_sayisi=0,
+    ),
     # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
     "bos_ogren_kapali": dict(
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
@@ -253,6 +321,35 @@ SENARYOLAR = {
         bos_gonderilir=[(4.2, 7.0), (10.2, 13.0), (16.2, 19.5)],
     ),
 }
+
+
+# GECIYOR: aracın ORTASI kadraj ortasına bu kadar yakınken kare keskin, yoksa
+# bulanık (hareket bulanıklığının yerine). ~5 kare keskin düşer.
+KESKIN_ARALIK = 130
+
+
+def gecen_ciz(f: np.ndarray, x: int, deger: int, plaka: bool, keskin: bool) -> np.ndarray:
+    """
+    Kadrajdan geçen bir araç (ya da gölge). `x` sol kenar; kadrajın dışına
+    taşan kısım kırpılır. Plaka: gövdenin altında koyu dikey çizgiler — keskin
+    karede çok kenar, bulanıkta neredeyse hiç.
+    """
+    import cv2 as _cv2
+    x0, x1 = max(0, x), min(640, x + 400)
+    if x1 > x0:
+        f[90:390, x0:x1] = deger
+        if plaka:
+            for c in range(x + 100, x + 300, 12):
+                c0, c1 = max(0, c), min(640, c + 6)
+                if c1 > c0:
+                    f[300:350, c0:c1] = 30
+    return f if keskin else _cv2.GaussianBlur(f, (0, 0), 6)
+
+
+def keskinlik_olc(img_gri: np.ndarray) -> float:
+    """Testin kendi ölçüsü: Laplacian varyansı (köprünün ölçüsünden bağımsız)."""
+    import cv2 as _cv2
+    return float(_cv2.Laplacian(img_gri, _cv2.CV_64F).var())
 
 
 def hepsini_kos() -> int:
@@ -361,6 +458,8 @@ def tek_kos(ad: str) -> int:
         os.environ["ACILIS_BEKLEME_SN"] = S["acilis_bekleme"]
     if S.get("bos_ogren"):
         os.environ["BOS_OGREN"] = S["bos_ogren"]
+    if S.get("gecis_yakala"):
+        os.environ["GECIS_YAKALA"] = S["gecis_yakala"]
     if S.get("sifre_bekleme"):
         os.environ["SIFRE_RED_BEKLEME_SN"] = S["sifre_bekleme"]
     if S.get("yeniden_baglan"):
@@ -399,15 +498,34 @@ def tek_kos(ad: str) -> int:
     def evre(t):
         for a, b, e in S["sahne"]:
             if a <= t < b:
-                return e
-        return BOS
+                return e, a, b
+        return BOS, 0.0, 0.0
+
+    # GURULTU: her karede bir aşağı bir yukarı (fark 4 — durgun eşiği 2'nin
+    # üstünde, hareket eşiği 6'nın altında). Sayaç zamana değil KAREYE bağlı;
+    # zamana bağlansaydı iki kare aynı yarıma düşüp sahte bir "durgun" verirdi.
+    titresim = [0]
 
     def kare():
         t = time.monotonic() - T0
-        e = evre(t)
+        e, a, b = evre(t)
         f = np.full((480, 640, 3), 100, np.uint8)
         if e == BOS:
             return f
+        if e == GURULTU:
+            titresim[0] ^= 1
+            return f + np.uint8(4 * titresim[0])
+        if e in (GECIYOR, GOLGE):
+            # Soldan girer, sağdan çıkar, hiç durmaz: 1080 px faz boyunca.
+            x = int(-420 + 1080 * (t - a) / (b - a))
+            if e == GOLGE:
+                # Tam koyu (0): 40 gibi soluk bir gölgenin kareler arası farkı
+                # (~5.6) HAREKET_ESIGI'nin (6) altında kalıyordu — köprü onu
+                # hiç hareket saymıyor, ki doğru; ama bu senaryo araç OLMAYAN
+                # bir hareketin öğrenmeyi nasıl beslediğini sınamak için var.
+                return gecen_ciz(f, x, deger=0, plaka=False, keskin=True)
+            return gecen_ciz(f, x, deger=220, plaka=True,
+                             keskin=abs(x + 200 - 320) < KESKIN_ARALIK)
         # DURDU'da sabit konum: kareler birebir aynı, durgun_sayaci artar.
         # GELIYOR'da kayar: ardışık fark HAREKET_ESIGI'yi geçer.
         x = 120 if e == DURDU else int((t * 2000) % 400)
@@ -615,6 +733,49 @@ def tek_kos(ad: str) -> int:
     if S.get("tek") and len({g["id"] for g in gonderimler}) != 1:
         print(f"FAIL: 1 gönderim bekleniyordu, {len({g['id'] for g in gonderimler})}")
         hata = 1
+
+    # ---- 1.2.5 geçen araç kontrolleri -------------------------------------
+    # Aynı islem_id'nin yeniden denemeleri TEK gönderim sayılır.
+    import base64 as _b64
+    import cv2 as _cv2
+
+    def _gri(foto: str) -> np.ndarray:
+        return _cv2.imdecode(np.frombuffer(_b64.b64decode(foto), np.uint8),
+                             _cv2.IMREAD_GRAYSCALE)
+
+    ilk_deneme: dict[str, dict] = {}
+    for g in sorted(gonderimler, key=lambda g: g["t"]):
+        ilk_deneme.setdefault(g["id"], g)
+    tekil = list(ilk_deneme.values())
+    # Sunucudaki modelin yerine aynı ölçü (arac_var_mi): içinde araç var mı.
+    aracli = [g for g in tekil if float(_gri(g["foto"]).mean()) > 120]
+
+    if "gonderim_sayisi" in S and len(tekil) != S["gonderim_sayisi"]:
+        print(f"FAIL: {S['gonderim_sayisi']} gönderim bekleniyordu, {len(tekil)} "
+              f"(t={', '.join('%.2f' % g['t'] for g in tekil)})")
+        hata = 1
+    if "arac_gonderim_sayisi" in S and len(aracli) != S["arac_gonderim_sayisi"]:
+        print(f"FAIL: içinde araç olan {S['arac_gonderim_sayisi']} gönderim "
+              f"bekleniyordu, {len(aracli)} "
+              f"(t={', '.join('%.2f' % g['t'] for g in aracli)})")
+        hata = 1
+    if S.get("keskin"):
+        # Ölçüt: aynı aracın en keskin hâli, köprünün yolundan (JPEG 92) geçmiş.
+        ornek = gecen_ciz(np.full((480, 640, 3), 100, np.uint8), 120, 220, True, True)
+        ok_, buf = _cv2.imencode(".jpg", ornek, [int(_cv2.IMWRITE_JPEG_QUALITY), 92])
+        ref = keskinlik_olc(_cv2.imdecode(buf, _cv2.IMREAD_GRAYSCALE))
+        for i, (a, b) in enumerate(S["pencereler"], 1):
+            icinde = [g for g in aracli if a <= g["t"] <= b]
+            if not icinde:
+                print(f"FAIL: {i}. geçen araç ({a}-{b}s) için içinde ARAÇ olan "
+                      "gönderim yok — boş şerit ya da yarım araç gitti")
+                hata = 1
+                continue
+            en_iyi = max(keskinlik_olc(_gri(g["foto"])) for g in icinde)
+            if en_iyi < 0.5 * ref:
+                print(f"FAIL: {i}. geçen araç bulanık gönderildi (keskinlik "
+                      f"{en_iyi:.0f}, en keskin hâli {ref:.0f}) — en keskin kare seçilmedi")
+                hata = 1
 
     if not hata:
         fazla = len(gonderimler) - eslesen

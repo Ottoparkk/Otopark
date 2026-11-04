@@ -96,6 +96,9 @@ SIFRE_RED_ISARETI = "kamera şifreyi reddetti"
 BOS_GORUNTU_ISARETI = "boş şerit görüntüsü (sunucu: araç yok)"   # 422 + arac_yok
 BOS_OGRENILDI_ISARETI = "boş şerit öğrenildi"
 BOS_ATLANDI_ISARETI = "boş şerit — gönderilmedi"
+# 1.2.5: durmadan geçen aracın en keskin karesi gönderiliyor (bariyersiz kapı).
+# Duran araçta satır hâlâ "araç durdu". İkisi de kameranın çalıştığının işareti.
+ARAC_GECTI_ISARETI = "araç geçti"
 # 1.2.1. Sunucunun İLK kalp atışını kabul ettiği an (bir kez yazılır): kurulum
 # sihirbazı köprüyü ancak bunu görünce "çalışıyor" sayar.
 SUNUCU_TAMAM_ISARETI = "sunucu bağlantısı doğrulandı"

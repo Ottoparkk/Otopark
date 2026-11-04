@@ -161,6 +161,7 @@ def _son_kamera_sozu(satirlar: list[str]) -> str | None:
         # nothing but those, and that is a working camera (1.2.0).
         if (gunluk.KAMERA_VAR_ISARETI in satir or "[i] çalışıyor" in satir
                 or "[i] araç durdu" in satir
+                or f"[i] {gunluk.ARAC_GECTI_ISARETI}" in satir
                 or gunluk.BOS_ATLANDI_ISARETI in satir
                 or gunluk.BOS_GORUNTU_ISARETI in satir):
             return "var"

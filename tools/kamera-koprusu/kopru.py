@@ -289,6 +289,35 @@ BOS_ESIGI = float(os.environ.get("BOS_ESIGI", "3.0"))
 # ve gündüz için ayrı ayrı, kendiliğinden.
 BOS_OGREN = os.environ.get("BOS_OGREN", "1").strip() != "0"
 
+# DURMADAN GEÇEN araç (1.2.5) — bariyersiz kapı, ~10 km/sa.
+#
+# Yukarıdaki mantık bir aracı ancak kadrajda DURUNCA gönderir. Durmayan araç
+# kadrajdayken hep hareketlidir; sahne ancak araç GİTTİKTEN sonra durulur ve
+# gönderilen kare boş şerittir — araç hiç okunmaz, sessizce kaybolur.
+#
+# Çözüm gönderimin ANINI değil KARESİNİ değiştirir: silahlıyken bir hareket
+# başlayınca, kadrajda bir şey varken (sahne hareketten önceki hâlinden
+# SAHNE_ESIGI kadar farklıyken) gelen her karenin keskinliği ölçülür, en
+# keskini tutulur. "Durdu" anı geldiğinde sahne hareketten önceki hâline
+# DÖNDÜYSE (araç gitti) o tutulan kare gönderilir; dönmediyse (araç kadrajda
+# durdu) eskisi gibi durduğu kare. Silahlanma, kuyruk, yeniden deneme ve zaman
+# damgası kuralları değişmez.
+#
+# "0" sahada kapatma anahtarıdır ve davranışı birebir 1.2.4'e döndürür.
+GECIS_YAKALA = os.environ.get("GECIS_YAKALA", "1").strip() != "0"
+
+# Güvenlik ağı: araç gitti ama sahne hiç DURULMUYOR (yağmur, gece kumlanması,
+# sallanan ağaç) — "durdu" anı hiç gelmez. Bekleyen bir kare varsa, bu kadar
+# süre güçlü hareket olmadıysa VE sahne hareketten önceki hâline döndüyse yine
+# gönderilir. "Döndüyse" şartı bilerek: duran, sonra gürültülü havada giden bir
+# araçta tutulan kare GİDEN aracın karesidir — gönderilseydi tek kapıda girişin
+# hemen ardından sahte bir "çıkış" olurdu.
+GECIS_BEKLE_SN = float(os.environ.get("GECIS_BEKLE_SN", "2"))
+
+# Keskinlik ölçüsü küçültülmüş gri kırpıkta alınır: her hareketli karede tam
+# çözünürlükte Laplacian gereksiz işlemci harcar, sıralama aynı kalır.
+KESKINLIK_GENISLIK = 640
+
 # The watchdog marks a camera dead if it has not heard anything. A quiet night
 # is not a fault, so ping on a timer as well as on events.
 KALP_ARALIGI_SN = 300
@@ -376,6 +405,45 @@ def gri_kucuk(img: np.ndarray) -> np.ndarray:
     """Downscaled grayscale — motion detection needs neither colour nor detail."""
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return cv2.resize(g, (160, 120), interpolation=cv2.INTER_AREA)
+
+
+def keskinlik(img: np.ndarray) -> float:
+    """
+    How sharp a crop is: the variance of its Laplacian (edge strength). A plate
+    is mostly edges, and motion blur is what erases them, so among the frames
+    of one passing car the highest value is the one a reader can read.
+    Measured on a grey copy no wider than KESKINLIK_GENISLIK.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    h, w = g.shape[:2]
+    if w > KESKINLIK_GENISLIK:
+        g = cv2.resize(g, (KESKINLIK_GENISLIK, max(1, int(h * KESKINLIK_GENISLIK / w))),
+                       interpolation=cv2.INTER_AREA)
+    return float(cv2.Laplacian(g, cv2.CV_64F).var())
+
+
+def _arkaya_dondu(gri: np.ndarray, gecis_arka: np.ndarray | None) -> bool:
+    """
+    Has the scene gone back to how it looked before THIS pass began? True means
+    the vehicle came and LEFT without stopping, so the held frame is the one to
+    read (1.2.5, GECIS_YAKALA).
+
+    Deliberately NOT "or it looks like the learned empty lane". A car that
+    STOPPED, was sent, and then drives off can re-arm the bridge mid-departure:
+    that pass starts from the stopped car and holds frames of it LEAVING. When
+    the lane empties, it matches the learned empty lane but not this pass's
+    start — and accepting the empty lane here sent the departing car a second
+    time (test_kopru bos_ogrenme caught it). At a single gate that second read
+    is an exit right after the entry.
+    """
+    return gecis_arka is not None and fark(gri, gecis_arka) <= SAHNE_ESIGI
+
+
+def _gecti_satiri(aday: tuple[float, np.ndarray, datetime, float], aday_sayisi: int) -> str:
+    """The log line for a passing car. The numbers are for tuning on site."""
+    s, _, _, f_arka = aday
+    return (f"[i] {gunluk.ARAC_GECTI_ISARETI} (keskinlik={s:.0f}, "
+            f"fark={f_arka:.1f}, {aday_sayisi} aday) — gönderiliyor")
 
 
 class BosOgrenme:
@@ -1106,6 +1174,16 @@ def main() -> None:
     # MAX_BEKLEME_SN — two silent minutes at a barrier.
     hareket_oldu = False
 
+    # 1.2.5 geçen araç (bkz. GECIS_YAKALA). `son_durgun_gri`: bir geçişin
+    # DIŞINDA görülen son durgun sahne. `gecis_arka`: o sahnenin, silahlıyken
+    # başlayan bir hareketin başında dondurulmuş hâli — None ise geçiş yok.
+    # `aday`: o geçişin en keskin karesi (keskinlik, tam kırpık, görülme anı,
+    # arka plandan fark); `aday_sayisi` ölçülen kare sayısı (yalnızca kayıt).
+    son_durgun_gri: np.ndarray | None = None
+    gecis_arka: np.ndarray | None = None
+    aday: tuple[float, np.ndarray, datetime, float] | None = None
+    aday_sayisi = 0
+
     # True from a failed read until the next good one. The recovery is LOGGED:
     # without that line the last camera entry in the log stays "kare alınamadı"
     # and `durum` reports KAMERA YOK for up to five minutes (until the next
@@ -1188,6 +1266,30 @@ def main() -> None:
                 gonderilen_gri = None
                 hareket_oldu = False
 
+        # ---- 1.2.5: geçen araç — geçişin en keskin karesini tut ------------
+        # Hareket dalından ÖNCE: o dal `continue` eder ve aracın kadrajdaki
+        # karelerinin neredeyse hepsi oradan geçer. Geçiş yalnızca SİLAHLIYKEN
+        # ve elde bir durgun sahne varken başlar (köprü bir aracın ortasında
+        # açıldıysa arka plan yoktur; o geçiş 1.2.4 gibi işlenir).
+        if GECIS_YAKALA and silahli:
+            if gecis_arka is None and d > HAREKET_ESIGI and son_durgun_gri is not None:
+                gecis_arka = son_durgun_gri
+                aday = None
+                aday_sayisi = 0
+            if gecis_arka is not None:
+                f_arka = fark(gri, gecis_arka)
+                if f_arka > SAHNE_ESIGI:          # kadrajda bir şey var
+                    aday_sayisi += 1
+                    ks = keskinlik(kirpik)
+                    if aday is None or ks > aday[0]:
+                        # Kopya: kameranın tamponu yeniden kullanılabilir; tutulan
+                        # kare altımızda değişmemeli.
+                        aday = (ks, kirpik.copy(), datetime.now(timezone.utc), f_arka)
+        # Arka plan adayı: bir geçişin DIŞINDA görülen son durgun sahne. Geçiş
+        # sürerken güncellenmez — yavaşlayan aracın karesi arka plan olmasın.
+        if d < DURGUN_ESIGI and gecis_arka is None:
+            son_durgun_gri = gri
+
         if d > HAREKET_ESIGI:
             son_hareket = simdi
             durgun_sayaci = 0
@@ -1199,41 +1301,74 @@ def main() -> None:
         else:
             durgun_sayaci = 0
 
+        # Gönderilecek kare: (kırpık, görülme anı, öğrenme için gri, kayıt satırı).
+        gonder: tuple[np.ndarray, datetime, np.ndarray | None, str] | None = None
+
         # A car ARRIVED (there was motion recently) and has now SETTLED (still
         # for several frames). That settled frame is both the moment the plate
         # is in position and the sharpest one available — a moving car is the
         # blurry one, and blur is what costs characters.
         gecerli_pencere = simdi - son_hareket < HAREKET_PENCERESI_SN
         if silahli and durgun_sayaci >= DURGUN_KARE and gecerli_pencere:
-            # Şerit boş görünüyorsa bu, GELEN değil GİDEN aracın bıraktığı
-            # durgunluktur. Referans yoksa (elle verilmemiş, henüz öğrenilmemiş)
-            # bu dal hiç çalışmaz ve davranış eskisiyle birebir aynıdır —
-            # kaçırmaktansa fazladan okumak. Satır her yerleşmede BİR kez
-            # yazılır (son_hareket sıfırlanınca bir sonraki harekete kadar bu
-            # dala girilmez); `fark` değeri sahada eşiği ayarlamanın ölçüsüdür.
-            bos_mu, bos_fark, bos_ref = _bos.eslesir(gri)
-            if bos_mu:
-                print(f"[i] {gunluk.BOS_ATLANDI_ISARETI} "
-                      f"(fark={bos_fark:.2f}, ref={bos_ref})", flush=True)
-                durgun_sayaci = 0
-                son_hareket = 0.0
-                continue
+            if aday is not None and _arkaya_dondu(gri, gecis_arka):
+                # Araç DURMADAN geçip gitti: sahne eski hâline döndü. Durulan
+                # kare boş şerit; okunacak kare geçişin en keskin karesi. Boş
+                # şerit öğrenmesine ise ŞİMDİKİ kare (gerçekten boş şerit)
+                # verilir, araç karesi değil: sunucu "araç yok" derse
+                # öğrenilen, aracın ardında kalan sahnedir.
+                gonder = (aday[1], aday[2], gri, _gecti_satiri(aday, aday_sayisi))
+            else:
+                # Şerit boş görünüyorsa bu, GELEN değil GİDEN aracın bıraktığı
+                # durgunluktur. Referans yoksa (elle verilmemiş, henüz
+                # öğrenilmemiş) bu dal hiç çalışmaz ve davranış eskisiyle birebir
+                # aynıdır — kaçırmaktansa fazladan okumak. Satır her yerleşmede
+                # BİR kez yazılır (son_hareket sıfırlanınca bir sonraki harekete
+                # kadar bu dala girilmez); `fark` değeri sahada eşiği ayarlamanın
+                # ölçüsüdür.
+                bos_mu, bos_fark, bos_ref = _bos.eslesir(gri)
+                if bos_mu:
+                    print(f"[i] {gunluk.BOS_ATLANDI_ISARETI} "
+                          f"(fark={bos_fark:.2f}, ref={bos_ref})", flush=True)
+                    durgun_sayaci = 0
+                    son_hareket = 0.0
+                    gecis_arka = None
+                    aday = None
+                    continue
+                gonder = (kirpik, datetime.now(timezone.utc), gri,
+                          f"[i] araç durdu (fark={d:.2f}) — gönderiliyor")
+        elif silahli and aday is not None and simdi - son_hareket >= GECIS_BEKLE_SN:
+            # Güvenlik ağı (GECIS_BEKLE_SN): araç gitti ama sahne durulmuyor.
+            # Yalnızca sahne eski hâline döndüyse gönderilir; dönmediyse araç
+            # kadrajda duruyor ya da başka bir şey var demektir — tutulan kare
+            # bekler, sahne durulunca yukarıdaki dal karar verir. Öğrenmeye
+            # hiçbir şey verilmez: durulmamış bir kare boş şerit kanıtı değil.
+            if _arkaya_dondu(gri, gecis_arka):
+                gonder = (aday[1], aday[2], None, _gecti_satiri(aday, aday_sayisi))
+            elif simdi - son_hareket >= HAREKET_PENCERESI_SN:
+                # Hareket penceresi de doldu: bu geçiş artık kapanır (1.2.4'te
+                # de bu kadar eski bir hareket gönderim üretmezdi).
+                gecis_arka = None
+                aday = None
 
-            print(f"[i] araç durdu (fark={d:.2f}) — gönderiliyor", flush=True)
+        if gonder is not None:
+            g_kirpik, g_zaman, g_ogren, satir = gonder
+            print(satir, flush=True)
             gonderim_sayaci += 1
             try:
-                foto = jpeg_base64(kirpik)
+                foto = jpeg_base64(g_kirpik)
                 # Only with a box: without one the crop IS the whole frame.
-                kanit = kanit_base64(kirpik) if kutu is not None else None
+                kanit = kanit_base64(g_kirpik) if kutu is not None else None
                 if kutu is not None and kanit is None:
                     print("[i] kanıt fotoğrafı 100 KB'a sığmadı — fotoğrafsız "
                           "gönderiliyor", flush=True)
-                kuyruga_al(foto, datetime.now(timezone.utc), gri, kanit)
+                kuyruga_al(foto, g_zaman, g_ogren, kanit)
             except Exception as e:  # encoding, not network — never kill the loop
                 print(f"[!] gönderilemedi: {e}", flush=True)
             # Disarmed until this vehicle leaves the frame, not until a clock
             # runs out. `gri` is a fresh array from gri_kucuk() every frame, so
-            # holding the reference cannot alias with `onceki`.
+            # holding the reference cannot alias with `onceki`. It is the scene
+            # AS IT IS NOW (for a passing car: the empty lane it left behind),
+            # so the next car — not this one — is what re-arms.
             silahli = False
             gonderilen_gri = gri
             bekleme_bitis = simdi + MIN_BEKLEME_SN
@@ -1245,6 +1380,8 @@ def main() -> None:
             # car would otherwise still be set and re-arm us the instant
             # MIN_BEKLEME_SN elapsed, while the car is still sitting there.
             hareket_oldu = False
+            gecis_arka = None
+            aday = None
 
 
 def cli() -> None:

@@ -145,9 +145,10 @@ o araç gidene kadar susar, ama kadrajda bir şey kıpırdayıp yeniden durulurs
 bu bir hata değil, araç kaçırmamak için böyle. Tek kapıda o ikinci gönderim,
 bilet 3 dakikadan eskiyse "çıkıyor" sayılır. Yani kameranın önünde 3 dakikadan
 uzun duran, az önce girmiş araç yanlışlıkla "Kapıda" işaretlenebilir (para
-hareket etmez, yalnızca işaret). Kamerayı araçların **kısa bir an durduğu**
-noktaya (köprü plakayı o duruşta çeker) çevirin; sıra beklenen ya da park
-edilen bir yere değil.
+hareket etmez, yalnızca işaret). Kamerayı araçların **geçtiği** noktaya
+çevirin: duran aracı durduğu anda, 1.2.5'ten beri durmadan geçen aracı
+geçişin en keskin karesinde çeker. Sıra beklenen ya da park edilen bir yere
+çevirmeyin.
 
 Sihirbaz yeniden çalıştırıldığında `kopru-<şerit>.json` içindeki kimliği
 sunucuya sorar; hâlâ geçerliyse **yeni kod istemeden** o şeridi yeniden kurmayı
@@ -405,10 +406,35 @@ is logged on or not") instead of the systemd unit below.
 
 ### When it sends
 
-One photo per car, taken at the moment the car **stops**: the bridge waits for
-motion in the crop box and then for several still frames. That frame is both
-the moment the plate is in position and the sharpest one available — a moving
-car is the blurry one, and blur is what costs characters.
+One photo per car. Two cases, decided at the same moment — when the crop box
+goes still after motion:
+
+- **The car stopped in view** (the still scene is NOT the one from before the
+  motion): that still frame is sent, as before 1.2.5. It is both the moment the
+  plate is in position and the sharpest one available.
+- **The car rolled through without stopping** (1.2.5, gates without a barrier):
+  the still scene IS the one from before the motion — the car has gone, and
+  before 1.2.5 the bridge sent that empty lane and the car was lost. Now, while
+  something is in the box during the pass, every frame's sharpness (Laplacian
+  variance) is measured and the sharpest is kept; when the lane goes back to
+  how it was, **that** frame is sent, timestamped when it was seen. The log
+  says `araç geçti (keskinlik=…, fark=…, N aday) — gönderiliyor` (a stopped
+  car still says `araç durdu`).
+
+If the scene never goes still after a passing car (rain, night grain, swaying
+trees), a held frame is still sent once there has been no strong motion for
+`GECIS_BEKLE_SN` **and** the lane looks like it did before the pass.
+
+"Looks like it did before THIS pass" is deliberately strict — not "looks like a
+learned empty lane". A car that stopped, was sent, and then drives off can
+re-arm the bridge mid-departure; that pass starts from the stopped car and
+holds frames of it leaving. Accepting the learned empty lane as "gone" sent the
+departing car a second time, which at a single gate is a fake exit right after
+the entry (`bos_ogrenme` checks there are exactly three car photos).
+
+Motion blur is the weak point of a moving car: set a **fast fixed shutter**
+(about 1/500 s) in the camera, and check a car after dark — infrared night
+pictures use a slower shutter and may need light at the gate.
 
 After a send the lane is **disarmed until that vehicle leaves the frame** — the
 crop has to stop matching the one that was sent. It is not a timer, and that
@@ -464,13 +490,15 @@ an older webhook does not strip it and would copy it into exception rows.
 | `BOS_REFERANS` | *(none)* | Path to an empty-lane frame from `--bos`. Optional since 1.2.0 (references are learned). |
 | `BOS_ESIGI` | `3.0` | How close to a reference counts as "empty" — for learned and manual references alike. |
 | `BOS_OGREN` | `1` | `0` turns empty-lane learning off (behaviour of 1.1.0). |
+| `GECIS_YAKALA` | `1` | `0` turns rolling-car capture off: behaviour of 1.2.4 exactly (a car that does not stop is missed). |
+| `GECIS_BEKLE_SN` | `2` | Safety net: send the held passing-car frame after this long without strong motion, if the lane looks as it did before the pass. |
 | `YENIDEN_BAGLAN_SN` / `YENIDEN_BAGLAN_MAX_SN` | `3` / `60` | Wait before reconnecting after the stream drops; doubles up to the cap, back to the base on the first good frame (1.2.2). |
 | `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. |
 
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 19 senaryo, ~4 dk
+python test_kopru.py            # yakalama döngüsü, 25 senaryo, ~5 dk
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
 ```
@@ -499,6 +527,20 @@ araç hiç görülmüyordu (bu senaryo eski kodda aracı gerçekten kaçırıyor
 `son_gonderim` — okuma servisi çökünce aynı islem_id ile dört deneme yapılır ve
 yalnızca SONUNCUSU `x-kamera-son-gonderim: 1` taşır (sunucu aracı ancak o
 denemede "okunamadı" kaydına çevirir, 039).
+
+Altı senaryo 1.2.5'ten, bariyersiz kapı için (araç durmadan geçer). Sahte
+kamera aracı soldan sağa geçirir ve yalnızca ortaya yakınken keskin çizer;
+testin kendi keskinlik ölçüsü köprününkinden bağımsızdır:
+`gecen_arac` — tek geçen araç: tam bir gönderim, içinde araç var, en keskin
+kare (1.2.4'te boş şerit gidiyordu); `gecen_iki_arac` — iki geçen araç, iki
+gönderim; `gecen_gurultu` — araç gidince sahne hiç durulmuyor, güvenlik ağı
+yine gönderiyor (1.2.4'te hiç gönderim yoktu); `gecen_bos_ogrenme` — araç
+olmayan bir hareketin "araç yok" cevabı, hareketten SONRAKİ boş sahneyi öğretir
+ve öğrenilmiş boş şerit sonraki geçen aracı gizlemez; `duran_arac_degismez` —
+duran araç eskisi gibi tek fotoğraf; `gecis_kapali` — `GECIS_YAKALA=0`, eski
+davranış (geçen araç kaçırılır). Ayrıca `bos_ogrenme` artık tam üç araç
+fotoğrafı ister: duran, sonra giden aracın ikinci kez gönderilmesini (tek
+kapıda sahte çıkış) yakalar — geliştirme sırasında gerçekten yakaladı.
 
 Dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
 bakıp model gibi cevap veriyor (araç → 200, boş → 422 + `arac_yok`):
