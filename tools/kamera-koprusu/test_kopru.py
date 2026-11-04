@@ -308,6 +308,178 @@ SENARYOLAR = {
         sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)],
         sure=6.0, pencereler=[], gecis_yakala="0", arac_gonderim_sayisi=0,
     ),
+    # ---- 1.2.6: kameranın kendi araç olayları (olay.py) ---------------------
+    # Olaylar HTTP olmadan, `olay.kaydet` dikişinden verilir; gerçek dinleyici
+    # (olay.baslat) her senaryoda devre dışı — hiçbir test ağa çıkmaz.
+    # `olay`: bagli=akış sağlıklı mı, olaylar=[(saniye, kod, eylem)].
+    # İlk olay (0.2-0.3 sn) yalnızca KAPIYI DOĞRULAR: kamera bu adla araç
+    # olayı gönderiyor. Geçişler ondan en az 5 sn sonra başlar ki o doğrulama
+    # olayı hiçbir geçişin penceresine düşmesin.
+    "olay_gecen_arac": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 10, BOS)],
+        sure=10.0, pencereler=[(6.9, 8.3)], gonderim_sayisi=1, keskin=True, atlanan=0,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.3, "SmartMotionVehicle", "Start"),
+                                      (7.0, "SmartMotionVehicle", "Stop")]),
+        kayitta_sirayla=["araç olayları doğrulandı", "araç geçti"],
+    ),
+    # Araç OLMAYAN geçiş (yürüyen biri): kamera olay üretmez → gönderilmez.
+    # 1.2.5 bunu gönderiyor, sunucu "okunamadı" kaydı + bildirim üretiyordu.
+    "olay_yok_gonderilmez": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GOLGE), (6.9, 14, BOS)],
+        sure=14.0, pencereler=[], gonderim_sayisi=0, gonderilmez=[(0, 14)], atlanan=1,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop")]),
+        kayitta_sirayla=["araç olayları doğrulandı", "araç olayı yok — gönderilmedi"],
+    ),
+    # Olay GEÇ geliyor (gece, kızılötesi): karar anından ~2.5 sn sonra. Karar
+    # 5 sn bekletilir; olay gelince fotoğraf gider.
+    "olay_gec_gelir": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 13, BOS)],
+        sure=13.0, pencereler=[(9.6, 10.6)], gonderim_sayisi=1, keskin=True,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (9.7, "SmartMotionVehicle", "Start")]),
+    ),
+    # Akış sağlıklı ama yalnızca VideoMotion geliyor (araç adı farklı ya da
+    # SMD kapalı): kapı DOĞRULANMAZ → 1.2.5 gibi gönderir. Yanlış bir olay adı
+    # hiçbir zaman bütün araçları durduramaz.
+    "olay_dogrulanmadi": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 10, BOS)],
+        sure=10.0, pencereler=[(6.9, 8.3)], gonderim_sayisi=1,
+        olay=dict(bagli=True, olaylar=[(6.3, "VideoMotion", "Start")]),
+    ),
+    # Akış yok (bağlantı kurulamadı): doğrulanmış olsa da kapı kapalı → 1.2.5.
+    "olay_akisi_yok": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GOLGE), (6.9, 10, BOS)],
+        sure=10.0, pencereler=[(6.9, 8.3)], gonderim_sayisi=1,
+        olay=dict(bagli=False, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                       (0.3, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Gelen araç DURUR (gönderilir), sonra gider. Gidişte kamera yine araç
+    # olayı üretir; 1.2.5 gidişin ardından boş şeridi gönderiyordu (sunucuda
+    # "okunamadı" kaydı). Kapı açıkken: TEK gönderim, gidişte hiçbir şey.
+    "olay_duran_ayrilan": dict(
+        sahne=[(0, 6, BOS), (6, 6.8, GELIYOR), (6.8, 9.6, DURDU),
+               (9.6, 10.3, GELIYOR), (10.3, 16, BOS)],
+        sure=16.0, pencereler=[(6.8, 8.0)], gonderim_sayisi=1, arac_gonderim_sayisi=1,
+        gonderilmez=[(8.5, 16)],
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.2, "SmartMotionVehicle", "Start"),
+                                      (7.5, "SmartMotionVehicle", "Stop"),
+                                      (9.7, "SmartMotionVehicle", "Start"),
+                                      (10.5, "SmartMotionVehicle", "Stop")]),
+        kayitta_sirayla=["araç durdu", "gönderilmiş araç — tekrar gönderilmedi"],
+    ),
+    # Duran aracın yerine, şerit hiç boşalmadan AYNI GÖRÜNÜŞTE ikinci bir araç
+    # gelip duruyor (sahte karelerde iki araç birebir aynı — en kötü durum).
+    # Pikselden "aynı araç mı" ayırt edilemez; 1.2.5 bunu gönderiyordu ve
+    # kapı da göndermeli — araç kaçırmak, bir tekrardan pahalıdır.
+    "olay_arac_yerine_arac": dict(
+        sahne=[(0, 6, BOS), (6, 6.8, GELIYOR), (6.8, 9.6, DURDU),
+               (9.6, 10.3, GELIYOR), (10.3, 14, DURDU)],
+        sure=14.0, pencereler=[(6.8, 8.0), (10.3, 11.5)], gonderim_sayisi=2,
+        arac_gonderim_sayisi=2,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.2, "SmartMotionVehicle", "Start"),
+                                      (7.0, "SmartMotionVehicle", "Stop"),
+                                      (9.7, "SmartMotionVehicle", "Start"),
+                                      (10.5, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Duran araç silahsızken (MIN_BEKLEME_SN içinde) gidiyor: gidişi hiçbir
+    # karar üretmez, kapı aracı hâlâ "duran" diye hatırlar. Sonra başka bir
+    # araç durmadan geçer — onun ardından sahne yine boş şeride döner, ama bu
+    # bir AYRILIŞ değildir (geçiş duran aracın görüntüsünden başlamadı):
+    # gönderilmeli.
+    "olay_hizli_ayrilan_sonra_gecen": dict(
+        sahne=[(0, 6, BOS), (6, 6.8, GELIYOR), (6.8, 7.8, DURDU),
+               (7.8, 8.5, GELIYOR), (8.5, 12, BOS),
+               (12, 12.9, GECIYOR), (12.9, 16, BOS)],
+        sure=16.0, pencereler=[(6.8, 7.6), (12.9, 14.3)], gonderim_sayisi=2,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.2, "SmartMotionVehicle", "Start"),
+                                      (8.6, "SmartMotionVehicle", "Stop"),
+                                      (12.3, "SmartMotionVehicle", "Start"),
+                                      (13.0, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Araç geçer (gönderilir), hemen ardından kutudan bir yaya geçer. Yayanın
+    # geçişi aracın olayından 5 sn sonra başlıyor; olay penceresi bir önceki
+    # kararın gerisine uzanmadığı için aracın olayı yayaya yetki vermez.
+    "olay_arac_ardindan_yaya": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 9.6, BOS),
+               (9.6, 10.5, GOLGE), (10.5, 17, BOS)],
+        sure=17.0, pencereler=[(6.9, 8.3)], gonderim_sayisi=1, gonderilmez=[(8.5, 17)],
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.3, "SmartMotionVehicle", "Start"),
+                                      (7.0, "SmartMotionVehicle", "Stop")]),
+        kayitta_sirayla=["araç geçti", "araç olayı yok — gönderilmedi"],
+    ),
+    # Karar olay beklerken akış KOPAR: olay kaybolmuş olabilir — atlanmaz,
+    # 1.2.5 gibi gönderilir (olay sorunu hiçbir aracı kaybettirmez).
+    "olay_beklerken_koptu": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 13, BOS)],
+        sure=13.0, pencereler=[(7.9, 9.0)], gonderim_sayisi=1, atlanan=0,
+        olay=dict(bagli=True, koptu=8.0,
+                  olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                           (0.3, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Arka arkaya iki araç, kamera ikisi için TEK bir Start…Stop üretiyor:
+    # ikisi de gönderilmeli (olay "tüketilmez", aralık ikisini de kapsar).
+    "olay_iki_arac_tek_aralik": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 9.5, BOS),
+               (9.5, 10.4, GECIYOR), (10.4, 14, BOS)],
+        sure=14.0, pencereler=[(6.9, 8.3), (10.4, 11.8)], gonderim_sayisi=2, keskin=True,
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (6.2, "SmartMotionVehicle", "Start"),
+                                      (10.6, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Pencere sınırlı: kamera 3.0-3.5'te bir araç gördü (kadrajın dışında,
+    # sokakta) ama kutuda hiçbir şey kıpırdamadı. 9'da kutudan araç OLMAYAN
+    # bir şey geçiyor — o eski olay bu geçişe yetki vermemeli.
+    "olay_pencere_sinirli": dict(
+        sahne=[(0, 9, BOS), (9, 9.9, GOLGE), (9.9, 17, BOS)],
+        sure=17.0, pencereler=[], gonderim_sayisi=0, gonderilmez=[(0, 17)],
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop"),
+                                      (3.0, "SmartMotionVehicle", "Start"),
+                                      (3.5, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Biri kameranın araç algılamasını kapattı, akış sağlıklı kalıyor: araç
+    # boyutunda üç geçiş üst üste olaysız atlanır ve son araç olayından beri
+    # OLAY_GERI_DONUS_SN geçmiştir → kapı kendini kapatır, sonraki araç gider.
+    "olay_geri_donus": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GECIYOR), (6.9, 10, BOS),
+               (10, 10.9, GECIYOR), (10.9, 14, BOS),
+               (14, 14.9, GECIYOR), (14.9, 18, BOS),
+               (18, 18.9, GECIYOR), (18.9, 22, BOS)],
+        sure=22.0, pencereler=[(18.9, 20.5)], gonderim_sayisi=1, gonderilmez=[(0, 18)],
+        atlanan=3,
+        olay_bekle="2", olay_geri_donus="4",
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop")]),
+        kayitta_sirayla=["araç olayı yok — gönderilmedi",
+                         "araç olayı gelmiyor — hareketle çalışılıyor"],
+    ),
+    # Sahada kapatma anahtarı: OLAY_KAPISI=0 → olaylar ne derse desin 1.2.5.
+    "olay_kapisi_kapali": dict(
+        sahne=[(0, 6, BOS), (6, 6.9, GOLGE), (6.9, 10, BOS)],
+        sure=10.0, pencereler=[(6.9, 8.3)], gonderim_sayisi=1, olay_kapisi="0",
+        olay=dict(bagli=True, olaylar=[(0.2, "SmartMotionVehicle", "Start"),
+                                      (0.3, "SmartMotionVehicle", "Stop")]),
+    ),
+    # Desenli zemin (asfalt dokusu): 1.2.5 kadrajın en çok ayrıntılı karesini
+    # seçiyordu — desenli zeminde bu, aracın kutuyu EN AZ kapladığı karedir.
+    # Gönderilen kare aracın TAMAMINI içermeli.
+    "dokulu_zemin": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)],
+        sure=6.0, pencereler=[(2.4, 3.8)], gonderim_sayisi=1, tam_arac=True, doku=True,
+    ),
     # Sahada kapatma anahtarı: BOS_OGREN=0 → bugünkü davranış aynen.
     "bos_ogren_kapali": dict(
         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR), (1.8, 3.5, DURDU),
@@ -460,6 +632,12 @@ def tek_kos(ad: str) -> int:
         os.environ["BOS_OGREN"] = S["bos_ogren"]
     if S.get("gecis_yakala"):
         os.environ["GECIS_YAKALA"] = S["gecis_yakala"]
+    if S.get("olay_kapisi"):
+        os.environ["OLAY_KAPISI"] = S["olay_kapisi"]
+    if S.get("olay_bekle"):
+        os.environ["OLAY_BEKLE_SN"] = S["olay_bekle"]
+    if S.get("olay_geri_donus"):
+        os.environ["OLAY_GERI_DONUS_SN"] = S["olay_geri_donus"]
     if S.get("sifre_bekleme"):
         os.environ["SIFRE_RED_BEKLEME_SN"] = S["sifre_bekleme"]
     if S.get("yeniden_baglan"):
@@ -470,6 +648,11 @@ def tek_kos(ad: str) -> int:
 
     sys.path.insert(0, BURASI)
     import cv2
+    import olay
+    # Gerçek olay dinleyicisi HİÇBİR senaryoda başlamaz: bazı senaryoların
+    # RTSP adresi kullanıcı taşıyor ve dinleyici ağa çıkardı. Olaylar, varsa,
+    # aşağıda `olay.kaydet` dikişinden verilir.
+    olay.baslat = lambda *a, **k: False
     import kopru
     import kesif
 
@@ -506,10 +689,18 @@ def tek_kos(ad: str) -> int:
     # zamana bağlansaydı iki kare aynı yarıma düşüp sahte bir "durgun" verirdi.
     titresim = [0]
 
+    # Desenli zemin: sabit bir asfalt dokusu (kareden kareye DEĞİŞMEZ, yani
+    # hareket sayılmaz) — ince ayrıntısı bol, araç gövdesi ise düz.
+    doku = None
+    if S.get("doku"):
+        rs = np.random.RandomState(7)
+        g = rs.randint(40, 160, (480, 640)).astype(np.uint8)
+        doku = np.dstack([g, g, g])
+
     def kare():
         t = time.monotonic() - T0
         e, a, b = evre(t)
-        f = np.full((480, 640, 3), 100, np.uint8)
+        f = doku.copy() if doku is not None else np.full((480, 640, 3), 100, np.uint8)
         if e == BOS:
             return f
         if e == GURULTU:
@@ -524,8 +715,19 @@ def tek_kos(ad: str) -> int:
                 # hiç hareket saymıyor, ki doğru; ama bu senaryo araç OLMAYAN
                 # bir hareketin öğrenmeyi nasıl beslediğini sınamak için var.
                 return gecen_ciz(f, x, deger=0, plaka=False, keskin=True)
-            return gecen_ciz(f, x, deger=220, plaka=True,
-                             keskin=abs(x + 200 - 320) < KESKIN_ARALIK)
+            keskin = abs(x + 200 - 320) < KESKIN_ARALIK
+            if doku is not None:
+                # Gerçekte hareket bulanıklığı yalnızca ARACI bozar; zemin
+                # keskin kalır. Araç ayrı bir katmanda çizilip (gerekirse)
+                # bulanıklaştırılır, sonra yalnızca kendi dikdörtgeninde
+                # desenin üstüne konur.
+                katman = gecen_ciz(np.full((480, 640, 3), 220, np.uint8), x, deger=220,
+                                   plaka=True, keskin=keskin)
+                x0, x1 = max(0, x), min(640, x + 400)
+                if x1 > x0:
+                    f[90:390, x0:x1] = katman[90:390, x0:x1]
+                return f
+            return gecen_ciz(f, x, deger=220, plaka=True, keskin=keskin)
         # DURDU'da sabit konum: kareler birebir aynı, durgun_sayaci artar.
         # GELIYOR'da kayar: ardışık fark HAREKET_ESIGI'yi geçer.
         x = 120 if e == DURDU else int((t * 2000) % 400)
@@ -570,6 +772,28 @@ def tek_kos(ad: str) -> int:
             pass
 
     kopru.cv2.VideoCapture = lambda *a, **k: SahteKamera()
+
+    # Kameranın olay akışının yerine: sağlık (bagli) her 0.2 sn tazelenir,
+    # olaylar zamanı gelince deftere yazılır — gerçek zamanla, köprüyle aynı
+    # monotonic saatte.
+    O = S.get("olay")
+    if O:
+        def olay_akisi() -> None:
+            d = olay.defter()
+            bekleyen = sorted(O.get("olaylar", []))
+            while True:
+                t = time.monotonic() - T0
+                # `koptu`: bu saniyeden sonra akış kopuk (dinleyici bağlantıyı
+                # kaybetti) — sağlık o an düşer.
+                if O.get("koptu") is not None and t >= O["koptu"]:
+                    d.baglanti(False, time.monotonic())
+                elif O.get("bagli"):
+                    d.baglanti(True, time.monotonic())
+                while bekleyen and bekleyen[0][0] <= t:
+                    _, kod, eylem = bekleyen.pop(0)
+                    olay.kaydet(kod, eylem, time.monotonic())
+                time.sleep(0.05)
+        threading.Thread(target=olay_akisi, daemon=True).start()
 
     threading.Thread(target=kopru.main, daemon=True).start()
     time.sleep(S["sure"])
@@ -759,6 +983,38 @@ def tek_kos(ad: str) -> int:
               f"bekleniyordu, {len(aracli)} "
               f"(t={', '.join('%.2f' % g['t'] for g in aracli)})")
         hata = 1
+    # 1.2.6: bu pencerelerde HİÇBİR gönderim olmamalı (araç olmayan geçiş,
+    # gönderilmiş aracın gidişi, olaysız atlanan geçişler).
+    for a, b in S.get("gonderilmez", []):
+        icinde = [g for g in tekil if a <= g["t"] <= b]
+        if icinde:
+            print(f"FAIL: {a}-{b}s arasında gönderim olmamalıydı, "
+                  f"{len(icinde)} var (t={', '.join('%.2f' % g['t'] for g in icinde)})")
+            hata = 1
+    # 1.2.6: gönderilen kare aracın TAMAMINI içermeli — gövde (220) satırları
+    # 90:390 boyunca 400 piksel genişliğinde; kadrajın %62.5'i. Kısmi kare
+    # (aracın yalnızca bir dilimi) bu oranın çok altında kalır.
+    if S.get("tam_arac"):
+        for i, (a, b) in enumerate(S["pencereler"], 1):
+            icinde = [g for g in tekil if a <= g["t"] <= b]
+            for g in icinde:
+                gri = _gri(g["foto"])
+                bant = gri[120:360, :]
+                oran = float((bant >= 180).mean())
+                if oran < 0.55:
+                    print(f"FAIL: {i}. araç kısmi gönderildi — gövdenin kapladığı oran "
+                          f"{oran:.2f} (tam araç ≈0.62)")
+                    hata = 1
+    # 1.2.6: olaysız atlanan her geçişin kırpığı kayıt klasörünün altındaki
+    # `atlanan` klasörüne saklanmalı (sahada "gerçek araç atlandı mı" kanıtı).
+    if "atlanan" in S:
+        import glob as _glob
+        atl = _glob.glob(os.path.join(os.environ["PROGRAMDATA"], "Otopark", "kayit",
+                                      "atlanan", "*.jpg"))
+        if len(atl) != S["atlanan"]:
+            print(f"FAIL: atlanan klasöründe {S['atlanan']} kırpık bekleniyordu, "
+                  f"{len(atl)} var")
+            hata = 1
     if S.get("keskin"):
         # Ölçüt: aynı aracın en keskin hâli, köprünün yolundan (JPEG 92) geçmiş.
         ornek = gecen_ciz(np.full((480, 640, 3), 100, np.uint8), 120, 220, True, True)

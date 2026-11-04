@@ -39,7 +39,9 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.2.5"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
+SURUM = "1.2.6"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
+                  # 1.2.6: yalnızca kameranın araç olayı olan geçiş gönderilir (olay.py),
+                  #        olaylar yoksa 1.2.5 gibi; desenli zeminde tam araç karesi
                   # 1.2.1: kurulum günü düzeltmeleri (şifre kilidi, saat, gece eşiği,
                   #        kalp atışı, kayıt döndürme, program klasörü, son deneme başlığı)
                   # 1.2.4: kendini toparlama (çökmede beklemez, dakikada bir yeniden
@@ -53,7 +55,8 @@ SURUM = "1.2.5"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kend
 # bunlar geç içe aktarma zinciriyle bağlı (giris -> kurulum -> kirpma_sunucu
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
-MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk"]
+MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
+            "olay"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 HARIC = ["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PyQt6",

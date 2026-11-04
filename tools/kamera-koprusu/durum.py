@@ -159,11 +159,14 @@ def _son_kamera_sozu(satirlar: list[str]) -> str | None:
             return "yok"
         # A skipped empty-lane picture is a picture too: a quiet night can be
         # nothing but those, and that is a working camera (1.2.0).
+        # 1.2.6: olaysız atlanan geçiş ve tanınan ayrılış da görüntüden doğar.
         if (gunluk.KAMERA_VAR_ISARETI in satir or "[i] çalışıyor" in satir
                 or "[i] araç durdu" in satir
                 or f"[i] {gunluk.ARAC_GECTI_ISARETI}" in satir
                 or gunluk.BOS_ATLANDI_ISARETI in satir
-                or gunluk.BOS_GORUNTU_ISARETI in satir):
+                or gunluk.BOS_GORUNTU_ISARETI in satir
+                or gunluk.OLAY_ATLANDI_ISARETI in satir
+                or gunluk.AYRILIS_ISARETI in satir):
             return "var"
         if "köprü başladı" in satir:
             return None
@@ -227,6 +230,42 @@ def bos_ozet(satirlar: list[str]) -> tuple[int, int]:
         elif gunluk.BOS_ATLANDI_ISARETI in s:
             atlanan += 1
     return okunan, atlanan
+
+
+def olay_durumu(satirlar: list[str]) -> str | None:
+    """
+    1.2.6 araç olayı kapısının hâli — bu başlangıçtan beri SON söz. None: söz
+    yok (1.2.5 kaydı ya da dinleyici henüz bir şey demedi), satır yazılmaz.
+    Hiçbiri sağlığı bozmaz: kapı kapalıyken köprü 1.2.5 gibi her geçişi
+    gönderir, araç kaybolmaz.
+    """
+    hareketle = " — hareketle çalışıyor (her geçiş gönderilir)"
+    for satir in reversed(satirlar):
+        if gunluk.OLAY_GERI_DONUS_ISARETI in satir:
+            return ("kapalı (otomatik geri dönüş: araç olayı gelmiyor)" + hareketle
+                    + " — kameranın Akıllı Hareket Algılama ayarını kontrol edin")
+        if gunluk.OLAY_DOGRULANDI_ISARETI in satir:
+            return "etkin — yalnızca araç olayı olan geçişler gönderiliyor"
+        if gunluk.OLAY_YOK_ISARETI in satir:
+            sebep = satir.split(gunluk.OLAY_YOK_ISARETI, 1)[1].lstrip(": ").strip()
+            return f"alınamıyor ({sebep or 'bilinmiyor'})" + hareketle
+        if gunluk.OLAY_BAGLI_ISARETI in satir:
+            return "bağlı, henüz araç olayı yok" + hareketle
+        if gunluk.OLAY_DINLENMIYOR_ISARETI in satir:
+            return ("dinlenmiyor (kamera adresinde kullanıcı yok ya da olay ayarı "
+                    "hatalı — bir önceki satıra bakın)" + hareketle)
+        if gunluk.OLAY_KAPALI_ISARETI in satir:
+            return "kapalı (OLAY_KAPISI=0)" + hareketle
+        if "köprü başladı" in satir:
+            return None
+    return None
+
+
+def olay_atlanan(satirlar: list[str]) -> int:
+    """Bugün araç olayı olmadığı için gönderilmeyen geçiş sayısı."""
+    bugun = time.strftime("%d.%m")
+    return sum(1 for s in satirlar
+               if s.startswith(bugun) and gunluk.OLAY_ATLANDI_ISARETI in s)
 
 
 def gorev_var_mi(yon: str) -> bool:
@@ -318,8 +357,13 @@ def serit_durumu(ayar_yolu: str) -> bool:
         hal = "ÇALIŞIYOR"
     print(f"     Durum        : {hal}")
 
+    olay_hali = olay_durumu(satirlar)
+    if olay_hali:
+        print(f"     Araç olayları: {olay_hali}")
     gonderim, red, son_hata = ozet(satirlar)
-    print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme")
+    atlanan = olay_atlanan(satirlar)
+    ek = f", {atlanan} atlandı (araç olayı yok)" if atlanan else ""
+    print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme{ek}")
     bos_okunan, bos_atlanan = bos_ozet(satirlar)
     if bos_okunan or bos_atlanan:
         print(f"     Boş şerit    : {bos_okunan} okundu, {bos_atlanan} atlandı")

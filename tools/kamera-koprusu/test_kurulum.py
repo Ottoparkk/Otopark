@@ -77,6 +77,32 @@ def test_ayar_json() -> None:
     assert d == ["http://x/kamera-webhook", "CIKIS", "1,2,3,4"], d
 
 
+def test_olay_ayari_serit_dosyasindan() -> None:
+    """
+    1.2.6: şeridin ayar dosyasına yazılan OLAY_ARAC_KODLARI / OLAY_PORT,
+    köprü dinleyiciyi başlattığı anda görülmeli. kopru olay'ı ayar dosyasını
+    yüklemeden ÖNCE içe aktarıyor; olay ayarlarını içe aktarmada okusaydı bu
+    sahadaki tek düzeltme yolu sessizce işlemezdi.
+    """
+    with tempfile.TemporaryDirectory() as klasor:
+        yol = os.path.join(klasor, "kopru-ortak.json")
+        with open(yol, "w", encoding="utf-8") as f:
+            json.dump({"YON": "ORTAK", "OLAY_ARAC_KODLARI": "AracX,AracY",
+                       "OLAY_PORT": 8088}, f)
+        kod = ONYUK + (
+            "import kopru, olay\n"
+            "a = olay.calisma_ayarlari()\n"
+            "print(','.join(a['kodlar']), a['port'])\n"
+        )
+        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": klasor}
+        for a in ("OLAY_ARAC_KODLARI", "OLAY_PORT", "OTOPARK_AYAR"):
+            ortam.pop(a, None)
+        r = subprocess.run([sys.executable, "-c", kod, "--ayar", yol], capture_output=True,
+                           text=True, encoding="utf-8", env=ortam)
+        assert r.returncode == 0, r.stderr[-800:]
+        assert r.stdout.strip().splitlines()[-1] == "AracX,AracY 8088", r.stdout
+
+
 def test_env_json_yener() -> None:
     """Gerçek ortam değişkeni dosyayı yenmeli: elle çalıştırma yolu bozulmasın."""
     d = kopru_degeri(["YON"], {"YON": "CIKIS"}, env={"YON": "GIRIS"})
@@ -1168,6 +1194,28 @@ def test_ayar_dosyasi_once_kisitlanir() -> None:
     assert "*S-1-5-18:(F)" in metin and "*S-1-5-32-544:(F)" in metin, metin
     assert "Administrators" not in metin and "SYSTEM:" not in metin, metin
     assert "/inheritance:r" in komut, komut
+
+
+def test_kayit_klasoru_devralinan_izinle_kisitlanir() -> None:
+    """
+    Kayıt klasörü yalnızca SYSTEM + yöneticilere açılır ve izin DEVRALINIR
+    ((OI)(CI)): içine sonradan açılan her şey — 1.2.6'nın olaysız atlanan
+    geçiş fotoğrafları (`kayit\\atlanan`, plakalı araç görüntüleri, KVKK) —
+    aynı kısıtlamayı kendiliğinden alır. Devralma düşerse o fotoğraflar
+    bilgisayardaki her kullanıcıya açık kalırdı.
+    """
+    import gunluk
+    cagrilar, _, _, yol = _ayari_yaz_izle(True)
+    # Yardımcı PROGRAMDATA'yı geri koydu; klasör ayar dosyasının yanından türetilir.
+    beklenen = os.path.join(os.path.dirname(yol), "kayit")
+    assert os.path.basename(gunluk.kayit_klasoru()) == "kayit"
+    kayit = [c[0] for c in cagrilar if c[0][1] == beklenen]
+    assert len(kayit) == 1, cagrilar
+    komut = kayit[0]
+    assert "/inheritance:r" in komut, komut
+    for hak in ("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)"):
+        assert hak in komut, (hak, komut)
+    assert not any("S-1-5-32-545" in p for p in komut), komut   # Users okumaz
 
 
 def test_ayar_izni_basarisizsa_uyarir() -> None:
@@ -2519,6 +2567,142 @@ def test_durum_bos_serit_satirlari() -> None:
     assert ok is True, cikti
     assert "1 gönderim, 0 reddedilme" in cikti, cikti
     assert "Boş şerit    : 1 okundu, 2 atlandı" in cikti, cikti
+
+
+# ------------------------------------------------ 1.2.6: araç olayları ---
+
+def test_durum_olay_satiri() -> None:
+    """
+    "Araç olayları:" satırı kapının hâlini kayıttan okur — her hâl için SON
+    söz geçerli, köprünün bu başlangıcından önceki satırlar sayılmaz. Geri
+    dönüş (hareketle çalışma) bir ARIZA değildir: köprü 1.2.5 gibi çalışır,
+    hiçbir araç kaybolmaz — sağlık bozulmaz.
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
+    eski = f"{bugun} 08:00:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}"
+    calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
+    durumlar = [
+        ([bas], None),                     # 1.2.5 ya da henüz söz yok: satır yok
+        ([bas, f"{bugun} 09:00:01  [i] {gunluk.OLAY_KAPALI_ISARETI} (OLAY_KAPISI=0)"],
+         "kapalı"),
+        ([bas, f"{bugun} 09:00:01  [i] {gunluk.OLAY_DINLENMIYOR_ISARETI}"],
+         "dinlenmiyor"),
+        ([bas, f"{bugun} 09:00:02  [i] {gunluk.OLAY_BAGLI_ISARETI}"],
+         "henüz araç olayı yok"),
+        ([bas, f"{bugun} 09:00:02  [i] {gunluk.OLAY_BAGLI_ISARETI}",
+          f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}"],
+         "etkin"),
+        ([bas, f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}",
+          f"{bugun} 09:02:00  [!] {gunluk.OLAY_YOK_ISARETI}: olay bağlantısı koptu"],
+         "alınamıyor (olay bağlantısı koptu)"),
+        ([bas, f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}",
+          f"{bugun} 09:30:00  [!] {gunluk.OLAY_GERI_DONUS_ISARETI}"],
+         "otomatik geri dönüş"),
+        # Önceki başlangıçtan kalan "doğrulandı" bu başlangıcı etkin göstermez.
+        ([eski, bas], None),
+    ]
+    for satirlar, beklenen in durumlar:
+        metin = durum.olay_durumu(satirlar)
+        if beklenen is None:
+            assert metin is None, (satirlar, metin)
+        else:
+            assert metin is not None and beklenen in metin, (satirlar, metin)
+    # Bugünün atlanan geçişleri sayılır; dünkü sayılmaz.
+    atlanan = [bas, f"01.01 09:00:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=40.0)",
+               f"{bugun} 09:10:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=40.0)",
+               f"{bugun} 09:11:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=9.0)"]
+    assert durum.olay_atlanan(atlanan) == (2 if bugun != "01.01" else 3)
+    # Ekranda: satır, sayı; geri dönüş ve "alınamıyor" sağlığı bozmaz.
+    for son, saglik in (
+            (f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}", "etkin"),
+            (f"{bugun} 09:02:00  [!] {gunluk.OLAY_YOK_ISARETI}: kamera kullanıcısının "
+             "Olay izni yok", "alınamıyor"),
+            (f"{bugun} 09:30:00  [!] {gunluk.OLAY_GERI_DONUS_ISARETI}", "geri dönüş")):
+        ok, cikti = _durum_senaryosu(atlanan + [son, calisiyor])
+        assert ok is True, cikti
+        assert "Araç olayları: " in cikti and saglik in cikti, cikti
+        assert "atlandı (araç olayı yok)" in cikti, cikti
+
+
+def test_durum_olaysiz_atlama_kamera_kaniti() -> None:
+    """
+    Kapı açıkken bir gece boyunca yalnızca "araç olayı yok — gönderilmedi" ve
+    "gönderilmiş araç" satırları olabilir: bunlar da kameranın görüntü
+    verdiğinin kanıtıdır — KAMERA YOK gösterilmemeli.
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    kopuk = f"{bugun} 01:00:00  [!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor"
+    for iyi in (f"{bugun} 01:00:09  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=12.0)",
+                f"{bugun} 01:00:09  [i] {gunluk.AYRILIS_ISARETI}"):
+        assert durum.kamera_kopuk([kopuk, iyi]) is False, iyi
+    # Olay dinleyicisinin kendi sorunları KAMERA (görüntü) sorunu değildir.
+    for olay_satiri in (f"{bugun} 01:00:09  [!] {gunluk.OLAY_YOK_ISARETI}: kamera "
+                        "şifreyi kabul etmedi",
+                        f"{bugun} 01:00:09  [!] {gunluk.OLAY_YOK_ISARETI}: kameraya "
+                        "bağlanılamadı"):
+        assert durum.kamera_kopuk([f"{bugun} 01:00:00  [i] {gunluk.KAMERA_VAR_ISARETI}",
+                                   olay_satiri]) is False, olay_satiri
+        assert durum.kamera_sifre_reddi([olay_satiri]) is False, olay_satiri
+
+
+def test_paket_tum_moduller() -> None:
+    """
+    Klasördeki her kendi modülümüz paketlenmeli (paketle.MODULLER). Biri
+    unutulursa sonuç ancak SAHADA görülür: .exe "No module named …" ile
+    çöker (1.2.6'da olay.py eklendi).
+    """
+    import paketle
+    burasi = os.path.dirname(os.path.abspath(__file__))
+    kendi = {f[:-3] for f in os.listdir(burasi)
+             if f.endswith(".py") and not f.startswith("test_")
+             and f not in ("paketle.py", "giris.py")}
+    eksik = kendi - set(paketle.MODULLER)
+    assert not eksik, f"paketlenmeyen modül: {sorted(eksik)}"
+
+
+def test_giris_olay_kipi() -> None:
+    """
+    `OtoparkKamera.exe --olay` kurulu şeridin ayar dosyasıyla olay test kipini
+    açar; birden çok şerit varsa her biri sırayla. Kurulum yoksa ne
+    yapılacağını söyler ve hata koduyla döner.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import giris
+    import olay
+    assert "--olay" in giris.KIPLER
+    klasor = tempfile.mkdtemp()
+    eski_pd = os.environ.get("PROGRAMDATA")
+    os.environ["PROGRAMDATA"] = klasor
+    onceki = olay.test_kipi
+    cagrilar: list[str] = []
+    olay.test_kipi = lambda yol, *a, **k: (cagrilar.append(yol), 0)[1]
+    try:
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--olay"]()
+        assert kod != 0 and cagrilar == [], (kod, cagrilar)
+        assert "kurulum" in yakala.getvalue().lower(), yakala.getvalue()
+        os.makedirs(os.path.join(klasor, "Otopark"))
+        for ad in ("kopru-giris.json", "kopru-cikis.json"):
+            with open(os.path.join(klasor, "Otopark", ad), "w", encoding="utf-8") as f:
+                f.write("{}")
+        with redirect_stdout(_io.StringIO()):
+            kod = giris.KIPLER["--olay"]()
+        assert kod == 0, kod
+        assert sorted(os.path.basename(c) for c in cagrilar) == [
+            "kopru-cikis.json", "kopru-giris.json"], cagrilar
+    finally:
+        olay.test_kipi = onceki
+        if eski_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = eski_pd
 
 
 # ------------------------------------------------ 1.2.1: kurulum günü ---

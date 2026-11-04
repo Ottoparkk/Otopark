@@ -99,6 +99,16 @@ BOS_ATLANDI_ISARETI = "boş şerit — gönderilmedi"
 # 1.2.5: durmadan geçen aracın en keskin karesi gönderiliyor (bariyersiz kapı).
 # Duran araçta satır hâlâ "araç durdu". İkisi de kameranın çalıştığının işareti.
 ARAC_GECTI_ISARETI = "araç geçti"
+# 1.2.6: kameranın kendi araç olayları (olay.py) ve onlara bağlı gönderim kapısı.
+OLAY_BAGLI_ISARETI = "kamera araç olaylarına bağlanıldı"
+OLAY_YOK_ISARETI = "kamera araç olayları alınamıyor"
+OLAY_DOGRULANDI_ISARETI = "araç olayları doğrulandı — yalnızca araçlar gönderilecek"
+OLAY_ATLANDI_ISARETI = "araç olayı yok — gönderilmedi"
+OLAY_GERI_DONUS_ISARETI = "araç olayı gelmiyor — hareketle çalışılıyor"
+AYRILIS_ISARETI = "gönderilmiş araç — tekrar gönderilmedi"
+# Açılışta kapının neden hiç açılmayacağı (durum ekranı okur).
+OLAY_DINLENMIYOR_ISARETI = "kamera araç olayları dinlenmiyor"
+OLAY_KAPALI_ISARETI = "araç olayı kapısı kapalı"
 # 1.2.1. Sunucunun İLK kalp atışını kabul ettiği an (bir kez yazılır): kurulum
 # sihirbazı köprüyü ancak bunu görünce "çalışıyor" sayar.
 SUNUCU_TAMAM_ISARETI = "sunucu bağlantısı doğrulandı"

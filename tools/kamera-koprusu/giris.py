@@ -9,6 +9,7 @@ kırılgan MERGE'ü demekti. Kip ilk argümandan seçiliyor.
     OtoparkKamera.exe --kopru --ayar X → köprünün kendisi (Görev Zamanlayıcı)
     OtoparkKamera.exe --durum          → çalışıyor mu
     OtoparkKamera.exe --kaldir         → kaldır
+    OtoparkKamera.exe --olay           → kameranın araç olaylarını canlı göster (1.2.6)
 
 Çift tıklayan kişi hiçbir argüman bilmek zorunda değil: ilk kurulumda doğrudan
 sihirbaz açılır, sonrasında menü çıkar.
@@ -84,9 +85,28 @@ def _kurulum() -> int:
     return kurulum.main()
 
 
+def _olay() -> int:
+    """
+    Kurulu her şeridin kamerasının araç olaylarını sırayla gösterir (yönetici
+    olarak açılmalı: ayar dosyası yalnızca yöneticilere açık). Köprü çalışırken
+    de güvenle koşar — olay aboneliği görüntü akışından ayrıdır.
+    """
+    import olay
+    ayarlar = sorted(glob.glob(os.path.join(_ayar_klasoru(), "kopru-*.json")))
+    if not ayarlar:
+        print("\n  Kurulu bir köprü bulunamadı — önce kurulumu çalıştırın.")
+        return 1
+    kod = 0
+    for yol in ayarlar:
+        print(f"\n  ── {os.path.basename(yol)} ──")
+        kod = olay.test_kipi(yol) or kod
+    return kod
+
+
 # Geç içe aktarma bilerek: `--durum` cv2'ye hiç dokunmasın ve paketlenmemiş
 # kurulumda opencv olmadan da çalışabilsin.
-KIPLER = {"--durum": _durum, "--kaldir": _kaldir, "--kurulum": _kurulum}
+KIPLER = {"--durum": _durum, "--kaldir": _kaldir, "--kurulum": _kurulum,
+          "--olay": _olay}
 
 
 def main() -> int:
@@ -112,7 +132,8 @@ def main() -> int:
         # Duraklamadan ÖNCE yazılmalı: ters sırada mesaj "Enter'a basın"ın
         # altında kalır ve kullanıcı neyi yanlış yazdığını göremez.
         print(f"\n  Bilinmeyen seçenek: {kip}")
-        print("  Kullanım: --durum | --kaldir | --kurulum | --kopru --ayar <dosya>")
+        print("  Kullanım: --durum | --kaldir | --kurulum | --olay | "
+              "--kopru --ayar <dosya>")
         if DONMUS:
             bekle()
         return 2

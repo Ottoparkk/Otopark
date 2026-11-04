@@ -205,8 +205,16 @@ bağlanamadan ölebilir ve `schtasks` bunu **başarı** olarak bildirir; kurulum
      Otomatik başlatma: kurulu
      Son hareket  : 12 saniye önce
      Durum        : ÇALIŞIYOR
-     Bugün        : 143 gönderim, 0 reddedilme
+     Araç olayları: etkin — yalnızca araç olayı olan geçişler gönderiliyor
+     Bugün        : 143 gönderim, 0 reddedilme, 12 atlandı (araç olayı yok)
 ```
+
+`Araç olayları` (1.2.6) bu başlangıçtan beri son sözü yazar: `etkin`,
+`bağlı, henüz araç olayı yok`, `alınamıyor (sebep)`, `kapalı (otomatik geri
+dönüş …)`, `dinlenmiyor`, `kapalı (OLAY_KAPISI=0)`. `etkin` dışındakilerin
+hepsinde köprü 1.2.5 gibi her geçişi gönderir; bu yüzden hiçbiri sağlığı
+bozmaz. Olaysız atlanan geçiş ve tanınan ayrılış satırları da kameranın görüntü
+verdiğinin kanıtı sayılır (gece boyunca yalnızca onlar olabilir).
 
 Altı koşulun **altısı birden** aranır, çünkü her biri ötekinin kör noktasını
 kapatıyor:
@@ -415,11 +423,86 @@ goes still after motion:
 - **The car rolled through without stopping** (1.2.5, gates without a barrier):
   the still scene IS the one from before the motion — the car has gone, and
   before 1.2.5 the bridge sent that empty lane and the car was lost. Now, while
-  something is in the box during the pass, every frame's sharpness (Laplacian
-  variance) is measured and the sharpest is kept; when the lane goes back to
-  how it was, **that** frame is sent, timestamped when it was seen. The log
-  says `araç geçti (keskinlik=…, fark=…, N aday) — gönderiliyor` (a stopped
-  car still says `araç durdu`).
+  something is in the box during the pass, every frame is scored and the best
+  is kept; when the lane goes back to how it was, **that** frame is sent,
+  timestamped when it was seen. The log says `araç geçti (skor=…, fark=…, N
+  aday) — gönderiliyor` (a stopped car still says `araç durdu`).
+  Since 1.2.6 the score is edge energy (Laplacian²) **on the pixels that
+  differ from the background before the pass** only. 1.2.5 scored the whole
+  crop, and on a textured road that favoured the frame where the car covered
+  the *least* of the box (asphalt texture is detail too); `dokulu_zemin` holds
+  it. A sharp whole car now beats both a sharp sliver and a blurred whole car.
+
+### Only vehicles (1.2.6)
+
+At the real gate 1.2.5 also sent passes **without a vehicle**: someone walking
+through the box, a shadow, dusk and infrared switching, lamp flicker. Each
+became an unreadable-plate record, a notification to all staff and a paid read.
+The camera's own detection (Dahua *Akıllı Hareket Algılama*, target *Motorlu
+Araç*) reported every car, day and night, and no people. So the bridge now
+listens to the camera's events (`olay.py`: `eventManager.cgi?action=attach`,
+own HTTP digest, see the module docstring for why not `requests`) and a
+decision is sent **only if a vehicle event overlaps the pass**:
+
+- **Window:** from 5 s before the pass's first strong motion
+  (`OLAY_ONCE_SN`) to the decision, never further back than 15 s and never
+  before the previous decision. An old event cannot authorise a later
+  flicker, and the car's own event cannot authorise the person walking
+  behind it (`olay_pencere_sinirli`, `olay_arac_ardindan_yaya`).
+- **Late event:** with no event yet, the decision waits up to
+  `OLAY_BEKLE_SN` (5 s) and is sent the moment one arrives, with its original
+  capture time (`olay_gec_gelir`). Otherwise it is skipped
+  (`araç olayı yok — gönderilmedi`) and the crop is kept in
+  `kayit\atlanan\` (newest `ATLANAN_SAKLA` = 50; the folder inherits
+  `kayit`'s admin-only rights), so the first days can prove no real car was
+  skipped.
+- **Departure:** a car that **stopped** and was sent produces a vehicle event
+  again when it drives off. 1.2.5 then sent the empty lane. With the gate on,
+  the bridge remembers the standing car and skips the decision that follows
+  its departure (`gönderilmiş araç — tekrar gönderilmedi`), but only when
+  that pass started from the standing car's picture (or the car left during
+  the 2 s re-arm wait) and the scene went back to its pre-arrival background
+  or a learned empty lane. A car only counts as "standing" if the sent
+  picture really differs from the background, and only an EMPTY scene after
+  it counts as its departure. There is deliberately **no** "the scene still
+  looks like the standing car, so skip" rule: a similar car that takes the
+  same spot without the lane ever emptying is indistinguishable in pixels,
+  and that rule lost it (`olay_arac_yerine_arac`; an earlier draft also lost
+  a rolling car this way, `olay_hizli_ayrilan_sonra_gecen`). The price is the
+  1.2.5 one: a standing car that creeps can now and then be sent twice.
+- **Fallback — no car is ever lost to an event problem (owner decision):**
+  the gate is used only while the event stream is healthy (a part within
+  20 s; the camera sends a heartbeat every 5) **and** at least one
+  recognised vehicle event has been seen since start. Otherwise the bridge
+  runs as 1.2.5 exactly: no user, no *Olay* right, wrong event name, SMD
+  switched off, camera unreachable, or `OLAY_KAPISI=0`. A decision that was
+  waiting when the stream dropped is sent at once
+  (`olay_beklerken_koptu`).
+- **Automatic fallback:** if three car-sized passes in a row
+  (`ARAC_KAPSAM_ESIGI`) are skipped and no vehicle event has come for
+  `OLAY_GERI_DONUS_SN` (10 min), someone has probably switched the camera's
+  detection off while the stream stays up. The gate closes
+  (`araç olayı gelmiyor — hareketle çalışılıyor`) and reopens at the next
+  vehicle event. Worst case, a few cars in those minutes are skipped; their
+  crops are in `atlanan\`.
+
+The listener logs state changes only, never credentials. A wrong password
+costs exactly one failed login and then waits `SIFRE_RED_BEKLEME_SN`, so the
+camera account (which the video also uses) never locks. A missing *Olay* right
+waits an hour; a rejected subscription waits 10 minutes. Its settings
+(`OLAY_ARAC_KODLARI`, `OLAY_PORT`, …) are read **when it starts**, after the
+lane's config file is loaded, so a line added to `kopru-<şerit>.json` takes
+effect on the next start, with no new build.
+
+`OtoparkKamera.exe --olay` (as administrator; the config is admin-only) shows
+the camera's events live for 2 minutes, with vehicle events marked `← ARAÇ`.
+Run it once after installing: a car should show a vehicle Start (and Stop), a
+person none. If the vehicle code differs from `SmartMotionVehicle`, put it in
+the lane's config file as `OLAY_ARAC_KODLARI`.
+
+Motorcycles are not detected by the camera: they are entered by hand (owner
+decision). Restrict the camera's detection **region** to the lane, or street
+traffic and headlight sweeps will authorise junk.
 
 If the scene never goes still after a passing car (rain, night grain, swaying
 trees), a held frame is still sent once there has been no strong motion for
@@ -493,14 +576,24 @@ an older webhook does not strip it and would copy it into exception rows.
 | `GECIS_YAKALA` | `1` | `0` turns rolling-car capture off: behaviour of 1.2.4 exactly (a car that does not stop is missed). |
 | `GECIS_BEKLE_SN` | `2` | Safety net: send the held passing-car frame after this long without strong motion, if the lane looks as it did before the pass. |
 | `YENIDEN_BAGLAN_SN` / `YENIDEN_BAGLAN_MAX_SN` | `3` / `60` | Wait before reconnecting after the stream drops; doubles up to the cap, back to the base on the first good frame (1.2.2). |
-| `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. |
+| `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. Also the event listener's wait after a rejected password (1.2.6). |
+| `OLAY_KAPISI` | `1` | `0` turns the vehicle-event gate off: behaviour of 1.2.5 exactly (every pass is sent). |
+| `OLAY_ARAC_KODLARI` | `SmartMotionVehicle` | Comma-separated event codes that mean "a vehicle". IVS line/region events with `Vehicle`/`MotorVehicle` count too. Check with `--olay`. |
+| `OLAY_PORT` | `80` | The camera's HTTP port for the event subscription. |
+| `OLAY_ONCE_SN` | `5` | How long before a pass's first motion a vehicle event may arrive. |
+| `OLAY_BEKLE_SN` | `5` | How long a decision waits for a late vehicle event before it is skipped. |
+| `OLAY_GERI_DONUS_SN` | `600` | Automatic fallback: after 3 car-sized skips in a row and this long without any vehicle event, the gate closes until the next one. |
+| `ARAC_KAPSAM_ESIGI` | `15` | How different from the background a pass must get to count as "car-sized" for the automatic fallback. |
+| `ATLANAN_SAKLA` | `50` | Skipped crops kept in `kayit\atlanan\`; `0` keeps none. |
+| `OLAY_SAGLIK_SN` / `OLAY_OKUMA_SN` | `20` / `15` | The event stream counts as healthy while a part arrived within this long; a silent stream is dropped after `OLAY_OKUMA_SN`. |
 
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 25 senaryo, ~5 dk
+python test_kopru.py            # yakalama döngüsü, 40 senaryo, ~8 dk
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı birimleri, ~5 sn
+python test_kurulum.py          # kurulum tarafı birimleri
+python test_olay.py             # kameranın araç olayları (1.2.6), sahte kamera ile
 ```
 
 Her çalıştırma bütün geçici dosyalarını `%TEMP%` altında TEK klasörde toplar
@@ -542,6 +635,32 @@ davranış (geçen araç kaçırılır). Ayrıca `bos_ogrenme` artık tam üç a
 fotoğrafı ister: duran, sonra giden aracın ikinci kez gönderilmesini (tek
 kapıda sahte çıkış) yakalar — geliştirme sırasında gerçekten yakaladı.
 
+On beş senaryo 1.2.6'dan, kameranın araç olayları için. Olaylar HTTP
+olmadan `olay.kaydet` dikişinden verilir; gerçek dinleyici hiçbir senaryoda
+başlamaz (bazı senaryoların RTSP adresi kullanıcı taşıyor, ağa çıkardı):
+`olay_gecen_arac` (olaylı geçiş gider), `olay_yok_gonderilmez` (yaya/gölge
+gitmez, kırpığı `atlanan`'a düşer), `olay_gec_gelir` (geç olay beklenir),
+`olay_dogrulanmadi` (yalnızca VideoMotion → kapı açılmaz, 1.2.5),
+`olay_akisi_yok` (akış yok → 1.2.5), `olay_beklerken_koptu` (beklerken akış
+koptu → hemen gönderilir), `olay_duran_ayrilan` (duran araç bir kez, gidişi
+hiç), `olay_arac_yerine_arac` (şerit boşalmadan yerine aynı görünüşte
+gelen araç da gider), `olay_hizli_ayrilan_sonra_gecen` (bekleme süresinde giden duran aracın
+ardından geçen araç yine gider), `olay_iki_arac_tek_aralik` (tek olay aralığı
+iki aracı da kapsar), `olay_pencere_sinirli` (eski olay yeni geçişe yetki
+vermez), `olay_arac_ardindan_yaya` (aracın olayı arkasındaki yayaya yetki
+vermez), `olay_geri_donus` (algılama kapatılınca otomatik geri dönüş),
+`olay_kapisi_kapali` (`OLAY_KAPISI=0`) ve `dokulu_zemin` (desenli zeminde
+gönderilen kare aracın tamamı). Kuralların her biri tek tek bozulup sınandı
+(14/14 yakalandı). `test_olay.py` (31 test) dinleyiciyi tutuyor: RFC 2617
+özet örneği, köşeli `[All]`ın istek satırında ve `uri=`'de aynen gitmesi,
+sınırı bölünmüş ya da `Content-Length`'i yanlış parçalar, araç/insan ayrımı,
+ve gerçek bir sokette sahte Dahua'ya karşı yanlış şifrede TEK başarısız
+giriş, izin yokken uzun bekleme, 400'de kodlu adres, kopunca yeniden bağlanma.
+Ayarların içe aktarmada değil başlatırken okunduğu da sınanıyor: köprü
+`olay`'ı ayar dosyasını yüklemeden önce içe aktarıyor ve dosyadaki
+`OLAY_ARAC_KODLARI` aksi hâlde sessizce yok sayılırdı (geliştirme sırasında
+bulundu).
+
 Dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
 bakıp model gibi cevap veriyor (araç → 200, boş → 422 + `arac_yok`):
 `bos_ogrenme` üçüncü boş şeridin HİÇ gönderilmediğini ve üçüncü aracın yine
@@ -566,7 +685,7 @@ sığmayan/kodlanamayan fotoğrafta istisna değil None dönmesini, sınırın
 `serit.ts` ile aynı sayı olmasını ve her denemede aynı kopyanın gitmesini
 tutuyor.
 
-`test_kurulum.py`'deki 114 birim testi kurulum tarafını tutuyor — ayar yükleme,
+`test_kurulum.py`'deki 128 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
 **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.

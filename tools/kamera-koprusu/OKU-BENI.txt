@@ -88,10 +88,11 @@ ELİNİZDE HAZIR OLSUN
   · Kameranın kullanıcı adı ve şifresi — DİKKATLE yazın. Kamera birkaç
     yanlış denemeden sonra girişleri yaklaşık yarım saat kilitler.
 
-    ÖNERİ: kameranın web arayüzünde yalnızca canlı görüntü yetkisi olan
-    AYRI bir kullanıcı açın ve programa onu verin. "admin" böylece hep
-    sizde kalır: programın kullandığı hesap bir gün kilitlense bile
-    kameranın ayarlarına girebilirsiniz.
+    ÖNERİ: kameranın web arayüzünde yalnızca "Canlı" ve "Olay" yetkisi
+    olan AYRI bir kullanıcı açın ve programa onu verin. "admin" böylece
+    hep sizde kalır: programın kullandığı hesap bir gün kilitlense bile
+    kameranın ayarlarına girebilirsiniz. "Olay" yetkisi 1.2.6'dan beri
+    gerekli: program kameranın araç algılamasını bu yetkiyle dinler.
 
   · Bu bilgisayarın saati doğru olmalı (Ayarlar → Saat ve dil → "Saati
     otomatik olarak ayarla"). Araçların giriş saati BU bilgisayarın
@@ -117,6 +118,34 @@ ELİNİZDE HAZIR OLSUN
   "boş şerit — gönderilmedi" satırları görmek NORMALDİR; Durum ekranında
   "Boş şerit : ... okundu, ... atlandı" olarak sayılır. Hiçbir ayar
   gerekmez.
+
+  YALNIZCA ARAÇLAR (1.2.6): program bir fotoğrafı ancak KAMERANIN
+  KENDİSİ o anda bir araç gördüyse gönderir. Kutudan yürüyerek geçen
+  biri, gölge, far ya da lamba titremesi gönderilmez; "okunamadı"
+  kaydı ve bildirim üretmez. Bunun için kamerada:
+    · Akıllı Hareket Algılama AÇIK, hedef "Motorlu Araç" seçili,
+    · algılama BÖLGESİ yalnızca şerit (plaka kutusunun çevresi) — sokak
+      ve kaldırım bölgenin dışında kalsın.
+  Durum ekranında "Araç olayları: etkin" yazar ve "Bugün" satırında
+  "... atlandı (araç olayı yok)" sayılır. Kamera araç bildirmiyorsa
+  (izin yok, algılama kapalı, bağlantı yok) program ESKİSİ GİBİ her
+  geçişi gönderir — hiçbir araç bu yüzden kaybolmaz; Durum ekranı o
+  zaman "... hareketle çalışıyor" der.
+
+  MOTOSİKLET: kamera motosikleti araç saymaz; motosikletleri
+  uygulamadan elle girin.
+
+  KONTROL (kurulumdan sonra bir kez): Başlat'a "cmd" yazın, sağ tık →
+  "Yönetici olarak çalıştır", sonra programın yolunu --olay ile yazın:
+      "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --olay
+  İki dakika boyunca kameranın bildirdiklerini gösterir. Bir araç
+  geçirin: "← ARAÇ" işaretli satırlar görünmeli. Bir insan geçirin:
+  "← ARAÇ" görünmemeli. Sonunda "✓ Kamera araç olaylarını gönderiyor"
+  yazmalı. Yazmıyorsa ekranın fotoğrafını iletin.
+
+  Atlanan geçişlerin son 50 fotoğrafı yalnızca yöneticilerin açabildiği
+  C:\ProgramData\Otopark\kayit\atlanan klasöründe durur: ilk günlerde
+  oraya bakın — içinde gerçek bir araç OLMAMALI.
 
   FOTOĞRAF: program her aracın plaka bölgesinin küçük bir fotoğrafını da
   gönderir; uygulamada biletin ve istisnanın üstünde görünür ve
@@ -206,6 +235,17 @@ BİR ŞEY TERS GİDERSE
       adımında YENİ şifreyi girin. Program, o şeridin çalışan köprüsünü
       kurulum boyunca kendisi durdurur; kurulum yarıda kalırsa eskisini
       yeniden başlatır.
+
+  "Araç olayları: alınamıyor (kamera kullanıcısının Olay izni yok)"
+      Kameranın web arayüzünde programın kullanıcısına "Olay" yetkisi
+      verin. Program bunu saatte bir yeniden dener; bu arada her geçişi
+      eskisi gibi gönderir.
+
+  "Araç olayları: kapalı (otomatik geri dönüş ...)"
+      Kamera bir süredir hiç araç bildirmiyor ama kutudan araç boyutunda
+      şeyler geçiyor. Kameranın Akıllı Hareket Algılama ayarının açık ve
+      hedefin "Motorlu Araç" olduğunu kontrol edin. Kamera yeniden bir
+      araç bildirdiğinde program kendiliğinden "etkin"e döner.
 
   Durum ekranı "KİMLİK REDDEDİLDİ" diyor
       Kamera uygulamadan kaldırılmış ya da devre dışı bırakılmış.
