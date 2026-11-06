@@ -10,7 +10,7 @@ invisible loss; here every entry, duration and collection becomes a durable
 server-side record.
 
 **Status:** in use at one car park (app, database and camera bridge). A new
-installation runs migrations `001` → `047` in order, then
+installation runs migrations `001` → `048` in order, then
 `supabase/tests/rls_smoke_test.sql` must end with `ALL TESTS PASSED` — no
 screen counts as working until that has been seen. Setup and verification:
 [SETUP.md](SETUP.md). Rules for changing the code: [CLAUDE.md](CLAUDE.md).

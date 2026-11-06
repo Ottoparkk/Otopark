@@ -11,6 +11,7 @@ import {
   KAMERA_OKUMA_KAYNAGI,
   KANIT_FOTO_EN_COK_BAYT,
   KANIT_FOTO_KOVA,
+  KOPRU_OKUMA_SAGLAYICI,
   OKUMA_DAKIKA_SINIRI,
   OKUMA_GUN_SINIRI,
   SURE_DOLDU,
@@ -21,6 +22,7 @@ import {
   kameraGirisiKarari,
   kameraOkumaLogu,
   kanitFotoCoz,
+  koprudenOkunamadi,
   okumaHatasiKaydedilir,
   okumaSiniriKarari,
   okunamadiKaydedilir,
@@ -349,7 +351,9 @@ const webhook = readFileSync(
   'utf8',
 )
 const yazimlar = [...webhook.matchAll(/\.from\(\s*'plaka_okuma_log'\s*\)\s*\.insert\(\s*([A-Za-z_]*)/g)]
-esit('webhook: okuma günlüğüne iki yerde yazılır (okundu / okunamadı)', yazimlar.length, 2)
+// Üç yer: okundu, okuma hatası, ve (köprü 1.3.0) köprünün "okuyamadım" olayı —
+// sonuncusu ücretli okuma değil ama aynı sınıra tabi olsun diye satır yazar.
+esit('webhook: okuma günlüğüne üç yerde yazılır (okundu / okuma hatası / köprü okunamadı)', yazimlar.length, 3)
 esit(
   'webhook: her yazım etiketli (kameraOkumaLogu)',
   yazimlar.map((m) => m[1]),
@@ -481,6 +485,76 @@ esit('webhook: yükleme kova sabitiyle', yuklemeler.map((m) => m[1]), ['KANIT_FO
 esit('webhook: üzerine yazmaz (upsert: false)', yuklemeler.map((m) => /upsert:\s*false/.test(m[2])), [true])
 esit('webhook: kamera_foto_bagla tek yerden', (webhook.match(/'kamera_foto_bagla'/g) ?? []).length, 1)
 esit('webhook: fotoğraf beş karar yolunda bağlanır', (webhook.match(/await kanitFotosunuBagla\(/g) ?? []).length, 5)
+
+// --- Köprü 1.3.0: plakayı köprü okur; emin değilse "okunamadı" der ----------
+// Köprü artık fotoğrafı okutmaz (foto_base64 göndermez), plakayı kendi okur.
+// Emin olmadığı aracı `okunamadi: true` ile bildirir: ücretli okuma YAPILMADAN
+// çözülmemiş kayıt (kamera_okunamadi) + saklanan fotoğraf. Kural tek yerde.
+const YOK = { ok: true, okunamadi: false }
+esit('köprü okunamadı: alan yok', koprudenOkunamadi({ plaka: '34ABC123' }), YOK)
+esit('köprü okunamadı: false', koprudenOkunamadi({ okunamadi: false }), YOK)
+esit('köprü okunamadı: null', koprudenOkunamadi({ okunamadi: null }), YOK)
+// Yalnızca gerçek true: "true" metni ya da 1 bir bayrak değildir.
+esit('köprü okunamadı: "true" metni değil', koprudenOkunamadi({ okunamadi: 'true' }), YOK)
+esit('köprü okunamadı: 1 değil', koprudenOkunamadi({ okunamadi: 1 }), YOK)
+esit(
+  'köprü okunamadı: tahmin ve güven taşır',
+  koprudenOkunamadi({ okunamadi: true, tahmin: ' 35AEU362 ', guven: 0.75 }),
+  { ok: true, okunamadi: true, tahmin: '35AEU362', guven: 0.75 },
+)
+esit(
+  'köprü okunamadı: tahminsiz',
+  koprudenOkunamadi({ okunamadi: true }),
+  { ok: true, okunamadi: true, tahmin: null, guven: null },
+)
+esit(
+  'köprü okunamadı: boş tahmin = yok',
+  koprudenOkunamadi({ okunamadi: true, tahmin: '   ' }),
+  { ok: true, okunamadi: true, tahmin: null, guven: null },
+)
+// Uzun tahmin kırpılır (kayıt 32 karakter tutar), aracı düşürmez.
+esit(
+  'köprü okunamadı: uzun tahmin kırpılır',
+  koprudenOkunamadi({ okunamadi: true, tahmin: 'A'.repeat(40) }).tahmin,
+  'A'.repeat(32),
+)
+// Güven 0..1 dışıysa ya da sayı değilse YOK sayılır (veritabanı 0..1 ister).
+for (const g of [-0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY, '0.9', null]) {
+  esit(`köprü okunamadı: geçersiz güven ${String(g)} → null`, koprudenOkunamadi({ okunamadi: true, guven: g }).guven, null)
+}
+esit('köprü okunamadı: güven 0 geçerli', koprudenOkunamadi({ okunamadi: true, guven: 0 }).guven, 0)
+esit('köprü okunamadı: güven 1 geçerli', koprudenOkunamadi({ okunamadi: true, guven: 1 }).guven, 1)
+// Plakayla ya da okunacak fotoğrafla birlikte "okunamadı" çelişkidir: 400.
+// (Birlikte kabul edilseydi ya plaka yok sayılırdı ya da ücretli okuma yapılırdı.)
+const CELISKI = { ok: false, durum: 400, hata: 'okunamadi, plaka ya da foto_base64 ile birlikte gönderilemez.' }
+esit('köprü okunamadı: plakayla → 400', koprudenOkunamadi({ okunamadi: true, plaka: '34ABC123' }), CELISKI)
+esit('köprü okunamadı: fotoğrafla → 400', koprudenOkunamadi({ okunamadi: true, foto_base64: 'QUJD' }), CELISKI)
+esit(
+  'köprü okunamadı: boş plaka çelişki değil',
+  koprudenOkunamadi({ okunamadi: true, plaka: '' }).ok,
+  true,
+)
+esit(
+  'köprü okunamadı: kanıt fotoğrafı serbest (saklanan kopya)',
+  koprudenOkunamadi({ okunamadi: true, foto_kanit_base64: 'QUJD' }).ok,
+  true,
+)
+esit('köprü okunamadı: günlük etiketi', KOPRU_OKUMA_SAGLAYICI, 'KOPRU')
+
+// Kaynağa bakış: köprünün "okunamadı" dalı ücretli okumayı (plakaOku) ÇAĞIRMAZ,
+// okuma sınırının altındadır, deneme sorusuna yazmadan cevap verir ve kayıt
+// yazılamazsa köprü yeniden denesin diye 503/409 döner (422 değil).
+const okDal = /if \(olay\.koprudenOkunamadi\) \{([\s\S]*?)\n    \} else if \(!plaka && olay\.image\) \{/.exec(webhook)
+esit('webhook: köprü okunamadı dalı ücretli okumadan ÖNCE ayrı', Boolean(okDal), true)
+esit('webhook: köprü okunamadı dalı plakaOku çağırmaz', okDal ? okDal[1].includes('plakaOku(') : true, false)
+esit('webhook: köprü okunamadı dalı okuma sınırından geçer', okDal ? okDal[1].includes('await okumaSiniri(') : false, true)
+esit('webhook: okuma sınırı tek yardımcıda (iki dal da onu çağırır)', (webhook.match(/await okumaSiniri\(/g) ?? []).length, 2)
+esit('webhook: deneme sorusu cevaplanır', webhook.includes('okunamadi_destekli: true'), true)
+esit(
+  'webhook: köprünün okunamadı kaydı yazılamazsa yeniden denenir',
+  /if \(olay\.koprudenOkunamadi\) return rpcHatasi\('kamera_okunamadi', okErr\)/.test(webhook),
+  true,
+)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 process.exit(kalan === 0 ? 0 : 1)

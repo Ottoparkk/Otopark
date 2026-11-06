@@ -141,6 +141,45 @@ export function okunamadiKaydedilir(yon: Serit, gorselOkundu: boolean, aracYok: 
 }
 
 /**
+ * Bridge 1.3.0 reads the plate ITSELF on the laptop and never sends a photo to
+ * be read (`foto_base64`). When it is not sure, it says so with
+ * `okunamadi: true` (+ its best guess `tahmin` and `guven`): the car must reach
+ * staff as an exception row with the stored photo, WITHOUT a paid read.
+ *
+ * Only a real boolean `true` counts. `okunamadi` together with a plate or with
+ * a photo to read is a contradiction and is refused (400): accepting it would
+ * either ignore the plate or pay for a read the bridge said it did not want.
+ * The stored copy (`foto_kanit_base64`) is fine — it is what staff look at.
+ * The guess is trimmed and cut to 32 characters (the column), a confidence
+ * outside 0..1 or not a number is dropped (the column only takes 0..1) — a bad
+ * guess must never cost the car. Normalising the guess (tidyPlaka) is the
+ * webhook's job: this file stays import-free so Node can test it.
+ */
+export const KOPRU_OKUMA_SAGLAYICI = 'KOPRU'
+
+export type KoprudenOkunamadi =
+  | { ok: true; okunamadi: false }
+  | { ok: true; okunamadi: true; tahmin: string | null; guven: number | null }
+  | { ok: false; durum: 400; hata: string }
+
+export function koprudenOkunamadi(govde: Record<string, unknown>): KoprudenOkunamadi {
+  if (govde.okunamadi !== true) return { ok: true, okunamadi: false }
+  const plakaVar = typeof govde.plaka === 'string' && govde.plaka.trim() !== ''
+  const fotoVar = typeof govde.foto_base64 === 'string' && govde.foto_base64 !== ''
+  if (plakaVar || fotoVar) {
+    return {
+      ok: false,
+      durum: 400,
+      hata: 'okunamadi, plaka ya da foto_base64 ile birlikte gönderilemez.',
+    }
+  }
+  const t = typeof govde.tahmin === 'string' ? govde.tahmin.trim().slice(0, 32) : ''
+  const g = govde.guven
+  const guven = typeof g === 'number' && Number.isFinite(g) && g >= 0 && g <= 1 ? g : null
+  return { ok: true, okunamadi: true, tahmin: t || null, guven }
+}
+
+/**
  * Is this the bridge's LAST attempt for the event (`x-kamera-son-gonderim`,
  * bridge 1.2.1+)? Exactly "1", like `x-kamera-deneme`.
  *

@@ -97,8 +97,9 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/045_okunamadi_bildirim.sql` | Unreadable-plate notification waits for the camera's retries, then goes to everyone |
 | `supabase/migrations/046_bilet_giris_duzelt.sql` | "Değiştir" on the ticket screen: correct the entry time of a car still inside |
 | `supabase/migrations/047_edge_tablo_yetkileri.sql` | Explicit table grants for the Edge Functions — required on any project created after 2026-10-30 |
+| `supabase/migrations/048_tek_kapi_olay_saati.sql` | Single gate judges a late camera event by the event's own time (bridge 1.3.0 sends buffered cars after an internet outage) |
 
-**Run all of them, 001 through 047, in this order.** Stopping early leaves the
+**Run all of them, 001 through 048, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -169,7 +170,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 69** (as of migration 047). It stops
+The last block before that line is **PASS 70** (as of migration 048). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.

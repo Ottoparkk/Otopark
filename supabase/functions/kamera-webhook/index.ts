@@ -8,8 +8,11 @@
  * It normalises every vendor shape to {plaka?, yon, zaman, islem_id, foto?}
  * and calls the SAME RPCs the phone uses, so the money logic has exactly one
  * implementation:
- *   • plate string in  (ANPR camera, Frigate, Plate Recognizer) → straight through
- *   • JPEG in          (thin bridge)                            → OCR, then through
+ *   • plate string in  (ANPR camera, Frigate, Plate Recognizer,
+ *                       bridge 1.3.0+ reading locally)          → straight through
+ *   • `okunamadi: true` (bridge 1.3.0+, not sure of the plate)   → exception row
+ *                       for staff with the stored photo — NO paid read
+ *   • JPEG in          (thin bridge ≤ 1.2.x)                    → OCR, then through
  *
  * WHAT IT CANNOT DO — by construction, not by promise:
  *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_tek_kapi,
@@ -49,6 +52,7 @@ import {
   GECICI_HATA,
   KAMERA_OKUMA_KAYNAGI,
   KANIT_FOTO_KOVA,
+  KOPRU_OKUMA_SAGLAYICI,
   SURE_DOLDU,
   cihazKimligi,
   fotoYuklemeTamam,
@@ -57,6 +61,7 @@ import {
   kameraGirisiKarari,
   kameraOkumaLogu,
   kanitFotoCoz,
+  koprudenOkunamadi,
   okumaHatasiKaydedilir,
   okumaSiniriKarari,
   okunamadiKaydedilir,
@@ -212,6 +217,13 @@ const OlaySchema = z.object({
   // loose as foto_base64: an oversized copy must cost only the photo
   // (kanitFotoCoz says no), never the car — a schema refusal here is a 400.
   foto_kanit_base64: z.string().max(12_000_000).nullable().optional(),
+  // Bridge 1.3.0 reads the plate itself; unsure → `okunamadi: true` with its
+  // best guess (koprudenOkunamadi). The guess and confidence are deliberately
+  // loose here — the helper trims / drops bad values — so that a bad guess
+  // never turns into a 400 that costs the car.
+  okunamadi: z.boolean().nullable().optional(),
+  tahmin: z.string().max(200).nullable().optional(),
+  guven: z.number().nullable().optional(),
 })
 
 interface Olay {
@@ -225,6 +237,13 @@ interface Olay {
   // checked. Vendor image bodies carry no compressed copy → no stored photo.
   kanit: Uint8Array | null
   ham: Record<string, unknown>
+  // Bridge 1.3.0: the bridge read the plate locally and is not sure. Never set
+  // by a vendor body (multipart / raw image); `kopruHata` is the 400 message
+  // when the body contradicts itself (okunamadi WITH a plate or a photo).
+  koprudenOkunamadi: boolean
+  koprudenTahmin: string | null
+  koprudenGuven: number | null
+  kopruHata: string | null
 }
 
 /** Pulls the fields we need out of whatever the vendor decided to send. */
@@ -248,6 +267,8 @@ function fromJson(body: Record<string, unknown>): Omit<Olay, 'image' | 'kanit'> 
     lpr.snapshot_timestamp ??
     null
 
+  const kopru = koprudenOkunamadi(body)
+
   return {
     plaka: plaka ? String(plaka) : null,
     yon: body.yon ? String(body.yon) : null,
@@ -261,8 +282,20 @@ function fromJson(body: Record<string, unknown>): Omit<Olay, 'image' | 'kanit'> 
       null,
     // Without the photo: this is what gets stored with an exception (039).
     ham: hamFotosuz(body),
+    koprudenOkunamadi: kopru.ok && kopru.okunamadi,
+    koprudenTahmin: kopru.ok && kopru.okunamadi ? kopru.tahmin : null,
+    koprudenGuven: kopru.ok && kopru.okunamadi ? kopru.guven : null,
+    kopruHata: kopru.ok ? null : kopru.hata,
   }
 }
+
+/** The bridge-only fields for bodies that cannot carry them (vendor shapes). */
+const KOPRU_YOK = {
+  koprudenOkunamadi: false,
+  koprudenTahmin: null,
+  koprudenGuven: null,
+  kopruHata: null,
+} as const
 
 /**
  * Manual multipart fallback. Deno's formData() requires every part to carry a
@@ -322,6 +355,7 @@ async function readEvent(req: Request, raw: Uint8Array): Promise<Olay> {
       islemId: null,
       cihaz: null,
       ham: {},
+      ...KOPRU_YOK,
     }
     let image: Olay['image'] = null
 
@@ -351,6 +385,7 @@ async function readEvent(req: Request, raw: Uint8Array): Promise<Olay> {
       islemId: null,
       cihaz: null,
       ham: {},
+      ...KOPRU_YOK,
       image: { data: bytesToBase64(raw), mediaType: ctype.split(';')[0]!.trim() },
       kanit: null,
     }
@@ -557,6 +592,16 @@ Deno.serve(async (req: Request) => {
     } catch {
       return json({ hata: 'Geçersiz gövde.' }, 400)
     }
+    // Bridge 1.3.0: "unsure" together with a plate or a photo to read
+    // contradicts itself (koprudenOkunamadi) — refused, never guessed.
+    if (olay.kopruHata) return json({ hata: olay.kopruHata }, 400)
+    // Capability probe: the bridge and the installer ask, as a trial, whether
+    // THIS server understands `okunamadi` (an older one would drop the flag and
+    // answer 422 with no exception row — the car lost). Nothing is written and
+    // no heartbeat was stamped above (trial).
+    if (deneme && olay.koprudenOkunamadi) {
+      return json({ okunamadi_destekli: true }, 200)
+    }
 
     // Direction is never guessed. One camera watches one lane, so it comes
     // from configuration; defaulting it would let a misconfigured exit camera
@@ -592,25 +637,19 @@ Deno.serve(async (req: Request) => {
     let okundu = false
     let tahmin = ''
 
-    // No plate text but a picture? That is the thin-bridge topology: the JPEG
-    // is all the model needs, so camera OCR was never required.
-    if (!plaka && olay.image) {
-      if ((ayar.plaka_saglayici ?? 'KAPALI') === 'KAPALI') {
-        return json({ hata: 'Görsel geldi ama plaka okuma kapalı.' }, 409)
-      }
-
-      // The PAID read is capped here, right before it is made (040). The
-      // ticket guard above cannot do it: most reads open no ticket — an empty
-      // lane, an unreadable plate, a failed read, every exit, every retry.
-      // Counted: this webhook's own tagged log rows, all lanes together.
-      // Placed here so only requests that really pay are counted; a plate-
-      // string camera, a heartbeat or a trial never reaches it.
-      //
-      // At the cap: 429, which the bridge retries and then drops the car, and
-      // an hourly Yönetici alert. No exception row per car — a flood through a
-      // leaked key would fill that list with fake cars. If counting fails the
-      // car is still read (okumaSiniriKarari, owner's choice): a 503 here would
-      // drop every camera car for as long as counting fails, silently.
+    // The read cap (040), in ONE place for the two paths that use it: the paid
+    // read below and the bridge's "unsure" event. The ticket guard above cannot
+    // do it: most reads open no ticket — an empty lane, an unreadable plate, a
+    // failed read, every exit, every retry. Counted: this webhook's own tagged
+    // log rows, all lanes together. A plate-string camera, a heartbeat or a
+    // trial never reaches it.
+    //
+    // At the cap: 429, which the bridge retries, and an hourly Yönetici alert.
+    // No exception row per car — a flood through a leaked key would fill that
+    // list with fake cars. If counting fails the car still goes through
+    // (okumaSiniriKarari, owner's choice): a 503 here would drop every camera
+    // car for as long as counting fails, silently.
+    async function okumaSiniri(): Promise<Response | null> {
       const [okumaDk, okumaGn] = await Promise.all([
         admin
           .from('plaka_okuma_log')
@@ -639,6 +678,40 @@ Deno.serve(async (req: Request) => {
           e?.message,
         )
       }
+      return null
+    }
+
+    if (olay.koprudenOkunamadi) {
+      // Bridge 1.3.0 read the plate on the laptop and is not sure (frames
+      // disagree, low confidence, or a stopped vehicle with no plate seen).
+      // NO paid read here — the bridge sends no photo to read (koprudenOkunamadi
+      // refuses one) — but the request still sits under the same read cap,
+      // through one tagged log row, so a leaked key cannot flood the
+      // exceptions list through this door either. Then the existing
+      // "unreadable" block below writes the exception row and the photo.
+      const sinirCevabi = await okumaSiniri()
+      if (sinirCevabi) return sinirCevabi
+      okundu = true
+      tahmin = olay.koprudenTahmin ? tidyPlaka(olay.koprudenTahmin) : ''
+      guven = olay.koprudenGuven
+      await admin.from('plaka_okuma_log').insert(
+        kameraOkumaLogu({
+          saglayici: KOPRU_OKUMA_SAGLAYICI,
+          ham_yanit: { okunamadi: true },
+          guven,
+          onerilen: tahmin || null,
+        }),
+      )
+    } else if (!plaka && olay.image) {
+      // No plate text but a picture: the thin-bridge topology (bridge ≤ 1.2.x
+      // and vendor cameras). The JPEG is all the model needs.
+      if ((ayar.plaka_saglayici ?? 'KAPALI') === 'KAPALI') {
+        return json({ hata: 'Görsel geldi ama plaka okuma kapalı.' }, 409)
+      }
+
+      // The PAID read is capped right before it is made (040).
+      const sinirCevabi = await okumaSiniri()
+      if (sinirCevabi) return sinirCevabi
 
       // A THROW HERE HAS TO LEAVE A TRACE. Without this the outer catch
       // returns 500 and writes nothing: an expired key or an empty credit
@@ -741,8 +814,14 @@ Deno.serve(async (req: Request) => {
           p_guven: guven,
           p_ham: olay.ham,
         })
-        if (okErr) console.error('kamera_okunamadi başarısız:', okErr.message)
-        else {
+        if (okErr) {
+          console.error('kamera_okunamadi başarısız:', okErr.message)
+          // Bridge 1.3.0 keeps the car in its outbox until a DEFINITIVE
+          // answer, so it must not get "422, no row": temporary → 503 (it
+          // retries; safe, istisna_yaz dedupes on islem_id), a real refusal →
+          // 409 (it stops and reports). Older bridges keep the old 422.
+          if (olay.koprudenOkunamadi) return rpcHatasi('kamera_okunamadi', okErr)
+        } else {
           istisna = true
           // NULL = a faster retry already handled the car and no row was
           // written (041); that retry attached its own photo.

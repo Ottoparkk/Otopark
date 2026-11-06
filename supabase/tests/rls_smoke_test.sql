@@ -6064,6 +6064,171 @@ end loop;
 
 raise notice 'PASS 69: Edge Function''ların ihtiyaç duyduğu tablo yetkileri service_role''e yazılı verilmiş';
 
+-- =====================================================================
+-- 70  Tek kapı geç gelen olayı OLAYIN saatiyle değerlendirir (048)
+--     Köprü 1.3.0 internet kesilince araçları diske yazar ve bağlantı
+--     dönünce SIRAYLA gönderir. 041'deki pencereler SUNUCU saatine
+--     (created_at, cikis_at/iptal_at karşısında now()) bakıyordu; toplu
+--     gelen olaylarda (1) girişiyle birlikte gelen çıkış yok sayılıp
+--     kayboluyordu, (2) personelin kapattığı aracın geç gelen olayı hayalet
+--     bilet açıyordu, (3) personelin elle girdiği aracın geç gelen girişi
+--     sahte "kapıda" damgası basıyordu. 048 olayın zamanını (p_zaman)
+--     ziyaretin başladığı anla — least(kaynak_zaman, created_at) — ve
+--     kapandığı anla kıyaslar. Canlı olayda p_zaman ≈ now(): PASS 58, 63 ve
+--     64 hiç değişmeden geçmeli.
+--     Süreler ve gecikme sınırı bu blokta sabitlenir (rollback geri alır):
+--     canlıdaki ayar ne olursa olsun senaryolar aynı dakikalarla kurulur.
+-- =====================================================================
+perform pg_temp.logout();
+update public.otopark_ayarlari
+   set tek_kapi_giris_yoksay_dk = 3, tek_kapi_cikis_yoksay_dk = 5,
+       kamera_gecikme_limiti_dk = 720
+ where id = 1;
+
+v_liste := array['ZZ70AA001', 'ZZ70BB002', 'ZZ70CC003', 'ZZ70DD004', 'ZZ70DD094',
+                 'ZZ70EE005', 'ZZ70EE095'];
+if exists (select 1 from public.biletler b, unnest(v_liste) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 70: fixture — ZZ70 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- T0: kesintinin başladığı an. Bütün olaylar bundan sonra, şimdi teslim edilir.
+v_ts := now() - interval '60 minutes';
+
+-- (a) Giriş (T0), aynı aracın ikinci karesi (T0+1) ve çıkışı (T0+30) kesinti
+--     bitince birlikte, sırayla gelir. 041 çıkışı "az önce açıldı" diye yok
+--     sayıyordu (bilet şimdi açıldı) — araç çıkmış ama bilet açık kalırdı.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70AA001', v_islem, v_ts) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 70a: geç gelen giriş bilet açmadı (%)', v_json;
+end if;
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70AA001', gen_random_uuid(), v_ts + interval '1 minute') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' then
+  raise exception 'FAIL 70a: aynı aracın bir dakika sonraki karesi yok sayılmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70AA001', gen_random_uuid(), v_ts + interval '30 minutes') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS'
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet then
+  raise exception 'FAIL 70a: girişiyle birlikte gelen çıkış işlenmedi (%)', v_json;
+end if;
+if (select cikis_bekliyor_at from public.biletler where id = v_bilet)
+   is distinct from v_ts + interval '30 minutes' then
+  raise exception 'FAIL 70a: "kapıda" damgası olayın saatini taşımıyor';
+end if;
+
+-- (b) Kesintide personel aracı elle girdi (T0+1) ve kapattı (T0+30). Kamera
+--     olayları (giriş T0, çıkış T0+30, bir kare daha T0+34) sonradan gelir:
+--     ziyaret bitmiş, YENİ BİLET AÇILMAMALI. 041 kapanışı now()'a göre
+--     "eski" bulup hayalet bilet açıyordu. (IPTAL, PASS 58(l) gibi: adım 2
+--     KAPALI ve IPTAL'i aynı coalesce ile ele alır.)
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum,
+                             iptal_sebep, iptal_at, created_at)
+select gen_random_uuid(), 'ZZ70BB002', v_ts + interval '1 minute', t.id, 'IPTAL',
+       'Test — kesintide elle kapandı', v_ts + interval '30 minutes', v_ts + interval '1 minute'
+  from public.tarifeler t order by t.id limit 1;
+foreach v_txt in array array['0', '30', '34'] loop
+  perform pg_temp.kamera();
+  select public.kamera_tek_kapi('ZZ70BB002', gen_random_uuid(),
+           v_ts + make_interval(mins => v_txt::integer)) into v_json;
+  perform pg_temp.logout();
+  if v_json ->> 'karar' is distinct from 'YOKSAY' then
+    raise exception 'FAIL 70b: kapanmış ziyaretin T0+% olayı yok sayılmadı (%)', v_txt, v_json;
+  end if;
+end loop;
+if (select count(*) from public.biletler where plaka = 'ZZ70BB002') <> 1 then
+  raise exception 'FAIL 70b: kapanmış ziyaretin geç olayı hayalet bilet açtı';
+end if;
+
+-- (c) Kesintide personel aracı elle girdi (T0+1, bilet AÇIK). Kameranın T0
+--     girişi sonradan gelir: aynı ziyaret, YOK SAYILMALI — 041 bileti "eski"
+--     bulup sahte "kapıda" damgası basıyordu. Aracın gerçek çıkışı (T0+30)
+--     ise çıkıştır.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, created_at)
+select gen_random_uuid(), 'ZZ70CC003', v_ts + interval '1 minute', t.id, 'ACIK',
+       v_ts + interval '1 minute'
+  from public.tarifeler t order by t.id limit 1
+returning id into v_bilet2;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70CC003', gen_random_uuid(), v_ts) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY'
+   or (select cikis_bekliyor_at from public.biletler where id = v_bilet2) is not null then
+  raise exception 'FAIL 70c: elle girilen aracın geç gelen girişi "kapıda" damgası bastı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70CC003', gen_random_uuid(), v_ts + interval '30 minutes') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS'
+   or (select cikis_bekliyor_at from public.biletler where id = v_bilet2)
+      is distinct from v_ts + interval '30 minutes' then
+  raise exception 'FAIL 70c: elle girilen aracın geç gelen çıkışı işlenmedi (%)', v_json;
+end if;
+
+-- (d) Bir karakter benzeri AÇIK bilet (adım 3): girişten bir dakika sonraki
+--     yanlış okuma aynı araçtır (yok say); yarım saat sonraki benzeri ise
+--     belirsizdir, insana gider. 041 ikisini de now()'a göre "yeni" bulup
+--     yok sayıyordu.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70DD004', gen_random_uuid(), v_ts) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 70d: fixture — ZZ70DD004 girişi açılmadı (%)', v_json;
+end if;
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70DD094', gen_random_uuid(), v_ts + interval '1 minute') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' then
+  raise exception 'FAIL 70d: girişten bir dakika sonraki benzer okuma yok sayılmadı (%)', v_json;
+end if;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70DD094', v_islem, v_ts + interval '30 minutes') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA'
+   or v_json ->> 'sebep' is distinct from 'BENZER_ACIK'
+   or exists (select 1 from public.biletler where plaka = 'ZZ70DD094')
+   or (select cikis_bekliyor_at from public.biletler where id = v_bilet) is not null
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'YON_BELIRSIZ') then
+  raise exception 'FAIL 70d: yarım saat sonraki benzer okuma insana gitmedi (%)', v_json;
+end if;
+
+-- (e) Bir karakter benzeri KAPANMIŞ ziyaret (adım 4): kapanıştan bir dakika
+--     sonraki yanlış okuma çıkan araçtır — bilet açılmamalı.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum,
+                             iptal_sebep, iptal_at, created_at)
+select gen_random_uuid(), 'ZZ70EE005', v_ts, t.id, 'IPTAL',
+       'Test — kesintide elle kapandı', v_ts + interval '30 minutes', v_ts
+  from public.tarifeler t order by t.id limit 1;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70EE095', gen_random_uuid(), v_ts + interval '31 minutes') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY'
+   or exists (select 1 from public.biletler where plaka = 'ZZ70EE095') then
+  raise exception 'FAIL 70e: kapanmış ziyaretin benzer okuması bilet açtı (%)', v_json;
+end if;
+
+-- (f) Yok sayma OLAY saatinde de geçicidir: (b)'deki araç şimdi (kapanıştan
+--     yarım saat sonra) gelirse yeni bir park süresidir, bilet açılmalı.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ70BB002', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS'
+   or not exists (select 1 from public.biletler where plaka = 'ZZ70BB002' and durum = 'ACIK') then
+  raise exception 'FAIL 70f: kapanıştan çok sonra gelen araca bilet açılmadı (%)', v_json;
+end if;
+
+raise notice 'PASS 70: tek kapı geç gelen olayı olayın saatiyle değerlendirir — birlikte gelen çıkış kaybolmaz, kapanmış ziyaret hayalet bilet açmaz, elle girilen araç sahte çıkış almaz';
+
 perform pg_temp.logout();
 raise notice '';
 raise notice 'ALL TESTS PASSED (rolled back)';
