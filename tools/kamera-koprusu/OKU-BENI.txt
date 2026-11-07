@@ -164,7 +164,10 @@ ELİNİZDE HAZIR OLSUN
   kameranın önünde bir kişi durunca araç puanı 0.35'in ALTINDA kalmalı.
   Satırdaki "ms", plaka okuyucu ile araç bulucudan yavaş olanının süresidir
   (1.3.3'ten beri ikisi aynı anda çalışır). Sonunda iki süre ve köprünün
-  saniyede kaç kare okuyacağı yazar — bunu iletin. "kesik" = plaka kutunun
+  saniyede kaç kare okuyacağı yazar — bunu iletin. 1.3.4: kırpma kutusu
+  büyükse her plaka iki yoldan okunur ("küçük:" eski yol); sonunda
+  "Emin okuma: tam çözünürlükte N kare, küçültülmüşte M kare" yazar —
+  bunu da iletin. "kesik" = plaka kutunun
   kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
   (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —
   geçen araçlarla karşılaştırın; yanlış olan varsa ekranın fotoğrafını

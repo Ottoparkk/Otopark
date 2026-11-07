@@ -114,7 +114,7 @@ class PlakaHatasi(Exception):
 
 AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK",
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
-               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK")
+               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM")
 
 
 def _oran(alt_dahil: bool):
@@ -133,6 +133,9 @@ _KURALLAR = (
     # bulucu 1 iplikte 410 ms, 2 iplikte 268 ms, 4 iplikte 241 ms (2026-11-07).
     ("PLAKA_IPLIK", "iplik", 2, int, lambda v: 1 <= v <= 8),
     ("PLAKA_BEKLE_SN", "bekle_sn", 0.4, float, lambda v: 0 <= v <= 5),
+    # 1.3.4: plaka küçültülmüş kırpıntıda BULUNUR, TAM çözünürlükten okunur
+    # (sahada 2124 px'lik kırpıntı 1568'e küçülüyordu). 0 = 1.3.3 davranışı.
+    ("PLAKA_TAM", "tam", True, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
     # 1.3.1 araç bulucu (arac.py). Faz 0: araçlar 0.40-0.94, insanlar ≤0.27.
     # Duran şey ARAC_BUL_ESIK altındaysa araç sayılmaz; durmadan geçen plakasız
     # şey ancak ARAC_GECIS_ESIK'i geçerse araç sayılır (gölge kart açmasın).
@@ -299,6 +302,14 @@ def haric_orani(k: Kutu, haric: tuple | None) -> float:
     if alan <= 0:
         return 0.0
     return kesilen_alan(k.x1, k.y1, k.x2, k.y2, haric) / alan
+
+
+def kutu_olcekle(k: Kutu, sx: float, sy: float) -> Kutu:
+    """
+    1.3.4: küçültülmüş kırpıntıda bulunan kutu → tam çözünürlüklü kırpıntının
+    pikselleri (sx, sy = gerçek boyut oranları). Skor değişmez.
+    """
+    return Kutu(k.x1 * sx, k.y1 * sy, k.x2 * sx, k.y2 * sy, k.skor)
 
 
 def genislet(k: Kutu, px: float, py: float, en: int, boy: int) -> Kutu:

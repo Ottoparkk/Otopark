@@ -100,6 +100,72 @@ def test_kutu_okuma_yardimcilari():
     assert okuma.kutuyu_oku(p, _kare(2), ORTA, None, 0.95) is None
 
 
+# --------------------------------------------- 1.3.4: tam çözünürlükten okuma -
+
+class KayitliOkuyucu:
+    """Okuyucunun HANGİ resimden HANGİ kutuyu okuduğunu kaydeder."""
+
+    def __init__(self, kutular):
+        self.kutular = list(kutular)
+        self.okunan: list = []
+
+    def bul(self, kirpik):
+        return list(self.kutular)
+
+    def oku_cift(self, img, k):
+        self.okunan.append((img.shape[:2], k))
+        return [("34ABC123", 0.99), ("34ABC123", 0.99)]
+
+
+TAM_BOY, TAM_EN = 891, 2124        # sahadaki kırpıntı 2124 px → 1568'e küçülür
+
+
+def _tam() -> np.ndarray:
+    return np.zeros((TAM_BOY, TAM_EN, 3), np.uint8)
+
+
+def test_kutuyu_oku_tam_cozunurlukten():
+    # Sahada 2026-11-07: 2124 px'lik kırpıntı 1568'e küçülüyor, kare plakanın
+    # küçük harfleri ("35CDJ06") emin okunamıyordu. Kutu küçük kırpıntıda
+    # bulunur, plaka TAM çözünürlükten okunur (kutu gerçek oranla taşınır).
+    p = KayitliOkuyucu([ORTA])
+    sonuc = okuma.kutuyu_oku(p, _kare(1), ORTA, None, 0.95, tam=_tam())
+    assert sonuc is not None and sonuc[1] == ("34ABC123", 0.99), sonuc
+    assert p.okunan == [((TAM_BOY, TAM_EN), plaka.kutu_olcekle(ORTA, TAM_EN / EN, TAM_BOY / BOY))]
+    # Kenar kuralı KÜÇÜK kırpıntının koordinatlarında: kesik kutu okunmaz bile.
+    p = KayitliOkuyucu([KENAR])
+    assert okuma.kutuyu_oku(p, _kare(1), KENAR, None, 0.95, tam=_tam()) is None and p.okunan == []
+    # Tam çözünürlük verilmediyse 1.3.3 ile aynı: küçük kırpıntıdan okunur.
+    p = KayitliOkuyucu([ORTA])
+    okuma.kutuyu_oku(p, _kare(1), ORTA, None, 0.95)
+    assert p.okunan == [((BOY, EN), ORTA)], p.okunan
+
+
+def test_kare_tam_cozunurluk_her_karede_kullanilir():
+    # Geçişin karesi de, geçişten önceki kare de tam çözünürlükten okunur.
+    for arka in (False, True):
+        p = KayitliOkuyucu([ORTA])
+        g = _gecis()
+        okuma.kareyi_isle(p, g, _kare(1), _z(1), 1, None, 0.95, arka=arka, tam=_tam())
+        assert [s for s, _ in p.okunan] == [(TAM_BOY, TAM_EN)], (arka, p.okunan)
+    assert g.arka_okunan == {"34ABC123"}
+
+
+def test_isci_tam_cozunurlugu_plaka_parcacigina_iletir():
+    p = KayitliOkuyucu([ORTA])
+    isci = okuma.Isci(p, haric=None, oku_esik=0.95, kayit=lambda s: None)
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(9), _z(0), 0, arka=True, tam=_tam()), oncelik=True)
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1, tam=_tam()))
+        assert isci.bekle(g, 2.0)
+        isci.ver(okuma.Is(g, _kare(2), _z(2), 2, durgun=True, tam=_tam()), oncelik=True)
+        assert isci.bekle(g, 2.0)
+        assert [s for s, _ in p.okunan] == [(TAM_BOY, TAM_EN)] * 3, p.okunan
+    finally:
+        isci.durdur()
+
+
 def test_kare_tam_plaka_oy_olur():
     p = SahtePlakaci({1: [ORTA]}, {(1, ORTA): [("34ABC123", 0.99), ("34ABC123", 0.97)]})
     g = _gecis()

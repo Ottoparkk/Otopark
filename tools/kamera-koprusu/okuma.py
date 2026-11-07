@@ -115,18 +115,26 @@ def kutulari_bul(p, kirpik: np.ndarray, haric) -> list:
     return [k for k in p.bul(kirpik) if plaka.haric_orani(k, haric) <= plaka.HARIC_DUSUR]
 
 
-def kutuyu_oku(p, kirpik: np.ndarray, k, haric, esik: float):
+def kutuyu_oku(p, kirpik: np.ndarray, k, haric, esik: float, tam: np.ndarray | None = None):
     """
     Tek kutunun iki kırpıntı okuması: (okumalar, emin) — emin = (metin, en
     düşük olasılık) ya da None. Kutu kesikse (kenara / kesilen köşeye değiyor)
     okuyucu hiç çağrılmaz; kesik ya da boşsa None döner.
+
+    1.3.4: `tam` verilmişse (aynı kırpıntının küçültülmemiş hâli) plaka ONDAN
+    okunur — kutu gerçek boyut oranıyla taşınır. Kesiklik kuralı yine küçük
+    kırpıntının koordinatlarında (kutu orada bulundu, kesilen köşeler de orada).
 
     Köprü (kareyi_isle) ile `--plaka` test kipi bunu paylaşır: ikisi ayrışamaz.
     """
     h, w = kirpik.shape[:2]
     if not plaka.tam_mi(k, w, h, haric):
         return None
-    okumalar = p.oku_cift(kirpik, k)
+    if tam is not None:
+        th, tw = tam.shape[:2]
+        okumalar = p.oku_cift(tam, plaka.kutu_olcekle(k, tw / w, th / h))
+    else:
+        okumalar = p.oku_cift(kirpik, k)
     if len(okumalar) != 2:
         return None
     return okumalar, plaka.iki_kirpinti(okumalar[0], okumalar[1], esik)
@@ -139,7 +147,7 @@ def _onceden_vardi(k, arka_araclar: list) -> bool:
 
 def kareyi_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
                 oku_esik: float, arka: bool = False, arac_kutulari=None,
-                durgun: bool = False) -> None:
+                durgun: bool = False, tam: np.ndarray | None = None) -> None:
     """
     Bir kareyi okur ve sonucu geçişe yazar (işçi çağırır; testler de).
     `arac_kutulari(kirpik, haric)` → (araç kutuları, insan puanı) ya da None
@@ -151,7 +159,7 @@ def kareyi_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
     1.3.1 onu "zaten oradaydı" saydı; yaklaşınca başka yerdedir → yenidir.
     Önceki kare ölçülmeden işlenen karede ne yeni bilinmez: sayılmaz.
     """
-    _plaka_isle(p, gecis, kirpik, zaman, gorunum, haric, oku_esik, arka)
+    _plaka_isle(p, gecis, kirpik, zaman, gorunum, haric, oku_esik, arka, tam)
     if arac_kutulari is not None:
         araci_isle(gecis, kirpik, haric, arac_kutulari, arka=arka, durgun=durgun)
 
@@ -180,7 +188,7 @@ def araci_isle(gecis: Gecis, kirpik: np.ndarray, haric, arac_kutulari, *, arka: 
 
 
 def _plaka_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
-                oku_esik: float, arka: bool) -> None:
+                oku_esik: float, arka: bool, tam: np.ndarray | None = None) -> None:
     kutular = kutulari_bul(p, kirpik, haric)
     if arka:
         with gecis.kilit:
@@ -188,7 +196,7 @@ def _plaka_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
             if kutular:
                 gecis.arka_kutulu = True
         for k in kutular:
-            sonuc = kutuyu_oku(p, kirpik, k, haric, ARKA_ESIK)
+            sonuc = kutuyu_oku(p, kirpik, k, haric, ARKA_ESIK, tam=tam)
             if sonuc is not None and sonuc[1] is not None:
                 with gecis.kilit:
                     gecis.arka_okunan.add(sonuc[1][0])
@@ -202,7 +210,7 @@ def _plaka_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
         if gecis.kutulu is None or kutular[0].skor > gecis.kutulu[0]:
             gecis.kutulu = (kutular[0].skor, kirpik)
     for k in kutular:
-        sonuc = kutuyu_oku(p, kirpik, k, haric, oku_esik)
+        sonuc = kutuyu_oku(p, kirpik, k, haric, oku_esik, tam=tam)
         if sonuc is None:
             continue
         okumalar, iki = sonuc
@@ -225,6 +233,9 @@ class Is(NamedTuple):
     gorunum: int
     arka: bool = False
     durgun: bool = False     # aracın durduğu kare (araç bulucu ayrıca saklar)
+    # 1.3.4: aynı kırpıntının KÜÇÜLTÜLMEMİŞ hâli (plaka buradan okunur); None =
+    # kırpıntı küçültülmedi ya da PLAKA_TAM=0. Sahibi işçi: döngü KOPYASINI verir.
+    tam: np.ndarray | None = None
 
 
 # Öncelikli işler sırayla tutulur: geçişten önceki kare ve durulan kare.
@@ -395,7 +406,7 @@ class Isci:
                 return
             try:
                 _plaka_isle(self._p, is_.gecis, is_.kirpik, is_.zaman, is_.gorunum,
-                            self.haric, self.oku_esik, is_.arka)
+                            self.haric, self.oku_esik, is_.arka, is_.tam)
                 self._ardisik = 0
             except Exception as e:  # noqa: BLE001 — bir kare okuyucuyu öldürmesin
                 self._ardisik += 1

@@ -1110,6 +1110,8 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     sureler: list[float] = []        # kare başına: iki modelden yavaş olanı
     sureler_p: list[float] = []      # plaka okuyucu
     sureler_a: list[float] = []      # araç bulucu
+    karsilastirma = False            # 1.3.4: kırpıntı küçültüldü, iki yoldan okundu
+    emin_tam_kare = emin_kucuk_kare = 0
     haric_k = None
     sekil: tuple | None = None
     son_satir = time.monotonic()
@@ -1126,28 +1128,50 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 continue
             bos = 0
             kareler += 1
-            kirpik = olcekle(kirp_maskeli(frame, kutu, haric))
+            maskeli = kirp_maskeli(frame, kutu, haric)
+            kirpik = olcekle(maskeli)
+            # 1.3.4: köprü gibi — kırpıntı küçültüldüyse plaka TAM çözünürlükten
+            # okunur; karşılaştırma için küçükten de okunur (süreye sayılmaz).
+            tam = maskeli if (p_ayar["tam"] and maskeli.shape[:2] != kirpik.shape[:2]) else None
             if haric is not None and sekil != kirpik.shape:
                 sekil = kirpik.shape
                 haric_k = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
             t0 = time.perf_counter()
             try:
                 parcalar = []
-                for k in okuma.kutulari_bul(p, kirpik, haric_k):
-                    s = okuma.kutuyu_oku(p, kirpik, k, haric_k, p_ayar["oku_esik"])
+                kutular = okuma.kutulari_bul(p, kirpik, haric_k)
+                okumalar = [okuma.kutuyu_oku(p, kirpik, k, haric_k, p_ayar["oku_esik"], tam=tam)
+                            for k in kutular]
+                ms_p = (time.perf_counter() - t0) * 1000
+                kucukler = ([okuma.kutuyu_oku(p, kirpik, k, haric_k, p_ayar["oku_esik"])
+                             for k in kutular] if tam is not None else [None] * len(kutular))
+                for k, s, sk in zip(kutular, okumalar, kucukler):
                     if s is None:
                         parcalar.append(f"{k.skor:.2f} kesik (kenara değiyor, okunmaz)")
                         continue
                     (m1, e1), (m2, e2) = s[0]
                     if s[1] is not None:
                         emin[s[1][0]] = emin.get(s[1][0], 0) + 1
-                        parcalar.append(f"{k.skor:.2f} → {s[1][0]} ({e1:.3f} / {e2:.3f}) EMİN")
+                        metin = f"{k.skor:.2f} → {s[1][0]} ({e1:.3f} / {e2:.3f}) EMİN"
                     else:
-                        parcalar.append(f"{k.skor:.2f} → belirsiz: {m1} ({e1:.3f}) / {m2} ({e2:.3f})")
+                        metin = f"{k.skor:.2f} → belirsiz: {m1} ({e1:.3f}) / {m2} ({e2:.3f})"
+                    if tam is not None:
+                        if sk is None:
+                            metin += " · küçük: okunamadı"
+                        elif sk[1] is not None:
+                            metin += f" · küçük: {sk[1][0]} EMİN"
+                        else:
+                            metin += f" · küçük: belirsiz {sk[0][0][0]} ({sk[0][0][1]:.3f})"
+                    parcalar.append(metin)
+                if tam is not None:
+                    karsilastirma = True
+                    if any(s is not None and s[1] is not None for s in okumalar):
+                        emin_tam_kare += 1
+                    if any(sk is not None and sk[1] is not None for sk in kucukler):
+                        emin_kucuk_kare += 1
             except Exception as e:  # noqa: BLE001 — test kipi: sebebi göster, dur
                 print(f"  ✗ Plaka okuyucu hata verdi: {type(e).__name__}: {e}")
                 return 1
-            ms_p = (time.perf_counter() - t0) * 1000
             sureler_p.append(ms_p)
             ms_a = 0.0
             puan = ""
@@ -1207,6 +1231,10 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     if bulucu is not None:
         print(f"  Araç bulucu: {arac_kare} karede araç (≥{bulucu.esik:.2f}), "
               f"en yüksek puan {arac_enb:.2f}.")
+    if karsilastirma:
+        print(f"  Emin okuma: tam çözünürlükte {emin_tam_kare} kare, küçültülmüşte "
+              f"{emin_kucuk_kare} kare. (Köprü tam çözünürlüğü kullanır; PLAKA_TAM=0 "
+              "küçültülmüşe döner.)")
     if emin:
         print("  ✓ Emin okunan plakalar: "
               + ", ".join(f"{m} ×{n}" for m, n in sorted(emin.items(), key=lambda x: -x[1])))
@@ -1322,6 +1350,8 @@ def main() -> None:
     # arka planı ve ayrılışı tanımak için okunan kare.
     son_durgun_gri: np.ndarray | None = None
     son_durgun_kirpik: np.ndarray | None = None
+    son_durgun_tam: np.ndarray | None = None   # 1.3.4: aynı karenin tam çözünürlüğü
+    plaka_tam = bool(p_ayar["tam"])
 
     # ---- 1.3.0 geçiş (okuma.Gecis): ilk güçlü hareketten karara kadar.
     gecis: okuma.Gecis | None = None
@@ -1415,7 +1445,11 @@ def main() -> None:
             print(f"[i] çalışıyor — {kare_sayaci} kare, "
                   f"{_gonderim_sayaci} gönderim", flush=True)
 
-        kirpik = olcekle(kirp_maskeli(frame, kutu, haric))
+        maskeli = kirp_maskeli(frame, kutu, haric)
+        kirpik = olcekle(maskeli)
+        # 1.3.4: kırpıntı küçültüldüyse plaka TAM çözünürlükten okunur (sahada
+        # 2124 → 1568 px; kare plakanın küçük harfleri emin okunamıyordu).
+        tam_var = plaka_tam and maskeli.shape[:2] != kirpik.shape[:2]
         if haric is not None and haric_sekli != kirpik.shape:
             haric_sekli = kirpik.shape
             isci.haric = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
@@ -1451,7 +1485,8 @@ def main() -> None:
             # değişse de tanınır, ve plakalı araç gidince durulan boş şerit
             # "plakasız araç durdu" sanılmaz (test_kopru `kuyruk`).
             if son_durgun_kirpik is not None:
-                isci.ver(okuma.Is(gecis, son_durgun_kirpik.copy(), zaman, 0, arka=True),
+                isci.ver(okuma.Is(gecis, son_durgun_kirpik.copy(), zaman, 0, arka=True,
+                                  tam=None if son_durgun_tam is None else son_durgun_tam.copy()),
                          oncelik=True)
         if gecis is not None:
             if gecis_arka is not None:
@@ -1462,7 +1497,8 @@ def main() -> None:
             # Okuyucu boştaysa en yeni kare verilir (kopyası: kameranın karesi
             # değişebilir). Meşgulse bu kare atlanır — döngü ASLA beklemez.
             if isci.bos_mu():
-                isci.ver(okuma.Is(gecis, kirpik.copy(), zaman, gorunum))
+                isci.ver(okuma.Is(gecis, kirpik.copy(), zaman, gorunum,
+                                  tam=maskeli.copy() if tam_var else None))
         if isci.takildi(simdi, OKUYUCU_TAKILMA_SN):
             print(f"[!] {gunluk.TAKILDI_ISARETI}: plaka okuyucu {OKUYUCU_TAKILMA_SN:.0f} sn'dir "
                   "dönmüyor — köprü yeniden başlatılıyor", flush=True)
@@ -1471,6 +1507,7 @@ def main() -> None:
         if d < DURGUN_ESIGI and gecis is None:
             son_durgun_gri = gri
             son_durgun_kirpik = kirpik
+            son_durgun_tam = maskeli if tam_var else None
 
         if d > HAREKET_ESIGI:
             son_hareket = simdi
@@ -1498,7 +1535,8 @@ def main() -> None:
             durdu = not _arkaya_dondu(gri, gecis_arka)
             if durdu:
                 gecis.durgun_kirpik = kirpik.copy()
-                isci.ver(okuma.Is(gecis, gecis.durgun_kirpik, zaman, gorunum, durgun=True),
+                isci.ver(okuma.Is(gecis, gecis.durgun_kirpik, zaman, gorunum, durgun=True,
+                                  tam=maskeli.copy() if tam_var else None),
                          oncelik=True)
             gonderildi = bitir(durdu, simdi, gri, d)
         elif (gecis is not None and simdi - son_hareket >= GECIS_BEKLE_SN

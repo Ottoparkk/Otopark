@@ -309,6 +309,22 @@ SENARYOLAR = {
         sure=6.0, pencereler=[(2.4, 3.8)], plakalar=[(2.4, 3.8, 0)], gonderim_sayisi=1,
         kirpma="0,0,640,480", haric="560,0,80,60;0,395,330,85", hic_gitmez=[3],
     ),
+    # 1.3.4: kırpıntı küçültülüyor (sahada 2124 → 1568 px); plaka küçük
+    # kırpıntıda BULUNUR ama orada okunamayacak kadar dar — TAM çözünürlükten
+    # okunur ve gider. (Kare 640 px, MAX_KENAR 320: yarıya küçülür; plaka
+    # tam çözünürlükte 200 px, küçükte 100 px; okuyucu 150 px'ten darını okumaz.)
+    "kucuk_kirpik_tam_okuma": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 6, DURDU, 0)],
+        sure=6.0, pencereler=[(1.8, 4.0)], plakalar=[(1.8, 4.0, 0)], gonderim_sayisi=1,
+        max_kenar="320", min_plaka_en=150,
+    ),
+    # Aynı sahne, PLAKA_TAM=0 (1.3.3 davranışı, sahadaki geri dönüş ayarı):
+    # plaka okunamaz → personele.
+    "kucuk_kirpik_tam_kapali": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 6, DURDU, 0)],
+        sure=6.0, pencereler=[(1.8, 4.0)], personele=[(1.8, 4.0, None)], gonderim_sayisi=1,
+        max_kenar="320", min_plaka_en=150, plaka_tam="0",
+    ),
     # ... ve yanında duran insan, park etmiş araç yüzünden kayıt açmamalı.
     "park_etmis_arac_yaya": dict(
         sahne=[(0, 1, BOS), (1, 1.8, YAYA_GELIYOR), (1.8, 6, YAYA_DURDU)], park_arac=True,
@@ -352,6 +368,8 @@ class SahtePlakaci:
     def __init__(self, S: dict):
         self.anlasmazlik = bool(S.get("anlasmazlik"))
         self.guven = float(S.get("guven", 0.99))
+        # 1.3.4: plaka bu kadar pikselden darsa okunamaz (küçük harfler gibi).
+        self.min_en = float(S.get("min_plaka_en", 0))
 
     @staticmethod
     def _maske(img: np.ndarray) -> np.ndarray:
@@ -367,6 +385,8 @@ class SahtePlakaci:
                         float(ys.max() + 1), 0.9)]
 
     def oku_cift(self, kirpik: np.ndarray, k):
+        if k.x2 - k.x1 < self.min_en:
+            return []
         bolge = kirpik[int(k.y1):int(k.y2), int(k.x1):int(k.x2)]
         m = self._maske(bolge)
         if not m.any():
@@ -482,7 +502,8 @@ def tek_kos(ad: str) -> int:
     for ad_s, anahtar in (("kirpma", "KIRPMA"), ("haric", "KIRPMA_HARIC"),
                           ("max_bekleme", "MAX_BEKLEME_SN"),
                           ("acilis_bekleme", "ACILIS_BEKLEME_SN"),
-                          ("sifre_bekleme", "SIFRE_RED_BEKLEME_SN")):
+                          ("sifre_bekleme", "SIFRE_RED_BEKLEME_SN"),
+                          ("max_kenar", "MAX_KENAR"), ("plaka_tam", "PLAKA_TAM")):
         if S.get(ad_s):
             os.environ[anahtar] = S[ad_s]
         else:

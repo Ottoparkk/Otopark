@@ -41,7 +41,10 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.3.3"   # 1.3.3: plaka okuyucu ve araç bulucu AYNI ANDA (ayrı iş parçacıkları;
+SURUM = "1.3.4"   # 1.3.4: plaka küçültülmüş kırpıntıda bulunur, TAM çözünürlükten okunur
+                  #        (sahada 2124 → 1568 px; kare plakanın küçük harfleri); PLAKA_TAM=0
+                  #        eskisi; --plaka iki yolu karşılaştırır
+                  # 1.3.3: plaka okuyucu ve araç bulucu AYNI ANDA (ayrı iş parçacıkları;
                   #        plaka okuma araç bulucuyu beklemez); en çok 3 hariç alan
                   #        (park etmiş araçların plakaları okunmaz); öncelikli kareler sırayla
                   #        (1.3.2 sahaya kurulmadı, içindekiler buradadır)

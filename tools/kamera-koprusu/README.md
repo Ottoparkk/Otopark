@@ -38,6 +38,23 @@ The crop still carries the accuracy: the plate must be big enough in it. Since
 1.3.0 the box can be drawn taller, with a **cut-out** over parked cars (see
 *Kırpma sayfası*).
 
+### Plates read from the full-resolution crop (1.3.4)
+
+`kopru.olcekle` shrinks the crop to `MAX_KENAR` (1568 px) before anything
+looks at it. On site the crop is 2124 px wide → plates lost ~26 % of their
+pixels, and square two-line plates (small top-row letters) stayed unsure:
+night card "35CDJ06" — right guess, but "5"/"C" only 54–70 % sure. Since
+1.3.4 the plate is still FOUND on the shrunk crop (the finder letterboxes to
+640 anyway, and the edge / cut-out rule stays in those coordinates), but the
+plate is CUT for reading from the full-resolution crop (cut-outs already
+grey), the box scaled by the real shape ratio (`plaka.kutu_olcekle`). The
+reader input is always 128×64, so the cost is one extra crop copy per job.
+Evidence photos and the vehicle finder still use the shrunk crop. Safety
+rules unchanged. Checked before release on the site photos: shrunk vs
+full-res reads never disagreed when both were sure; one more plate became
+sure (35KKM62, correct). `PLAKA_TAM=0` returns to 1.3.3; `--plaka` reads
+every plate both ways and prints how many sure reads each gave.
+
 ### Plate reader and vehicle finder in parallel (1.3.3)
 
 Up to 1.3.2 one worker read the plate and THEN ran YOLOX on each frame: on the
@@ -603,6 +620,7 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `PLAKA_OKU_ESIK` | `0.95` | Both crops' lowest character probability must reach this. |
 | `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
 | `PLAKA_IPLIK` | `2` | Threads for the plate reader and the vehicle finder. 1.3.2: on the site laptop (8 logical processors) a frame took 410 ms with 1, 268 ms with 2, 241 ms with 4 — 2 takes most of the gain and leaves cores for the camera stream. |
+| `PLAKA_TAM` | `1` | 1.3.4: read the plate from the full-resolution crop (found on the shrunk one). `0` = 1.3.3. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
 | `ARAC_BUL` | `1` | `0` switches the vehicle finder (1.3.1) off: every decision is 1.3.0's. |
 | `ARAC_BUL_ESIK` | `0.35` | A stopped plateless thing counts as a vehicle at this score. Bake-off: cars 0.40–0.94, people ≤ 0.27. |
@@ -617,14 +635,14 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 37 senaryo
+python test_kopru.py            # yakalama döngüsü, 39 senaryo
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı, 142 birim testi
-python test_okuma.py            # geçiş kararları + iki iş parçacığı (okuma.py), 57 test
-python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 37 test
+python test_okuma.py            # geçiş kararları + iki iş parçacığı (okuma.py), 60 test
+python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 39 test
 python test_arac.py             # araç bulucu (arac.py), 15 test
 python test_giden.py            # gönderim kutusu (giden.py), 13 test
-python test_mutasyon.py         # 38 kural tek tek bozulur; her biri yakalanmalı
+python test_mutasyon.py         # 42 kural tek tek bozulur; her biri yakalanmalı
 ```
 
 `test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,

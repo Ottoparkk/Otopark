@@ -188,6 +188,35 @@ def test_tam_plaka_ikinci_ve_ucuncu_haric_alan():
     assert plaka.tam_mi(K(300, 300, 450, 340, 0.9), en, boy, haric)         # hepsinden uzak
 
 
+def test_ayar_plaka_tam():
+    # 1.3.4: PLAKA_TAM=1 (varsayılan) plakayı tam çözünürlükten okur; 0 = 1.3.3.
+    eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
+    try:
+        assert "PLAKA_TAM" in plaka.AYAR_ADLARI
+        a, u = plaka.calisma_ayarlari()
+        assert a["tam"] is True and u == []
+        a, u = plaka.calisma_ayarlari({"PLAKA_TAM": "0"})
+        assert a["tam"] is False and u == []
+        a, u = plaka.calisma_ayarlari({"PLAKA_TAM": "evet"})
+        assert a["tam"] is True and len(u) == 1 and "PLAKA_TAM" in u[0], u
+    finally:
+        for k, v in eski.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_kutu_olcekle():
+    # 1.3.4: kutu küçültülmüş kırpıntıda bulunur, plaka tam çözünürlükten
+    # okunur — kutu gerçek boyut oranlarıyla taşınır, skoru değişmez.
+    K = plaka.Kutu
+    k = plaka.kutu_olcekle(K(100, 50, 200, 80, 0.83), 2124 / 1568, 1046 / 772)
+    assert abs(k.x1 - 135.459) < 1e-3 and abs(k.x2 - 270.918) < 1e-3, k
+    assert abs(k.y1 - 67.746) < 1e-3 and abs(k.y2 - 108.394) < 1e-3, k
+    assert k.skor == 0.83
+    assert plaka.kutu_olcekle(K(1, 2, 3, 4, 0.5), 1.0, 1.0) == K(1, 2, 3, 4, 0.5)
+
+
 def test_genislet():
     K = plaka.Kutu
     g = plaka.genislet(K(100, 100, 200, 120, 0.7), 0.10, 0.15, 1000, 1000)

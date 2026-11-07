@@ -4238,6 +4238,9 @@ def test_plaka_kipi_emin_okuma() -> None:
     # yakalayacağı kare hızı (yavaş olana göre) yazılır.
     assert "plaka okuyucu ortalama" in c and "araç bulucu ortalama" in c, c
     assert "kare/sn" in c, c
+    # 1.3.4: kırpıntı (1600 px) küçültülüyor → her kutu İKİ yoldan okunur ve
+    # sonunda hangisinin kaç emin okuma verdiği yazar (sahada ölçmek için).
+    assert "küçük:" in c and "Emin okuma: tam çözünürlükte 3 kare, küçültülmüşte 3 kare" in c, c
 
 
 def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:
