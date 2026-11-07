@@ -43,6 +43,7 @@ döner ve uyarılır.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import math
 import os
 import re
@@ -128,7 +129,9 @@ _KURALLAR = (
     ("PLAKA_BUL_ESIK", "bul_esik", 0.30, float, lambda v: 0 < v < 1),
     ("PLAKA_OKU_ESIK", "oku_esik", 0.95, float, _oran(False)),
     ("PLAKA_TEK_ESIK", "tek_esik", 0.99, float, _oran(False)),
-    ("PLAKA_IPLIK", "iplik", 1, int, lambda v: 1 <= v <= 8),
+    # 1.3.2: sahadaki dizüstünde (8 mantıksal işlemci) kare başına plaka + araç
+    # bulucu 1 iplikte 410 ms, 2 iplikte 268 ms, 4 iplikte 241 ms (2026-11-07).
+    ("PLAKA_IPLIK", "iplik", 2, int, lambda v: 1 <= v <= 8),
     ("PLAKA_BEKLE_SN", "bekle_sn", 0.4, float, lambda v: 0 <= v <= 5),
     # 1.3.1 araç bulucu (arac.py). Faz 0: araçlar 0.40-0.94, insanlar ≤0.27.
     # Duran şey ARAC_BUL_ESIK altındaysa araç sayılmaz; durmadan geçen plakasız
@@ -230,16 +233,60 @@ def _paylar(en: int, boy: int) -> tuple[float, float]:
     return max(3.0, 0.01 * en), max(3.0, 0.01 * boy)
 
 
+# 1.3.3: en çok bu kadar kesilen köşe (park etmiş araçların üstü).
+HARIC_EN_COK = 3
+
+
+def haric_listesi(haric) -> tuple:
+    """
+    Kesilen köşe(ler) → dikdörtgen demeti ((x, y, w, h), …).
+
+    İKİ biçimi ayıran TEK yer: None → (), tek dikdörtgen (dört sayı — 1.3.0
+    biçimi) → bir elemanlı demet, dikdörtgen dizisi → demet. Kesilen köşeyi
+    açan her fonksiyon bunu çağırır; eski çağıranlar değişmeden çalışır.
+    """
+    if haric is None:
+        return ()
+    ogeler = list(haric)
+    if len(ogeler) == 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in ogeler):
+        return (tuple(v.item() if hasattr(v, "item") else v for v in ogeler),)
+    return tuple(tuple(r) for r in ogeler)
+
+
+def kesisim_parcalari(haric):
+    """
+    Birleşim alanı için (işaret, (x1, y1, x2, y2)) parçaları: dikdörtgenlerin
+    boş olmayan her alt kümesinin kesişimi (içerme-dışlama). Üst üste binen
+    kesilen köşeler böylece İKİ KEZ sayılmaz. En çok 3 alan → en çok 7 parça.
+    """
+    kutular = [(x, y, x + w, y + h) for x, y, w, h in haric_listesi(haric)]
+    for n in range(1, len(kutular) + 1):
+        for grup in itertools.combinations(kutular, n):
+            x1, y1 = max(g[0] for g in grup), max(g[1] for g in grup)
+            x2, y2 = min(g[2] for g in grup), min(g[3] for g in grup)
+            if x2 > x1 and y2 > y1:
+                yield (1 if n % 2 else -1), (x1, y1, x2, y2)
+
+
+def kesilen_alan(x1: float, y1: float, x2: float, y2: float, haric) -> float:
+    """(x1, y1, x2, y2) kutusunun kesilen köşelerin BİRLEŞİMİNDE kalan alanı."""
+    toplam = 0.0
+    for isaret, (a1, b1, a2, b2) in kesisim_parcalari(haric):
+        ix = max(0.0, min(x2, a2) - max(x1, a1))
+        iy = max(0.0, min(y2, b2) - max(y1, b1))
+        toplam += isaret * ix * iy
+    return toplam
+
+
 def tam_mi(k: Kutu, en: int, boy: int, haric: tuple | None = None) -> bool:
     """
-    Kutu kırpıntının her kenarından (ve kesilen köşeden) en az max(3 px, %1)
-    uzakta mı? Değiyorsa plaka büyük olasılıkla kesik: okunmaz.
+    Kutu kırpıntının her kenarından (ve HER kesilen köşeden) en az
+    max(3 px, %1) uzakta mı? Değiyorsa plaka büyük olasılıkla kesik: okunmaz.
     """
     px, py = _paylar(en, boy)
     if k.x1 < px or k.y1 < py or k.x2 > en - px or k.y2 > boy - py:
         return False
-    if haric is not None:
-        hx, hy, hw, hh = haric
+    for hx, hy, hw, hh in haric_listesi(haric):
         ex1, ey1, ex2, ey2 = hx - px, hy - py, hx + hw + px, hy + hh + py
         if k.x1 < ex2 and k.x2 > ex1 and k.y1 < ey2 and k.y2 > ey1:
             return False
@@ -247,16 +294,11 @@ def tam_mi(k: Kutu, en: int, boy: int, haric: tuple | None = None) -> bool:
 
 
 def haric_orani(k: Kutu, haric: tuple | None) -> float:
-    """Kutunun kesilen köşede kalan alan oranı (0..1)."""
-    if haric is None:
-        return 0.0
+    """Kutunun kesilen köşelerde (birleşimlerinde) kalan alan oranı (0..1)."""
     alan = (k.x2 - k.x1) * (k.y2 - k.y1)
     if alan <= 0:
         return 0.0
-    hx, hy, hw, hh = haric
-    ix = max(0.0, min(k.x2, hx + hw) - max(k.x1, hx))
-    iy = max(0.0, min(k.y2, hy + hh) - max(k.y1, hy))
-    return (ix * iy) / alan
+    return kesilen_alan(k.x1, k.y1, k.x2, k.y2, haric) / alan
 
 
 def genislet(k: Kutu, px: float, py: float, en: int, boy: int) -> Kutu:

@@ -317,31 +317,50 @@ def kutu_metni_coz(metin: str) -> tuple[int, int, int, int] | None:
     return x, y, w, h
 
 
-def haric_metni_coz(metin: str, kutu) -> tuple[tuple[int, int, int, int] | None, str | None]:
+def haric_metni_coz(metin: str, kutu) -> tuple[tuple | None, str | None]:
     """
-    KIRPMA_HARIC metni → (hariç alan ya da None, uyarı ya da None).
+    KIRPMA_HARIC metni → (kesilen köşeler ((x, y, w, h), …) ya da None,
+    uyarı ya da None). 1.3.3: en çok plaka.HARIC_EN_COK alan, ";" ile;
+    tek alanlı metin 1.3.0 ile aynıdır.
 
-    Bozuk biçim ve kutunun TAMAMINI kaplayan alan ValueError — köprü hiçbir
-    şey göremezdi. Kutu yoksa ya da alan kutunun dışındaysa yok sayılır, bir
-    uyarıyla. Kurallar kırpma sayfasınınkiyle aynı (kirpma_sunucu._kutu_coz).
+    Bozuk biçim, fazla alan ve kutunun TAMAMINI (birlikte) kaplayan alanlar
+    ValueError — köprü hiçbir şey göremezdi. Kutu yoksa hepsi, kutunun
+    dışındaki alan tek başına yok sayılır, bir uyarıyla. Kurallar kırpma
+    sayfasınınkiyle aynı (kirpma_sunucu._kutu_coz).
     """
     metin = (metin or "").strip()
     if not metin:
         return None, None
     if kutu is None:
         return None, "KIRPMA_HARIC verildi ama KIRPMA yok — kesilen köşe yok sayılıyor"
-    try:
-        x, y, w, h = (int(p) for p in metin.split(","))
-    except ValueError:
-        raise ValueError('KIRPMA_HARIC "x,y,w,h" biçiminde olmalı (piksel), örn. "0,0,500,200"')
-    if w <= 0 or h <= 0:
-        raise ValueError("KIRPMA_HARIC genişlik ve yükseklik pozitif olmalı")
+    parcalar = [p.strip() for p in metin.split(";")]
+    if len(parcalar) > plaka.HARIC_EN_COK:
+        raise ValueError(f"KIRPMA_HARIC en çok {plaka.HARIC_EN_COK} alan olabilir (\";\" ile ayrılır)")
     kx, ky, kw, kh = kutu
-    if x >= kx + kw or y >= ky + kh or x + w <= kx or y + h <= ky:
-        return None, "KIRPMA_HARIC kırpma kutusunun dışında — kesilen köşe yok sayılıyor"
-    if x <= kx and y <= ky and x + w >= kx + kw and y + h >= ky + kh:
+    alanlar: list[tuple[int, int, int, int]] = []
+    disarida = 0
+    for parca in parcalar:
+        try:
+            x, y, w, h = (int(p) for p in parca.split(","))
+        except ValueError:
+            raise ValueError('KIRPMA_HARIC "x,y,w,h" biçiminde olmalı (piksel; en çok 3 alan '
+                             '";" ile), örn. "0,0,500,200"')
+        if w <= 0 or h <= 0:
+            raise ValueError("KIRPMA_HARIC genişlik ve yükseklik pozitif olmalı")
+        if x >= kx + kw or y >= ky + kh or x + w <= kx or y + h <= ky:
+            disarida += 1
+            continue
+        alanlar.append((x, y, w, h))
+    uyari = None
+    if disarida and not alanlar:
+        uyari = "KIRPMA_HARIC kırpma kutusunun dışında — kesilen köşe yok sayılıyor"
+    elif disarida:
+        uyari = f"KIRPMA_HARIC: {disarida} alan kırpma kutusunun dışında — o alan yok sayılıyor"
+    if not alanlar:
+        return None, uyari
+    if plaka.kesilen_alan(kx, ky, kx + kw, ky + kh, alanlar) >= kw * kh:
         raise ValueError("KIRPMA_HARIC kırpma kutusunun tamamını kaplıyor — köprü hiçbir şey göremezdi")
-    return (x, y, w, h), None
+    return tuple(alanlar), uyari
 
 
 def kirpma_kutusu() -> tuple[int, int, int, int] | None:
@@ -364,8 +383,8 @@ def kirp(frame: np.ndarray, kutu: tuple[int, int, int, int] | None) -> np.ndarra
     return frame[y0:y1, x0:x1]
 
 
-def kirpma_haric(kutu: tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
-    """KIRPMA_HARIC → (x, y, w, h) tam kare pikseli, ya da None."""
+def kirpma_haric(kutu: tuple[int, int, int, int] | None) -> tuple | None:
+    """KIRPMA_HARIC → ((x, y, w, h), …) tam kare pikseli, ya da None."""
     try:
         haric, uyari = haric_metni_coz(KIRPMA_HARIC, kutu)
     except ValueError as e:
@@ -375,42 +394,49 @@ def kirpma_haric(kutu: tuple[int, int, int, int] | None) -> tuple[int, int, int,
     return haric
 
 
-def _haric_kirpintida(frame_sekli: tuple, kutu, haric) -> tuple[int, int, int, int] | None:
-    """Kesilen köşe, kırpıntının (ölçeklenmeden önce) kendi koordinatlarında."""
-    if haric is None or kutu is None:
-        return None
+def _haric_kirpintida(frame_sekli: tuple, kutu, haric) -> tuple:
+    """
+    Kesilen köşeler, kırpıntının (ölçeklenmeden önce) kendi koordinatlarında:
+    ((x, y, w, h), …); kırpıntıyla kesişmeyen düşer. 1.3.3: en çok 3 alan.
+    """
+    if kutu is None:
+        return ()
     yh, yw = frame_sekli[:2]
     x, y, w, h = kutu
     x0, y0 = max(0, min(x, yw - 1)), max(0, min(y, yh - 1))
     x1, y1 = max(x0 + 1, min(x + w, yw)), max(y0 + 1, min(y + h, yh))
-    hx, hy, hw, hh = haric
-    a0, b0 = max(hx - x0, 0), max(hy - y0, 0)
-    a1, b1 = min(hx + hw - x0, x1 - x0), min(hy + hh - y0, y1 - y0)
-    if a1 <= a0 or b1 <= b0:
-        return None
-    return a0, b0, a1 - a0, b1 - b0
+    sonuc = []
+    for hx, hy, hw, hh in plaka.haric_listesi(haric):
+        a0, b0 = max(hx - x0, 0), max(hy - y0, 0)
+        a1, b1 = min(hx + hw - x0, x1 - x0), min(hy + hh - y0, y1 - y0)
+        if a1 > a0 and b1 > b0:
+            sonuc.append((a0, b0, a1 - a0, b1 - b0))
+    return tuple(sonuc)
 
 
 def kirp_maskeli(frame: np.ndarray, kutu, haric) -> np.ndarray:
     """
-    kirp() + kesilen köşe düz griye (114) boyanır. Kesilen köşe varsa KOPYA
-    döner (kirp bir görünüm verir; kameranın karesi değişmemeli), yoksa
+    kirp() + her kesilen köşe düz griye (114) boyanır. Kesilen köşe varsa
+    KOPYA döner (kirp bir görünüm verir; kameranın karesi değişmemeli), yoksa
     kirp()'in kendisi — davranış 1.2.x ile birebir.
     """
     parca = kirp(frame, kutu)
-    h = _haric_kirpintida(frame.shape, kutu, haric)
-    if h is None:
+    alanlar = _haric_kirpintida(frame.shape, kutu, haric)
+    if not alanlar:
         return parca
     parca = parca.copy()
-    a, b, w, hh = h
-    parca[b:b + hh, a:a + w] = 114
+    for a, b, w, hh in alanlar:
+        parca[b:b + hh, a:a + w] = 114
     return parca
 
 
 def haric_olcekli(frame_sekli: tuple, kutu, haric, kirpik_sekli: tuple):
-    """Kesilen köşe, ölçeklenmiş kırpıntının (kirpik) koordinatlarında — okuyucu için."""
-    h = _haric_kirpintida(frame_sekli, kutu, haric)
-    if h is None:
+    """
+    Kesilen köşeler, ölçeklenmiş kırpıntının (kirpik) koordinatlarında —
+    okuyucu ve araç bulucu için: ((x, y, w, h), …) ya da None.
+    """
+    alanlar = _haric_kirpintida(frame_sekli, kutu, haric)
+    if not alanlar:
         return None
     yh, yw = frame_sekli[:2]
     x, y, w, hh_ = kutu
@@ -418,8 +444,7 @@ def haric_olcekli(frame_sekli: tuple, kutu, haric, kirpik_sekli: tuple):
     cw = max(x0 + 1, min(x + w, yw)) - x0
     ch = max(y0 + 1, min(y + hh_, yh)) - y0
     sx, sy = kirpik_sekli[1] / cw, kirpik_sekli[0] / ch
-    a, b, ww, hh = h
-    return a * sx, b * sy, ww * sx, hh * sy
+    return tuple((a * sx, b * sy, ww * sx, hh * sy) for a, b, ww, hh in alanlar)
 
 
 def olcekle(img: np.ndarray) -> np.ndarray:
@@ -1074,14 +1099,17 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     print(f"  Kamera: {host}   ({int(sure_sn)} sn; Ctrl+C ile erken bitirebilirsiniz)")
     print("  Araç geçirin. Her satır: saat · süre · kutu skoru → okuma (iki kırpıntı)"
           + (" · araç / insan puanı" if bulucu else "") + ".")
-    print("  Süre, köprünün bir karede yaptığı TÜM iş (plaka + araç bulucu).\n")
+    print("  1.3.3: köprüde iki model AYNI ANDA çalışır; satırdaki ms ikisinden yavaş\n"
+          "  olanıdır (burada sırayla ölçülür — gerçekte işlemciyi paylaşırlar).\n")
 
     cap = (kamera or kamera_baglan)(rtsp)
     kareler = kutulu = bos = 0
     arac_kare = 0
     arac_enb = 0.0
     emin: dict[str, int] = {}
-    sureler: list[float] = []
+    sureler: list[float] = []        # kare başına: iki modelden yavaş olanı
+    sureler_p: list[float] = []      # plaka okuyucu
+    sureler_a: list[float] = []      # araç bulucu
     haric_k = None
     sekil: tuple | None = None
     son_satir = time.monotonic()
@@ -1119,21 +1147,27 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
             except Exception as e:  # noqa: BLE001 — test kipi: sebebi göster, dur
                 print(f"  ✗ Plaka okuyucu hata verdi: {type(e).__name__}: {e}")
                 return 1
+            ms_p = (time.perf_counter() - t0) * 1000
+            sureler_p.append(ms_p)
+            ms_a = 0.0
             puan = ""
             arac_var = False
             if bulucu is not None:
+                t1 = time.perf_counter()
                 try:
                     a, i = bulucu.skor(kirpik, haric_k)
                 except Exception as e:  # noqa: BLE001 — köprüde de plaka okumayı durdurmaz
                     print(f"  ! Araç bulucu hata verdi: {type(e).__name__}: {e}")
                     bulucu = None
                 else:
+                    ms_a = (time.perf_counter() - t1) * 1000
+                    sureler_a.append(ms_a)
                     puan = f"araç {a:.2f} / insan {i:.2f}"
                     arac_enb = max(arac_enb, a)
                     if a >= bulucu.esik:
                         arac_var = True
                         arac_kare += 1
-            ms = (time.perf_counter() - t0) * 1000
+            ms = max(ms_p, ms_a)
             sureler.append(ms)
             simdi = time.monotonic()
             if parcalar or arac_var:
@@ -1158,8 +1192,18 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     if not kareler:
         print("  ✗ Kameradan hiç görüntü gelmedi.")
         return 1
-    print(f"  {kareler} kare · {kutulu} karede plaka kutusu · süre ortalama "
-          f"{sum(sureler) / len(sureler):.0f} ms, en çok {max(sureler):.0f} ms")
+    print(f"  {kareler} kare · {kutulu} karede plaka kutusu")
+    ort_p = sum(sureler_p) / len(sureler_p)
+    satir = (f"  Süre: plaka okuyucu ortalama {ort_p:.0f} ms (en çok {max(sureler_p):.0f})")
+    yavas = ort_p
+    if sureler_a:
+        ort_a = sum(sureler_a) / len(sureler_a)
+        satir += f", araç bulucu ortalama {ort_a:.0f} ms (en çok {max(sureler_a):.0f})"
+        yavas = max(yavas, ort_a)
+    print(satir)
+    hiz = 1000.0 / yavas if yavas > 0 else float("inf")
+    print(f"  Köprüde iki model aynı anda çalışır: kare başına ~{yavas:.0f} ms "
+          f"(~{min(hiz, 99.0):.1f} kare/sn; işlemciyi paylaştıkları için biraz daha az olabilir).")
     if bulucu is not None:
         print(f"  Araç bulucu: {arac_kare} karede araç (≥{bulucu.esik:.2f}), "
               f"en yüksek puan {arac_enb:.2f}.")
@@ -1199,7 +1243,8 @@ def main() -> None:
         # `[i]`: not a fault, durum must not show it as the last error.
         print("[i] kırpma kutusu yok — bu şeritte araç fotoğrafı saklanmayacak", flush=True)
     if haric is not None:
-        print(f"[i] kesilen köşe {','.join(str(v) for v in haric)} — orada hareket ve plaka "
+        print(f"[i] kesilen köşe {'; '.join(','.join(str(v) for v in h) for h in haric)} — "
+              "orada hareket ve plaka "
               "yok sayılır", flush=True)
 
     # ---- 1.3.0: plaka okuyucu. Yüklenemezse köprü DÜŞMEZ: araçlar personele.

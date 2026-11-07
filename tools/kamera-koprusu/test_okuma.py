@@ -182,63 +182,127 @@ def test_arka_kare_zayif_okuma_sayilmaz():
 
 # --------------------------------------------------------- araç bulucu (1.3.1) -
 
-class SahteArac:
-    """skor: karenin numarasına göre (araç, insan) puanı; hata=True ise patlar."""
+def _ak(x1, y1, x2, y2, skor):
+    import arac
+    return arac.AracKutu(float(x1), float(y1), float(x2), float(y2), float(skor))
 
-    def __init__(self, skorlar=None, hata=False, esik=0.35, gecis_esik=0.60):
-        self.skorlar = skorlar or {}
+
+# 1.3.2: "önce de vardı" kontrolü YERE bakar. Kırpıntı 1568×668.
+PARK = (1000, 500, 1500, 660)        # hep orada duran araç
+UZAK = (0, 200, 160, 400)            # yavaş gelen aracın "geçişten önceki" karedeki yeri
+YAKIN = (400, 150, 1100, 600)        # aynı araç, yaklaşınca
+
+
+class SahteArac:
+    """kutular: karenin numarasına göre (araç kutuları, insan puanı); hata=True ise patlar."""
+
+    def __init__(self, kutular=None, hata=False, esik=0.35, gecis_esik=0.60, bekle=0.0):
+        self.olcumler = kutular or {}
         self.hata = hata
         self.esik = esik
         self.gecis_esik = gecis_esik
+        self.bekle = bekle
         self.cagrilar: list[int] = []
 
-    def skor(self, kirpik, haric):
+    def kutular(self, kirpik, haric):
         no = int(kirpik[0, 0, 0])
         self.cagrilar.append(no)
+        if self.bekle:
+            time.sleep(self.bekle)
         if self.hata:
             raise RuntimeError("araç modeli çöktü")
-        return self.skorlar.get(no, (0.0, 0.0))
+        kutular, insan = self.olcumler.get(no, ([], 0.0))
+        return [_ak(*k) for k in kutular], insan
+
+
+def _isle(g, no, a, p=None, **kw):
+    okuma.kareyi_isle(p or SahtePlakaci(), g, _kare(no), _z(no), no, kw.pop("haric", None),
+                      0.95, arac_kutulari=a.kutular, **kw)
 
 
 def test_kare_arac_her_karede_olculur():
     # Sahibin kararı (2026-11-07): araç bulucu HER karede çalışır — plaka
     # kutusu olan karede de (plaka bulucu bir kez araç olmayan şeyi kutuladı).
-    a = SahteArac({1: (0.2, 0.9), 2: (0.7, 0.1)})
+    a = SahteArac({9: ([], 0.0), 1: ([YAKIN + (0.2,)], 0.9), 2: ([YAKIN + (0.7,)], 0.1)})
     p = SahtePlakaci({2: [ORTA]}, {(2, ORTA): [("34ABC123", 0.99), ("34ABC123", 0.99)]})
     g = _gecis()
-    okuma.kareyi_isle(p, g, _kare(1), _z(1), 1, None, 0.95, arac_skoru=a.skor)
-    okuma.kareyi_isle(p, g, _kare(2), _z(2), 2, None, 0.95, arac_skoru=a.skor)
-    assert a.cagrilar == [1, 2], a.cagrilar
+    _isle(g, 9, a, arka=True)
+    _isle(g, 1, a, p)
+    _isle(g, 2, a, p)
+    assert a.cagrilar == [9, 1, 2], a.cagrilar
     assert g.arac_max == 0.7 and int(g.arac_kirpik[0, 0, 0]) == 2 and g.insan_max == 0.9
-    assert g.arac_durgun is None and g.arac_arka is None
+    assert g.arac_durgun is None and g.arka_araclar == []
     assert g.en_iyi["34ABC123"][0] == 0.99                # plaka okuması etkilenmedi
 
 
-def test_kare_durgun_ve_arka_ayri_tutulur():
-    a = SahteArac({7: (0.6, 0.0), 8: (0.1, 0.8)})
+def test_kare_park_etmis_arac_yeni_sayilmaz():
+    # Geçişten önce de AYNI YERDE duran araç bu geçişin aracı değil; yanında
+    # beliren araç yenidir.
+    park2 = (1010, 505, 1505, 662)                        # aynı araç, kutu biraz oynadı
+    a = SahteArac({9: ([PARK + (0.47,)], 0.0),
+                   1: ([park2 + (0.48,), YAKIN + (0.92,)], 0.0),
+                   2: ([park2 + (0.49,)], 0.9),
+                   3: ([park2 + (0.47,)], 0.8)})
     g = _gecis()
-    okuma.kareyi_isle(SahtePlakaci(), g, _kare(7), _z(0), 0, None, 0.95, arka=True,
-                      arac_skoru=a.skor)
-    # Geçişten ÖNCEKİ kare geçişin aracı sayılmaz.
-    assert g.arac_arka == 0.6 and g.arac_max is None and g.arac_durgun is None
-    okuma.kareyi_isle(SahtePlakaci(), g, _kare(8), _z(3), 3, None, 0.95,
-                      arac_skoru=a.skor, durgun=True)
-    assert g.arac_durgun == 0.1 and g.arac_max == 0.1 and g.insan_max == 0.8
+    _isle(g, 9, a, arka=True)
+    assert len(g.arka_araclar) == 1 and g.arac_max is None
+    _isle(g, 1, a)
+    _isle(g, 2, a)
+    assert g.arac_max == 0.92 and int(g.arac_kirpik[0, 0, 0]) == 1, g.arac_max
+    _isle(g, 3, a, durgun=True)
+    assert g.arac_durgun == 0.0 and g.insan_max == 0.9   # durulan karede YENİ araç yok
 
 
-def test_kare_arac_olculemediyse_bilinmez():
+def test_kare_yavas_gelen_arac_yeni_sayilir():
+    # Sahada 2026-11-07: yavaş gelen araç "geçişten önceki" kareye uzaktayken
+    # girdi. Yaklaşınca başka YERDE: yenidir.
+    a = SahteArac({9: ([UZAK + (0.45,)], 0.0), 1: ([YAKIN + (0.92,)], 0.0)})
     g = _gecis()
+    _isle(g, 9, a, arka=True)
+    _isle(g, 1, a)
+    assert g.arac_max == 0.92, g.arac_max
+
+
+def test_kare_biraz_ilerleyen_buyuk_arac_yeni_sayilir():
+    # Büyük araç kırpıntının çoğunu kaplar: boyunun %30'u kadar ilerlemiş
+    # araçla önceki kutu yine ~%54 örtüşür. Gerçek fotoğraflarda (Faz 0
+    # yeniden oynatma) farklı yerlerdeki iki araç 0.48 örtüştü. Park etmiş
+    # aracın kutusu kareden kareye ~0.9 örtüşür: "aynı araç" eşiği 0.7.
+    a = SahteArac({9: ([(0, 0, 1000, 400, 0.9)], 0.0), 1: ([(300, 0, 1300, 400, 0.9)], 0.0)})
+    g = _gecis()
+    _isle(g, 9, a, arka=True)
+    _isle(g, 1, a)
+    assert g.arac_max == 0.9, g.arac_max
+
+
+def test_kare_onceki_kare_olculmeden_bilinmez():
+    # Önceki kare henüz ölçülmediyse (ya da geçişin önceki karesi yoksa) ne
+    # yeni olduğu bilinemez: sayılmaz, karar 1.3.0 kuralına döner.
+    a = SahteArac({1: ([YAKIN + (0.92,)], 0.0)})
+    g = _gecis()
+    _isle(g, 1, a, durgun=True)
+    assert g.arka_araclar is None and g.arac_max is None and g.arac_durgun is None
+    g = _gecis()
+    _isle(g, 9, a, arka=True)                              # ölçüldü, araç yok
     okuma.kareyi_isle(SahtePlakaci(), g, _kare(1), _z(1), 1, None, 0.95,
-                      arac_skoru=lambda k, h: None, durgun=True)
+                      arac_kutulari=lambda k, h: None, durgun=True)   # bulucu ölçemedi
     assert g.arac_max is None and g.arac_durgun is None and g.insan_max is None
     okuma.kareyi_isle(SahtePlakaci(), g, _kare(2), _z(2), 2, None, 0.95)   # bulucu yok
     assert g.arac_max is None
 
 
+def test_kare_onceki_karedeki_plaka_kutulari_sayilir():
+    # Teşhis için: geçişten önceki karede kaç plaka kutusu vardı (kayıt satırı).
+    g = _gecis()
+    okuma.kareyi_isle(SahtePlakaci({9: [ORTA, KENAR]}, {}), g, _kare(9), _z(0), 0, None, 0.95,
+                      arka=True)
+    assert g.arka_kutulu is True and g.arka_plaka_sayisi == 2
+
+
 def test_kare_arac_bulucuya_haric_alan_verilir():
     gorulen = []
     okuma.kareyi_isle(SahtePlakaci(), _gecis(), _kare(1), _z(1), 1, (1, 2, 3, 4), 0.95,
-                      arac_skoru=lambda k, h: gorulen.append(h) or (0.0, 0.0))
+                      arac_kutulari=lambda k, h: gorulen.append(h) or ([], 0.0))
     assert gorulen == [(1, 2, 3, 4)], gorulen
 
 
@@ -349,13 +413,15 @@ def test_isci_takildi():
 
 
 def test_isci_arac_bulucuyu_calistirir_ve_esikleri_verir():
-    a = SahteArac({1: (0.8, 0.0)})
+    a = SahteArac({9: ([], 0.0), 1: ([YAKIN + (0.8,)], 0.0)})
     isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None, arac=a)
     try:
         g = _gecis()
+        isci.ver(okuma.Is(g, _kare(9), _z(0), 0, arka=True), oncelik=True)
+        assert isci.bekle(g, 2.0)
         isci.ver(okuma.Is(g, _kare(1), _z(1), 1, durgun=True), oncelik=True)
         assert isci.bekle(g, 2.0)
-        assert g.arac_durgun == 0.8 and a.cagrilar == [1], (g.arac_durgun, a.cagrilar)
+        assert g.arac_durgun == 0.8 and a.cagrilar == [9, 1], (g.arac_durgun, a.cagrilar)
         assert isci.arac_esikleri() == (0.35, 0.60)
     finally:
         isci.durdur()
@@ -374,6 +440,105 @@ def test_isci_bekleme_suresi_kare_suresine_uyar():
         s = isci.bekleme_suresi(0.4)
         assert 0.7 <= s <= 1.0, s
         assert isci.bekleme_suresi(5.0) == okuma.BEKLE_TAVAN_SN  # tavan
+    finally:
+        isci.durdur()
+
+
+def test_isci_iki_model_paralel_calisir():
+    # 1.3.3: sahadaki dizüstünde bir kare, plaka okuyucu SONRA araç bulucu
+    # sırayla çalışınca 410 ms sürüyordu (~2.4 kare/sn): geçen plakaya 3-4
+    # şans. İki model ayrı iş parçacığında, AYNI ANDA çalışır.
+    p = SahtePlakaci(bekle=0.3)
+    a = SahteArac(bekle=0.3)
+    isci = okuma.Isci(p, haric=None, oku_esik=0.95, kayit=lambda s: None, arac=a)
+    try:
+        g = _gecis()
+        bas = time.monotonic()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))
+        assert isci.bekle(g, 3.0)
+        gecen = time.monotonic() - bas
+        assert p.cagrilar == [1] and a.cagrilar == [1]
+        assert gecen < 0.5, gecen                      # sırayla olsaydı ≥ 0.6
+    finally:
+        isci.durdur()
+
+
+def test_isci_yavas_arac_bulucu_plakayi_bekletmez():
+    # Plaka okuyucu boşalınca yeni kare alır; araç bulucu yavaşsa EN YENİ
+    # kareye atlar — plaka okuma onun yüzünden hiçbir kareyi kaçırmaz.
+    p = SahtePlakaci(bekle=0.02)
+    a = SahteArac(bekle=0.4)
+    isci = okuma.Isci(p, haric=None, oku_esik=0.95, kayit=lambda s: None, arac=a)
+    try:
+        g = _gecis()
+        for i in range(1, 7):
+            bitis = time.monotonic() + 2.0
+            while not isci.bos_mu() and time.monotonic() < bitis:
+                time.sleep(0.005)
+            isci.ver(okuma.Is(g, _kare(i), _z(i), i))
+        assert isci.bekle(g, 5.0)
+        assert p.cagrilar == [1, 2, 3, 4, 5, 6], p.cagrilar
+        assert a.cagrilar[0] == 1 and a.cagrilar[-1] == 6 and len(a.cagrilar) < 6, a.cagrilar
+    finally:
+        isci.durdur()
+
+
+def test_isci_bekle_iki_modeli_de_bekler():
+    # Karar, araç bulucunun durulan kare sonucunu da beklemeli.
+    isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac(bekle=0.4))
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1, durgun=True), oncelik=True)
+        time.sleep(0.05)
+        assert not isci.bekle(g, 0.1)                  # plaka bitti, araç sürüyor
+        assert isci.bekle(g, 2.0)
+    finally:
+        isci.durdur()
+
+
+def test_isci_bekleme_suresi_yavas_modele_gore():
+    isci = okuma.Isci(SahtePlakaci(bekle=0.02), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac(bekle=0.3))
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))
+        assert isci.bekle(g, 2.0)
+        assert 0.7 <= isci.bekleme_suresi(0.4) <= 1.0, isci.bekleme_suresi(0.4)
+    finally:
+        isci.durdur()
+
+
+def test_isci_takildi_arac_bulucuyu_da_gorur():
+    isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac(bekle=0.4))
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))
+        time.sleep(0.1)
+        assert isci.takildi(time.monotonic(), 0.05)    # plaka bitti, araç bulucu sürüyor
+        isci.bekle(g, 2.0)
+        assert not isci.takildi(time.monotonic(), 0.05)
+    finally:
+        isci.durdur()
+
+
+def test_isci_iki_oncelikli_is_sirayla():
+    # Geçişten önceki kare ve durulan kare ikisi de öncelikli; çok kısa bir
+    # geçişte durulan kare, henüz işlenmemiş önceki kareyi EZMEMELİ (ezseydi
+    # araç bulucu "yeni araç" bilemez, 1.3.0 kuralına düşerdi).
+    p = SahtePlakaci(bekle=0.15)
+    a = SahteArac(bekle=0.15)
+    isci = okuma.Isci(p, haric=None, oku_esik=0.95, kayit=lambda s: None, arac=a)
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))                       # sürüyor
+        time.sleep(0.05)
+        isci.ver(okuma.Is(g, _kare(7), _z(0), 0, arka=True), oncelik=True)
+        isci.ver(okuma.Is(g, _kare(8), _z(2), 2, durgun=True), oncelik=True)
+        assert isci.bekle(g, 3.0)
+        assert p.cagrilar == [1, 7, 8], p.cagrilar
+        assert a.cagrilar == [1, 7, 8], a.cagrilar
     finally:
         isci.durdur()
 
@@ -528,8 +693,11 @@ def test_karar_bozuk_okuyucu():
 ESIK = dict(arac_esik=0.35, arac_gecis_esik=0.60)
 
 
-def _arac(g: okuma.Gecis, durgun=None, enb=None, arka=None, insan=None, kirpik=None):
-    g.arac_durgun, g.arac_max, g.arac_arka, g.insan_max = durgun, enb, arka, insan
+def _arac(g: okuma.Gecis, durgun=None, enb=None, arka=(), insan=None, kirpik=None):
+    """Geçişin ölçülmüş hâli: `durgun` / `enb` YENİ araç puanları, `arka` önceki karedeki kutular
+    (None = önceki kare ölçülmedi)."""
+    g.arac_durgun, g.arac_max, g.insan_max = durgun, enb, insan
+    g.arka_araclar = None if arka is None else [_ak(*k) for k in arka]
     g.arac_kirpik = kirpik
     return g
 
@@ -537,50 +705,55 @@ def _arac(g: okuma.Gecis, durgun=None, enb=None, arka=None, insan=None, kirpik=N
 def test_karar_duran_ama_arac_gorulmedi_gonderilmez():
     # Sahada 2026-11-07 (1.3.0'ın ilk günü): kameranın önünde DURAN iki kişi
     # araç boyunda sayıldı ve "Çözülmemiş kayıt" oldu.
-    g = _arac(_gecis(), durgun=0.10, enb=0.27, arka=0.02, insan=0.91)
+    g = _arac(_gecis(), durgun=0.0, enb=0.27, insan=0.91)
     g.durgun_kirpik = _kare(8)
     gonder, satir = _karar(g, durdu=True, arac_boyu=True, **ESIK)
     assert gonder == [], gonder
     assert any(okuma.PLAKASIZ_ISARETI in s and okuma.ARAC_YOK_ISARETI in s for s in satir), satir
 
 
-def test_karar_duran_arac_gorulduyse_personele():
-    g = _arac(_gecis(), durgun=0.80, enb=0.80, arka=0.0)
+def test_karar_park_etmis_arac_yaninda_duran_yaya_gonderilmez():
+    # Park etmiş araç kadrajda; yanında insan duruyor: durulan karede YENİ
+    # araç yok (kareyi_isle park etmiş aracı saymadı) → hiçbir şey.
+    g = _arac(_gecis(), durgun=0.0, enb=0.0, arka=[PARK + (0.47,)], insan=0.9)
+    g.durgun_kirpik = _kare(8)
+    gonder, satir = _karar(g, durdu=True, arac_boyu=True, **ESIK)
+    assert gonder == [] and any(okuma.ARAC_YOK_ISARETI in s for s in satir), satir
+
+
+def test_karar_duran_yeni_arac_personele():
+    # 0.40: duran eşiğinin (0.35) üstü ama geçen eşiğinin (0.60) altı — örneğin
+    # gece zayıf görülen, DURAN araç. Yalnızca kural 1 yakalar.
+    g = _arac(_gecis(), durgun=0.40, enb=0.40)
     g.durgun_kirpik = _kare(8)
     gonder, _ = _karar(g, durdu=True, arac_boyu=True, **ESIK)
     assert [(x.tur, x.tahmin, x.zaman) for x in gonder] == [("OKUNAMADI", None, _z(0))]
     assert int(gonder[0].kirpik[0, 0, 0]) == 8
-    # Durulan karede araç zayıf ama geçişte NET bir araç vardı ve geçişten
-    # önce yoktu (ör. gece): yine personele — önce araç kaybolmasın.
-    g = _arac(_gecis(), durgun=0.10, enb=0.85, arka=0.02)
-    g.durgun_kirpik = _kare(8)
-    assert [x.tur for x in _karar(g, durdu=True, arac_boyu=True, **ESIK)[0]] == ["OKUNAMADI"]
-    # ... ama o araç geçişten ÖNCE de oradaysa (park etmiş araç) bu geçişin
-    # aracı değildir.
-    g = _arac(_gecis(), durgun=0.10, enb=0.85, arka=0.70)
-    g.durgun_kirpik = _kare(8)
-    assert _karar(g, durdu=True, arac_boyu=True, **ESIK)[0] == []
 
 
-def test_karar_duran_arac_bilinmiyorsa_bugunku_kural():
-    # Durulan kare ölçülemedi (işçi yetişmedi): 1.3.0 kuralı — personele, ve
-    # sahada teşhis için kayda yazılır.
-    g = _arac(_gecis(), durgun=None, enb=0.10, arka=0.0)
+def test_karar_sahadaki_kacirma_personele_gider():
+    # Sahada 2026-11-07 17:51 / 17:56 / 18:05 (1.3.1): araç sabit hızla geçti.
+    # Yavaş gelirken "geçişten önceki" kareye uzakta girdi (plaka kutusuyla),
+    # gidince boş şerit o kareye benzemedi → "araç durdu", durulan karede araç
+    # yok. 1.3.1 hiçbir şey göndermedi (arka_kutulu + "önce de vardı").
+    g = _arac(_gecis(), durgun=0.0, enb=0.94, arka=[UZAK + (0.45,)], insan=0.84,
+              kirpik=_kare(6))
+    g.arka_kutulu = True
+    g.arka_plaka_sayisi = 1
     g.durgun_kirpik = _kare(8)
     gonder, satir = _karar(g, durdu=True, arac_boyu=True, **ESIK)
-    assert [x.tur for x in gonder] == ["OKUNAMADI"]
-    assert any(okuma.ARAC_YETISMEDI_ISARETI in s for s in satir), satir
-    # Araç bulucu yok / bozuk (eşik verilmedi): ölçüm ne derse desin 1.3.0 kuralı.
-    g = _arac(_gecis(), durgun=0.0, enb=0.0, arka=0.0)
-    g.durgun_kirpik = _kare(8)
-    assert [x.tur for x in _karar(g, durdu=True, arac_boyu=True)[0]] == ["OKUNAMADI"]
+    assert [(x.tur, x.tahmin, x.zaman) for x in gonder] == [("OKUNAMADI", None, _z(0))], satir
+    assert int(gonder[0].kirpik[0, 0, 0]) == 6                 # aracın göründüğü kare
+    assert any(okuma.PLAKASIZ_ARAC_ISARETI in s for s in satir), satir
+    # Teşhis: önceki karede ne vardı, kayda yazılır (yalnızca sayılar).
+    assert any("önce: 1 araç, 1 plaka kutusu" in s for s in satir), satir
 
 
 def test_karar_gecen_plakasiz_arac_personele():
     # Sahibin kararı (2026-11-07): durmadan geçen ve plakası hiç okunamayan
     # ARAÇ da personele (1.3.0'da sessizce düşüyordu). Fotoğraf = aracın en
     # iyi görüldüğü kare, son kare değil (araç gitmiş olabilir).
-    g = _arac(_gecis(), enb=0.85, arka=0.02, insan=0.1, kirpik=_kare(6))
+    g = _arac(_gecis(), enb=0.85, insan=0.1, kirpik=_kare(6))
     g.son_kirpik = _kare(9)
     gonder, satir = _karar(g, durdu=False, arac_boyu=True, **ESIK)
     assert [(x.tur, x.tahmin, x.zaman) for x in gonder] == [("OKUNAMADI", None, _z(0))]
@@ -590,33 +763,60 @@ def test_karar_gecen_plakasiz_arac_personele():
     assert not any(okuma.PLAKASIZ_ISARETI in s for s in satir), satir
 
 
-def test_karar_gecen_arac_her_kosul_gerekli():
-    tamam = dict(enb=0.85, arka=0.02)
+def test_karar_yeni_arac_kosullari():
+    tamam = dict(enb=0.85)
     durumlar = [
-        ("zayıf araç (gölge, kenar parçası)", dict(enb=0.50, arka=0.02), {}),
-        ("araç ölçülmedi", dict(enb=None, arka=0.02), {}),
-        ("arka plan ölçülmedi", dict(enb=0.85, arka=None), {}),
-        ("araç geçişten önce de oradaydı", dict(enb=0.85, arka=0.70), {}),
-        ("hareket küçük", tamam, dict(arac_boyu=False)),
-        ("önceki karede plakalı araç vardı (gidiş)", tamam, dict(arka_kutulu=True)),
-        ("gönderilmiş aracın ayrılışı", tamam, dict(ayrilis_sahne=True)),
-        ("araç bulucu yok / bozuk", tamam, dict(esiksiz=True)),
+        ("zayıf yeni araç (gölge, kenar parçası)", dict(enb=0.50), {}, []),
+        ("araç ölçülmedi", dict(enb=None), {}, []),
+        ("hareket küçük", tamam, dict(arac_boyu=False), []),
+        ("gönderilmiş aracın ayrılışı", tamam, dict(ayrilis_sahne=True), []),
+        ("araç bulucu yok / bozuk → 1.3.0 (geçen plakasız düşer)", tamam, dict(esiksiz=True), []),
+        # Önceki kare ölçülmedi: ne "yeni" bilinmez → 1.3.0 kuralı.
+        ("önceki kare ölçülmedi, geçti", dict(enb=0.85, arka=None), {}, []),
+        ("önceki kare ölçülmedi, durdu", dict(enb=0.85, durgun=0.0, arka=None),
+         dict(durdu=True), ["OKUNAMADI"]),
+        ("önceki kare ölçülmedi, durdu, önceki karede plaka", dict(enb=0.85, durgun=0.0, arka=None),
+         dict(durdu=True, arka_kutulu=True), []),
     ]
-    for ad, alan, ek in durumlar:
+    for ad, alan, ek, beklenen in durumlar:
         g = _arac(_gecis(), **alan)
+        g.durgun_kirpik = _kare(8)
         g.arka_kutulu = ek.pop("arka_kutulu", False)
         esik = {} if ek.pop("esiksiz", False) else ESIK
-        gonder, _ = _karar(g, durdu=False, **{"arac_boyu": True, **ek, **esik})
-        assert gonder == [], f"{ad}: {gonder}"
+        gonder, _ = _karar(g, **{"durdu": False, "arac_boyu": True, **ek, **esik})
+        assert [x.tur for x in gonder] == beklenen, f"{ad}: {gonder}"
+
+
+def test_karar_bulucuyla_onceki_karedeki_plaka_engel_degil():
+    # 1.3.0'ın gidiş kuralı (önceki karede plaka kutusu → gidiş) bulucu
+    # varken kullanılmaz: o kuralı sahada YAVAŞ GELEN araç tetikledi. Gidişin
+    # kendisi zaten kapalı: gönderilmiş araç ayrılış sayılır (yukarıda).
+    g = _arac(_gecis(), enb=0.85)
+    g.arka_kutulu = True
+    assert [x.tur for x in _karar(g, durdu=False, arac_boyu=True, **ESIK)[0]] == ["OKUNAMADI"]
+
+
+def test_karar_duran_arac_bilinmiyorsa_personele():
+    # Durulan kare ölçülemedi (işçi yetişmedi): personele (kaçırmak yerine),
+    # ve sahada teşhis için kayda yazılır.
+    g = _arac(_gecis(), durgun=None, enb=0.10)
+    g.durgun_kirpik = _kare(8)
+    gonder, satir = _karar(g, durdu=True, arac_boyu=True, **ESIK)
+    assert [x.tur for x in gonder] == ["OKUNAMADI"]
+    assert any(okuma.ARAC_YETISMEDI_ISARETI in s for s in satir), satir
+    # Araç bulucu yok / bozuk (eşik verilmedi): ölçüm ne derse desin 1.3.0 kuralı.
+    g = _arac(_gecis(), durgun=0.0, enb=0.0)
+    g.durgun_kirpik = _kare(8)
+    assert [x.tur for x in _karar(g, durdu=True, arac_boyu=True)[0]] == ["OKUNAMADI"]
 
 
 def test_karar_arac_bulucu_plakayi_engellemez():
     # Emin plaka da belirsiz plaka da araç bulucunun puanına BAKMAZ.
-    g = _arac(_gecis(), durgun=0.0, enb=0.0, arka=0.0)
+    g = _arac(_gecis(), durgun=0.0, enb=0.0)
     _oy(g, "34ABC123", [1, 2])
     gonder, _ = _karar(g, durdu=True, **ESIK)
     assert [(x.tur, x.plaka) for x in gonder] == [("PLAKA", "34ABC123")]
-    g = _arac(_gecis(), durgun=0.0, enb=0.0, arka=0.0)
+    g = _arac(_gecis(), durgun=0.0, enb=0.0)
     _oy(g, "34ABC123", [1], enk=0.96)
     g.oylama.kutu(_z(2), 1)
     gonder, _ = _karar(g, durdu=True, **ESIK)
@@ -625,7 +825,7 @@ def test_karar_arac_bulucu_plakayi_engellemez():
 
 def test_karar_bozuk_okuyucu_arac_bulucuya_bakmaz():
     # Okuyucu bozukken işçi iş almaz, araç bulucu da çalışmaz: 1.3.0 kuralı.
-    g = _arac(_gecis(), durgun=0.0, enb=0.0, arka=0.0)
+    g = _arac(_gecis(), durgun=0.0, enb=0.0)
     g.durgun_kirpik = _kare(4)
     assert [x.tur for x in _karar(g, bozuk=True, arac_boyu=True, **ESIK)[0]] == ["OKUNAMADI"]
 

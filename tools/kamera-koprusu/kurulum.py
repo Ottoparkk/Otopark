@@ -567,8 +567,11 @@ def kirpma_ve_esikler(rtsp: str) -> dict:
         print("  ! Kırpma seçilmedi — tüm kare kullanılacak, okuma daha kötü olur.")
     # Hariç alan da HER ZAMAN yazılır (boşsa ""), aynı sebeple: eski dosyadaki
     # hariç alan yeni kutunun içinde plakanın tam üstüne düşebilirdi.
-    if kutu and haric:
-        ayar["KIRPMA_HARIC"] = ",".join(str(v) for v in haric)
+    # 1.3.3: en çok 3 alan, ";" ile (tek alan 1.3.0 ile aynı metin).
+    import plaka
+    alanlar = plaka.haric_listesi(haric) if kutu else ()
+    if alanlar:
+        ayar["KIRPMA_HARIC"] = ";".join(",".join(str(v) for v in a) for a in alanlar)
         print(f"  ✓ Hariç alan: {ayar['KIRPMA_HARIC']}")
     else:
         ayar["KIRPMA_HARIC"] = ""
@@ -884,6 +887,7 @@ def yalniz_yonetici(yol: str, klasor: bool = False, herkes_okur: bool = False) -
 # thumbs.db'yi Windows'un kendisi yazar.
 PAKET_DOSYALARI = frozenset({
     "otoparkkamera.exe", "_internal", "oku-beni.txt",
+    "lisanslar",                                     # 1.3.0'dan beri (paketle.lisanslari_topla)
     "kare.jpg", "kirpik.jpg", "bos.jpg",            # --kare / --test / --bos
     "desktop.ini", "thumbs.db",
 })

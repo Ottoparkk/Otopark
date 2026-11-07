@@ -38,6 +38,21 @@ The crop still carries the accuracy: the plate must be big enough in it. Since
 1.3.0 the box can be drawn taller, with a **cut-out** over parked cars (see
 *Kırpma sayfası*).
 
+### Plate reader and vehicle finder in parallel (1.3.3)
+
+Up to 1.3.2 one worker read the plate and THEN ran YOLOX on each frame: on the
+site laptop a frame cost ~410 ms (~2.4 frames/s), so a passing plate got only
+3–4 chances, and the safety rule (2 sure views) was rarely met — cards like
+"34MSN927 — plaka tam olarak okunamadı" although the guess was right. Since
+1.3.3 `okuma.Isci` runs the two models in **separate threads, at the same
+time**, each with its own queue: plate reading never waits for YOLOX (the
+capture loop feeds a frame whenever the plate reader is free); YOLOX takes the
+newest frame it can, and both still get the before-frame and the stopped frame
+first (priority — now kept **in order**, up to 2, so a short pass cannot lose
+the before-frame). The decision waits for both (`bekleme_suresi` uses the
+slower one). On this PC: 1.6–1.8× more frames per second than one after the
+other. `--plaka` prints both times and the expected frame rate.
+
 ### Vehicle finder (1.3.1)
 
 On 1.3.0's first day (2026-11-07) two people standing still in front of the
@@ -61,6 +76,23 @@ no skipping: the plate finder once boxed something that was not a car).
   only if a vehicle is seen; a rolling plateless **vehicle** now goes to staff
   too (1.3.0 dropped it silently). When the finder is missing, broken or off,
   every decision is exactly 1.3.0's — a car is never lost because of it.
+
+**1.3.2 — only NEW vehicles count, and "new" is about WHERE.** On 1.3.1's
+first evening two cars rolled through and nothing was recorded. The log
+showed `araç durdu … gönderim yok` with vehicle 0.92–0.95: the frame
+"before the pass" (the last frame that differed little from the one before
+it) already held that same car, arriving slowly, so 1.3.0's departure rule
+(a plate box in that frame) and 1.3.1's "a vehicle was already there" check
+both said "nothing new" — and the empty lane afterwards did not match that
+frame, so the pass even looked "stopped". Both checks also looked at the
+whole picture, so a parked car in view would have blocked them too. Now the
+finder returns boxes; a box counts only if it is not at the same place as a
+box of the before-frame (IoU < 0.7 — a parked car overlaps itself ≥ 0.93
+frame to frame, a car that moved 30 % of its length ~0.54). With the finder,
+1.3.0's departure rule is not used (a sent car's departure is covered by the
+disarm + `ayrilis`); an unsent car leaving the lane becomes a card — safe
+direction. Every plateless decision logs what the before-frame held
+(`önce: N araç, M plaka kutusu`).
 
 Files: `plaka.py` (finder, reader, votes), `arac.py` (vehicle finder),
 `okuma.py` (one decision per pass), `giden.py` (the outbox), models in
@@ -109,7 +141,8 @@ Dört soru sorar, ikisi kameranın kendi kullanıcı adı ve şifresi:
 3. **Kırpma kutusu** — tarayıcıda canlı görüntü açılır, şeridi kapsayan
    dikdörtgeni **fareyle sürüklersiniz** (sol/sağ kenar şeridin genişliği,
    üst kenar araçların durduğu yerin biraz üstü). Park etmiş araçlar kutuya
-   giriyorsa **Hariç alan çiz** ile üstlerine ikinci bir dikdörtgen (1.3.0).
+   giriyorsa **Hariç alan çiz** ile her birinin üstüne bir dikdörtgen (1.3.0;
+   1.3.3'ten beri en çok 3, her biri ayrı silinir).
    Kutu 200 pikselin altına düşerse kırmızıya döner
 4. **Test** — bağlantı ve gizli anahtar doğrulanır; 1.3.0'dan beri sunucunun
    "okunamadı" bildirimini tanıdığı da sınanır (eski `kamera-webhook` →
@@ -430,7 +463,7 @@ the sent photo, and a plate touching its border counts as cut.
 
 ```bash
 export KIRPMA="820,540,600,220"
-export KIRPMA_HARIC="820,540,200,120"    # optional
+export KIRPMA_HARIC="820,540,200,120"    # optional; up to 3: "a,b,c,d;e,f,g,h" (1.3.3)
 python kopru.py --test
 ```
 
@@ -486,9 +519,11 @@ too — then:
 | a **sure** plate (see *How it reads plates*) | the plate, with the photo of its best read; `zaman` = when it was **first** read |
 | two different sure plates | both, in time order |
 | plate boxes in ≥ 2 frames, nothing sure | `okunamadi` + the best guess and its confidence + photo → staff |
-| a car-sized thing **stopped**, no plate box at all (and none in the background) | `okunamadi` + photo → staff — **1.3.1:** only if the vehicle finder sees a vehicle in the stopped frame (≥ `ARAC_BUL_ESIK`), or saw a clear one (≥ `ARAC_GECIS_ESIK`) in the pass that was not there before it; if the stopped frame was not measured in time, 1.3.0's rule (staff) |
-| the same, but **no vehicle** seen (people standing in front of the camera) | nothing; the log says `hareket — plaka görülmedi … — araç görülmedi (araç 0.10, insan 0.91)` |
-| **1.3.1:** a car-sized pass that did **not** stop, no plate read, a clear vehicle (≥ `ARAC_GECIS_ESIK`) that was not in the background | `okunamadi` + the frame where the vehicle was seen best → staff (`plakasız araç geçti`) |
+| a car-sized thing **stopped**, no plate box at all (and none in the background) — **without the vehicle finder** (missing / broken / off, or the before-frame was not measured) | `okunamadi` + photo → staff (1.3.0) |
+| **with the finder (1.3.2):** car-sized, no plate, stopped, and the stopped frame shows a **new** vehicle ≥ `ARAC_BUL_ESIK` | `okunamadi` + photo → staff (`plakasız araç durdu`) |
+| **with the finder:** car-sized, no plate, a **new** vehicle ≥ `ARAC_GECIS_ESIK` anywhere in the pass — stopped or not ("stopped" can be wrong when the car was already in the before-frame) | `okunamadi` + the frame where it was seen best → staff (`plakasız araç geçti`) |
+| **with the finder:** stopped, but the stopped frame was not measured in time | `okunamadi` + photo → staff (`araç bulucu durulan kareye yetişmedi`) |
+| **with the finder:** no new vehicle (people standing in front of the camera, shadows, a parked car) | nothing; the log says `hareket — plaka görülmedi … — araç görülmedi (araç 0.00, insan 0.91; önce: 1 araç, 0 plaka kutusu)` |
 | motion, no plate, nothing stopped (people, shadows, light) | nothing; the log says `hareket — plaka görülmedi` |
 | the departure of a stopped car that was sent | nothing (`gönderilmiş araç — tekrar gönderilmedi`) |
 | the same plate (or one character away) sent in the last 60 s | nothing |
@@ -553,7 +588,7 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | Variable | Default | What it does |
 |---|---|---|
 | `KIRPMA` | *(none)* | `x,y,w,h` in pixels. Unset = the whole frame, which works but reads worse, and no photo is stored. |
-| `KIRPMA_HARIC` | *(none)* | Cut-out inside the box, `x,y,w,h` full-frame pixels: painted grey, no motion, no plate, not in the photo. |
+| `KIRPMA_HARIC` | *(none)* | Cut-outs inside the box, `x,y,w,h` full-frame pixels, up to 3 separated by `;` (1.3.3): painted grey, no motion, no plate, not in the photo. A single rectangle is the same text as 1.3.0. |
 | `MAX_KENAR` | `1568` | Long-edge cap of the crop before anything looks at it. Thresholds measured by the installer assume this. |
 | `HAREKET_ESIGI` | `6.0` | Above this, something is moving. |
 | `DURGUN_ESIGI` | `2.0` | Below this, the scene is still. |
@@ -567,7 +602,7 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `PLAKA_BUL_ESIK` | `0.30` | Plate finder score floor. |
 | `PLAKA_OKU_ESIK` | `0.95` | Both crops' lowest character probability must reach this. |
 | `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
-| `PLAKA_IPLIK` | `1` | Reader threads. One is measured; the bridge is 24/7 on an old laptop. |
+| `PLAKA_IPLIK` | `2` | Threads for the plate reader and the vehicle finder. 1.3.2: on the site laptop (8 logical processors) a frame took 410 ms with 1, 268 ms with 2, 241 ms with 4 — 2 takes most of the gain and leaves cores for the camera stream. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
 | `ARAC_BUL` | `1` | `0` switches the vehicle finder (1.3.1) off: every decision is 1.3.0's. |
 | `ARAC_BUL_ESIK` | `0.35` | A stopped plateless thing counts as a vehicle at this score. Bake-off: cars 0.40–0.94, people ≤ 0.27. |
@@ -582,14 +617,14 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 33 senaryo
+python test_kopru.py            # yakalama döngüsü, 37 senaryo
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı, 141 birim testi
-python test_okuma.py            # geçiş kararları (okuma.py), 45 test
-python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 34 test
-python test_arac.py             # araç bulucu (arac.py), 12 test
+python test_kurulum.py          # kurulum tarafı, 142 birim testi
+python test_okuma.py            # geçiş kararları + iki iş parçacığı (okuma.py), 57 test
+python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 37 test
+python test_arac.py             # araç bulucu (arac.py), 15 test
 python test_giden.py            # gönderim kutusu (giden.py), 13 test
-python test_mutasyon.py         # 30 kural tek tek bozulur; her biri yakalanmalı
+python test_mutasyon.py         # 38 kural tek tek bozulur; her biri yakalanmalı
 ```
 
 `test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,
@@ -651,7 +686,7 @@ telemetrisinin kapalı açıldığını ve gerçek okuyucunun sabit bir girdide 
 yalnızca kesin cevapta silmeyi, geçici hatada beklemeyi, dolu kutuda alarmı
 (ama yazmayı) ve bozuk dosyanın silinmeyip ayrılmasını tutar.
 
-`test_kurulum.py`'deki 141 birim testi kurulum tarafını tutuyor — ayar yükleme,
+`test_kurulum.py`'deki 142 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu, kırpma sayfası (hariç alan dâhil),
 `--plaka` kipi, paket ön/son kontrolleri ve lisanslar. Orası bozulursa köprü
 hiç **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
@@ -745,15 +780,22 @@ bağlantıyı sıfırlıyor ve istemci 403'ü okuyamadan "bağlantı kesildi"
 alıyordu. Gerçek kullanımda yalnızca reddedilen istekler o yoldan geçer; testte
 `test_kirpma_sunucusu_bos_port_ve_belirtec` bu yüzden ara sıra düşüyordu.
 
-**Hariç alan (1.3.0).** Kutu çizildikten sonra **Hariç alan çiz**'e basıp
-kutunun içinde ikinci bir dikdörtgen çizilir (park etmiş araçların üstü);
-kırmızı taralı görünür, kutunun dışına taşan kısmı kesilir — görülen =
-kaydedilen. **Hariç alanı sil** onu kaldırır; **Tüm kareyi kullan** hariç alan
-göndermez. Kutunun dışında kalan ya da kutunun tamamını kaplayan hariç alanla
-Kaydet kapalıdır; sunucu tarafı (`_kutu_coz`) aynı ikisini 400 ile reddeder ve
-köprünün kuralıyla (`kopru.haric_metni_coz`) birebir aynıdır — 3000 rastgele
-kutuda sınandı. Gövde geriye uyumlu: `null` | `{x,y,w,h}` |
-`{x,y,w,h,"haric":{x,y,w,h}}`. Sihirbaz `KIRPMA_HARIC`'i HER ZAMAN yazar (yoksa
+**Hariç alan (1.3.0; 1.3.3'ten beri en çok 3).** Kutu çizildikten sonra
+**Hariç alan çiz**'e basıp kutunun içinde dikdörtgen çizilir (park etmiş
+araçların üstü); kırmızı taralı ve numaralı görünür, kutunun dışına taşan
+kısmı kesilir — görülen = kaydedilen. Üçüncüden sonra düğme kapanır. Her
+alanın listede kendi **Hariç alanı sil** düğmesi vardır; **Tüm kareyi kullan**
+hariç alan göndermez. Biri kutunun dışında kalan ya da kutunun tamamını
+BİRLİKTE kaplayan alanlarla Kaydet kapalıdır (üst üste binenler iki kez
+sayılmaz — sayfa, sunucu ve köprü aynı birleşim hesabını yapar); sunucu tarafı
+(`_kutu_coz`) aynısını 400 ile reddeder ve köprünün kuralıyla
+(`kopru.haric_metni_coz`) birebir aynıdır — 3000 rastgele kutu/liste ile
+sınandı, sayfa gerçek tarayıcıda denendi. Gövde geriye uyumlu: `null` |
+`{x,y,w,h}` | `{x,y,w,h,"haric":{x,y,w,h}}` | `{x,y,w,h,"haric":[{x,y,w,h}, …]}`.
+**Neden 1.3.3:** plakası okunabilen park etmiş bir araç kadrajdaysa, başka bir
+araç geçerken onun plakası da okunup gönderiliyordu (en çok dakikada bir) —
+tek kapıda park etmiş araca bilet açar ya da kapatırdı (`test_kopru
+ikinci_haric_park_plakali`). Sihirbaz `KIRPMA_HARIC`'i HER ZAMAN yazar (yoksa
 `""`): yeniden kurulumda eski hariç alan yeni kutuya geri dönmesin.
 
 Eşikler **seçilen kutunun içinde** ölçülür (hariç alan griye boyanmış olarak): köprü hareketi kırpılmış görüntüde

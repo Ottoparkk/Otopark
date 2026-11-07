@@ -2016,11 +2016,19 @@ def test_kirpma_sunucusu_haric_alan() -> None:
     kurulum bittikten sonra başlamayan bir köprüden iyidir.
     """
     kutu = {"x": 100, "y": 100, "w": 600, "h": 400}
+    # 1.3.3: sonuç her zaman dikdörtgen LİSTESİ (en çok 3); eski tek nesne de
+    # kabul edilir (eski sayfa / eski kurulum programı).
     iyi = [
-        ({"x": 100, "y": 100, "w": 200, "h": 150}, (100, 100, 200, 150)),
+        ({"x": 100, "y": 100, "w": 200, "h": 150}, ((100, 100, 200, 150),)),
         # Kutunun dışına taşan kısım kırpılır.
-        ({"x": 50, "y": 60, "w": 250, "h": 190}, (100, 100, 200, 150)),
-        ({"x": 600, "y": 400, "w": 500, "h": 500}, (600, 400, 100, 100)),
+        ({"x": 50, "y": 60, "w": 250, "h": 190}, ((100, 100, 200, 150),)),
+        ({"x": 600, "y": 400, "w": 500, "h": 500}, ((600, 400, 100, 100),)),
+        ([{"x": 100, "y": 100, "w": 200, "h": 150}], ((100, 100, 200, 150),)),
+        ([{"x": 100, "y": 100, "w": 200, "h": 150}, {"x": 50, "y": 450, "w": 100, "h": 100}],
+         ((100, 100, 200, 150), (100, 450, 50, 50))),
+        ([{"x": 100, "y": 100, "w": 50, "h": 50}, {"x": 300, "y": 100, "w": 50, "h": 50},
+          {"x": 500, "y": 100, "w": 50, "h": 50}],
+         ((100, 100, 50, 50), (300, 100, 50, 50), (500, 100, 50, 50))),
     ]
     for haric, beklenen in iyi:
         ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
@@ -2035,16 +2043,17 @@ def test_kirpma_sunucusu_haric_alan() -> None:
             sunucu.shutdown()
             sunucu.server_close()
 
-    # "haric": null = çizilmedi.
-    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
-    try:
-        kod, _ = _istek(sunucu.server_address[1], "/kaydet",
-                        json.dumps({**kutu, "haric": None}).encode(),
-                        {"X-Otopark-Belirtec": belirtec})
-        assert kod == 200 and sonuc["haric"] is None, (kod, sonuc)
-    finally:
-        sunucu.shutdown()
-        sunucu.server_close()
+    # "haric": null ya da [] = çizilmedi.
+    for bos in (None, []):
+        ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+        try:
+            kod, _ = _istek(sunucu.server_address[1], "/kaydet",
+                            json.dumps({**kutu, "haric": bos}).encode(),
+                            {"X-Otopark-Belirtec": belirtec})
+            assert kod == 200 and sonuc["haric"] is None, (bos, kod, sonuc)
+        finally:
+            sunucu.shutdown()
+            sunucu.server_close()
 
     kotu = [
         {"x": 0, "y": 0, "w": 50, "h": 50},              # kutuyla kesişmiyor
@@ -2058,6 +2067,12 @@ def test_kirpma_sunucusu_haric_alan() -> None:
         {"x": 100, "y": 100, "w": 50},
         [100, 100, 50, 50],
         "100,100,50,50",
+        # 1.3.3: liste
+        [{"x": 100, "y": 100, "w": 50, "h": 50}] * 4,                       # 3'ten fazla
+        [{"x": 100, "y": 100, "w": 50, "h": 50}, {"x": 0, "y": 0, "w": 50, "h": 50}],  # biri dışarıda
+        [{"x": 100, "y": 100, "w": 50, "h": 50}, {"x": 100, "y": 100, "w": 0, "h": 5}],  # biri bozuk
+        # Tek tek değil ama BİRLİKTE kutunun tamamını örtüyor.
+        [{"x": 100, "y": 100, "w": 300, "h": 400}, {"x": 400, "y": 100, "w": 300, "h": 400}],
     ]
     ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
     try:
@@ -2070,13 +2085,15 @@ def test_kirpma_sunucusu_haric_alan() -> None:
         sunucu.shutdown()
         sunucu.server_close()
 
-    # Sayfa iki modu da sunar: hariç alan çizme ve silme.
+    # Sayfa iki modu da sunar: hariç alan çizme ve silme (1.3.3: her alan
+    # ayrı silinir, en çok 3).
     ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
     try:
         kod, sayfa = _istek(sunucu.server_address[1], "/")
         assert kod == 200
         metin = sayfa.decode("utf-8")
         assert "Hariç alan çiz" in metin and "Hariç alanı sil" in metin, metin[:200]
+        assert "haricSil(" in metin and "HARIC_EN_COK=3" in metin, metin[:200]
     finally:
         sunucu.shutdown()
         sunucu.server_close()
@@ -2677,6 +2694,17 @@ def test_haric_alan_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
         assert yeni["KIRPMA"] == "10,20,600,400", yeni
         assert yeni["KIRPMA_HARIC"] == "10,20,200,150", yeni
         assert "10,20,200,150" in yakala.getvalue(), yakala.getvalue()
+
+        # 1.3.3: birden çok alan ";" ile yazılır; tek alan eskisiyle aynı metin.
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400),
+                                                 ((10, 20, 200, 150), (300, 50, 100, 80)), [])
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        assert yeni["KIRPMA_HARIC"] == "10,20,200,150;300,50,100,80", yeni
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), ((10, 20, 200, 150),), [])
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        assert yeni["KIRPMA_HARIC"] == "10,20,200,150", yeni
 
         kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), None, [])
         with redirect_stdout(_io.StringIO()):
@@ -3343,6 +3371,14 @@ def test_program_klasoru_yalnizca_kendi_klasorumuzse_kisitlanir() -> None:
         assert sonuc is False and komutlar == [], (ad, dosyalar, komutlar)
         assert "C:\\Otopark" in cikti, cikti
 
+    # Sahada 2026-11-07 (1.3.1 kurulumu): 1.3.0'dan beri paketin kökünde
+    # `lisanslar\` klasörü var (paketle.lisanslari_topla) ama izin listesinde
+    # yoktu — HER 1.3.x kurulumunda klasör kısıtlanmadan kalıyordu.
+    k = _program_klasoru("OtoparkKamera", ["OtoparkKamera.exe", "OKU-BENI.txt",   # + _internal
+                                           "lisanslar"])
+    sonuc, komutlar, cikti = _kisitla(k)
+    assert sonuc is True and len(komutlar) == 1, (komutlar, cikti)
+
     # Kaynaktan çalışırken (paketlenmemiş) hiçbir şeye dokunulmaz.
     k = _program_klasoru("OtoparkKamera", ["OtoparkKamera.exe"])
     sonuc, komutlar, _ = _kisitla(k, donmus=False)
@@ -3999,14 +4035,44 @@ def test_kirpma_metinleri_cozulur() -> None:
     assert h is None and "KIRPMA yok" in uyari, uyari
     h, uyari = kopru.haric_metni_coz("0,0,50,50", kutu)
     assert h is None and "dışında" in uyari, uyari
-    assert kopru.haric_metni_coz("100,100,200,150", kutu) == ((100, 100, 200, 150), None)
-    for bozuk in ("a,b,c,d", "1,2,3", "100,100,0,5", "90,90,700,500", "100,100,600,400"):
+    # 1.3.3: sonuç dikdörtgen LİSTESİ; tek dikdörtgenli eski metin aynen çalışır.
+    assert kopru.haric_metni_coz("100,100,200,150", kutu) == (((100, 100, 200, 150),), None)
+    assert kopru.haric_metni_coz("100,100,200,150;400,300,100,50", kutu) == \
+        (((100, 100, 200, 150), (400, 300, 100, 50)), None)
+    assert kopru.haric_metni_coz(" 100,100,50,50 ; 300,100,50,50;500,100,50,50 ", kutu) == \
+        (((100, 100, 50, 50), (300, 100, 50, 50), (500, 100, 50, 50)), None)
+    # Biri kutunun dışında: o düşer, uyarılır, öbürü kalır.
+    h, uyari = kopru.haric_metni_coz("0,0,50,50;100,100,200,150", kutu)
+    assert h == ((100, 100, 200, 150),) and "dışında" in uyari, (h, uyari)
+    for bozuk in ("a,b,c,d", "1,2,3", "100,100,0,5", "90,90,700,500", "100,100,600,400",
+                  "100,100,50,50;100,100,50,50;100,100,50,50;100,100,50,50",   # 4 alan
+                  "100,100,50,50;",                                           # boş parça
+                  "100,100,300,400;400,100,300,400"):                         # birlikte tamamı
         try:
             kopru.haric_metni_coz(bozuk, kutu)
         except ValueError as e:
             assert "KIRPMA_HARIC" in str(e), e
         else:
             raise AssertionError(f"kabul edildi: {bozuk!r}")
+
+
+def test_kirp_maskeli_birden_cok_alan() -> None:
+    """1.3.3: her kesilen köşe griye boyanır ve ölçeklenmiş kırpıntıya taşınır."""
+    import numpy as np
+    _kopru_yuklu()
+    import kopru
+    kare = np.full((200, 300, 3), 255, np.uint8)
+    kutu = (0, 0, 300, 200)
+    haric = ((10, 10, 50, 40), (200, 100, 60, 60))
+    k = kopru.kirp_maskeli(kare, kutu, haric)
+    assert (k[10:50, 10:60] == 114).all() and (k[100:160, 200:260] == 114).all()
+    assert (k[0:10, :] == 255).all() and (k[60:100, 70:190] == 255).all()
+    assert (kare == 255).all()                                   # kameranın karesi değişmedi
+    assert kopru.haric_olcekli(kare.shape, kutu, haric, (100, 150, 3)) == \
+        ((5.0, 5.0, 25.0, 20.0), (100.0, 50.0, 30.0, 30.0))
+    # Tek dikdörtgen (eski biçim) aynen çalışır.
+    k1 = kopru.kirp_maskeli(kare, kutu, (10, 10, 50, 40))
+    assert (k1[10:50, 10:60] == 114).all() and (k1[100:160, 200:260] == 255).all()
 
 
 def test_kirpma_sayfasinin_kaydettigi_haric_kopruce_kabul_edilir() -> None:
@@ -4025,13 +4091,16 @@ def test_kirpma_sayfasinin_kaydettigi_haric_kopruce_kabul_edilir() -> None:
     for _ in range(3000):
         kutu = {"x": r.randint(0, 900), "y": r.randint(0, 500),
                 "w": r.randint(1, 1200), "h": r.randint(1, 700)}
-        haric = {"x": r.randint(0, 1500), "y": r.randint(0, 900),
-                 "w": r.randint(1, 900), "h": r.randint(1, 600)}
+        # 1.3.3: tek nesne (eski) ya da 1-3 dikdörtgenlik liste.
+        alanlar = [{"x": r.randint(0, 1500), "y": r.randint(0, 900),
+                    "w": r.randint(1, 900), "h": r.randint(1, 600)}
+                   for _ in range(r.randint(1, 3))]
+        haric = alanlar[0] if r.random() < 0.3 else alanlar
         gecerli, k, h = kirpma_sunucu._kutu_coz({**kutu, "haric": haric})
         if not gecerli:
             continue
         kabul += 1
-        metin = ",".join(str(v) for v in h)
+        metin = ";".join(",".join(str(v) for v in d) for d in h)
         assert kopru.haric_metni_coz(metin, k) == (h, None), (kutu, haric, h)
     assert kabul > 500, kabul
 
@@ -4165,6 +4234,10 @@ def test_plaka_kipi_emin_okuma() -> None:
     assert "hazır" in c.lower(), c
     # 1.3.1: araç bulucunun puanı da her satırda; ms ikisinin toplam süresi.
     assert "Araç bulucu hazır" in c and "araç 0.90" in c, c
+    # 1.3.3: iki model köprüde AYNI ANDA çalışır — ayrı süreler ve köprünün
+    # yakalayacağı kare hızı (yavaş olana göre) yazılır.
+    assert "plaka okuyucu ortalama" in c and "araç bulucu ortalama" in c, c
+    assert "kare/sn" in c, c
 
 
 def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:
@@ -4172,6 +4245,7 @@ def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:
     kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.97)], arac_hata=True)
     assert kod == 0 and "EMİN" in c, c
     assert "Araç bulucu çalışmıyor" in c and "araç 0." not in c, c
+    assert "kare/sn" in c and "araç bulucu ortalama" not in c, c
 
 
 def test_plaka_kipi_belirsiz_ve_kesik() -> None:
@@ -4292,6 +4366,10 @@ def test_paket_lisanslari_toplanir() -> None:
     assert "numpy" in kokler, kokler
     d = tempfile.mkdtemp()
     klasor = paketle.lisanslari_topla(d, kokler)
+    # Paketin kökündeki bu klasör kurulumun izin listesinde olmalı; yoksa
+    # program klasörü hiç kısıtlanmaz (sahada 2026-11-07).
+    import kurulum
+    assert os.path.basename(klasor).lower() in kurulum.PAKET_DOSYALARI, klasor
     dosyalar = sorted(os.listdir(klasor))
     with open(os.path.join(klasor, "LISANSLAR.txt"), encoding="utf-8") as f:
         dizin = f.read()

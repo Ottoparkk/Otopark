@@ -44,6 +44,10 @@ GECIYOR, GOLGE, GURULTU = "geciyor", "golge", "gurultu"
 #   YAYA_GELIYOR / YAYA_DURDU  araç boyunda ama araç OLMAYAN bir şey (koyu,
 #            plakasız) gelir ve DURUR — kameranın önünde duran insanlar (1.3.1).
 YAYA_GELIYOR, YAYA_DURDU = "yaya_geliyor", "yaya_durdu"
+#   SURUNUYOR / KACIYOR  plakasız araç önce ÇOK YAVAŞ girer (kare kare değişim
+#            DURGUN_ESIGI'nin altında: "geçişten önceki" kareye kendisi girer),
+#            sonra hızlanıp geçer ve gider (sahada 2026-11-07 akşamı, 1.3.1).
+SURUNUYOR, KACIYOR = "surunuyor", "kaciyor"
 
 PLAKALAR = ["34ABC123", "06KZ4581", "35PA052", "81Z9999", "01A12345"]
 
@@ -282,6 +286,35 @@ SENARYOLAR = {
         gonderim_sayisi=1, kirpma="0,0,640,480", tam_arac=True,
         kayitta_sirayla=["plakasız araç geçti"],
     ),
+    # ---- 1.3.2: "önce de vardı" kontrolü YERE bakar --------------------------
+    # Sahada 2026-11-07 akşamı iki araç kayıtsız geçti: yavaş yaklaşan araç
+    # "geçişten önceki" kareye girdi, köprü onu "zaten oradaydı" saydı; araç
+    # gidince boş şerit o kareye benzemedi ve kayıtta "araç durdu" yazdı.
+    "yavas_gelen": dict(
+        sahne=[(0, 1, BOS), (1, 4, SURUNUYOR), (4, 4.9, KACIYOR), (4.9, 8, BOS)],
+        sure=8.0, pencereler=[(4.9, 7.0)], personele=[(4.9, 7.0, None)],
+        gonderim_sayisi=1, kayitta_sirayla=["plakasız araç geçti"],
+    ),
+    # Kadrajda hep duran (park etmiş) bir araç başka araçların kuralını
+    # kapatmamalı: plakasız geçen araç yine personele ...
+    "park_etmis_arac_gecen": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)], park_arac=True,
+        sure=6.0, pencereler=[(2.4, 4.0)], personele=[(2.4, 4.0, None)], gonderim_sayisi=1,
+    ),
+    # 1.3.3: en çok 3 kesilen köşe. Plakası OKUNABİLEN park etmiş araç 2.
+    # alanın içinde; başka bir araç geçerken onun plakası ASLA gitmemeli
+    # (tek kapıda park etmiş araca bilet açar / kapatırdı).
+    "ikinci_haric_park_plakali": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR, 0), (2.4, 6, BOS)], park_plakali=3,
+        sure=6.0, pencereler=[(2.4, 3.8)], plakalar=[(2.4, 3.8, 0)], gonderim_sayisi=1,
+        kirpma="0,0,640,480", haric="560,0,80,60;0,395,330,85", hic_gitmez=[3],
+    ),
+    # ... ve yanında duran insan, park etmiş araç yüzünden kayıt açmamalı.
+    "park_etmis_arac_yaya": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, YAYA_GELIYOR), (1.8, 6, YAYA_DURDU)], park_arac=True,
+        sure=6.0, pencereler=[], gonderim_sayisi=0, gonderilmez=[(0, 6)],
+        kayitta_sirayla=["araç görülmedi"],
+    ),
 }
 
 KESKIN_ARALIK = 130
@@ -346,17 +379,31 @@ class SahtePlakaci:
 
 class SahteArac:
     """
-    arac.AracBulucu yerine: araç gövdesi (açık gri, ≥200) kırpıntının ne
-    kadarını kaplıyorsa o kadar "araç". Koyu şekil (yaya, gölge) ve boş
-    şerit 0. Tam görünen araç ≈0.94, yarısı görünen ≈0.47 — en iyi kare
-    aracın tamamını gösteren karedir.
+    arac.AracBulucu yerine: her açık gri (≥200) bölge bir araç kutusu; puan
+    bölgenin kırpıntıdaki payıyla büyür (0.3 + 1.6 × pay): tam görünen araç
+    ≈0.92, park etmiş köşedeki araç ≈0.47. Koyu şekil (yaya, gölge) ve boş
+    şerit hiç kutu vermez. En iyi kare aracın en büyük göründüğü karedir.
     """
 
     esik, gecis_esik = 0.35, 0.60
 
+    def kutular(self, kirpik: np.ndarray, haric):
+        import cv2 as _cv2
+        import arac as _a
+        maske = (kirpik.min(axis=2) >= 200).astype(np.uint8)
+        n, _, st, _ = _cv2.connectedComponentsWithStats(maske)
+        alan = float(kirpik.shape[0] * kirpik.shape[1])
+        kutular = []
+        for i in range(1, n):
+            x, y, w, h, a = (int(v) for v in st[i])
+            if a / alan >= 0.01:
+                kutular.append(_a.AracKutu(float(x), float(y), float(x + w), float(y + h),
+                                           min(0.99, 0.3 + 1.6 * a / alan)))
+        return sorted(kutular, key=lambda k: -k.skor), 0.0
+
     def skor(self, kirpik: np.ndarray, haric):
-        oran = float((kirpik.min(axis=2) >= 200).mean())
-        return (0.0 if oran < 0.05 else min(0.95, oran * 2.4)), 0.0
+        kutular, insan = self.kutular(kirpik, haric)
+        return (kutular[0].skor if kutular else 0.0), insan
 
 
 def hepsini_kos() -> int:
@@ -500,9 +547,28 @@ def tek_kos(ad: str) -> int:
         doku = np.dstack([g, g, g])
 
     def kare():
+        f = _kare()
+        if S.get("park_arac"):
+            # Hep orada duran araç: alt şeritte, geçen aracın yolundan ayrık.
+            f[420:480, 100:640] = 220
+        if S.get("park_plakali") is not None:
+            # Plakası okunabilen park etmiş araç (sol altta, 2. kesilen köşede).
+            f[405:470, 20:310] = 220
+            for c in range(60, 260, 12):
+                f[415:455, c:c + 6] = isaret(S["park_plakali"])
+        return f
+
+    def _kare():
         t = time.monotonic() - T0
         e, a, b, no = evre(t)
         f = doku.copy() if doku is not None else np.full((480, 640, 3), 100, np.uint8)
+        if e == SURUNUYOR:
+            # 25 px/sn: kare kare değişim ~0.1 (DURGUN_ESIGI 2'nin çok altında).
+            # Kadrajın tamamen dışından başlar: aniden belirmez.
+            return gecen_ciz(f, int(-400 + 25 * (t - a)), deger=220, no=None, keskin=True)
+        if e == KACIYOR:
+            return gecen_ciz(f, int(-325 + 1025 * (t - a) / (b - a)), deger=220, no=None,
+                             keskin=True)
         if e == BOS:
             return f
         if e == GURULTU:
@@ -607,6 +673,9 @@ def tek_kos(ad: str) -> int:
         if icinde:
             fail(f"{a}-{b}s arasında gönderim olmamalıydı, {len(icinde)} var "
                  f"(t={', '.join('%.2f' % g['t'] for g in icinde)})")
+    for no in S.get("hic_gitmez", []):
+        if any(g["plaka"] == PLAKALAR[no] for g in gonderimler):
+            fail(f"{PLAKALAR[no]} (kesilen köşedeki park etmiş araç) gönderildi")
     if any(g["foto_var"] for g in gonderimler):
         fail("okunacak fotoğraf (foto_base64) gönderildi — 1.3.0 bulutta okutmaz")
     if S.get("tek") and len(tekil) != 1:

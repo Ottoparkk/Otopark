@@ -152,6 +152,42 @@ def test_haric_orani():
     assert plaka.haric_orani(K(10, 10, 10, 10, 0.9), (0, 0, 50, 50)) == 0.0   # alansız kutu
 
 
+# ---- 1.3.3: en çok 3 kesilen köşe (park etmiş araçların plakaları) --------
+
+def test_haric_listesi_tek_ve_cok():
+    # TEK yer iki biçimi ayırır: tek dikdörtgen (eski) ya da dikdörtgen listesi.
+    assert plaka.haric_listesi(None) == ()
+    assert plaka.haric_listesi(()) == ()
+    assert plaka.haric_listesi((0, 0, 50, 10)) == ((0, 0, 50, 10),)
+    assert plaka.haric_listesi((0.5, 0.0, 50.0, 10.0)) == ((0.5, 0.0, 50.0, 10.0),)
+    assert plaka.haric_listesi(np.array([1, 2, 3, 4])) == ((1, 2, 3, 4),)
+    iki = ((0, 0, 50, 10), (60, 0, 5, 5))
+    assert plaka.haric_listesi(iki) == iki
+    assert plaka.haric_listesi([[0, 0, 50, 10], [60, 0, 5, 5]]) == iki
+
+
+def test_haric_orani_birlesim_cift_sayilmaz():
+    # Üst üste binen iki kesilen köşe: kesişim BİR kez sayılır (toplam değil).
+    K = plaka.Kutu
+    k = K(0, 0, 100, 100, 0.9)
+    assert plaka.haric_orani(k, ((0, 0, 60, 100), (40, 0, 60, 100))) == 1.0   # toplam 1.2 olurdu
+    assert plaka.haric_orani(k, ((0, 0, 50, 100), (200, 0, 10, 10))) == 0.5   # ikincisi uzakta
+    uc = ((0, 0, 50, 50), (25, 25, 50, 50), (0, 25, 50, 25))
+    # Birleşim: 2500 + 2500 + 1250 − (625 + 625 + 1250) + 625 = 4375.
+    assert abs(plaka.haric_orani(k, uc) - 0.4375) < 1e-12
+    assert plaka.kesilen_alan(0, 0, 100, 100, uc) == 4375
+
+
+def test_tam_plaka_ikinci_ve_ucuncu_haric_alan():
+    en, boy = 1568, 668
+    K = plaka.Kutu
+    haric = ((0, 0, 100, 100), (1000, 400, 300, 200), (600, 0, 100, 50))
+    assert not plaka.tam_mi(K(1100, 450, 1250, 490, 0.9), en, boy, haric)   # 2. alanın içinde
+    assert not plaka.tam_mi(K(560, 52, 640, 90, 0.9), en, boy, haric)       # 3. alana 2 px (pay 6.7)
+    assert plaka.tam_mi(K(560, 60, 640, 90, 0.9), en, boy, haric)           # 10 px: payın dışında
+    assert plaka.tam_mi(K(300, 300, 450, 340, 0.9), en, boy, haric)         # hepsinden uzak
+
+
 def test_genislet():
     K = plaka.Kutu
     g = plaka.genislet(K(100, 100, 200, 120, 0.7), 0.10, 0.15, 1000, 1000)
@@ -332,7 +368,8 @@ def test_ayarlar_varsayilan_ve_ortam():
         a, uyarilar = plaka.calisma_ayarlari()
         assert uyarilar == [] and a["acik"] is True
         assert a["bul_esik"] == 0.30 and a["oku_esik"] == 0.95 and a["tek_esik"] == 0.99
-        assert a["iplik"] == 1 and a["bekle_sn"] == 0.4
+        # 1.3.2: sahadaki dizüstünde 1 iplik 410 ms, 2 iplik 268 ms (2026-11-07).
+        assert a["iplik"] == 2 and a["bekle_sn"] == 0.4
         os.environ["PLAKA_BUL"] = "0"
         os.environ["PLAKA_OKU_ESIK"] = "0.97"
         a, uyarilar = plaka.calisma_ayarlari({"PLAKA_OKU_ESIK": "0.5", "PLAKA_IPLIK": "2"})
@@ -349,7 +386,7 @@ def test_ayarlar_bozuk_deger_cokmez():
     try:
         a, uyarilar = plaka.calisma_ayarlari({"PLAKA_OKU_ESIK": "abc", "PLAKA_IPLIK": "0",
                                                "PLAKA_BUL_ESIK": "1.5", "PLAKA_BEKLE_SN": "-1"})
-        assert a["oku_esik"] == 0.95 and a["iplik"] == 1 and a["bul_esik"] == 0.30 and a["bekle_sn"] == 0.4
+        assert a["oku_esik"] == 0.95 and a["iplik"] == 2 and a["bul_esik"] == 0.30 and a["bekle_sn"] == 0.4
         assert len(uyarilar) == 4 and all("PLAKA_" in u for u in uyarilar), uyarilar
     finally:
         for k, v in eski.items():

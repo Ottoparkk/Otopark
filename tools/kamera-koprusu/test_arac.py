@@ -119,6 +119,53 @@ def test_skorla_kesilen_koseyi_atlar():
     assert abs(a - 0.5) < 1e-6, a
 
 
+# ------------------------------------------------------- kutular (1.3.2) ---
+
+def test_ortusme():
+    K = arac.AracKutu
+    a = K(0, 0, 100, 100, 0.9)
+    assert arac.ortusme(a, a) == 1.0
+    assert arac.ortusme(a, K(200, 0, 300, 100, 0.9)) == 0.0
+    assert abs(arac.ortusme(a, K(50, 0, 150, 100, 0.9)) - 50 / 150) < 1e-9
+    assert arac.ortusme(a, K(10, 10, 10, 50, 0.9)) == 0.0          # alansız kutu
+
+
+def test_kutulari_coz_nms_ve_esik():
+    # Aynı aracın iki komşu ızgara adayı tek kutu olur (NMS); eşik altı ve
+    # araç olmayan sınıf kutu vermez; insan puanı ayrıca döner.
+    i8 = 52 * 5 + 3
+    h = _ham((i8, 2, 1.0, 0.9, (0.5, 0.5, np.log(10), np.log(4))),
+             (i8 + 1, 2, 1.0, 0.8, (-0.5, 0.5, np.log(10), np.log(4))),   # aynı kutu, komşu hücre
+             (52 * 40 + 40, 7, 1.0, 0.6, (0.5, 0.5, 0.0, 0.0)),            # başka yerde kamyon
+             (52 * 20 + 20, 2, 1.0, 0.05, (0.5, 0.5, 0.0, 0.0)),           # eşik altı
+             (52 * 30 + 30, 0, 1.0, 0.7, (0.5, 0.5, 0.0, 0.0)))            # insan
+    kutular, insan = arac.kutulari_coz(h, 0.5, 800, 600, None)
+    assert [round(k.skor, 3) for k in kutular] == [0.9, 0.6], kutular
+    assert np.allclose(kutular[0][:4], (0, 56, 136, 120)), kutular[0]
+    assert abs(insan - 0.7) < 1e-6
+    # Kesilen köşedeki kutu düşer.
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, (0, 50, 200, 100))
+    assert [round(k.skor, 3) for k in kutular] == [0.6], kutular
+
+
+def test_kesilen_koseler_birden_cok():
+    # 1.3.3: en çok 3 kesilen köşe; araç kutusu HERHANGİ birinin (birleşimin)
+    # içinde kalıyorsa düşer — üst üste binenler iki kez sayılmaz.
+    i8 = 52 * 5 + 3                      # r=0.5 → (0, 56, 136, 120)
+    h = _ham((i8, 2, 1.0, 0.9, (0.5, 0.5, np.log(10), np.log(4))),
+             (52 * 40 + 40, 7, 1.0, 0.5, (0.5, 0.5, 0.0, 0.0)))
+    ikinci = ((600, 500, 50, 50), (0, 50, 200, 100))              # araç 2. alanın içinde
+    assert abs(arac.skorla(h, 0.5, 800, 600, ikinci)[0] - 0.5) < 1e-6
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, ikinci)
+    assert [round(k.skor, 3) for k in kutular] == [0.5], kutular
+    # İki yarım alan birlikte kutunun tamamını örter → düşer (tek tek %50).
+    yarim = ((0, 50, 68, 100), (68, 50, 100, 100))
+    assert abs(arac.skorla(h, 0.5, 800, 600, yarim)[0] - 0.5) < 1e-6
+    # Aynı yarı iki kez: birleşim %50 → kalır (toplam %100 sayılsaydı düşerdi).
+    ayni = ((0, 50, 68, 100), (0, 50, 68, 100))
+    assert abs(arac.skorla(h, 0.5, 800, 600, ayni)[0] - 0.9) < 1e-6
+
+
 # ------------------------------------------------------------------ ayarlar ---
 
 def _ortamsiz(f):
@@ -264,6 +311,13 @@ def test_gercek_model_bos_sahne_ve_altin_deger():
     h, w = img.shape[:2]
     a2, _ = b.skor(img, (w // 2, 0, w - w // 2, h // 2))
     assert a2 < 0.10, (a2, a)
+    # 1.3.2: kutular — en güçlüsü aynı puanla, aracın yerinde (sağ üst).
+    kutular, _ = b.kutular(img, None)
+    assert kutular and abs(kutular[0].skor - a) < 1e-6, kutular
+    k = kutular[0]
+    assert (k.x1 + k.x2) / 2 > w / 2 and (k.y1 + k.y2) / 2 < h / 2, k
+    # Boş sahnede kutu yok.
+    assert b.kutular(np.full((668, 1568, 3), 110, np.uint8), None)[0] == []
 
 
 if __name__ == "__main__":

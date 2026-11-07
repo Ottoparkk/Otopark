@@ -87,7 +87,9 @@ ELİNİZDE HAZIR OLSUN
     eden plaka bulanık çıkar.
     Park etmiş araçlar görüntüye giriyorsa üstlerine HARİÇ ALAN çizin
     (aşağıya bakın): orada duran araç yanlışlıkla "çıkıyor" diye
-    işaretlenebilirdi.
+    işaretlenebilirdi. (1.3.3'ten beri kadrajda kalan park etmiş bir araç
+    başka araçların kaydını engellemez; hariç alanın kusursuz olması
+    gerekmez, ama plakası okunmasın diye yine örtün.)
 
   · Kameranın kullanıcı adı ve şifresi — DİKKATLE yazın. Kamera birkaç
     yanlış denemeden sonra girişleri yaklaşık yarım saat kilitler.
@@ -111,9 +113,11 @@ ELİNİZDE HAZIR OLSUN
     · üst kenar: araçların durduğu yerin biraz ÜSTÜ (kutu uzun olabilir),
     · kutu yeşil olana kadar büyütün; plaka kutunun kenarına değmesin.
   Kutunun içinde PARK ETMİŞ araçlar görünüyorsa "Hariç alan çiz"e basıp
-  onların üstüne ikinci bir dikdörtgen çizin (kırmızı taralı görünür).
-  Orası gri boyanır: hareketi sayılmaz, plakası okunmaz, fotoğrafta da
-  görünmez. Yanlış çizdiyseniz "Hariç alanı sil".
+  her birinin üstüne bir dikdörtgen çizin (en çok 3; kırmızı taralı ve
+  numaralı görünür). Oralar gri boyanır: hareketi sayılmaz, plakası
+  okunmaz, fotoğrafta da görünmez. Plakası görünen park etmiş araçları
+  MUTLAKA örtün: yoksa başka bir araç geçerken onun plakası da okunur.
+  Yanlış çizdiğiniz alanı listede kendi "Hariç alanı sil" düğmesiyle silin.
 
 
 ÇALIŞIYOR MU?
@@ -158,7 +162,9 @@ ELİNİZDE HAZIR OLSUN
   hiçbir şey kaydetmez. Birkaç araç geçirin: her araç en az bir kez doğru
   plakasıyla "EMİN" görünmeli ve araç puanı 0.35'in üstüne çıkmalı;
   kameranın önünde bir kişi durunca araç puanı 0.35'in ALTINDA kalmalı.
-  Satırdaki "ms" bir karenin tüm işidir; 400 ms'yi sık geçiyorsa iletin. "kesik" = plaka kutunun
+  Satırdaki "ms", plaka okuyucu ile araç bulucudan yavaş olanının süresidir
+  (1.3.3'ten beri ikisi aynı anda çalışır). Sonunda iki süre ve köprünün
+  saniyede kaç kare okuyacağı yazar — bunu iletin. "kesik" = plaka kutunun
   kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
   (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —
   geçen araçlarla karşılaştırın; yanlış olan varsa ekranın fotoğrafını

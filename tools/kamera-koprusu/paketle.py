@@ -41,7 +41,15 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.3.1"   # 1.3.1: araç bulucu (YOLOX-tiny, Apache-2.0) her karede: duran
+SURUM = "1.3.3"   # 1.3.3: plaka okuyucu ve araç bulucu AYNI ANDA (ayrı iş parçacıkları;
+                  #        plaka okuma araç bulucuyu beklemez); en çok 3 hariç alan
+                  #        (park etmiş araçların plakaları okunmaz); öncelikli kareler sırayla
+                  #        (1.3.2 sahaya kurulmadı, içindekiler buradadır)
+                  # 1.3.2: "önce de vardı" YERE bakar (yavaş gelen / park etmiş araç
+                  #        kuralları kapatmaz; sahada iki araç kaçmıştı); plaka + araç
+                  #        bulucu 2 iplik (410 → 268 ms); program klasörü yeniden
+                  #        kısıtlanır (izin listesinde lisanslar\ yoktu, 1.3.0'dan beri)
+                  # 1.3.1: araç bulucu (YOLOX-tiny, Apache-2.0) her karede: duran
                   #        yaya kayıt açmaz; durmadan geçen plakasız araç personele
                   # 1.3.0: plaka bu bilgisayarda okunur (YOLOv9 + fast-plate-ocr, ONNX);
                   #        kameranın SMD olayları ve sunucuda okuma yok; L biçimli alan

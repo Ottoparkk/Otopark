@@ -73,13 +73,13 @@ gelmezse kameranın açık ve bu bilgisayarla aynı ağda olduğunu kontrol edin
 <div>
   <button class="mod secili" id="kutuCiz">Kutuyu çiz</button>
   <button class="mod haric" id="haricCiz" disabled>Hariç alan çiz</button>
-  <button class="mod" id="haricSil" disabled>Hariç alanı sil</button>
 </div>
+<div id="haricListe"></div>
 
 <div class="ipuc">Kutunun içinde park etmiş araçlar görünüyorsa
-<b>Hariç alan çiz</b>'e basıp onların üstüne ikinci bir dikdörtgen çizin.
-Orası gri boyanır: hareketi sayılmaz, plakası okunmaz, fotoğrafta da
-görünmez.</div>
+<b>Hariç alan çiz</b>'e basıp her birinin üstüne bir dikdörtgen çizin (en çok
+3). Oralar gri boyanır: hareketi sayılmaz, plakası okunmaz, fotoğrafta da
+görünmez. Her alan listeden ayrı silinir.</div>
 
 <div class="ipuc" id="ipuc">Kutuyu çizin. Uzun kenarı <b>200 pikselin</b>
 altında kalırsa plaka güvenilir okunmaz — kamerayı yaklaştırın ya da zoom
@@ -89,18 +89,43 @@ yapın.</div>
 <button class="ikinci" id="tumu">Tüm kareyi kullan</button>
 </div><script>
 const t=document.getElementById('t'),c=t.getContext('2d');
-// mod: 'kutu' kırpma kutusunu, 'haric' kutunun içindeki hariç alanı çizer.
-let img=new Image(),kutu=null,haric=null,mod='kutu',ciz=false,bas=null,kaynak=[0,0];
+// mod: 'kutu' kırpma kutusunu, 'haric' kutunun içine bir hariç alan çizer.
+// 1.3.3: en çok HARIC_EN_COK hariç alan (park etmiş araçların üstü).
+const HARIC_EN_COK=3;
+let img=new Image(),kutu=null,haricler=[],cizilen=null,mod='kutu',ciz=false,bas=null,kaynak=[0,0];
 
-// Hariç alanın kutunun İÇİNDE kalan kısmı (kaydedilen de bu); kesişmiyorsa null.
-function haricKirp(k){
-  if(!haric||!k)return null;
-  const x0=Math.max(haric.x,k.x),y0=Math.max(haric.y,k.y),
-        x1=Math.min(haric.x+haric.w,k.x+k.w),y1=Math.min(haric.y+haric.h,k.y+k.h);
+// Bir alanın kutunun İÇİNDE kalan kısmı (kaydedilen de bu); kesişmiyorsa null.
+function kirpDik(h,k){
+  if(!h||!k)return null;
+  const x0=Math.max(h.x,k.x),y0=Math.max(h.y,k.y),
+        x1=Math.min(h.x+h.w,k.x+k.w),y1=Math.min(h.y+h.h,k.y+k.h);
   if(x1<=x0||y1<=y0)return null;
   return {x:x0,y:y0,w:x1-x0,h:y1-y0};
 }
-function tamami(h,k){return h&&k&&h.x===k.x&&h.y===k.y&&h.w===k.w&&h.h===k.h;}
+// Alanların BİRLEŞİMİNİN alanı (içerme-dışlama): üst üste binenler iki kez
+// sayılmaz. Köprüdeki plaka.kesilen_alan ile aynı hesap.
+function birlesimAlani(rs){
+  let t=0;const n=rs.length;
+  for(let m=1;m<(1<<n);m++){
+    let x0=-Infinity,y0=-Infinity,x1=Infinity,y1=Infinity,say=0;
+    for(let i=0;i<n;i++)if(m&(1<<i)){
+      const r=rs[i];say++;
+      x0=Math.max(x0,r.x);y0=Math.max(y0,r.y);
+      x1=Math.min(x1,r.x+r.w);y1=Math.min(y1,r.y+r.h);
+    }
+    if(x1>x0&&y1>y0)t+=(say%2?1:-1)*(x1-x0)*(y1-y0);
+  }
+  return t;
+}
+// Alanların kutuya kırpılmış hâlleri; biri dışarıdaysa null, birlikte kutunun
+// tamamını örtüyorsa 'tamami'. Sunucu ve köprü de aynı ikisini reddeder.
+function haricDurumu(k){
+  const kirp=haricler.map(h=>kirpDik(h,k));
+  if(kirp.some(h=>!h))return {hata:'disarida'};
+  if(kirp.length&&birlesimAlani(kirp)>=k.w*k.h)return {hata:'tamami'};
+  return {alanlar:kirp};
+}
+function haricSil(i){haricler.splice(i,1);mod='kutu';boya();guncelle();}
 
 function boya(){
   if(!img.width)return;
@@ -113,8 +138,8 @@ function boya(){
     c.fillStyle='rgba(94,207,232,.15)';c.fillRect(kutu.x,kutu.y,kutu.w,kutu.h);
   }
   // Kutunun içindeyse kaydedilecek (kırpılmış) hâli çizilir: görülen = saklanan.
-  const h=haricKirp(kutu)||haric;
-  if(h){
+  haricler.concat(cizilen?[cizilen]:[]).forEach((ham,no)=>{
+    const h=kirpDik(ham,kutu)||ham;
     c.save();
     c.beginPath();c.rect(h.x,h.y,h.w,h.h);c.clip();
     c.fillStyle='rgba(248,113,113,.25)';c.fillRect(h.x,h.y,h.w,h.h);
@@ -125,7 +150,11 @@ function boya(){
     c.stroke();c.restore();
     c.strokeStyle='#f87171';c.lineWidth=lw;c.setLineDash([]);
     c.strokeRect(h.x,h.y,h.w,h.h);
-  }
+    // Numara: listedeki "Hariç alan N" ile aynı.
+    const yazi=Math.max(16,img.width/40);
+    c.font='bold '+yazi+'px system-ui,sans-serif';c.fillStyle='#f87171';
+    c.fillText(String(no+1),h.x+yazi*0.4,h.y+yazi*1.1);
+  });
 }
 function yenile(){
   const y=new Image();
@@ -148,47 +177,67 @@ t.addEventListener('pointermove',e=>{
   if(!ciz)return;const p=nokta(e);
   const r={x:Math.min(bas.x,p.x),y:Math.min(bas.y,p.y),
            w:Math.abs(p.x-bas.x),h:Math.abs(p.y-bas.y)};
-  if(mod==='haric')haric=r;else kutu=r;
+  if(mod==='haric')cizilen=r;else kutu=r;
   boya();guncelle();
 });
 t.addEventListener('pointerup',()=>{
   ciz=false;
-  // Tek tıklama ya da kıl kadar bir dikdörtgen hariç alan sayılmaz.
-  if(mod==='haric'&&haric&&(haric.w<8||haric.h<8)){haric=null;boya();}
+  if(mod==='haric'&&cizilen){
+    // Tek tıklama ya da kıl kadar bir dikdörtgen hariç alan sayılmaz.
+    if(cizilen.w>=8&&cizilen.h>=8&&haricler.length<HARIC_EN_COK)haricler.push(cizilen);
+    cizilen=null;
+    if(haricler.length>=HARIC_EN_COK)mod='kutu';
+    boya();
+  }
   guncelle();
 });
 function modSec(m){mod=m;guncelle();}
 function guncelle(){
   const o=document.getElementById('olcu'),k=document.getElementById('kalite'),
         b=document.getElementById('kaydet'),ho=document.getElementById('haricOlcu'),
-        hc=document.getElementById('haricCiz'),hs=document.getElementById('haricSil');
+        hc=document.getElementById('haricCiz');
   const kutuVar=kutu&&kutu.w>=8&&kutu.h>=8;
-  if(!kutuVar&&mod==='haric')mod='kutu';
-  hc.disabled=!kutuVar;hs.disabled=!haric;
+  if((!kutuVar||haricler.length>=HARIC_EN_COK)&&mod==='haric')mod='kutu';
+  hc.disabled=!kutuVar||haricler.length>=HARIC_EN_COK;
   document.getElementById('kutuCiz').classList.toggle('secili',mod==='kutu');
   hc.classList.toggle('secili',mod==='haric');
   t.style.cursor='crosshair';
+  listeyiYaz();
   if(!kutuVar){
     o.textContent='—';k.textContent='—';b.disabled=true;
-    ho.textContent=haric?'—':'Yok';ho.className='';return;
+    ho.textContent=haricler.length?'—':'Yok';ho.className='';return;
   }
   o.textContent=kutu.w+'×'+kutu.h+' px';
   const uzun=Math.max(kutu.w,kutu.h),iyi=uzun>=200;
   k.textContent=iyi?'Yeterli':'Çok küçük';
   k.className=iyi?'iyi':'kotu';
-  // Kutunun dışında kalan ya da kutunun tamamını kaplayan bir hariç alan
-  // kaydedilemez (sunucu ve köprü de reddeder): Kaydet kapalı, sebep yazılı.
+  // Kutunun dışında kalan bir alan ya da kutunun tamamını (birlikte) kaplayan
+  // alanlar kaydedilemez (sunucu ve köprü de reddeder): Kaydet kapalı, sebep yazılı.
+  const d=haricDurumu(kutu);
   let haricTamam=true;
-  const h=haricKirp(kutu);
-  if(!haric){ho.textContent='Yok';ho.className='';}
-  else if(!h){ho.textContent='Kutunun dışında';ho.className='kotu';haricTamam=false;}
-  else if(tamami(h,kutu)){ho.textContent='Kutunun tamamı';ho.className='kotu';haricTamam=false;}
-  else{ho.textContent=h.w+'×'+h.h+' px';ho.className='';}
+  if(!haricler.length){ho.textContent='Yok';ho.className='';}
+  else if(d.hata==='disarida'){ho.textContent='Biri kutunun dışında';ho.className='kotu';haricTamam=false;}
+  else if(d.hata==='tamami'){ho.textContent='Kutunun tamamı';ho.className='kotu';haricTamam=false;}
+  else{ho.textContent=haricler.length+' alan';ho.className='';}
   b.disabled=!haricTamam;
+}
+// Her hariç alan bir satır: numarası, boyutu ve kendi silme düğmesi.
+function listeyiYaz(){
+  const l=document.getElementById('haricListe');
+  l.textContent='';
+  haricler.forEach((ham,i)=>{
+    const h=kirpDik(ham,kutu)||ham;
+    const s=document.createElement('div');
+    s.className='ipuc';s.style.margin='8px 0';
+    s.append('Hariç alan '+(i+1)+': '+h.w+'×'+h.h+' px ');
+    const btn=document.createElement('button');
+    btn.className='mod';btn.style.margin='0 0 0 12px';btn.textContent='Hariç alanı sil';
+    btn.onclick=()=>haricSil(i);
+    s.append(btn);l.append(s);
+  });
 }
 document.getElementById('kutuCiz').onclick=()=>modSec('kutu');
 document.getElementById('haricCiz').onclick=()=>modSec('haric');
-document.getElementById('haricSil').onclick=()=>{haric=null;mod='kutu';boya();guncelle();};
 document.getElementById('kaydet').onclick=()=>gonder(kutu);
 // "Tüm kare"de kesilecek bir kutu yok: hariç alan da gönderilmez.
 document.getElementById('tumu').onclick=()=>gonder(null);
@@ -200,15 +249,15 @@ function gonder(k){
     const x=Math.max(0,Math.min(k.x,kaynak[0]-1)),y=Math.max(0,Math.min(k.y,kaynak[1]-1));
     k={x:x,y:y,w:Math.max(1,Math.min(k.x+k.w,kaynak[0])-x),
        h:Math.max(1,Math.min(k.y+k.h,kaynak[1])-y)};
-    // Hariç alan sıkıştırılmış kutuya göre kırpılır; ortada kalmıyorsa
+    // Hariç alanlar sıkıştırılmış kutuya göre kırpılır; biri ortada kalmıyorsa
     // sessizce düşürülmez, kullanıcıya söylenir.
-    const h=haricKirp(k);
-    if(haric&&(!h||tamami(h,k))){
+    const d=haricDurumu(k);
+    if(d.hata){
       document.getElementById('ipuc').textContent=
-        'Hariç alan kutunun dışında ya da kutunun tamamını kaplıyor. Hariç alanı silin ya da yeniden çizin.';
+        'Bir hariç alan kutunun dışında ya da alanlar kutunun tamamını kaplıyor. O alanı silin ya da yeniden çizin.';
       return;
     }
-    govde=Object.assign({},k,{haric:h});
+    govde=Object.assign({},k,{haric:d.alanlar});
   }
   fetch('/kaydet',{method:'POST',
     headers:{'Content-Type':'application/json','X-Otopark-Belirtec':'__BELIRTEC__'},
@@ -266,7 +315,7 @@ class _Durum:
         self.kirpik_hareketler: list[float] = []   # yalnızca seçilen kutu
         self.kutu: tuple[int, int, int, int] | None = None
         # 1.3.0: kutunun içinde griye boyanan alan (park etmiş araçlar).
-        self.haric: tuple[int, int, int, int] | None = None
+        self.haric: tuple | None = None          # ((x, y, w, h), …) — 1.3.3: en çok 3
         self._onceki: np.ndarray | None = None
         self._onceki_kirpik: np.ndarray | None = None
         self.kilit = threading.Lock()
@@ -368,41 +417,49 @@ def _dikdortgen(veri) -> tuple[int, int, int, int] | None:
     return x, y, w, h
 
 
-def _kutu_coz(veri) -> tuple[bool, tuple[int, int, int, int] | None,
-                             tuple[int, int, int, int] | None]:
+def _kutu_coz(veri) -> tuple[bool, tuple[int, int, int, int] | None, tuple | None]:
     """
-    /kaydet gövdesi: `null` = tüm kare, ya da {x, y, w, h} — 1.3.0'dan beri
-    isteğe bağlı bir "haric": {x, y, w, h} ile. (geçerli mi, kutu, hariç alan)
+    /kaydet gövdesi: `null` = tüm kare, ya da {x, y, w, h} — isteğe bağlı bir
+    "haric" ile: 1.3.3'ten beri en çok 3 dikdörtgenlik LİSTE ([{x,y,w,h}, …]);
+    1.3.0'ın tek nesnesi ve `null` / `[]` de kabul edilir.
+    (geçerli mi, kutu, kesilen köşeler ((x, y, w, h), …) ya da None)
 
     Değerler GERÇEK tamsayı olmalı (bool ve kesir değil), konum negatif
     olamaz, boyut pozitif olmalı. Kutu ayar dosyasına ve oradan köprüye
     gidiyor; orada patlayacak bir değeri burada reddetmek, kurulum bittikten
     sonra başlamayan bir köprüden iyidir.
 
-    Hariç alan kutunun İÇİNE kırpılarak döner (sayfa da öyle çizer: görülen =
-    saklanan). Kutuyla kesişmeyen ya da kutunun tamamını kaplayan hariç alan
-    isteği reddettirir — köprü de aynı ikisini kabul etmez (kopru.kirpma_haric).
+    Her alan kutunun İÇİNE kırpılarak döner (sayfa da öyle çizer: görülen =
+    saklanan). Kutuyla kesişmeyen bir alan, 3'ten fazla alan ya da kutunun
+    tamamını BİRLİKTE kaplayan alanlar isteği reddettirir — köprü de aynısını
+    kabul etmez (kopru.haric_metni_coz).
     """
+    import plaka
     if veri is None:
         return True, None, None
     kutu = _dikdortgen(veri)
     if kutu is None:
         return False, None, None
     ham = veri.get("haric")
-    if ham is None:
+    if ham is None or ham == []:
         return True, kutu, None
-    h = _dikdortgen(ham)
-    if h is None:
+    liste = [ham] if isinstance(ham, dict) else ham
+    if not isinstance(liste, list) or len(liste) > plaka.HARIC_EN_COK:
         return False, None, None
     kx, ky, kw, kh = kutu
-    x0, y0 = max(h[0], kx), max(h[1], ky)
-    x1, y1 = min(h[0] + h[2], kx + kw), min(h[1] + h[3], ky + kh)
-    if x1 <= x0 or y1 <= y0:
+    alanlar = []
+    for oge in liste:
+        h = _dikdortgen(oge)
+        if h is None:
+            return False, None, None
+        x0, y0 = max(h[0], kx), max(h[1], ky)
+        x1, y1 = min(h[0] + h[2], kx + kw), min(h[1] + h[3], ky + kh)
+        if x1 <= x0 or y1 <= y0:
+            return False, None, None
+        alanlar.append((x0, y0, x1 - x0, y1 - y0))
+    if plaka.kesilen_alan(kx, ky, kx + kw, ky + kh, alanlar) >= kw * kh:
         return False, None, None
-    haric = (x0, y0, x1 - x0, y1 - y0)
-    if haric == kutu:
-        return False, None, None
-    return True, kutu, haric
+    return True, kutu, tuple(alanlar)
 
 
 def sunucu_baslat(d: _Durum, port: int = 0):

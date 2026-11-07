@@ -25,11 +25,21 @@ onnxruntime burada içe aktarılmaz: telemetrisi kapalı tek yol plaka._ort_yukl
 from __future__ import annotations
 
 import os
+from typing import NamedTuple
 
 import cv2
 import numpy as np
 
 import plaka
+
+
+class AracKutu(NamedTuple):
+    """Kırpıntı pikselinde bir araç kutusu ve puanı (1.3.2)."""
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    skor: float
 
 MODEL = plaka.ModelDosyasi(
     "yolox_tiny.onnx",
@@ -61,6 +71,11 @@ ALTIN_ARAC = 0.80782
 ALTIN_PAYI = 0.05         # sahada başka bir işlemci (AVX2/AVX512) küçük fark verebilir
 # Boş sahnede bundan yüksek araç puanı = model bozuk.
 BOS_SINIR = 0.10
+# 1.3.2: kutu listesine girecek en düşük araç puanı. Bilerek düşük: geçişten
+# önceki karedeki (park etmiş) araç zayıf görülse de listede olsun ki sonra
+# "yeni araç" sanılmasın. Kararın eşikleri (0.35 / 0.60) ayrıca uygulanır.
+KUTU_ALT = 0.10
+NMS_ORTUSME = 0.45
 
 
 # ------------------------------------------------------------- ön işlem ---
@@ -109,24 +124,60 @@ def coz(ham: np.ndarray, r: float, en: int, boy: int):
 
 
 def _haric_orani(kutular: np.ndarray, haric) -> np.ndarray:
-    """plaka.haric_orani'nin vektör hâli: kutunun kesilen köşede kalan oranı."""
-    hx, hy, hw, hh = haric
-    ix = np.clip(np.minimum(kutular[:, 2], hx + hw) - np.maximum(kutular[:, 0], hx), 0, None)
-    iy = np.clip(np.minimum(kutular[:, 3], hy + hh) - np.maximum(kutular[:, 1], hy), 0, None)
+    """
+    plaka.haric_orani'nin vektör hâli: kutunun kesilen köşelerin BİRLEŞİMİNDE
+    kalan oranı (1.3.3: en çok 3 alan; üst üste binenler iki kez sayılmaz).
+    """
+    kesilen = np.zeros(len(kutular), dtype=np.float64)
+    for isaret, (a1, b1, a2, b2) in plaka.kesisim_parcalari(haric):
+        ix = np.clip(np.minimum(kutular[:, 2], a2) - np.maximum(kutular[:, 0], a1), 0, None)
+        iy = np.clip(np.minimum(kutular[:, 3], b2) - np.maximum(kutular[:, 1], b1), 0, None)
+        kesilen += isaret * ix * iy
     alan = (kutular[:, 2] - kutular[:, 0]) * (kutular[:, 3] - kutular[:, 1])
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(alan > 0, ix * iy / alan, 0.0)
+        return np.where(alan > 0, kesilen / alan, 0.0)
+
+
+def _haricsiz(kutular: np.ndarray, arac: np.ndarray, insan: np.ndarray, haric):
+    """Kutusunun yarısından fazlası kesilen köşelerde kalan adayları atar."""
+    if not plaka.haric_listesi(haric):
+        return kutular, arac, insan
+    tut = _haric_orani(kutular, haric) <= HARIC_DUSUR
+    return kutular[tut], arac[tut], insan[tut]
 
 
 def skorla(ham: np.ndarray, r: float, en: int, boy: int, haric) -> tuple[float, float]:
     """(en yüksek araç puanı, en yüksek insan puanı); kesilen köşedekiler hariç."""
-    kutular, arac, insan = coz(ham, r, en, boy)
-    if haric is not None:
-        tut = _haric_orani(kutular, haric) <= HARIC_DUSUR
-        arac, insan = arac[tut], insan[tut]
+    kutular, arac, insan = _haricsiz(*coz(ham, r, en, boy), haric)
     a = float(arac.max()) if arac.size else 0.0
     i = float(insan.max()) if insan.size else 0.0
     return max(a, 0.0), max(i, 0.0)
+
+
+def ortusme(a, b) -> float:
+    """İki kutunun kesişim / birleşim oranı (IoU), 0..1."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    kesisim = ix * iy
+    birlesim = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - kesisim
+    return kesisim / birlesim if birlesim > 0 and kesisim > 0 else 0.0
+
+
+def kutulari_coz(ham: np.ndarray, r: float, en: int, boy: int, haric,
+                 alt: float = KUTU_ALT) -> tuple[list[AracKutu], float]:
+    """
+    (araç kutuları — puanı ≥ alt, aynı aracın kopyaları birleşmiş (NMS),
+    puana göre azalan; en yüksek insan puanı). Kesilen köşedekiler hariç.
+    """
+    kutular, arac, insan = _haricsiz(*coz(ham, r, en, boy), haric)
+    i = float(insan.max()) if insan.size else 0.0
+    sec = np.nonzero(arac >= alt)[0]
+    if sec.size == 0:
+        return [], max(i, 0.0)
+    xywh = [[float(k[0]), float(k[1]), float(k[2] - k[0]), float(k[3] - k[1])] for k in kutular[sec]]
+    kalan = np.array(cv2.dnn.NMSBoxes(xywh, [float(x) for x in arac[sec]], alt, NMS_ORTUSME)).reshape(-1)
+    sonuc = [AracKutu(*(float(v) for v in kutular[sec[j]]), float(arac[sec[j]])) for j in kalan]
+    return sorted(sonuc, key=lambda k: -k.skor), max(i, 0.0)
 
 
 # ------------------------------------------------------------------ bulucu ---
@@ -141,12 +192,21 @@ class AracBulucu:
         self.gecis_esik = float(ayar["arac_gecis_esik"])
         self._dizin = dizin
 
-    def skor(self, kirpik: np.ndarray, haric) -> tuple[float, float]:
-        """Kırpıntıdaki (araç, insan) puanı, 0..1."""
+    def _ham(self, kirpik: np.ndarray):
         x, r = on_isle(kirpik)
-        ham = self._oturum.run(None, {self._girdi: x})[0]
+        return self._oturum.run(None, {self._girdi: x})[0], r
+
+    def skor(self, kirpik: np.ndarray, haric) -> tuple[float, float]:
+        """Kırpıntıdaki (araç, insan) puanı, 0..1 (`--plaka` ve öz sınama)."""
+        ham, r = self._ham(kirpik)
         h, w = kirpik.shape[:2]
         return skorla(ham, r, w, h, haric)
+
+    def kutular(self, kirpik: np.ndarray, haric) -> tuple[list[AracKutu], float]:
+        """1.3.2: (araç kutuları, insan puanı) — köprü "araç NEREDE" diye bakar."""
+        ham, r = self._ham(kirpik)
+        h, w = kirpik.shape[:2]
+        return kutulari_coz(ham, r, w, h, haric)
 
     def oz_sinama(self) -> None:
         """Dosya doğru ama ÇALIŞIYOR mu? Değilse PlakaHatasi."""
