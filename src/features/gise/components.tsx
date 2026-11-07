@@ -144,6 +144,13 @@ export function BiletKart({
           <Chip size="sm" tone={bilet.cikis_bekliyor_at ? 'accent' : 'neutral'} className="shrink-0">
             {bilet.cikis_bekliyor_at ? 'Kapıda' : 'İçeride'}
           </Chip>
+          {/* 050: a Personel asked to cancel; the ticket stays open until a
+              Yönetici decides, so the list must say why it is still here. */}
+          {bilet.iptal_talebi && (
+            <Chip size="sm" tone="warn" className="shrink-0">
+              İptal bekliyor
+            </Chip>
+          )}
           {bilet.abonman_id && (
             <Chip size="sm" tone="success" className="shrink-0">
               Abonman
@@ -986,18 +993,22 @@ export function useBiletAksiyonlari(
         open={iptalAcik}
         onOpenChange={setIptalAcik}
         tone="danger"
-        title="Bileti iptal et"
+        // 050: a Personel does not cancel, they ASK — the server files a
+        // request and the ticket stays open. Saying "iptal edilecek" to them
+        // would describe something that does not happen.
+        title={yonetici ? 'Bileti iptal et' : 'İptal iste'}
         description={
-          (bilet.durum === 'KAPALI'
-            ? 'Tahsil edilen tutar için ters kayıt yazılır. İşlem geri alınamaz'
-            : 'Bu bilet iptal edilecek. İşlem geri alınamaz') +
-          // A Yönetici is not notified of their own cancellation —
-          // notify_yonetici excludes auth.uid() — so telling them otherwise is
-          // false. The audit row is written for everyone, and that is the
-          // sentence that is true in both cases.
-          (yonetici ? ' ve denetim kaydına yazılır.' : ' ve Yöneticiye bildirilir.')
+          yonetici
+            ? (bilet.durum === 'KAPALI'
+                ? 'Tahsil edilen tutar için ters kayıt yazılır. İşlem geri alınamaz'
+                : 'Bu bilet iptal edilecek. İşlem geri alınamaz') +
+              // A Yönetici is not notified of their own cancellation —
+              // notify_yonetici excludes auth.uid() — so the audit row is the
+              // sentence that is true here.
+              ' ve denetim kaydına yazılır.'
+            : 'İptal isteği Yönetici onayına gönderilir. Onaylanana kadar bilet açık kalır.'
         }
-        confirmLabel="İptal Et"
+        confirmLabel={yonetici ? 'İptal Et' : 'İsteği Gönder'}
         cancelLabel="Vazgeç"
         loading={iptal.isPending}
         error={iptalHata}
@@ -1009,7 +1020,11 @@ export function useBiletAksiyonlari(
           void iptal
             .mutateAsync({ bilet_id: bilet.id, sebep: sebep.trim() })
             .then(() => setIptalAcik(false))
-            .catch((e) => setIptalHata(rpcErrorText(e, 'Bilet iptal edilemedi.')))
+            .catch((e) =>
+              setIptalHata(
+                rpcErrorText(e, yonetici ? 'Bilet iptal edilemedi.' : 'İptal isteği gönderilemedi.'),
+              ),
+            )
         }}
       >
         <Input
@@ -1023,9 +1038,21 @@ export function useBiletAksiyonlari(
     </>
   ) : null
 
+  // 050: a request already waiting on this ticket. A second one is refused by
+  // the server; the button says so instead of offering it.
+  const iptalBekliyor = Boolean(bilet?.iptal_talebi_at)
+
   return {
     /** Delete is Yönetici-only in the RPC; this only hides a doomed control. */
     silinebilir: yonetici,
+    /** What the İptal button says for this person (050: Personel asks). */
+    iptalEtiketi: yonetici
+      ? 'Bileti İptal Et'
+      : iptalBekliyor
+        ? 'İptal onayı bekliyor'
+        : 'İptal İste',
+    /** True only for a Personel whose request is already waiting. */
+    iptalKapali: !yonetici && iptalBekliyor,
     iptalAc: () => {
       setSebep('')
       setIptalHata(null)
@@ -1040,11 +1067,36 @@ export function useBiletAksiyonlari(
 }
 
 /** The İptal trigger, identical wherever it appears. */
-export function IptalButonu({ onClick, size }: { onClick: () => void; size?: 'lg' }) {
+export function IptalButonu({
+  onClick,
+  size,
+  etiket = 'Bileti İptal Et',
+  disabled = false,
+}: {
+  onClick: () => void
+  size?: 'lg'
+  /** From useBiletAksiyonlari: a Personel ASKS (050), so their label differs. */
+  etiket?: string
+  disabled?: boolean
+}) {
   return (
-    <Button variant="danger" size={size} block onClick={onClick}>
-      Bileti İptal Et
+    <Button variant="danger" size={size} block onClick={onClick} disabled={disabled}>
+      {etiket}
     </Button>
+  )
+}
+
+/**
+ * 050: a Personel's cancel request is waiting for a Yönetici. Shown on the
+ * ticket screens so nobody mistakes the still-open ticket for a cancel that
+ * did not happen.
+ */
+export function IptalTalebiNotu({ sebep }: { sebep?: string | null }) {
+  return (
+    <div className="rounded-field bg-warn-soft px-4 py-3">
+      <p className="text-body font-semibold text-warn">İptal onayı bekliyor</p>
+      {sebep && <p className="mt-0.5 text-label text-warn">{sebep}</p>}
+    </div>
   )
 }
 

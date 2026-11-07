@@ -16,7 +16,7 @@ import { useAuth } from '../../app/providers/AuthProvider'
 import { formatGoreceli } from '../../lib/dates'
 import { formatTL } from '../../lib/money'
 import { rpcErrorText } from '../../lib/errors'
-import { IconKisi } from '../../components/ui/icons'
+import { IconCop, IconKalem, IconKisi } from '../../components/ui/icons'
 import type { Rol } from '../../lib/types'
 
 export default function Personel() {
@@ -265,6 +265,7 @@ function KisiKart({
   /** Opens the pay screen. Absent for people who have no pay to show. */
   onAc?: () => void
 }) {
+  const aktif = p.durum === 'ACTIVE'
   return (
     <Card>
       <div className="flex items-start justify-between gap-3">
@@ -273,32 +274,62 @@ function KisiKart({
             {p.ad_soyad || 'İsimsiz'}
             {ben && <span className="ml-2 text-label font-normal text-faint">(siz)</span>}
           </p>
-          {/* The role as a chip rather than a grey line: it is a label on a
-              person, and it reads as one. */}
-          <span className="mt-1.5 inline-block rounded-chip bg-field px-2 py-0.5 text-micro font-medium text-soft">
-            {p.rol === 'YONETICI' ? 'Yönetici' : p.rol === 'PERSONEL' ? 'Personel' : 'Rol yok'}
-          </span>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {/* The role as a chip rather than a grey line: it is a label on a
+                person, and it reads as one. */}
+            <span className="inline-block rounded-chip bg-field px-2 py-0.5 text-micro font-medium text-soft">
+              {p.rol === 'YONETICI' ? 'Yönetici' : p.rol === 'PERSONEL' ? 'Personel' : 'Rol yok'}
+            </span>
+            {/* Under the name now (owner, 2026-11-07), so the top right is
+                free for the actions. Only when a salary is set — ₺0 for staff
+                paid another way would read as an error. */}
+            {p.maas_kurus > 0 && (
+              <span className="text-label text-soft tnum">Maaş {formatTL(p.maas_kurus)}</span>
+            )}
+          </div>
         </div>
 
-        {/* Pay on the right, captioned. The status chip that used to sit here
-            is gone: every row already lives under an Aktif / Kapalı / Onay
-            bekleyen heading, so it said the same thing twice. Shown only when
-            a salary is set — a row of ₺0 for staff who are paid another way
-            would read as an error. */}
-        {p.maas_kurus > 0 && (
-          <div className="shrink-0 text-right">
-            <p className="text-micro font-medium tracking-wide text-faint uppercase">Maaş</p>
-            <p className="text-body font-semibold text-ink tnum">{formatTL(p.maas_kurus)}</p>
+        {/* Role and status are never self-served — blocked server-side too,
+            so on your own card these would only ever produce a refusal.
+            Icons, not labelled buttons (owner): the one wide button below is
+            Ödemeler, the thing this list is opened for most. */}
+        {!ben && (onRol || onDurum) && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onRol && (
+              <button
+                type="button"
+                onClick={onRol}
+                aria-label="Rol değiştir"
+                className="flex size-11 items-center justify-center rounded-field bg-field text-soft active:brightness-95"
+              >
+                <IconKalem size={18} />
+              </button>
+            )}
+            {onDurum &&
+              (aktif ? (
+                <button
+                  type="button"
+                  onClick={onDurum}
+                  aria-label="Sil"
+                  className="flex size-11 items-center justify-center rounded-field bg-danger-soft text-danger active:brightness-95"
+                >
+                  <IconCop size={18} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onDurum}
+                  className="min-h-[44px] rounded-chip bg-success-soft px-3.5 text-label font-semibold text-success active:brightness-95"
+                >
+                  Geri ver
+                </button>
+              ))}
           </div>
         )}
       </div>
 
-      {/* Self-service is blocked server-side too — these buttons are hidden
-          because they would only ever produce a Turkish refusal. */}
-      {/* Ödemeler is its own row above the role controls, and it is offered
-          for YOURSELF too: a Yönetici who pays themselves a salary still
-          needs the screen. Role and status are the ones that must not be
-          self-served, which is why only those sit behind `!ben`. */}
+      {/* Offered for YOURSELF too: a Yönetici who pays themselves a salary
+          still needs the screen. */}
       {onAc && (
         <button
           type="button"
@@ -307,31 +338,6 @@ function KisiKart({
         >
           Ödemeler
         </button>
-      )}
-
-      {!ben && (
-        <div className="mt-2 flex gap-2">
-          {onRol && (
-            <button
-              type="button"
-              onClick={onRol}
-              className="min-h-[44px] flex-1 rounded-field bg-field text-body font-medium text-soft"
-            >
-              Rol değiştir
-            </button>
-          )}
-          {onDurum && (
-            <button
-              type="button"
-              onClick={onDurum}
-              className={`min-h-[44px] flex-1 rounded-field text-body font-medium ${
-                p.durum === 'ACTIVE' ? 'bg-danger-soft text-danger' : 'bg-success-soft text-success'
-              }`}
-            >
-              {p.durum === 'ACTIVE' ? 'Sil' : 'Geri ver'}
-            </button>
-          )}
-        </div>
       )}
     </Card>
   )

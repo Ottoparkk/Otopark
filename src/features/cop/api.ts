@@ -33,6 +33,8 @@ export const COP_TABLO_ETIKET: Record<string, string> = {
   hesap_araclari: 'Hesap aracı',
   istisnalar: 'Çözülmemiş kayıt',
   tarifeler: 'Tarife',
+  // 049: soft-deleted on the server; restoring clears the flag.
+  vardiyalar: 'Vardiya',
 }
 
 export function useCop() {

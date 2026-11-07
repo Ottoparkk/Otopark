@@ -6,7 +6,6 @@ import {
   IconAbonman,
   IconAyar,
   IconCop,
-  IconKamera,
   IconKisi,
   IconPuan,
 } from '../../components/ui/icons'
@@ -28,6 +27,9 @@ import {
  *    It used to be hidden while off — but the switch that turns it on now
  *    lives on that screen, and a tile you must already have enabled the
  *    feature to see is a door locked from the inside.
+ *  - Kamera kurulumu has no tile of its own (owner, 2026-11-07): it is
+ *    reached from Otopark ayarları → Kamera, next to the settings it belongs
+ *    with. The route stays, because camera notifications link straight to it.
  *
  * What is left is one column of full-width rows, short enough to need no
  * group headings.
@@ -88,14 +90,6 @@ export default function Panel() {
             icon={<IconKisi size={22} />}
             baslik="Personel"
             aciklama="Kayıt onayı, rol ve durum"
-          />
-          <MenuKart
-            satir
-            to="/yonetim/kameralar"
-            tone="accent"
-            icon={<IconKamera size={22} />}
-            baslik="Kamera kurulumu"
-            aciklama="Kamera ekle, durumu gör"
           />
           <MenuKart
             satir

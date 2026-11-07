@@ -22,6 +22,7 @@ import {
   BiletKart,
   CikanKart,
   IptalButonu,
+  IptalTalebiNotu,
   PlakaBasligi,
   useBiletAksiyonlari,
 } from './components'
@@ -564,6 +565,10 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         {tam && <BiletFoto bilet={tam} />}
 
         <PlakaBasligi plaka={bilet.plaka} durum="ACIK" kapida={Boolean(bilet.cikis_bekliyor_at)} />
+
+        {/* 050: shown to everyone at the till — the car may still pay and
+            leave, which drops the request (the server clears it). */}
+        {bilet.iptal_talebi && <IptalTalebiNotu sebep={tam?.iptal_talebi_sebep} />}
 
         {/* ---- the one thing at full contrast -------------------------- */}
         {/* The amount being collected is the single most important number in

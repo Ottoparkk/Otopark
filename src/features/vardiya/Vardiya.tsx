@@ -1,27 +1,43 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Button,
   Card,
   EmptyState,
   Input,
   ScreenHeader,
+  Select,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Spinner } from '../../components/ui/Spinner'
 import {
   useAcikVardiya,
   useVardiyaAc,
   useVardiyaKapat,
   useVardiyaOzetim,
+  useVardiyaSil,
   useVardiyalarim,
 } from './api'
-import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
+import { useAyarlar } from '../gise/api'
+import { useAyarGuncelle } from '../yonetim/api'
+import {
+  SAAT_SECENEKLERI,
+  vardiyaAyarBaslangic,
+  vardiyaAyarHatasi,
+  vardiyaAyarYamasi,
+  type VardiyaAyarTaslak,
+} from './vardiyaAyar'
+import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { formatGoreceli, formatTam } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
-import { IconVardiya } from '../../components/ui/icons'
+import { IconAyar, IconCop, IconVardiya } from '../../components/ui/icons'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
+import type { Vardiya as VardiyaSatiri } from '../../lib/types'
+
+/** The real money helpers, handed to the pure settings module (see vardiyaAyar.ts). */
+const PARA = { parseTLToKurus, kurusToInput }
 
 export default function Vardiya() {
   const { profile } = useAuth()
@@ -39,6 +55,27 @@ export default function Vardiya() {
 
   const ac = useVardiyaAc()
   const kapat = useVardiyaKapat()
+
+  // ---- Yönetici: delete a past shift (049) ------------------------------
+  const sil = useVardiyaSil()
+  const [silHedef, setSilHedef] = useState<VardiyaSatiri | null>(null)
+  const [silHata, setSilHata] = useState<string | null>(null)
+
+  // ---- Yönetici: the three shift settings (moved from Otopark Ayarları) --
+  // The same cached settings row Gişe already reads for every role. Only the
+  // WRITE is Yönetici-only, and RLS enforces that (003); the gear is hidden
+  // from Personel because it would only ever produce a refusal.
+  const ayarlar = useAyarlar()
+  const ayarGuncelle = useAyarGuncelle()
+  const [ayarAcik, setAyarAcik] = useState(false)
+  const [ayarTaslak, setAyarTaslak] = useState<VardiyaAyarTaslak | null>(null)
+  const [ayarHata, setAyarHata] = useState<string | null>(null)
+  // Opened before the row arrived: fill the form the moment it does, once.
+  useEffect(() => {
+    if (ayarAcik && ayarTaslak === null && ayarlar.data) {
+      setAyarTaslak(vardiyaAyarBaslangic(ayarlar.data, PARA))
+    }
+  }, [ayarAcik, ayarTaslak, ayarlar.data])
 
   const [acModal, setAcModal] = useState(false)
   const [kapatModal, setKapatModal] = useState(false)
@@ -70,7 +107,29 @@ export default function Vardiya() {
     <div>
       {/* Not the operator's name any more: one drawer, one shift, shared by
           whoever is on it. Titling it with a person would say the opposite. */}
-      <ScreenHeader title="Vardiya" subtitle="Ortak kasa" />
+      <ScreenHeader
+        title="Vardiya"
+        subtitle="Ortak kasa"
+        right={
+          yonetici ? (
+            // Icon only, at the owner's request; the label lives in
+            // aria-label so a screen reader still says what it opens.
+            <button
+              type="button"
+              aria-label="Vardiya ayarları"
+              title="Vardiya ayarları"
+              onClick={() => {
+                setAyarHata(null)
+                setAyarTaslak(ayarlar.data ? vardiyaAyarBaslangic(ayarlar.data, PARA) : null)
+                setAyarAcik(true)
+              }}
+              className="flex size-11 shrink-0 items-center justify-center rounded-chip text-soft active:bg-field"
+            >
+              <IconAyar size={22} />
+            </button>
+          ) : undefined
+        }
+      />
 
       <div className="space-y-4 px-5">
         {!ozet ? (
@@ -185,7 +244,26 @@ export default function Vardiya() {
                       {v.kapanis_at ? sureMetni(v.acilis_at, v.kapanis_at) : '—'}
                     </p>
                   </div>
-                  <FarkRozeti fark={v.fark_kurus} />
+                  <div className="flex shrink-0 items-center gap-1">
+                    <FarkRozeti fark={v.fark_kurus} />
+                    {/* This list is Yönetici-only already (RLS); the check
+                        is repeated so the button can never appear for
+                        anyone the server would refuse. */}
+                    {yonetici && (
+                      <button
+                        type="button"
+                        aria-label="Vardiyayı sil"
+                        title="Vardiyayı sil"
+                        onClick={() => {
+                          setSilHata(null)
+                          setSilHedef(v)
+                        }}
+                        className="flex size-11 items-center justify-center rounded-chip text-danger active:bg-danger-soft"
+                      >
+                        <IconCop size={18} />
+                      </button>
+                    )}
+                  </div>
                 </Card>
               ))}
             </div>
@@ -362,6 +440,94 @@ export default function Vardiya() {
               <p className="text-label text-faint">Fark Yöneticiye bildirildi.</p>
             )}
           </div>
+        )}
+      </FormModal>
+
+      {/* ---- delete a past shift (Yönetici, 049) ----------------------- */}
+      <ConfirmDialog
+        open={silHedef !== null}
+        onOpenChange={() => setSilHedef(null)}
+        tone="danger"
+        title="Vardiyayı sil"
+        description={
+          silHedef
+            ? `${formatTam(silHedef.acilis_at)} vardiyası Çöp Kutusu'na taşınır. Tahsilatlar ve biletler etkilenmez; Çöp Kutusu'ndan geri alınabilir.`
+            : ''
+        }
+        confirmLabel="Sil"
+        loading={sil.isPending}
+        error={silHata}
+        onConfirm={() => {
+          if (!silHedef) return
+          void sil
+            .mutateAsync(silHedef.id)
+            .then(() => setSilHedef(null))
+            .catch((e) => setSilHata(rpcErrorText(e, 'Vardiya silinemedi.')))
+        }}
+      />
+
+      {/* ---- shift settings (Yönetici) --------------------------------- */}
+      {/* ⚠ Never draw the fields over a settings row that did not load: the
+          first Kaydet would write blanks over real settings. */}
+      <FormModal
+        open={ayarAcik}
+        onOpenChange={setAyarAcik}
+        title="Vardiya ayarları"
+        loading={ayarGuncelle.isPending}
+        error={ayarHata}
+        disabled={ayarTaslak === null}
+        onSubmit={() => {
+          if (!ayarTaslak) return
+          const sorun = vardiyaAyarHatasi(ayarTaslak, PARA)
+          setAyarHata(sorun)
+          if (sorun) return
+          void ayarGuncelle
+            .mutateAsync(vardiyaAyarYamasi(ayarTaslak, PARA))
+            .then(() => setAyarAcik(false))
+            .catch((e) => setAyarHata(rpcErrorText(e, 'Ayarlar kaydedilemedi.')))
+        }}
+      >
+        {ayarTaslak === null ? (
+          ayarlar.error ? (
+            <p className="text-body text-danger">
+              Ayarlar okunamadı. Pencereyi kapatıp tekrar deneyin.
+            </p>
+          ) : (
+            <Spinner label="Ayarlar yükleniyor" />
+          )
+        ) : (
+          <>
+            <Select
+              label="Otomatik açılış saati"
+              value={ayarTaslak.otoSaat}
+              onChange={(e) => setAyarTaslak({ ...ayarTaslak, otoSaat: e.target.value })}
+              hint="Bu saatte kasa vardiyası kendiliğinden açılır. Kapalıyken vardiyayı açmak unutulursa, o sırada tahsil edilen nakit hiçbir sayımda görünmez."
+            >
+              <option value="">Kapalı — elle açılır</option>
+              {SAAT_SECENEKLERI.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Otomatik açılış nakdi (₺)"
+              value={ayarTaslak.acilisNakit}
+              onChange={(e) => setAyarTaslak({ ...ayarTaslak, acilisNakit: e.target.value })}
+              inputMode="decimal"
+              disabled={!ayarTaslak.otoSaat}
+              hint="Otomatik açılan vardiyanın kasasında duran para üstü. Kimse saymadığı için burada yazan tutar kullanılır — yanlışsa her kapanışta o kadar fark çıkar."
+            />
+            <Input
+              label="Vardiya kapanma eşiği (saat)"
+              value={ayarTaslak.esik}
+              onChange={(e) =>
+                setAyarTaslak({ ...ayarTaslak, esik: digitsOnly(e.target.value, 2) })
+              }
+              inputMode="numeric"
+              hint="Bu kadar süredir açık kalan vardiya otomatik kapatılır — nakit sayılmadan, fark boş bırakılarak. 4-72 saat."
+            />
+          </>
         )}
       </FormModal>
     </div>

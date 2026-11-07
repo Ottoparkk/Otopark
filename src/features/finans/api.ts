@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { donemAralik, type Donem, type DonemAralik } from '../yonetim/components'
 import { gunEkle, istanbulGun, istanbulSaat } from '../../lib/dates'
 import { dakikaFarki } from '../../lib/sure'
+import { kararAksiyonu, kararSatiri, type AuditSatiri, type Karar, type KararSonuc, type KararTur } from './kararlar'
 import type {
   Bilet,
   BiletDurum,
@@ -580,9 +581,10 @@ export function useOnayOzet(enabled = true) {
   })
 }
 
-export function useOnayListesi(durum: OnayDurum) {
+export function useOnayListesi(durum: OnayDurum, enabled = true) {
   return useQuery({
     queryKey: ['onay', durum],
+    enabled,
     queryFn: async (): Promise<OnayKayit[]> => {
       const { data, error } = await supabase.rpc('onay_listesi', { p_durum: durum })
       if (error) throw error
@@ -684,6 +686,7 @@ function vardiyaTazele(qc: ReturnType<typeof useQueryClient>) {
     'vardiya_ozetim',
     'vardiyalarim',
     'tum_vardiyalar',
+    'kararlar',
   ]) {
     void qc.invalidateQueries({ queryKey: [k] })
   }
@@ -719,5 +722,106 @@ export function useVardiyaKapatmaReddet() {
       if (error) throw error
     },
     onSuccess: () => vardiyaTazele(qc),
+  })
+}
+
+/* ------------------------------------------------- bilet iptali onayı */
+
+/**
+ * Personel's cancel requests on open tickets, waiting on a Yönetici (050).
+ *
+ * `select('*')` for the same reason as `useVardiyaTalepleri`: the columns
+ * arrived in 050 and a select list naming them would fail the whole query
+ * before the migration runs. Only ACIK tickets: an exit or payment clears the
+ * request in the database (050's trigger), the filter just says it twice.
+ */
+export function useIptalTalepleri(enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ['iptal_talepleri'],
+    queryFn: async (): Promise<Bilet[]> => {
+      const { data, error } = await supabase
+        .from('biletler')
+        .select('*')
+        .eq('durum', 'ACIK')
+        .not('iptal_talebi_at', 'is', null)
+        .order('iptal_talebi_at', { ascending: true })
+      if (error) throw error
+      return (data ?? []) as Bilet[]
+    },
+  })
+}
+
+/**
+ * Everything a decision on a cancel request moves: approving cancels an open
+ * ticket, so the gate screens hear about it exactly as for a direct cancel.
+ */
+function iptalTazele(qc: ReturnType<typeof useQueryClient>) {
+  for (const k of [
+    'iptal_talepleri',
+    'kararlar',
+    'acik_biletler',
+    'bilet',
+    'gunluk_ozet',
+    'vardiya_ozetim',
+    'park_yeri_durumu',
+    'dolu_yerler',
+    'bilet_gecmisi',
+  ]) {
+    void qc.invalidateQueries({ queryKey: [k] })
+  }
+  onayTazele(qc)
+}
+
+export function useBiletIptalOnayla() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (biletId: string): Promise<void> => {
+      const { error } = await supabase.rpc('bilet_iptal_onayla', { p_bilet_id: biletId })
+      if (error) throw error
+    },
+    onSuccess: () => iptalTazele(qc),
+  })
+}
+
+export function useBiletIptalReddet() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (v: { id: string; sebep: string }): Promise<void> => {
+      const { error } = await supabase.rpc('bilet_iptal_reddet', {
+        p_bilet_id: v.id,
+        p_sebep: v.sebep.trim() || null,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => iptalTazele(qc),
+  })
+}
+
+/**
+ * Decided Vardiya / Bilet iptali requests, newest first, last 50.
+ *
+ * Read from audit_log because a decided request leaves no row of its own
+ * (see kararlar.ts). RLS `audit_select` is Yönetici-only, which is also who
+ * can open the Onay screen.
+ */
+export function useKararlar(tur: KararTur, sonuc: KararSonuc, enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ['kararlar', tur, sonuc],
+    queryFn: async (): Promise<Karar[]> => {
+      const { data, error } = await supabase
+        .from('audit_log')
+        .select('id, actor, action, row_id, detay, created_at')
+        .eq('action', kararAksiyonu(tur, sonuc))
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      return ((data ?? []) as AuditSatiri[])
+        .map(kararSatiri)
+        .filter((k): k is Karar => k !== null)
+    },
   })
 }

@@ -10,10 +10,12 @@ import {
   useRaporGunluk,
   useOnayOzet,
   useVardiyaTalepleri,
+  useIptalTalepleri,
   useRaporOzet,
   useTumVardiyalar,
   useYontemOzet,
 } from './api'
+import { onayAltYazisi } from './kararlar'
 import { formatTL } from '../../lib/money'
 import { ODEME_ETIKET, type OdemeYontemi } from '../../lib/types'
 import { gunEkle, gunFarki } from '../../lib/dates'
@@ -108,6 +110,9 @@ export default function Finans() {
   // here the operator is standing at a shift that will not close, and the
   // Yönetici has no reason to open the screen that would close it.
   const { data: vardiyaTalep = [] } = useVardiyaTalepleri()
+  // Same reasoning for Personel's ticket-cancel requests (050): the ticket
+  // stays open until someone decides, so the request must be seen.
+  const { data: iptalTalep = [] } = useIptalTalepleri()
 
   /**
    * What is actually in the till — the money we have, not the money that
@@ -132,19 +137,16 @@ export default function Finans() {
 
   const ciro = ozet.data?.ciro_kurus ?? 0
 
-  // Two different queues behind one card. The figure stays the collections
-  // total — a shift close has no single amount of its own — so the caption is
-  // what has to carry the second queue.
+  // Three queues behind one card. The figure stays the collections total — a
+  // shift close or a ticket cancel has no amount of its own — so the caption
+  // is what has to carry the other two.
   const tahsilatAdet = onay.data?.adet ?? 0
-  const onayBekleyen = tahsilatAdet > 0 || vardiyaTalep.length > 0
-  const onayAlt =
-    tahsilatAdet > 0 && vardiyaTalep.length > 0
-      ? tahsilatAdet + ' tahsilat + vardiya kapatma'
-      : tahsilatAdet > 0
-        ? tahsilatAdet + ' tahsilat bekliyor'
-        : vardiyaTalep.length > 0
-          ? 'vardiya kapatma bekliyor'
-          : 'bekleyen yok'
+  const onayBekleyen = tahsilatAdet > 0 || vardiyaTalep.length > 0 || iptalTalep.length > 0
+  const onayAlt = onayAltYazisi({
+    tahsilat: tahsilatAdet,
+    vardiya: vardiyaTalep.length,
+    iptal: iptalTalep.length,
+  })
 
   const kasaToplam = useMemo(() => {
     const h = kasa.data ?? []

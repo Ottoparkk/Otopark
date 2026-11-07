@@ -277,6 +277,8 @@ export interface TarifeGirdi {
   sonraki_saat_kurus: number
   gunluk_tavan_kurus: number
   kayip_bilet_kurus: number
+  /** 051: the bands, only for KADEMELI ({dakika: upper bound, kurus}). */
+  kademeler: { dakika: number; kurus: number }[] | null
 }
 
 /**
@@ -297,6 +299,10 @@ export function useTarifeGuncelle() {
         p_kayip_bilet_kurus: g.kayip_bilet_kurus,
         p_tur: g.tur,
         p_sabit_kurus: g.sabit_kurus,
+        // Only sent for a banded tariff; otherwise the server's default (null)
+        // applies. A Süreli / Sabit save therefore names exactly the
+        // parameters it did before 051.
+        ...(g.tur === 'KADEMELI' ? { p_kademeler: g.kademeler } : {}),
       })
       if (error) throw error
     },

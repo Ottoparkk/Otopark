@@ -237,7 +237,7 @@ export default function Kameralar() {
 
   return (
     <div>
-      <ScreenHeader title="Kamera Kurulumu" back="/yonetim" />
+      <ScreenHeader title="Kamera Kurulumu" back="/yonetim/ayarlar" />
 
       <div className="space-y-4 px-5">
         {/* Pairing a camera while the webhook refuses everything is a dead

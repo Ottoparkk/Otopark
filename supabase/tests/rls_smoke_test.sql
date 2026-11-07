@@ -50,6 +50,13 @@
 --    • The tables the Edge Functions read and write directly are granted to
 --      service_role explicitly (047), so a project created after Supabase
 --      stopped auto-granting new tables (2026-10-30) still works
+--    • Single gate (048): a late camera event is judged by its own time
+--    • An old, closed shift is deleted only by a Yönetici (049): soft delete
+--      into the bin, money and ticket links untouched, Geri al / Kalıcı sil
+--    • Personel's cancel of an open ticket is a request (050): the Yönetici
+--      approves or rejects it, an exit drops it, both sides are notified
+--    • Kademeli tariff (051): price bands, the boundary in the lower band,
+--      full days + bands past 24 h, invalid band lists refused
 -- ============================================================
 
 begin;
@@ -6228,6 +6235,539 @@ if v_json ->> 'karar' is distinct from 'GIRIS'
 end if;
 
 raise notice 'PASS 70: tek kapı geç gelen olayı olayın saatiyle değerlendirir — birlikte gelen çıkış kaybolmaz, kapanmış ziyaret hayalet bilet açmaz, elle girilen araç sahte çıkış almaz';
+
+-- =====================================================================
+-- 71  Eski vardiyayı silme (049)
+--     Yalnızca Yönetici, yalnızca KAPANMIŞ vardiya. Silme YUMUŞAKTIR: satır
+--     kalır (silindi_at), RLS onu herkesten gizler, Çöp Kutusu'na bir kayıt
+--     düşer. Para hiç değişmez: o vardiyanın bileti ve tahsilatı bağıyla ve
+--     tutarıyla aynen kalır — kasa ve raporlar oynamaz. Geri al satırı geri
+--     getirir; kalıcı sil gerçekten siler (bağlar null'a düşer, tutarlar
+--     yine aynı kalır).
+-- =====================================================================
+perform pg_temp.logout();
+if not exists (select 1 from public.profiles
+                where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 71: fixture — u_yonetici Yönetici ya da u_personel Personel değil';
+end if;
+
+-- Kapanmış bir vardiya, ona bağlı kapanmış bir bilet ve onaylı tahsilatı.
+insert into public.vardiyalar (personel_id, acilis_at, kapanis_at, acilis_nakit_kurus,
+                               beklenen_nakit_kurus, sayilan_nakit_kurus, fark_kurus,
+                               kapanis_kaynak)
+values (u_personel, now() - interval '40 days', now() - interval '39 days 16 hours', 0,
+        4000, 3500, -500, 'ELLE')
+returning id into v_id;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi,
+                             vardiya_id, kapatan_vardiya_id, created_at)
+select gen_random_uuid(), 'ZZ71VRD01', now() - interval '40 days',
+       now() - interval '39 days 20 hours', t.id, 'KAPALI', 4000, 4000, 'NAKIT',
+       v_id, v_id, now() - interval '40 days'
+  from public.tarifeler t order by t.id limit 1
+returning id into v_bilet;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, durum)
+values ('BILET', v_bilet, 4000, 'NAKIT', v_id, 'ONAYLANDI')
+returning id into v_id2;
+
+-- (a) Personel silemez.
+perform pg_temp.login(u_personel);
+begin
+  perform public.vardiya_sil(v_id);
+  raise exception 'FAIL 71a: Personel vardiya sildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yalnızca Yönetici%' then
+    raise exception 'FAIL 71a: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (b) Açık vardiya silinemez (kapatma isteği de yalnızca açık vardiyada durur).
+select id into v_vardiya from public.vardiyalar where kapanis_at is null limit 1;
+if v_vardiya is null then
+  insert into public.vardiyalar (personel_id, acilis_at, acilis_nakit_kurus)
+  values (u_personel, now() - interval '1 hour', 0)
+  returning id into v_vardiya;
+end if;
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.vardiya_sil(v_vardiya);
+  raise exception 'FAIL 71b: açık vardiya silindi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Açık vardiya silinemez%' then
+    raise exception 'FAIL 71b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.vardiyalar where id = v_vardiya and silindi_at is not null) then
+  raise exception 'FAIL 71b: açık vardiya silindi olarak işaretlendi';
+end if;
+
+-- (c) Yönetici siler: Yönetici bile artık görmez; satır durur, çöpe ve
+--     denetim kaydına düşer.
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_sil(v_id);
+select count(*) into v_n from public.vardiyalar where id = v_id;
+perform pg_temp.logout();
+if v_n <> 0 then
+  raise exception 'FAIL 71c: silinen vardiya Yöneticiye hâlâ görünüyor';
+end if;
+if not exists (select 1 from public.vardiyalar
+                where id = v_id and silindi_at is not null and silen = u_yonetici) then
+  raise exception 'FAIL 71c: vardiya satırı silindi olarak işaretlenmedi';
+end if;
+select id into v_id2 from public.cop where tablo = 'vardiyalar' and kayit_id = v_id;
+if v_id2 is null then
+  raise exception 'FAIL 71c: silinen vardiya Çöp Kutusu''na düşmedi';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'vardiya_sil' and row_id = v_id and actor = u_yonetici) then
+  raise exception 'FAIL 71c: silme audit_log''a yazılmadı';
+end if;
+
+-- (d) Para değişmez: bilet ve tahsilat bağıyla, tutarıyla, durumuyla aynen.
+if not exists (select 1 from public.biletler
+                where id = v_bilet and vardiya_id = v_id and kapatan_vardiya_id = v_id
+                  and tahsil_kurus = 4000 and durum = 'KAPALI')
+   or not exists (select 1 from public.tahsilatlar
+                   where bilet_id = v_bilet and vardiya_id = v_id
+                     and tutar_kurus = 4000 and durum = 'ONAYLANDI') then
+  raise exception 'FAIL 71d: vardiya silinince bilet ya da tahsilat değişti';
+end if;
+
+-- (e) İkinci kez silinemez.
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.vardiya_sil(v_id);
+  raise exception 'FAIL 71e: silinmiş vardiya ikinci kez silindi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- (f) Geri al: vardiya yeniden görünür, çöp kaydı kalkar, bağlar yerinde.
+perform pg_temp.login(u_yonetici);
+perform public.cop_geri_al(v_id2);
+select count(*) into v_n from public.vardiyalar where id = v_id;
+perform pg_temp.logout();
+if v_n <> 1
+   or exists (select 1 from public.vardiyalar where id = v_id and silindi_at is not null)
+   or exists (select 1 from public.cop where id = v_id2) then
+  raise exception 'FAIL 71f: Geri al vardiyayı geri getirmedi';
+end if;
+if not exists (select 1 from public.tahsilatlar
+                where bilet_id = v_bilet and vardiya_id = v_id and tutar_kurus = 4000) then
+  raise exception 'FAIL 71f: geri alınan vardiyanın tahsilat bağı kayboldu';
+end if;
+
+-- (g) Kalıcı sil: satır gider, bağlar null'a düşer, tutarlar aynı kalır.
+perform pg_temp.login(u_yonetici);
+perform public.vardiya_sil(v_id);
+perform pg_temp.logout();
+select id into v_id2 from public.cop where tablo = 'vardiyalar' and kayit_id = v_id;
+perform pg_temp.login(u_yonetici);
+perform public.cop_kalici_sil(v_id2);
+perform pg_temp.logout();
+if exists (select 1 from public.vardiyalar where id = v_id)
+   or exists (select 1 from public.cop where id = v_id2) then
+  raise exception 'FAIL 71g: kalıcı sil vardiyayı silmedi';
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet and vardiya_id is null and kapatan_vardiya_id is null
+                  and tahsil_kurus = 4000 and durum = 'KAPALI')
+   or not exists (select 1 from public.tahsilatlar
+                   where bilet_id = v_bilet and vardiya_id is null
+                     and tutar_kurus = 4000 and durum = 'ONAYLANDI') then
+  raise exception 'FAIL 71g: kalıcı silmede bilet ya da tahsilat tutarı değişti';
+end if;
+
+-- (h) Yetki: yalnızca giriş yapmış kullanıcı çağırabilir (rolü gövde denetler).
+if has_function_privilege('anon', 'public.vardiya_sil(uuid)', 'execute')
+   or has_function_privilege('service_role', 'public.vardiya_sil(uuid)', 'execute')
+   or not has_function_privilege('authenticated', 'public.vardiya_sil(uuid)', 'execute') then
+  raise exception 'FAIL 71h: vardiya_sil yetkileri yanlış';
+end if;
+
+raise notice 'PASS 71: eski vardiyayı yalnızca Yönetici siler, yalnızca kapanmışsa; silinen herkesten gizlenir ve çöpe düşer; para hiç değişmez; geri al ve kalıcı sil çalışır';
+
+-- =====================================================================
+-- 72  Personelin bilet iptali Yönetici onayına düşer (050)
+--     Personel açık bileti artık İPTAL ETMEZ, iptal İSTER: bilet açık kalır,
+--     istek bilette durur, Yöneticiye bildirim gider. Onay iptal eder (sebep
+--     personelinki), ret isteği siler ve bileti açık bırakır; ikisi de
+--     isteyene bildirilir ve audit_log'a yazılır (Onay ekranının geçmişi
+--     oradan okunur). Araç bu arada çıkarsa istek düşer. Yönetici eskisi gibi
+--     doğrudan iptal eder; personel kapanmış bileti hâlâ iptal edemez.
+-- =====================================================================
+perform pg_temp.logout();
+if not exists (select 1 from public.profiles
+                where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 72: fixture — u_yonetici Yönetici ya da u_personel Personel değil';
+end if;
+v_liste := array['ZZ72IPT01', 'ZZ72IPT02', 'ZZ72IPT03', 'ZZ72IPT04'];
+if exists (select 1 from public.biletler b, unnest(v_liste) as p(plaka)
+            where b.plaka = p.plaka and b.durum = 'ACIK') then
+  raise exception 'FAIL 72: fixture — ZZ72 plakalarından birinin açık bileti var';
+end if;
+update public.profiles set notif_prefs = coalesce(notif_prefs, '{}'::jsonb) - 'BILET_IPTAL_TALEBI'
+ where id = u_yonetici;
+update public.profiles set notif_prefs = coalesce(notif_prefs, '{}'::jsonb) - 'BILET_IPTAL_KARAR'
+ where id = u_personel;
+
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ72IPT01', now() - interval '1 hour', t.id, 'ACIK'
+  from public.tarifeler t order by t.id limit 1
+returning id into v_bilet;
+
+-- (a) Personelin iptali bir İSTEKTİR: bilet açık kalır, istek bilette durur,
+--     Yöneticiye bildirim ve iz düşer.
+perform pg_temp.login(u_personel);
+perform public.bilet_iptal(v_bilet, '  Yanlış plaka girildi  ');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK'
+                  and iptal_talebi_at is not null and iptal_talebi_by = u_personel
+                  and iptal_talebi_sebep = 'Yanlış plaka girildi') then
+  raise exception 'FAIL 72a: personelin iptali istek olarak yazılmadı ya da bilet kapandı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_iptal_talebi' and row_id = v_bilet and actor = u_personel) then
+  raise exception 'FAIL 72a: iptal isteği audit_log''a yazılmadı';
+end if;
+if not exists (select 1 from public.notifications
+                where profile_id = u_yonetici and tur::text = 'BILET_IPTAL_TALEBI'
+                  and link = '/finans/onay') then
+  raise exception 'FAIL 72a: Yöneticiye iptal isteği bildirimi gitmedi';
+end if;
+-- Gişe listesi (acik_bilet_ara) bekleyen isteği personele de gösterir.
+perform pg_temp.login(u_personel);
+select a.iptal_talebi into v_bool from public.acik_bilet_ara('ZZ72IPT01') a where a.id = v_bilet;
+perform pg_temp.logout();
+if v_bool is distinct from true then
+  raise exception 'FAIL 72a: Gişe listesi bekleyen iptal isteğini göstermiyor';
+end if;
+
+-- (b) Bekleyen isteğin üstüne ikinci istek yazılmaz.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_iptal(v_bilet, 'ikinci istek');
+  raise exception 'FAIL 72b: bekleyen isteğin üstüne ikinci istek yazıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%onay bekliyor%' then
+    raise exception 'FAIL 72b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+-- (c) Kararı personel veremez.
+begin
+  perform public.bilet_iptal_onayla(v_bilet);
+  raise exception 'FAIL 72c: personel iptal isteğini onayladı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yalnızca Yönetici%' then
+    raise exception 'FAIL 72c: beklenmeyen hata (onayla): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_iptal_reddet(v_bilet, null);
+  raise exception 'FAIL 72c: personel iptal isteğini reddetti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yalnızca Yönetici%' then
+    raise exception 'FAIL 72c: beklenmeyen hata (reddet): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (d) Ret: bilet açık kalır, istek silinir, iz ve isteyene bildirim.
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal_reddet(v_bilet, '  Araç hâlâ içeride  ');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK' and iptal_talebi_at is null
+                  and iptal_talebi_by is null and iptal_talebi_sebep is null) then
+  raise exception 'FAIL 72d: ret sonrası bilet açık değil ya da istek silinmedi';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_iptal_ret' and row_id = v_bilet and actor = u_yonetici
+                  and (detay ->> 'talep_eden')::uuid = u_personel
+                  and detay ->> 'sebep' = 'Yanlış plaka girildi'
+                  and detay ->> 'ret_sebep' = 'Araç hâlâ içeride') then
+  raise exception 'FAIL 72d: ret audit_log''a isteyen ve sebeplerle yazılmadı';
+end if;
+if not exists (select 1 from public.notifications
+                where profile_id = u_personel and tur::text = 'BILET_IPTAL_KARAR'
+                  and govde like '%Araç hâlâ içeride%') then
+  raise exception 'FAIL 72d: isteyene ret bildirimi gitmedi';
+end if;
+
+-- (e) Onay: bilet iptal edilir, sebep personelinkidir; istek silinir; iz ve
+--     isteyene bildirim.
+perform pg_temp.login(u_personel);
+perform public.bilet_iptal(v_bilet, 'Test girişi');
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal_onayla(v_bilet);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'IPTAL' and iptal_sebep = 'Test girişi'
+                  and iptal_talebi_at is null) then
+  raise exception 'FAIL 72e: onay bileti personelin sebebiyle iptal etmedi';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_iptal_onay' and row_id = v_bilet and actor = u_yonetici
+                  and (detay ->> 'talep_eden')::uuid = u_personel
+                  and detay ->> 'sebep' = 'Test girişi') then
+  raise exception 'FAIL 72e: onay audit_log''a yazılmadı';
+end if;
+if exists (select 1 from public.audit_log
+            where action = 'bilet_iptal_talebi_dustu' and row_id = v_bilet) then
+  raise exception 'FAIL 72e: onaylanan istek "düştü" diye de yazıldı';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_personel and tur::text = 'BILET_IPTAL_KARAR') <> 2 then
+  raise exception 'FAIL 72e: isteyene onay bildirimi gitmedi';
+end if;
+
+-- (f) İstek beklerken araç çıkarsa istek düşer; onaylanacak bir şey kalmaz.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ72IPT02', now() - interval '1 hour', t.id, 'ACIK'
+  from public.tarifeler t order by t.id limit 1
+returning id into v_bilet2;
+perform pg_temp.login(u_personel);
+perform public.bilet_iptal(v_bilet2, 'Yanlış giriş');
+perform pg_temp.logout();
+update public.biletler set durum = 'KAPALI', cikis_at = now() where id = v_bilet2;
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'KAPALI' and iptal_talebi_at is null
+                  and iptal_talebi_by is null and iptal_talebi_sebep is null) then
+  raise exception 'FAIL 72f: çıkan aracın iptal isteği düşmedi';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_iptal_talebi_dustu' and row_id = v_bilet2) then
+  raise exception 'FAIL 72f: düşen istek audit_log''a yazılmadı';
+end if;
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.bilet_iptal_onayla(v_bilet2);
+  raise exception 'FAIL 72f: düşmüş istek onaylandı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%iptal isteği yok%' then
+    raise exception 'FAIL 72f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (g) Personel kapanmış bileti hâlâ iptal edemez (istek de yazamaz).
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_iptal(v_bilet2, 'Kapanmışı iptal');
+  raise exception 'FAIL 72g: personel kapanmış bilet için iptal yazdı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yalnızca Yönetici%' then
+    raise exception 'FAIL 72g: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (h) Yönetici eskisi gibi DOĞRUDAN iptal eder — istek yazılmaz.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ72IPT03', now() - interval '1 hour', t.id, 'ACIK'
+  from public.tarifeler t order by t.id limit 1
+returning id into v_bilet2;
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal(v_bilet2, 'Yönetici iptali');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'IPTAL' and iptal_talebi_at is null) then
+  raise exception 'FAIL 72h: Yönetici iptali doğrudan iptal etmedi';
+end if;
+
+-- (i) Bildirim türleri ve yetkiler.
+if not public.bildirim_yonetici_turu('BILET_IPTAL_TALEBI') then
+  raise exception 'FAIL 72i: BILET_IPTAL_TALEBI Yönetici türü değil';
+end if;
+if public.bildirim_yonetici_turu('BILET_IPTAL_KARAR') then
+  raise exception 'FAIL 72i: BILET_IPTAL_KARAR Yönetici türü sayıldı (isteyen personele gider)';
+end if;
+foreach v_txt in array array['public.bilet_iptal_onayla(uuid)',
+                             'public.bilet_iptal_reddet(uuid, text)',
+                             'public.bilet_iptal(uuid, text)',
+                             -- 050 yeniden yarattı: Supabase'in yeni fonksiyona
+                             -- verdiği varsayılan yetkiler geri alınmış olmalı.
+                             'public.acik_bilet_ara(text)'] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute')
+     or not has_function_privilege('authenticated', v_txt, 'execute') then
+    raise exception 'FAIL 72i: % yetkileri yanlış', v_txt;
+  end if;
+end loop;
+if has_function_privilege('authenticated', 'public.bilet_iptal_talebi_temizle()', 'execute') then
+  raise exception 'FAIL 72i: istek temizleme tetiği istemciye açık';
+end if;
+
+raise notice 'PASS 72: personelin bilet iptali Yönetici onayına düşer; onay iptal eder, ret açık bırakır, ikisi de iz ve bildirim bırakır; çıkan aracın isteği düşer; Yönetici doğrudan iptal eder';
+
+-- =====================================================================
+-- 73  Kademeli tarife (051)
+--     Sahibin fiyat listesi: 0–2 sa 200 ₺, 2–4 sa 300 ₺, 4–8 sa 400 ₺,
+--     8–24 sa 500 ₺. Sınır alttaki kademeye aittir (2:00 = 200, 2:01 = 300);
+--     dakika yukarı yuvarlanır (bugünkü gibi). 24 saati aşınca her TAM gün
+--     500 ₺ ve kalan süre yine kademelerle (30 sa = 900, 48 sa = 1000,
+--     24 sa 1 dk = 700). Ücretsiz süre ve kayıp bilet bugünkü gibi. Süreli ve
+--     sabit tarife hiç değişmez; içerideki aracın tarifesi değişmez.
+-- =====================================================================
+perform pg_temp.logout();
+v_json := '[{"dakika":120,"kurus":20000},{"dakika":240,"kurus":30000},
+            {"dakika":480,"kurus":40000},{"dakika":1440,"kurus":50000}]'::jsonb;
+
+-- (a) Saf hesap — her örnek elle kontrol edildi.
+foreach v_txt in array array[
+    '0:0', '5:0', '6:20000', '120:20000', '121:30000', '240:30000', '241:40000',
+    '480:40000', '481:50000', '1440:50000', '1441:70000', '1800:90000',
+    '2880:100000', '2881:120000'] loop
+  v_n  := split_part(v_txt, ':', 1)::integer;
+  v_n2 := split_part(v_txt, ':', 2)::integer;
+  if public.ucret_kademeli(v_n, 5, v_json) <> v_n2 then
+    raise exception 'FAIL 73a: % dakika % kuruş olmalıydı, % çıktı',
+      v_n, v_n2, public.ucret_kademeli(v_n, 5, v_json);
+  end if;
+end loop;
+
+-- (b) Geçersiz kademe listeleri reddedilir (biri 24 saatte bitmiyor, biri
+--     sırasız, biri boş, biri eksi, biri kesirli, biri pahalıdan ucuza).
+foreach v_txt in array array[
+    '[{"dakika":120,"kurus":20000},{"dakika":480,"kurus":40000}]',
+    '[{"dakika":240,"kurus":30000},{"dakika":120,"kurus":20000},{"dakika":1440,"kurus":50000}]',
+    '[]',
+    '[{"dakika":120,"kurus":-1},{"dakika":1440,"kurus":50000}]',
+    '[{"dakika":120.5,"kurus":20000},{"dakika":1440,"kurus":50000}]',
+    '[{"dakika":120,"kurus":30000},{"dakika":1440,"kurus":20000}]',
+    '{"dakika":1440,"kurus":50000}',
+    '[{"dakika":1440}]'] loop
+  if public.kademeler_gecerli(v_txt::jsonb) then
+    raise exception 'FAIL 73b: geçersiz kademe listesi kabul edildi: %', v_txt;
+  end if;
+end loop;
+if not public.kademeler_gecerli(v_json)
+   or not public.kademeler_gecerli('[{"dakika":1440,"kurus":50000}]'::jsonb) then
+  raise exception 'FAIL 73b: geçerli kademe listesi reddedildi';
+end if;
+
+-- (c) Personel tarife yazamaz.
+perform pg_temp.login(u_personel);
+begin
+  perform public.tarife_guncelle(5, 0, 0, 0, 20000, 'KADEMELI', 0, v_json);
+  raise exception 'FAIL 73c: Personel kademeli tarife yazdı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yalnızca Yönetici%' then
+    raise exception 'FAIL 73c: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (d) Önce içeride bir araç (süreli tarifeyle), sonra Yönetici kademeli
+--     tarifeye geçer: içerideki aracın ücreti DEĞİŞMEZ (sürümleme).
+perform pg_temp.login(u_yonetici);
+select public.tarife_guncelle(15, 6000, 3000, 25000, 40000, 'SURELI', 0) into v_tarife_eski;
+v_ucret := public.ucret_hesapla(now() - interval '3 hours', now(), v_tarife_eski);
+select public.tarife_guncelle(5, 0, 0, 0, 20000, 'KADEMELI', 0, v_json) into v_id;
+perform pg_temp.logout();
+if public.ucret_hesapla(now() - interval '3 hours', now(), v_tarife_eski) <> v_ucret then
+  raise exception 'FAIL 73d: kademeli tarifeye geçmek eski tarifeyle fiyatlanan aracı etkiledi';
+end if;
+if not exists (select 1 from public.tarifeler
+                where id = v_id and tur::text = 'KADEMELI' and kademeler = v_json
+                  and ilk_saat_kurus = 0 and sonraki_saat_kurus = 0
+                  and gunluk_tavan_kurus = 0 and sabit_kurus = 0
+                  and ucretsiz_dakika = 5 and kayip_bilet_kurus = 20000
+                  and gecerli_bitis is null) then
+  raise exception 'FAIL 73d: kademeli tarife beklenen biçimde yazılmadı';
+end if;
+
+-- (e) Gerçek ücret yolu (ucret_hesapla) kademeli tarifeyi saf hesapla aynı fiyatlar.
+foreach v_txt in array array['5:0', '6:20000', '120:20000', '121:30000',
+                             '1441:70000', '1800:90000', '2880:100000'] loop
+  v_n  := split_part(v_txt, ':', 1)::integer;
+  v_n2 := split_part(v_txt, ':', 2)::integer;
+  if public.ucret_hesapla(now() - make_interval(mins => v_n), now(), v_id) <> v_n2 then
+    raise exception 'FAIL 73e: ucret_hesapla % dakikada % kuruş olmalıydı', v_n, v_n2;
+  end if;
+end loop;
+-- Saniyeler yukarı yuvarlanır: 2 sa 0 dk 30 sn = 121. dakika → 300 ₺.
+if public.ucret_hesapla(now() - interval '120 minutes 30 seconds', now(), v_id) <> 30000 then
+  raise exception 'FAIL 73e: kademe sınırında saniye yukarı yuvarlanmadı';
+end if;
+
+-- (f) Sunucu geçersiz listeyi ve listesiz kademeli tarifeyi reddeder;
+--     kademe listesi kademeli olmayan tarifeye yazılmaz.
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.tarife_guncelle(5, 0, 0, 0, 20000, 'KADEMELI', 0,
+    '[{"dakika":120,"kurus":20000}]'::jsonb);
+  raise exception 'FAIL 73f: 24 saatte bitmeyen liste kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kademe listesi geçersiz%' then
+    raise exception 'FAIL 73f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.tarife_guncelle(5, 0, 0, 0, 20000, 'KADEMELI', 0, null);
+  raise exception 'FAIL 73f: listesiz kademeli tarife kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kademe listesi geçersiz%' then
+    raise exception 'FAIL 73f: beklenmeyen hata (liste yok): %', sqlerrm;
+  end if;
+end;
+select public.tarife_guncelle(15, 6000, 3000, 25000, 40000, 'SURELI', 0, v_json) into v_id2;
+perform pg_temp.logout();
+if exists (select 1 from public.tarifeler where id = v_id2 and kademeler is not null) then
+  raise exception 'FAIL 73f: süreli tarifeye kademe listesi yazıldı';
+end if;
+
+-- (g) Süreli ve sabit tarife sonuçları değişmedi (PASS 42 ile aynı değerler).
+perform pg_temp.login(u_yonetici);
+select public.tarife_guncelle(15, 0, 0, 0, 40000, 'SABIT', 5000) into v_id2;
+perform pg_temp.logout();
+if public.ucret_hesapla(now() - interval '10 hours', now(), v_id2) <> 5000
+   or public.ucret_hesapla(now() - interval '10 minutes', now(), v_id2) <> 0 then
+  raise exception 'FAIL 73g: sabit tarife sonucu değişti';
+end if;
+
+-- (h) Yetkiler: yazma yolu yalnızca giriş yapmış kullanıcıya açık (rolü
+--     gövde denetler); saf hesap ve doğrulayıcı istemciye açık değil.
+v_txt := 'public.tarife_guncelle(integer, integer, integer, integer, integer, public.tarife_tur, integer, jsonb)';
+if has_function_privilege('anon', v_txt, 'execute')
+   or has_function_privilege('service_role', v_txt, 'execute')
+   or not has_function_privilege('authenticated', v_txt, 'execute') then
+  raise exception 'FAIL 73h: tarife_guncelle yetkileri yanlış';
+end if;
+if (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'tarife_guncelle') <> 1 then
+  raise exception 'FAIL 73h: tarife_guncelle birden çok imzayla duruyor';
+end if;
+foreach v_txt in array array['public.ucret_kademeli(bigint, integer, jsonb)',
+                             'public.kademeler_gecerli(jsonb)'] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 73h: % istemciye açık', v_txt;
+  end if;
+end loop;
+
+raise notice 'PASS 73: kademeli tarife sahibin listesini doğru fiyatlar (sınır alt kademede, 24 saat sonrası gün + kademe), geçersiz liste reddedilir, süreli/sabit ve içerideki araç etkilenmez';
 
 perform pg_temp.logout();
 raise notice '';

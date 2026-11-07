@@ -91,6 +91,28 @@ export function useVardiyaAc() {
   })
 }
 
+/**
+ * Yönetici deletes a CLOSED shift (049). Soft on the server: the row stays,
+ * RLS hides it, the bin gets an entry — tickets and collections keep their
+ * link and amount, so the kasa and reports do not move. The RPC refuses a
+ * Personel and an open shift; hiding the button is only the cosmetic half.
+ */
+export function useVardiyaSil() {
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (vardiyaId: string): Promise<void> => {
+      const { error } = await supabase.rpc('vardiya_sil', { p_vardiya_id: vardiyaId })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['vardiyalarim'] })
+      void qc.invalidateQueries({ queryKey: ['tum_vardiyalar'] })
+      void qc.invalidateQueries({ queryKey: ['cop'] })
+    },
+  })
+}
+
 export function useVardiyaKapat() {
   const qc = useQueryClient()
   return useMutation({

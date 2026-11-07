@@ -48,6 +48,8 @@ export type BildirimTur =
   | 'ONAY_BEKLIYOR'
   | 'VARDIYA_KAPATMA'
   | 'VARDIYA_KARAR'
+  | 'BILET_IPTAL_TALEBI'
+  | 'BILET_IPTAL_KARAR'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
@@ -159,6 +161,11 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   // list that is not Yönetici-only, which is why 035 leaves it out of
   // `bildirim_yonetici_turu`.
   VARDIYA_KARAR: 'Vardiya kapatma kararı',
+  // 050: a Personel's cancel is a request the Yönetici decides on.
+  BILET_IPTAL_TALEBI: 'Bilet iptali isteği',
+  // Like VARDIYA_KARAR: reaches the PERSONEL who asked, so 050 leaves it out
+  // of `bildirim_yonetici_turu`.
+  BILET_IPTAL_KARAR: 'Bilet iptali kararı',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -234,7 +241,8 @@ export interface ParkYeriDurumu {
  * SURELI  saate göre — ilk saat, sonraki saatler, günlük tavan
  * SABIT   giriş başına tek fiyat; saatlik alanlar 0 yazılır ve hesaba girmez
  */
-export type TarifeTur = 'SURELI' | 'SABIT'
+/** 051 adds KADEMELI: "N saate kadar X ₺" bands, priced by the server. */
+export type TarifeTur = 'SURELI' | 'SABIT' | 'KADEMELI'
 
 export interface Tarife {
   id: string
@@ -247,6 +255,9 @@ export interface Tarife {
   /** 0 means no daily cap. */
   gunluk_tavan_kurus: number
   kayip_bilet_kurus: number
+  /** 051: only on a KADEMELI tariff — ascending upper bounds in minutes,
+   *  the last one 1440. Optional so a read before 051 has run types correctly. */
+  kademeler?: { dakika: number; kurus: number }[] | null
   gecerli_baslangic: string
   gecerli_bitis: string | null
   olusturan: string | null
@@ -390,6 +401,13 @@ export interface Bilet {
   iptal_sebep: string | null
   iptal_by: string | null
   iptal_at: string | null
+  /**
+   * 050: a Personel's pending cancel request — the ticket stays open until a
+   * Yönetici decides. Optional so a read before 050 has run types correctly.
+   */
+  iptal_talebi_at?: string | null
+  iptal_talebi_by?: string | null
+  iptal_talebi_sebep?: string | null
   created_at: string
 }
 
@@ -504,6 +522,9 @@ export interface AcikBilet {
    *  the webhook has no user. */
   giris_by: string | null
   giris_kaynak: Kaynak
+  /** 050 — a Personel's cancel request is waiting for a Yönetici. Optional:
+   *  absent until the migration has run. */
+  iptal_talebi?: boolean
 }
 
 export interface GunlukOzet {

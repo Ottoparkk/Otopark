@@ -98,8 +98,11 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/046_bilet_giris_duzelt.sql` | "Değiştir" on the ticket screen: correct the entry time of a car still inside |
 | `supabase/migrations/047_edge_tablo_yetkileri.sql` | Explicit table grants for the Edge Functions — required on any project created after 2026-10-30 |
 | `supabase/migrations/048_tek_kapi_olay_saati.sql` | Single gate judges a late camera event by the event's own time (bridge 1.3.0 sends buffered cars after an internet outage) |
+| `supabase/migrations/049_vardiya_sil.sql` | Yönetici deletes an old, closed shift into the Çöp Kutusu (soft delete — money and ticket links untouched) |
+| `supabase/migrations/050_bilet_iptal_onayi.sql` | Personel's cancel of an open ticket becomes a request in Onay; Yönetici approves or rejects |
+| `supabase/migrations/051_kademeli_tarife.sql` | "Kademeli" tariff: price bands (e.g. 0–2 h, 2–4 h, 4–8 h, 8–24 h), full days past 24 h |
 
-**Run all of them, 001 through 048, in this order.** Stopping early leaves the
+**Run all of them, 001 through 051, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -170,7 +173,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 70** (as of migration 048). It stops
+The last block before that line is **PASS 73** (as of migration 051). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.
@@ -607,7 +610,7 @@ The provider decision gets **re-made** from this table, not re-argued.
 1. Turn on **Yönetim → Ayarlar → `kamera_aktif`** (off by default).
 
 **The normal path is now pairing, not a shared secret.** In the app, Yönetici →
-**Yönetim → Kamera kurulumu → "Yeni kamera"** mints an `XXXXX-XXXXX` code for
+**Yönetim → Otopark ayarları → Kamera kurulumu ve durumu → "Yeni kamera"** mints an `XXXXX-XXXXX` code for
 ONE camera, valid 15 minutes (it can be exchanged again until that camera's
 first heartbeat, so a lost reply does not burn it; each exchange replaces the
 secret). The installer's own connection test carries `x-kamera-deneme: 1` and

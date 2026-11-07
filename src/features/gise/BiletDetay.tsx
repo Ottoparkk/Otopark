@@ -19,6 +19,7 @@ import {
   BiletDetayKarti,
   BiletFoto,
   IptalButonu,
+  IptalTalebiNotu,
   PlakaBasligi,
   useBiletAksiyonlari,
 } from './components'
@@ -111,6 +112,8 @@ export default function BiletDetay() {
           kapida={Boolean(bilet.cikis_bekliyor_at)}
         />
 
+        {acik && bilet.iptal_talebi_at && <IptalTalebiNotu sebep={bilet.iptal_talebi_sebep} />}
+
         {/* Right under the plate on purpose: if this plate is wrong, nothing
             below it matters — the car cannot be found at exit. Only while the
             ticket is open, which is the window where the correction is still
@@ -200,7 +203,12 @@ export default function BiletDetay() {
             refuse it. */}
         {bilet.durum !== 'IPTAL' && (
           <div className="border-t border-divider pt-4">
-            <IptalButonu onClick={aksiyon.iptalAc} size="lg" />
+            <IptalButonu
+              onClick={aksiyon.iptalAc}
+              size="lg"
+              etiket={aksiyon.iptalEtiketi}
+              disabled={aksiyon.iptalKapali}
+            />
           </div>
         )}
       </div>

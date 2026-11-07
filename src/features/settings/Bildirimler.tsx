@@ -33,6 +33,9 @@ const TON: Record<BildirimTur, string> = {
   // The only type an operator receives, and it carries either outcome — the
   // body says which, so the tone must not pre-announce bad news.
   VARDIYA_KARAR: 'bg-accent-soft text-accent',
+  BILET_IPTAL_TALEBI: 'bg-warn-soft text-warn',
+  // Sent to the operator either way; the body says which.
+  BILET_IPTAL_KARAR: 'bg-accent-soft text-accent',
 }
 
 export default function Bildirimler() {
