@@ -1,38 +1,52 @@
 # Kamera köprüsü
 
-Grabs a cropped plate photo from an IP camera on a computer at the car park and
-posts it to `kamera-webhook`, which reads it with **the same model the phone app
-uses**. **Nothing in this folder is part of the web app** — it is not built,
-typechecked or deployed with it. It runs on hardware you own.
+Watches an IP camera from a computer at the car park, **reads the plate on that
+computer** and posts the plate text to `kamera-webhook`. **Nothing in this
+folder is part of the web app** — it is not built, typechecked or deployed with
+it. It runs on hardware you own.
 
 The camera never touches the internet. It talks to this machine over the LAN;
 this machine talks out. That is the whole security argument for the bridge.
 
-## Why it does not read plates itself
+## How it reads plates (1.3.0)
 
-An earlier version ran YOLOv8 + EasyOCR on this box. Both halves are gone, for
-different reasons:
+Owner decision, 2026-11-06. Up to 1.2.6 the bridge sent a photo and the server
+read it with a cloud model, and a camera event (SMD, "vehicle") decided which
+passes were cars. On site the photos were often taken at the wrong moment (the
+plate cut at the crop's edge), reads failed, and tuning the camera's SMD / IVS
+settings cost far more time than it saved. Both are gone:
 
-- **The OCR** is gone because a second engine is a second accuracy question
-  nobody has measured on Turkish plates, while the server's engine is the one
-  that gets tuned, logged and improved. The camera path and the phone path now
-  read plates identically, by construction.
-- **The detector** is gone because Ultralytics' licence (AGPL-3.0) requires an
-  enterprise licence for proprietary internal use — and because it was not
-  needed. The camera is fixed, aimed at one lane, at cars that *stop* at a
-  barrier, so the plate lands in the same rectangle of every frame. A crop box
-  you configure once does the same job with no model, no GPU and no licence.
+- **Plate finder:** YOLOv9 (`yolo-v9-t-640`, open-image-models, ONNX). Code MIT;
+  the weights' licence is not stated upstream — the owner accepted that risk.
+  Not YOLOv8 / Ultralytics (AGPL-3.0).
+- **Plate reader:** fast-plate-ocr `cct-s-v2-global` (ONNX, weights MIT). It won
+  the bake-off: 97.5 % fully correct on 2,359 Turkish plates (RapidOCR 74.3 %).
+- **Only sure reads are sent as plates.** Every plate box is read twice — tight
+  and widened — and counts only if both texts agree and every character is at
+  least 95 % likely; across frames the plate needs votes from two different
+  views (one view is enough only at ≥ 99 %). Measured: **0 confident-wrong reads** on the public set and the site's
+  photos. Anything less sure goes to staff with the photo ("Çözülmemiş
+  kayıtlar"); there is no cloud read and no guess.
+- **Grammar-constrained:** the reader may only produce a valid Turkish plate
+  (province 01–81, the same pattern as the server's `vlm.ts`), and it never
+  "fixes" an O into a 0 blindly — a forced character keeps its low probability
+  and makes the read unsure.
+- No per-read cost, no internet wait for reading, no camera menu to tune. About
+  100–150 ms per frame on the site laptop's CPU.
 
-What remains is the part that was actually carrying the accuracy: **the crop.**
-Measured on one car photographed twice, far away it read three of eight
-characters wrong and close it read perfectly. The crop is not a bandwidth
-optimisation.
+The crop still carries the accuracy: the plate must be big enough in it. Since
+1.3.0 the box can be drawn taller, with a **cut-out** over parked cars (see
+*Kırpma sayfası*).
+
+Files: `plaka.py` (finder, reader, votes), `okuma.py` (one decision per pass),
+`giden.py` (the outbox), models in `modeller/` (licence and source:
+`modeller/LISANS.txt`, SHA-256 checked at every start).
 
 ## What you need
 
-- A computer on the same network as the camera. An old laptop is the best
-  choice available: it has a screen for diagnosis and the UPS is already inside
-  it. A Raspberry Pi is now genuinely enough — nothing here does inference.
+- A Windows computer on the same network as the camera. An old laptop is the
+  best choice available: it has a screen for diagnosis and the UPS is already
+  inside it. The reader runs on the CPU (one thread); no GPU.
 - The camera's username and password. **Not** its RTSP URL — the installer
   works that out.
 - Nothing else. The packaged build carries its own Python; only building the
@@ -67,11 +81,16 @@ Dört soru sorar, ikisi kameranın kendi kullanıcı adı ve şifresi:
    ağından ayrı gönderilir (tek gönderimde Windows çoğu kez Wi-Fi'yi seçiyor,
    kablodaki kamera aramayı hiç duymuyordu); birden çok cihaz cevap verirse
    Enter hiçbirini seçmez.
-3. **Kırpma kutusu** — tarayıcıda canlı görüntü açılır, plakanın etrafını
-   **fareyle sürüklersiniz**. Kutu 200 pikselin altına düşerse kırmızıya döner
-4. **Test** — bağlantı ve gizli anahtar doğrulanır; 1.2.1'den beri bu
-   bilgisayarın saati de sunucununkiyle karşılaştırılır (bir dakikadan fazla
-   fark = durur, ne yapılacağını söyler)
+3. **Kırpma kutusu** — tarayıcıda canlı görüntü açılır, şeridi kapsayan
+   dikdörtgeni **fareyle sürüklersiniz** (sol/sağ kenar şeridin genişliği,
+   üst kenar araçların durduğu yerin biraz üstü). Park etmiş araçlar kutuya
+   giriyorsa **Hariç alan çiz** ile üstlerine ikinci bir dikdörtgen (1.3.0).
+   Kutu 200 pikselin altına düşerse kırmızıya döner
+4. **Test** — bağlantı ve gizli anahtar doğrulanır; 1.3.0'dan beri sunucunun
+   "okunamadı" bildirimini tanıdığı da sınanır (eski `kamera-webhook` →
+   durur, önce sunucuyu güncelleyin der); 1.2.1'den beri bu bilgisayarın
+   saati de sunucununkiyle karşılaştırılır (bir dakikadan fazla fark = durur,
+   ne yapılacağını söyler)
 
 Kurulum, köprü başlayıp kameraya bağlandıktan **ve sunucu ilk kalp atışını
 kabul ettikten** sonra "tamamlandı" der (1.2.1). Program `OtoparkKamera`
@@ -117,8 +136,8 @@ değiştirilse bile). Eski biçimli bir kodda şerit eksikse sihirbaz onu sorar,
 ### Tek kapı (`ORTAK`)
 
 Üçüncü bir şerit var: `ORTAK` — araçların **aynı kapıdan girip çıktığı**
-otopark. Köprü için hiçbir şey değişmez (gördüğü aracı fotoğraflar, `yon:
-ORTAK` ile gönderir); fark sunucudadır. Şerit yönü söyleyemediği için
+otopark. Köprü için hiçbir şey değişmez (okuduğu plakayı `yon: ORTAK` ile
+gönderir); fark sunucudadır. Şerit yönü söyleyemediği için
 `kamera-webhook` olayı `kamera_tek_kapi`'ye (037) verir ve karar **bilet
 durumundan** çıkar:
 
@@ -128,7 +147,7 @@ durumundan** çıkar:
 | açık bileti var, daha eski | çıkış: yalnızca "kapıda" damgası |
 | bileti az önce kapandı (varsayılan 5 dk) | yok sayılır — ödeyip çıkan araç |
 | içerideki bir plakaya bir karakter uzak | Çözülmemiş kayıtlar (`YON_BELIRSIZ`) — tahmin edilmez |
-| okunamadı (araç var, plaka okunmadı) | Çözülmemiş kayıtlar (`OKUNAMADI`, 039) — girdi mi çıktı mı bilinmez |
+| okunamadı (köprü emin değil: `okunamadi: true`, 1.3.0) | Çözülmemiş kayıtlar (`OKUNAMADI`, 039) — fotoğraflı, girdi mi çıktı mı bilinmez |
 | hiçbiri | giriş: bilet açılır |
 
 Cevap gövdesi `karar` ve `sebep` taşır ve köprü cevabı kayda yazdığı için her
@@ -140,15 +159,18 @@ okur; `ORTAK` hiçbir yerde `GIRIS`e yuvarlanmaz. 1.0.0 kurulum programı
 gerekir.
 
 Giriş süresi 3 dakikanın altına indirilemez. Köprü bir aracı gönderdikten sonra
-o araç gidene kadar susar, ama kadrajda bir şey kıpırdayıp yeniden durulursa
-(önünden geçen biri, biraz ilerleyen araç) **aynı aracı yeniden gönderir** —
-bu bir hata değil, araç kaçırmamak için böyle. Tek kapıda o ikinci gönderim,
-bilet 3 dakikadan eskiyse "çıkıyor" sayılır. Yani kameranın önünde 3 dakikadan
-uzun duran, az önce girmiş araç yanlışlıkla "Kapıda" işaretlenebilir (para
-hareket etmez, yalnızca işaret). Kamerayı araçların **geçtiği** noktaya
-çevirin: duran aracı durduğu anda, 1.2.5'ten beri durmadan geçen aracı
-geçişin en keskin karesinde çeker. Sıra beklenen ya da park edilen bir yere
-çevirmeyin.
+o araç gidene kadar susar; 1.3.0'da aynı plaka 60 sn içinde ikinci kez
+gönderilmez ve gönderilmiş duran aracın **gidişi** tanınıp gönderilmez. Ama
+kadrajda 60 sn'den uzun duran araç, önünde bir şey kıpırdayıp plakası yeniden
+okunursa **yeniden gönderilir** — araç kaçırmamak için böyle. Tek kapıda o
+ikinci gönderim, bilet 3 dakikadan eskiyse "çıkıyor" sayılır (para hareket
+etmez, yalnızca "Kapıda" işareti). Kamerayı araçların **geçtiği** noktaya
+çevirin; sıra beklenen ya da park edilen bir yeri hariç alanla dışarıda
+bırakın.
+
+Gönderim kutusu (1.3.0) yüzünden olaylar gecikerek de gelebilir. Tek kapı
+kararları bu yüzden olayın **kendi saatine** göre verilir (048): 10:00 girişi
+ile 10:30 çıkışı internet dönünce 11:00'de birlikte gelse de çıkış çıkıştır.
 
 Sihirbaz yeniden çalıştırıldığında `kopru-<şerit>.json` içindeki kimliği
 sunucuya sorar; hâlâ geçerliyse **yeni kod istemeden** o şeridi yeniden kurmayı
@@ -188,8 +210,9 @@ dokunulmaz (sahibin kararı). Pille çalışan dizüstü Windows varsayılanıyl
 uyuyabilir ve elektrik gelince kendiliğinden uyanmaz — `OKU-BENI.txt` bunu
 söyler.
 
-Bağlantı testi bilerek **fotoğraf göndermez**: gerçek bir kare gerçek bir bilet
-açardı ve kurulum, kasada silinmesi gereken bir kayıt bırakmamalı.
+Bağlantı testi bilerek **araç göndermez**: gerçek bir plaka gerçek bir bilet
+açardı ve kurulum, kasada silinmesi gereken bir kayıt bırakmamalı. Sunucu
+sürümü yoklaması da (`okunamadi` + `x-kamera-deneme`) hiçbir şey yazmaz.
 
 Son adım "görev oluşturuldu" demekle yetinmez. Görev kurulup süreç kameraya
 bağlanamadan ölebilir ve `schtasks` bunu **başarı** olarak bildirir; kurulumdan
@@ -202,21 +225,24 @@ bağlanamadan ölebilir ve `schtasks` bunu **başarı** olarak bildirir; kurulum
 ```
   ── GIRIS şeridi ──────────────────────────────
      Kamera       : rtsp://admin:•••@10.0.0.42:554/stream1
+     Kırpma       : 31,613,2072,1100
+     Hariç alan   : 31,613,500,300 (kesilen köşe)
      Otomatik başlatma: kurulu
      Son hareket  : 12 saniye önce
      Durum        : ÇALIŞIYOR
-     Araç olayları: etkin — yalnızca araç olayı olan geçişler gönderiliyor
-     Bugün        : 143 gönderim, 0 reddedilme, 12 atlandı (araç olayı yok)
+     Plaka okuma  : hazır
+     Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket
 ```
 
-`Araç olayları` (1.2.6) bu başlangıçtan beri son sözü yazar: `etkin`,
-`bağlı, henüz araç olayı yok`, `alınamıyor (sebep)`, `kapalı (otomatik geri
-dönüş …)`, `dinlenmiyor`, `kapalı (OLAY_KAPISI=0)`. `etkin` dışındakilerin
-hepsinde köprü 1.2.5 gibi her geçişi gönderir; bu yüzden hiçbiri sağlığı
-bozmaz. Olaysız atlanan geçiş ve tanınan ayrılış satırları da kameranın görüntü
-verdiğinin kanıtı sayılır (gece boyunca yalnızca onlar olabilir).
+`gönderim` sunucunun kabul ettiği her aracı sayar; `personele` onların
+plakası emin okunamayıp fotoğrafıyla "Çözülmemiş kayıtlar"a düşenleridir.
+`plakasız hareket` gönderilmeyen hareketlerdir (yaya, gölge, ışık — plaka hiç
+görülmedi, araç da durmadı); kameranın görüntü verdiğinin kanıtı sayılır.
+İnternet yokken bekleyen araç varsa `Bekleyen     : N araç (en eski …) —
+internet gelince sırayla gönderilecek` satırı çıkar. 1.2.6'nın `Araç olayları`
+ve `Boş şerit` satırları 1.3.0'da yok.
 
-Altı koşulun **altısı birden** aranır, çünkü her biri ötekinin kör noktasını
+Yedi koşulun **yedisi birden** aranır, çünkü her biri ötekinin kör noktasını
 kapatıyor:
 
 - **kamera görüntü veriyor mu** — kamerası olmayan köprü ölmez: açılışta
@@ -244,10 +270,18 @@ kapatıyor:
   `ağ hatası` ise durum ekranı `İNTERNET YOK` der. Köprü ağ hatasından sonraki
   ilk sunucu cevabında bir kez `internet bağlantısı geri geldi` yazar; o,
   başarılı bir gönderim, sunucunun herhangi bir cevabı ya da yeniden başlama
-  kesintiyi bitirir. **Kesinti sırasında görülen araçlar saklanmaz ve sonradan
-  gönderilmez** (4 deneme, ~15 sn – ~2,5 dk, sonra `gönderilemedi — araç elle
-  girilmeli`) — çevrimdışı tampon bilerek yok (sahibin kararı, 2026-10-31).
-  Kamera yoksa önce `KAMERA YOK` söylenir.
+  kesintiyi bitirir. **1.3.0'dan beri kesinti sırasında görülen araçlar
+  kaybolmaz:** her araç gönderilmeden ÖNCE gönderim kutusuna
+  (`kayit\giden-<şerit>\`) yazılır ve sunucu kesin cevap verene kadar orada
+  kalır, internet dönünce sırayla (en az 3 sn arayla) gider ve ancak o zaman
+  silinir (`giden.py`). Bu, sahibin 2026-10-31 "çevrimdışı tampon yok"
+  kararını **2026-11-06'da sahibin kendisi değiştirmesidir** — yalnızca
+  kamera köprüsü için, yalnızca gönderilene kadar. Kamera yoksa önce `KAMERA
+  YOK` söylenir.
+- **plaka okuyucu çalışıyor mu** (1.3.0) — modeller açılamazsa köprü DÜŞMEZ:
+  her araç-boyutlu geçiş fotoğrafıyla personele gider (araç kaybolmaz ama
+  hepsi insana kalır). Durum ekranı `PLAKA OKUYUCU ÇALIŞMIYOR` der ve
+  `Plaka okuma` satırı sebebi yazar.
 
 Yanlış yönde yanılan bir sağlık göstergesi, göstergesizlikten kötüdür: kimse
 bakmayı bırakmaz, herkes yanlış cevaba güvenir.
@@ -271,25 +305,52 @@ sürecin konsolu yok — `print()` çıktısı hiçbir yere gitmiyordu. "İlk g�
 kayıtlarını izleyin" tavsiyesinin karşılığı ancak bu dosyayla var.
 
 2 MB'de döner, iki yedek tutulur (~6 MB tavan). Klasör yalnızca SYSTEM ve
-yöneticilere açık: kayıt, sunucunun okuduğu plakaları içerebiliyor.
+yöneticilere açık. 1.3.0 kayda **plaka yazmaz** (kayıt yalnızca boyutla döner,
+yani plaka orada süresiz kalırdı); araçlar `islem_id`'nin ilk sekiz hanesiyle
+izlenir. Plaka ve fotoğraf yalnızca gönderim kutusunda (`kayit\giden-<şerit>\`)
+durur, o da sunucu kabul edene kadar. 2000 aracı aşarsa `[!]` alarmı yazılır
+ama yeni araçlar yine yazılır (asla sessizce düşmez). Bozuk bir dosya silinmez,
+`.bozuk` olarak kenara ayrılır.
 
 ### Kaldırma
 
 `OtoparkKamera.exe` → **Kaldır**. Görevi siler ve ayar dosyasını **gizli
 anahtarıyla birlikte** kaldırır. Kayıtlar bilerek durur — arızayı anlamaya
-çalışan kişinin elindeki tek iz. Güç ayarları da durur; bilgisayarı başka bir
+çalışan kişinin elindeki tek iz; gönderim kutusunda bekleyen araç varsa o da
+durur (`kayit\giden-<şerit>\`). Güç ayarları da durur; bilgisayarı başka bir
 iş için kullanacaksanız Güç Seçenekleri'nden geri alın.
 
 ## Paketi üretmek (geliştirici)
 
+Depo dışında bir venv'de (sürümler `requirements.txt` ile birebir olmalı):
+
 ```bash
-pip install pyinstaller
-python paketle.py
+python -m venv <venv>
+<venv>\Scripts\python -m pip install -r requirements.txt pyinstaller pillow
+<venv>\Scripts\python paketle.py
 ```
 
-`dagitim/OtoparkKamera-<sürüm>-<tarih>.zip` (~60 MB) üretir ve SHA-256 özetini
+`dagitim/OtoparkKamera-<sürüm>-<tarih>.zip` (~85 MB) üretir ve SHA-256 özetini
 yazar. Özeti dağıtımla birlikte verin: indirilen dosyanın yolda değişmediğini
 doğrulamanın tek yolu.
+
+1.3.0'dan beri `paketle.py` üç şeyi kendisi sınar ve tutmazsa durur:
+
+- **Derlemeden önce:** `requirements.txt`'deki her sürüm kurulu olanla aynı mı
+  (plaka okuyucunun altın çıktısı onnxruntime 1.31.0 ile ölçüldü) ve
+  modellerin SHA-256'sı `plaka.py`'dekiyle aynı mı.
+- **Derledikten sonra:** derlenen `.exe`'yi `--plaka-sina` ile GERÇEKTEN
+  çalıştırır — modeller pakette mi, onnxruntime DLL'leriyle açılıyor mu, öz
+  sınama geçiyor mu. Eksik bir DLL sahada değil burada görülür.
+- **Lisanslar:** pakete giren her paketin lisans metni, derleme anında kurulu
+  sürümden `lisanslar\` klasörüne toplanır (dizini `LISANSLAR.txt`); metni
+  bulunamayan paket derlemeyi durdurur. Modellerin lisansı ve Python'unki de
+  eklenir.
+
+**onnxruntime telemetrisi:** resmî paket varsayılan olarak Microsoft'a
+telemetri gönderir (paketin kendi `Privacy.md`'si). `plaka._ort_yukle` onu
+ilk içe aktarmadan önce `ORT_DISABLE_TELEMETRY=1` ile ve ayrıca API ile kapatır;
+onnxruntime'ı başka hiçbir yer içe aktarmaz (bir test bunu tutar).
 
 - **`--onedir`, `--onefile` değil.** Tek dosyalı sürüm her açılışta ~120 MB'ı
   geçici klasöre açıyor; köprü bir servis olarak yeniden başlıyor ve bu her
@@ -322,78 +383,33 @@ python kurulum.py            # Windows'ta: yönetici olarak
 python kopru.py --kare
 ```
 
-Saves `kare.jpg` and prints the frame size. Open it, measure the rectangle the
-plate sits in when a car is stopped at the barrier, and pass it as `x,y,w,h` in
-pixels. Frame it **generously** — a box cropped to the plate's exact edges
-loses the context the model uses, and one that only just fits will miss a tall
-van or a low sports car.
+Saves `kare.jpg` and prints the frame size. Open it, measure the lane's
+rectangle and pass it as `x,y,w,h` in pixels: left and right edges at the
+lane's width (no street), top edge a little above where cars stop. Frame it
+**generously** — a plate touching the box's edge is treated as cut and is never
+read; a box that only just fits will cut a tall van or a low sports car.
+
+Parked cars inside the box? Add a **cut-out** over them, also `x,y,w,h` in
+full-frame pixels. It must overlap the box and must not cover all of it; the
+bridge paints it flat grey, so it brings no motion, no plate and no pixels into
+the sent photo, and a plate touching its border counts as cut.
 
 ```bash
 export KIRPMA="820,540,600,220"
+export KIRPMA_HARIC="820,540,200,120"    # optional
 python kopru.py --test
 ```
 
-Saves `kirpik.jpg` — confirm the plate is actually inside it — and then prints
-live `hareket` values. Watch them with the lane empty and with a car pulling
-in: that tells you what to set `HAREKET_ESIGI` (moving) and `DURGUN_ESIGI`
-(still) to, instead of guessing.
+Saves `kirpik.jpg` (with the cut-out grey) — confirm the lane is actually inside
+it — and then prints live `hareket` values. Watch them with the lane empty and
+with a car pulling in: that tells you what to set `HAREKET_ESIGI` (moving) and
+`DURGUN_ESIGI` (still) to, instead of guessing.
 
-If `kirpik.jpg` comes back under 200 px on its long edge, the bridge warns you.
-That is the size at which the model's own documentation says reads become
-unreliable — move the camera closer or zoom in; no amount of prompt tuning
-recovers pixels that were never captured.
-
-## Skipping the empty lane (learned automatically since 1.2.0)
-
-A car **arriving** and a car **leaving** look identical to the bridge — motion,
-then stillness — so it photographs the empty lane after every departure, and
-every vehicle costs two reads instead of one.
-
-**Since 1.2.0 the bridge learns the empty lane by itself.** When it sends a
-photo of the empty lane, the server's model answers "no vehicle at all"
-(`arac_yok` in the webhook's 422). The bridge keeps a tiny 160×120 grey copy as
-a *candidate*. When a later empty-lane photo gets the same answer, looks the
-same, **and at least one car was read in between**, the candidate becomes a
-*reference*. From then on a settled picture that matches a reference is not
-sent; the log says `boş şerit — gönderilmedi (fark=…, ref=…)`.
-
-- Up to 6 references (day, dusk, infrared night, wet road…); the one unused
-  longest makes room. Kept in memory: after a restart the first departures are
-  paid for again and the references come back.
-- "A car read in between" is what stops one parked car with an unreadable plate,
-  photographed twice, from being learned as "empty". A 422 without `arac_yok`
-  ("a car I cannot read") is never learned from.
-- Size-mismatched pictures are never treated as matching (the motion `fark()`
-  returns 0.0 for that case; the learner refuses to compare instead).
-- **Check it on installation day:** every skip logs its `fark`. Empty-lane
-  matches should sit near 0, and a car must never come close to `BOS_ESIGI`
-  (3.0). If anything looks borderline, set `"BOS_OGREN": "0"` in the lane's
-  config file and the bridge behaves exactly like 1.1.0.
-- Needs the webhook that sends `arac_yok` (deployed with the Haiku 5.5 change).
-  Against an older webhook nothing is learned and nothing changes.
-- `durum` shows `Boş şerit : N okundu, M atlandı` for today.
-
-### Manual reference (still supported)
-
-A hand-made reference works alongside the learned ones and is never dropped:
-
-```bash
-python kopru.py --bos      # run this while the lane is EMPTY
-export BOS_REFERANS="bos.jpg"
-```
-
-**This cannot cause a missed vehicle, by design.** If the reference is wrong —
-taken with a car in it, or in daylight and used at night — then an empty lane
-also looks different from it and the bridge sends anyway. The worst case is the
-behaviour you already have without it. That asymmetry is deliberate: a wasted
-read costs a fraction of a cent, a missed car costs a free park.
-
-**Worth setting for more than the money.** A photo of the empty lane also
-*disarms* the bridge for `MIN_BEKLEME_SN`, so those wasted reads eat into the
-window the next vehicle needs. That is why the floor is 2s and not longer; with
-a reference configured the departure never fires and the question goes away.
-
-Leave `BOS_REFERANS` unset and only the learned references are used.
+If `kirpik.jpg` comes back under 200 px on its long edge, the bridge warns you —
+move the camera closer or zoom in; no reader recovers pixels that were never
+captured. Then check real cars with `OtoparkKamera.exe --plaka` (as
+administrator): it shows, live, every plate box, both reads, `EMİN` /
+`belirsiz` / `kesik` and the milliseconds — and sends and saves nothing.
 
 ## Run
 
@@ -408,286 +424,191 @@ python kopru.py
 
 **One process per lane.** Direction is configuration, never a guess — an exit
 camera that thinks it is an entrance opens tickets for cars that are leaving.
+The models must be in `modeller/` next to `plaka.py` (they are in git and in
+the package).
 
 On Windows, `set` instead of `export`, and use Task Scheduler ("run whether user
 is logged on or not") instead of the systemd unit below.
 
-### When it sends
+### When it sends (1.3.0)
 
-One photo per car. Two cases, decided at the same moment — when the crop box
-goes still after motion:
+The bridge works in **passes**. A pass starts at the first strong motion in the
+crop while the lane is armed. The last still frame *before* the pass (the
+background) is read first, with priority; then frames of the pass go to the
+reader (a single slot, newest frame wins, so a slow read never piles up). The
+reader runs in its own thread — the capture loop never waits for it.
 
-- **The car stopped in view** (the still scene is NOT the one from before the
-  motion): that still frame is sent, as before 1.2.5. It is both the moment the
-  plate is in position and the sharpest one available.
-- **The car rolled through without stopping** (1.2.5, gates without a barrier):
-  the still scene IS the one from before the motion — the car has gone, and
-  before 1.2.5 the bridge sent that empty lane and the car was lost. Now, while
-  something is in the box during the pass, every frame is scored and the best
-  is kept; when the lane goes back to how it was, **that** frame is sent,
-  timestamped when it was seen. The log says `araç geçti (skor=…, fark=…, N
-  aday) — gönderiliyor` (a stopped car still says `araç durdu`).
-  Since 1.2.6 the score is edge energy (Laplacian²) **on the pixels that
-  differ from the background before the pass** only. 1.2.5 scored the whole
-  crop, and on a textured road that favoured the frame where the car covered
-  the *least* of the box (asphalt texture is detail too); `dokulu_zemin` holds
-  it. A sharp whole car now beats both a sharp sliver and a blurred whole car.
+A pass is **decided** when the car has stopped (the crop is still and does not
+look like the background), when the scene goes back to the background (a car
+that rolled through), after `GECIS_BEKLE_SN` without strong motion if the
+scene never settles (rain, night grain), or when the stream drops. At the
+decision the bridge waits at most `PLAKA_BEKLE_SN` (0.4 s) for a read in
+flight, then:
 
-### Only vehicles (1.2.6)
+| What was seen | What is sent |
+|---|---|
+| a **sure** plate (see *How it reads plates*) | the plate, with the photo of its best read; `zaman` = when it was **first** read |
+| two different sure plates | both, in time order |
+| plate boxes in ≥ 2 frames, nothing sure | `okunamadi` + the best guess and its confidence + photo → staff |
+| a car-sized thing **stopped**, no plate box at all (and none in the background) | `okunamadi` + photo → staff |
+| motion, no plate, nothing stopped (people, shadows, light) | nothing; the log says `hareket — plaka görülmedi` |
+| the departure of a stopped car that was sent | nothing (`gönderilmiş araç — tekrar gönderilmedi`) |
+| the same plate (or one character away) sent in the last 60 s | nothing |
+| the reader is down | every car-sized pass → `okunamadi` + photo → staff |
 
-At the real gate 1.2.5 also sent passes **without a vehicle**: someone walking
-through the box, a shadow, dusk and infrared switching, lamp flicker. Each
-became an unreadable-plate record, a notification to all staff and a paid read.
-The camera's own detection (Dahua *Akıllı Hareket Algılama*, target *Motorlu
-Araç*) reported every car, day and night, and no people. So the bridge now
-listens to the camera's events (`olay.py`: `eventManager.cgi?action=attach`,
-own HTTP digest, see the module docstring for why not `requests`) and a
-decision is sent **only if a vehicle event overlaps the pass**:
+"Car-sized" means the crop changed from the background by at least
+`ARAC_KAPSAM_ESIGI` during the pass; it is what keeps people walking past from
+flooding staff. A departure is recognised when the pass starts from the sent
+car's own picture, or when the sent plate is read in the pass's background
+frame. "No plate in the background either" matters: when a plated car leaves
+and the lane goes empty, the change is that car's departure, not something
+that stopped (`kuyruk` holds it).
 
-- **Window:** from 5 s before the pass's first strong motion
-  (`OLAY_ONCE_SN`) to the decision, never further back than 15 s and never
-  before the previous decision. An old event cannot authorise a later
-  flicker, and the car's own event cannot authorise the person walking
-  behind it (`olay_pencere_sinirli`, `olay_arac_ardindan_yaya`).
-- **Late event:** with no event yet, the decision waits up to
-  `OLAY_BEKLE_SN` (5 s) and is sent the moment one arrives, with its original
-  capture time (`olay_gec_gelir`). Otherwise it is skipped
-  (`araç olayı yok — gönderilmedi`) and the crop is kept in
-  `kayit\atlanan\` (newest `ATLANAN_SAKLA` = 50; the folder inherits
-  `kayit`'s admin-only rights), so the first days can prove no real car was
-  skipped.
-- **Departure:** a car that **stopped** and was sent produces a vehicle event
-  again when it drives off. 1.2.5 then sent the empty lane. With the gate on,
-  the bridge remembers the standing car and skips the decision that follows
-  its departure (`gönderilmiş araç — tekrar gönderilmedi`), but only when
-  that pass started from the standing car's picture (or the car left during
-  the 2 s re-arm wait) and the scene went back to its pre-arrival background
-  or a learned empty lane. A car only counts as "standing" if the sent
-  picture really differs from the background, and only an EMPTY scene after
-  it counts as its departure. There is deliberately **no** "the scene still
-  looks like the standing car, so skip" rule: a similar car that takes the
-  same spot without the lane ever emptying is indistinguishable in pixels,
-  and that rule lost it (`olay_arac_yerine_arac`; an earlier draft also lost
-  a rolling car this way, `olay_hizli_ayrilan_sonra_gecen`). The price is the
-  1.2.5 one: a standing car that creeps can now and then be sent twice.
-- **Fallback — no car is ever lost to an event problem (owner decision):**
-  the gate is used only while the event stream is healthy (a part within
-  20 s; the camera sends a heartbeat every 5) **and** at least one
-  recognised vehicle event has been seen since start. Otherwise the bridge
-  runs as 1.2.5 exactly: no user, no *Olay* right, wrong event name, SMD
-  switched off, camera unreachable, or `OLAY_KAPISI=0`. A decision that was
-  waiting when the stream dropped is sent at once
-  (`olay_beklerken_koptu`).
-- **Automatic fallback:** if three car-sized passes in a row
-  (`ARAC_KAPSAM_ESIGI`) are skipped and no vehicle event has come for
-  `OLAY_GERI_DONUS_SN` (10 min), someone has probably switched the camera's
-  detection off while the stream stays up. The gate closes
-  (`araç olayı gelmiyor — hareketle çalışılıyor`) and reopens at the next
-  vehicle event. Worst case, a few cars in those minutes are skipped; their
-  crops are in `atlanan\`.
+On the **exit lane** (`YON=CIKIS`) an unsure car is only logged
+(`çıkış şeridinde okunamayan araç`): the server has no exception row for an
+exit and the money there is in a person's hands anyway.
 
-The listener logs state changes only, never credentials. A wrong password
-costs exactly one failed login and then waits `SIFRE_RED_BEKLEME_SN`, so the
-camera account (which the video also uses) never locks. A missing *Olay* right
-waits an hour; a rejected subscription waits 10 minutes. Its settings
-(`OLAY_ARAC_KODLARI`, `OLAY_PORT`, …) are read **when it starts**, after the
-lane's config file is loaded, so a line added to `kopru-<şerit>.json` takes
-effect on the next start, with no new build.
-
-`OtoparkKamera.exe --olay` (as administrator; the config is admin-only) shows
-the camera's events live for 2 minutes, with vehicle events marked `← ARAÇ`.
-Run it once after installing: a car should show a vehicle Start (and Stop), a
-person none. If the vehicle code differs from `SmartMotionVehicle`, put it in
-the lane's config file as `OLAY_ARAC_KODLARI`.
-
-Motorcycles are not detected by the camera: they are entered by hand (owner
-decision). Restrict the camera's detection **region** to the lane, or street
-traffic and headlight sweeps will authorise junk.
-
-If the scene never goes still after a passing car (rain, night grain, swaying
-trees), a held frame is still sent once there has been no strong motion for
-`GECIS_BEKLE_SN` **and** the lane looks like it did before the pass.
-
-"Looks like it did before THIS pass" is deliberately strict — not "looks like a
-learned empty lane". A car that stopped, was sent, and then drives off can
-re-arm the bridge mid-departure; that pass starts from the stopped car and
-holds frames of it leaving. Accepting the learned empty lane as "gone" sent the
-departing car a second time, which at a single gate is a fake exit right after
-the entry (`bos_ogrenme` checks there are exactly three car photos).
+Every decision goes to the outbox first (`giden.py`), then a sender thread
+posts it; the file is deleted only on a definitive answer (2xx, or a final
+400/409, which is logged as `reddedildi`). 429, 5xx and network errors keep
+it and retry with the **same** `islem_id` (1, 2, 4 … 60 s), and the outbox
+wakes at once when the internet comes back. The server is replay-safe on
+`islem_id`, so a crash between "accepted" and "deleted" only re-sends a no-op.
+A server that does not know `okunamadi` (older `kamera-webhook`) answers 422
+without an exception: the bridge logs `[!] sunucu okunamadı kaydını yazmadı`
+and drops that one (the installer refuses such a server up front).
 
 Motion blur is the weak point of a moving car: set a **fast fixed shutter**
-(about 1/500 s) in the camera, and check a car after dark — infrared night
-pictures use a slower shutter and may need light at the gate.
+(about 1/500 s) in the camera, and check a car after dark with `--plaka` —
+infrared night pictures use a slower shutter and may need light at the gate.
 
 After a send the lane is **disarmed until that vehicle leaves the frame** — the
 crop has to stop matching the one that was sent. It is not a timer, and that
 distinction is load-bearing: a fixed 60s cooldown used to outlive the 12s
 motion window, so the *next* car settled while sending was blocked and was
-already stale by the time it lifted. Every vehicle arriving roughly 5–49s
-behind another was dropped, with no ticket and nothing in `istisnalar` to find
-it by.
+already stale by the time it lifted. `MAX_BEKLEME_SN` forces a re-arm as
+insurance; a repeat of the same car is stopped by the 60 s rule and, past it,
+by the one-open-ticket-per-plate index on the server.
 
-Re-arming is an API-cost guard, not a data guard: if the same car were sent
-twice, the plate resolves to the same value and the one-open-ticket-per-plate
-index refuses the second. That is why an early re-arm on a lighting change is
-acceptable, and why `MAX_BEKLEME_SN` can force one without risk.
+### The stored photo
 
-**Known cost, accepted deliberately:** a car that creeps forward at the barrier
-can move enough to look like it left, and get photographed again. Each repeat
-is one wasted read and a 409 from the webhook — never a wrong ticket. Every
-guard that would suppress it also risks suppressing a genuinely new vehicle,
-and a missed car costs a free park while a repeat costs a fraction of a kuruş.
-
-### The stored photo (1.2.3)
-
-Each send carries two copies of the same crop: the reading copy
-(`foto_base64`, quality 92, ≤ `MAX_KENAR`) and a **compressed** copy
+Each car carries **one** photo: a compressed copy of the crop
 (`foto_kanit_base64`) that the server stores as the ticket / exit / exception
-photo (migration 042). The compressed copy is ≤ 1280 px and ≤ 100 KB
-(102,400 bytes — the same number as `KANIT_FOTO_EN_COK_BAYT` in
+photo (migration 042). Since 1.3.0 there is no reading copy (`foto_base64`):
+nothing is read on the server. The copy is ≤ 1280 px and ≤ 100 KB (102,400
+bytes — the same number as `KANIT_FOTO_EN_COK_BAYT` in
 `supabase/functions/_shared/serit.ts`; a test keeps the two equal). JPEG
 quality 80 → 40, then the picture shrinks by ×0.75, at most four rounds; if it
-still does not fit the car goes **without** a photo (`kanıt fotoğrafı 100 KB'a
-sığmadı`), never without its ticket. Normal plate crops fit at the first
-quality (13–56 KB measured).
+still does not fit the car goes **without** a photo, never without its record.
+The cut-out is grey in it.
 
 **No `KIRPMA` box → no photo** (owner decision, KVKK): without a box the crop is
 the whole street view. The bridge says so once at startup.
 
-Deploy the `kamera-webhook` that knows this field **before** installing 1.2.3:
-an older webhook does not strip it and would copy it into exception rows.
-
 ### Tuning
+
+All of these can be set in the lane's config file (`kopru-<şerit>.json`) or as
+environment variables. A bad `PLAKA_*` value never stops the bridge — the
+default is used and a `[!]` line says so; the motion and timing values are
+numbers that must be valid, or the bridge stops at start (and `durum` says so).
 
 | Variable | Default | What it does |
 |---|---|---|
-| `KIRPMA` | *(none)* | `x,y,w,h` in pixels. Unset = send the whole frame, which works but reads worse. |
-| `MAX_KENAR` | `1568` | Long-edge cap. Raise to `2576` only if `plaka_model` is a high-resolution model (Claude 4.7 and later). |
-| `JPEG_KALITE` | `92` | Deliberately gentle — heavy JPEG makes text hard to read. |
+| `KIRPMA` | *(none)* | `x,y,w,h` in pixels. Unset = the whole frame, which works but reads worse, and no photo is stored. |
+| `KIRPMA_HARIC` | *(none)* | Cut-out inside the box, `x,y,w,h` full-frame pixels: painted grey, no motion, no plate, not in the photo. |
+| `MAX_KENAR` | `1568` | Long-edge cap of the crop before anything looks at it. Thresholds measured by the installer assume this. |
 | `HAREKET_ESIGI` | `6.0` | Above this, something is moving. |
 | `DURGUN_ESIGI` | `2.0` | Below this, the scene is still. |
 | `DURGUN_KARE` | `5` | Still frames required before believing the car stopped. |
-| `MIN_BEKLEME_SN` | `2` | Floor between two sends. Keep it well under a plausible dwell at the barrier — see the empty-lane note above. |
+| `MIN_BEKLEME_SN` | `2` | Floor after a send before the lane can re-arm. Keep it well under a plausible dwell at the barrier. |
 | `MAX_BEKLEME_SN` | `120` | Re-arm after this even if the scene never changed. Insurance — a wedged disarm would lose every later car. |
 | `SAHNE_ESIGI` | `6.0` | How different the crop must look from the sent frame before the vehicle counts as gone. |
-| `BOS_REFERANS` | *(none)* | Path to an empty-lane frame from `--bos`. Optional since 1.2.0 (references are learned). |
-| `BOS_ESIGI` | `3.0` | How close to a reference counts as "empty" — for learned and manual references alike. |
-| `BOS_OGREN` | `1` | `0` turns empty-lane learning off (behaviour of 1.1.0). |
-| `GECIS_YAKALA` | `1` | `0` turns rolling-car capture off: behaviour of 1.2.4 exactly (a car that does not stop is missed). |
-| `GECIS_BEKLE_SN` | `2` | Safety net: send the held passing-car frame after this long without strong motion, if the lane looks as it did before the pass. |
+| `GECIS_BEKLE_SN` | `2` | Safety net: decide a pass after this long without strong motion, if the lane looks as it did before the pass. |
+| `ARAC_KAPSAM_ESIGI` | `15` | How much the crop must change during a pass to count as car-sized. |
+| `PLAKA_BUL` | `1` | `0` switches local reading off: every car-sized pass goes to staff. |
+| `PLAKA_BUL_ESIK` | `0.30` | Plate finder score floor. |
+| `PLAKA_OKU_ESIK` | `0.95` | Both crops' lowest character probability must reach this. |
+| `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
+| `PLAKA_IPLIK` | `1` | Reader threads. One is measured; the bridge is 24/7 on an old laptop. |
+| `PLAKA_BEKLE_SN` | `0.4` | How long a decision waits for a read in flight. |
 | `YENIDEN_BAGLAN_SN` / `YENIDEN_BAGLAN_MAX_SN` | `3` / `60` | Wait before reconnecting after the stream drops; doubles up to the cap, back to the base on the first good frame (1.2.2). |
-| `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. Also the event listener's wait after a rejected password (1.2.6). |
-| `OLAY_KAPISI` | `1` | `0` turns the vehicle-event gate off: behaviour of 1.2.5 exactly (every pass is sent). |
-| `OLAY_ARAC_KODLARI` | `SmartMotionVehicle` | Comma-separated event codes that mean "a vehicle". IVS line/region events with `Vehicle`/`MotorVehicle` count too. Check with `--olay`. |
-| `OLAY_PORT` | `80` | The camera's HTTP port for the event subscription. |
-| `OLAY_ONCE_SN` | `5` | How long before a pass's first motion a vehicle event may arrive. |
-| `OLAY_BEKLE_SN` | `5` | How long a decision waits for a late vehicle event before it is skipped. |
-| `OLAY_GERI_DONUS_SN` | `600` | Automatic fallback: after 3 car-sized skips in a row and this long without any vehicle event, the gate closes until the next one. |
-| `ARAC_KAPSAM_ESIGI` | `15` | How different from the background a pass must get to count as "car-sized" for the automatic fallback. |
-| `ATLANAN_SAKLA` | `50` | Skipped crops kept in `kayit\atlanan\`; `0` keeps none. |
-| `OLAY_SAGLIK_SN` / `OLAY_OKUMA_SN` | `20` / `15` | The event stream counts as healthy while a part arrived within this long; a silent stream is dropped after `OLAY_OKUMA_SN`. |
+| `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. |
+
+1.2.x settings that no longer do anything: `JPEG_KALITE`, `BOS_REFERANS`,
+`BOS_ESIGI`, `BOS_OGREN`, `GECIS_YAKALA`, every `OLAY_*`, `ATLANAN_SAKLA`.
+Left in an old config file they are simply ignored.
 
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 40 senaryo, ~8 dk
+python test_kopru.py            # yakalama döngüsü, 30 senaryo
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı birimleri
-python test_olay.py             # kameranın araç olayları (1.2.6), sahte kamera ile
+python test_kurulum.py          # kurulum tarafı, 138 birim testi
+python test_okuma.py            # geçiş kararları (okuma.py), 29 test
+python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 34 test
+python test_giden.py            # gönderim kutusu (giden.py), 13 test
+python test_mutasyon.py         # 21 kural tek tek bozulur; her biri yakalanmalı
 ```
 
+`test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,
+ayrılış, plakasız duran araç, bozuk okuyucu, kutudan silme, kayıtta plaka yok,
+hariç alan, telemetri, eski sunucu, çıkış şeridi…) köprü klasörünün GEÇİCİ bir
+kopyasında bozar ve onu tutan testin düştüğünü doğrular; önce her testin
+bozulmamış kodda geçtiğini sınar. Depoya dokunmaz, hiçbir şey silmez.
+
+`test_plaka.py`'nin iki testi gerçek modelleri çalıştırır ve yalnızca
+onnxruntime kuruluysa koşar (paket venv'i); kurulu değilse "atlandı" der —
+sürüm öncesi hepsi paket venv'inde de koşulmalı. 1.2.6'nın `olay.py` ve
+`test_olay.py` dosyaları 1.3.0 ile kaldırıldı (kamera olayları kullanılmıyor).
+
 Her çalıştırma bütün geçici dosyalarını `%TEMP%` altında TEK klasörde toplar
-(`otopark-test-kurulum-…` / `otopark-test-kopru-…`) ve sonunda yolunu yazar.
-Klasör silinmez; elle temizlenir.
+(`otopark-test-kurulum-…` / `-kopru-…` / `-giden-…` / `-plaka-…`) ve sonunda
+yolunu yazar. Klasör silinmez; elle temizlenir. Hiçbir test bir şey silmez.
 
-Gerçek `main()` döngüsünü sahte bir kamera ve sahte bir ağ ile çalıştırır —
-karar mantığı taklit edilmez. `requests` kurulu olmasa da koşar.
+`test_kopru.py` gerçek `main()` döngüsünü sahte bir kamera, sahte bir ağ ve
+sahte bir plaka okuyucuyla çalıştırır — karar mantığı (okuma.py, plaka.Oylama,
+giden.py) taklit edilmez. Sahte plaka aracın altında işaret renginde
+çizgilerdir; sahte okuyucu işareti bulur (bulanık karede bulamaz, gerçekte de
+bulanık plaka okunmaz) ve numarasına göre plakayı okur. `requests` kurulu
+olmasa da koşar.
 
-Altıncı senaryo (`gec_kamera`) açılışı tutuyor: elektrik kesintisinden sonra
-bilgisayar kameradan önce açılır; köprü eskiden ilk denemede çıkıyordu ve görev
-açılışta yalnızca bir kez koştuğu için biri bilgisayarı yeniden başlatana kadar
-dönmüyordu. Artık kamerayı bekliyor (5 sn'den 60 sn'ye uzayan aralıklarla) ve
-beklerken kalp atışı GÖNDERMİYOR — ölü kamera sunucuya canlı görünmemeli.
+Bir zamanlar araç düşüren gerçek hatalardan gelenler: `iki_arac`, `429`,
+`yavas`, `park`, `kuyruk` (sabit 60 sn'lik beklemenin olduğu sürümde dördü
+kalıyordu); `gec_kamera` (elektrikten sonra bilgisayar kameradan önce açılır;
+köprü kamerayı bekler ve beklerken kalp atışı GÖNDERMEZ); `kopma`;
+`kalp_bloklamaz` (kalp atışı yakalamayı dondurmamalı); `sifre_degisti`,
+`sifre_acilista`, `kopma_geri_cekilme` (kameranın hesabını kilitlememek,
+1.2.2); `takilma` (bekçi, 1.2.4); `tek_kapi`; `kanit_fotografi` (kutuyla her
+gönderim ≤ 100 KB geçerli JPEG; kutusuz hiçbir senaryoda fotoğraf yok);
+`gecen_arac`, `gecen_iki_arac`, `gecen_gurultu`, `dokulu_zemin` (bariyersiz
+kapı, 1.2.5/1.2.6); `duran_arac_degismez` (duran araç bir kez, gidişi hiç).
 
-İlk beş senaryo da bir zamanlar araç düşüren gerçek hatalardan geldi: iki araç arka
-arkaya, hız sınırı (429), yavaş webhook, bariyerde bekleyen araç, ve bariyere
-ilerleyen üç araçlık kuyruk. Sabit 60 sn'lik beklemenin olduğu sürümde bunların
-dördü kalıyor.
+1.3.0'ın kuralları: `plakasiz_duran` (plakası görülmeyen duran araç
+personele), `yaya_gecer` (plakasız, durmayan hareket hiçbir şey göndermez),
+`anlasmazlik` (iki kırpıntı ayrı plaka → personele, tahminle), `kesik_plaka`
+(kutunun kenarında kesik plaka hiç okunmaz → personele), `eski_sunucu`
+(`okunamadi`yı tanımayan sunucu → `[!]`), `okuyucu_yok` (modeller yoksa köprü
+düşmez, araç personele), `ag_yok_bekler` ve `internet_kesintisi` (kesintide
+araçlar kutuda bekler, aynı `islem_id` ile ve SIRAYLA gider), `cikis_belirsiz`
+(çıkışta okunamayan araç gönderilmez), `haric_alan` (hariç alanda duran araç
+hiçbir şey üretmez), `ayni_plaka_60sn`. `kuyruk` 1.3.0'da yeni bir hatayı
+yakaladı: plakalı araç gidip şerit boşalınca bu "plakasız bir şey durdu"
+sanılıp personele yazılıyordu — artık geçişin arka plan karesi de okunuyor.
 
-İki senaryo 1.2.1'den: `kalp_bloklamaz` — kalp atışı yakalama döngüsünde senkron
-koşuyordu ve yavaş bir cevap kamerayı 10-20 sn donduruyordu; o arada gelip duran
-araç hiç görülmüyordu (bu senaryo eski kodda aracı gerçekten kaçırıyordu).
-`son_gonderim` — okuma servisi çökünce aynı islem_id ile dört deneme yapılır ve
-yalnızca SONUNCUSU `x-kamera-son-gonderim: 1` taşır (sunucu aracı ancak o
-denemede "okunamadı" kaydına çevirir, 039).
+`test_okuma.py` kararları tek tek tutar: kesik plaka okunmaz, kesilen köşedeki
+kutu düşer, iki kırpıntı kuralı, oylama, ayrılış, 60 sn, bozuk okuyucu,
+kayıtta plaka yok. `test_plaka.py` ön işlemi ve kutu eşlemeyi yukarı akıştan
+(open-image-models 0.5.1, fast-plate-ocr 1.1.0) ölçülmüş değerlere göre, Türk plaka kuralının
+sunucununkiyle (`vlm.ts`) aynı metin olduğunu, model özetlerini, onnxruntime
+telemetrisinin kapalı açıldığını ve gerçek okuyucunun sabit bir girdide sabit
+çıktı verdiğini sınar. `test_giden.py` kutunun atomik yazımını, sırayı,
+yalnızca kesin cevapta silmeyi, geçici hatada beklemeyi, dolu kutuda alarmı
+(ama yazmayı) ve bozuk dosyanın silinmeyip ayrılmasını tutar.
 
-Altı senaryo 1.2.5'ten, bariyersiz kapı için (araç durmadan geçer). Sahte
-kamera aracı soldan sağa geçirir ve yalnızca ortaya yakınken keskin çizer;
-testin kendi keskinlik ölçüsü köprününkinden bağımsızdır:
-`gecen_arac` — tek geçen araç: tam bir gönderim, içinde araç var, en keskin
-kare (1.2.4'te boş şerit gidiyordu); `gecen_iki_arac` — iki geçen araç, iki
-gönderim; `gecen_gurultu` — araç gidince sahne hiç durulmuyor, güvenlik ağı
-yine gönderiyor (1.2.4'te hiç gönderim yoktu); `gecen_bos_ogrenme` — araç
-olmayan bir hareketin "araç yok" cevabı, hareketten SONRAKİ boş sahneyi öğretir
-ve öğrenilmiş boş şerit sonraki geçen aracı gizlemez; `duran_arac_degismez` —
-duran araç eskisi gibi tek fotoğraf; `gecis_kapali` — `GECIS_YAKALA=0`, eski
-davranış (geçen araç kaçırılır). Ayrıca `bos_ogrenme` artık tam üç araç
-fotoğrafı ister: duran, sonra giden aracın ikinci kez gönderilmesini (tek
-kapıda sahte çıkış) yakalar — geliştirme sırasında gerçekten yakaladı.
-
-On beş senaryo 1.2.6'dan, kameranın araç olayları için. Olaylar HTTP
-olmadan `olay.kaydet` dikişinden verilir; gerçek dinleyici hiçbir senaryoda
-başlamaz (bazı senaryoların RTSP adresi kullanıcı taşıyor, ağa çıkardı):
-`olay_gecen_arac` (olaylı geçiş gider), `olay_yok_gonderilmez` (yaya/gölge
-gitmez, kırpığı `atlanan`'a düşer), `olay_gec_gelir` (geç olay beklenir),
-`olay_dogrulanmadi` (yalnızca VideoMotion → kapı açılmaz, 1.2.5),
-`olay_akisi_yok` (akış yok → 1.2.5), `olay_beklerken_koptu` (beklerken akış
-koptu → hemen gönderilir), `olay_duran_ayrilan` (duran araç bir kez, gidişi
-hiç), `olay_arac_yerine_arac` (şerit boşalmadan yerine aynı görünüşte
-gelen araç da gider), `olay_hizli_ayrilan_sonra_gecen` (bekleme süresinde giden duran aracın
-ardından geçen araç yine gider), `olay_iki_arac_tek_aralik` (tek olay aralığı
-iki aracı da kapsar), `olay_pencere_sinirli` (eski olay yeni geçişe yetki
-vermez), `olay_arac_ardindan_yaya` (aracın olayı arkasındaki yayaya yetki
-vermez), `olay_geri_donus` (algılama kapatılınca otomatik geri dönüş),
-`olay_kapisi_kapali` (`OLAY_KAPISI=0`) ve `dokulu_zemin` (desenli zeminde
-gönderilen kare aracın tamamı). Kuralların her biri tek tek bozulup sınandı
-(14/14 yakalandı). `test_olay.py` (31 test) dinleyiciyi tutuyor: RFC 2617
-özet örneği, köşeli `[All]`ın istek satırında ve `uri=`'de aynen gitmesi,
-sınırı bölünmüş ya da `Content-Length`'i yanlış parçalar, araç/insan ayrımı,
-ve gerçek bir sokette sahte Dahua'ya karşı yanlış şifrede TEK başarısız
-giriş, izin yokken uzun bekleme, 400'de kodlu adres, kopunca yeniden bağlanma.
-Ayarların içe aktarmada değil başlatırken okunduğu da sınanıyor: köprü
-`olay`'ı ayar dosyasını yüklemeden önce içe aktarıyor ve dosyadaki
-`OLAY_ARAC_KODLARI` aksi hâlde sessizce yok sayılırdı (geliştirme sırasında
-bulundu).
-
-Dört senaryo boş şerit öğrenmeyi (1.2.0) tutuyor. Sahte sunucu fotoğrafa
-bakıp model gibi cevap veriyor (araç → 200, boş → 422 + `arac_yok`):
-`bos_ogrenme` üçüncü boş şeridin HİÇ gönderilmediğini ve üçüncü aracın yine
-gönderildiğini; `bos_belirsiz` (arac_yok yok), `bos_arada_okuma_yok` (arada
-okunan araç yok) ve `bos_ogren_kapali` (`BOS_OGREN=0`) hiçbir şeyin
-öğrenilmediğini sınıyor.
-
-Üç senaryo 1.2.2'den, kameranın hesabını kilitlememek için. Şifre sınaması
-taklit edilir ve her açma denemesi kaydedilir (gerçekte her biri bir giriş):
-`sifre_degisti` — akış koptu ve kamera eski şifreyi reddediyor: o süre boyunca
-akış HİÇ açılmamalı, sınamalar seyrek olmalı, sınama düzelince köprü kendisi
-dönmeli ve sonraki araç gönderilmeli (eski kod aynı pencerede akışı eski
-şifreyle iki kez açıyordu). `sifre_acilista` — aynısı açılışta.
-`kopma_geri_cekilme` — kamera gitti, sınama bir şey söyleyemiyor: aralıklar
-tabandan ikiye katlanıp tavanda durmalı ve kamera dönünce tabana sıfırlanmalı.
-
-Bir senaryo 1.2.3'ten: `kanit_fotografi` — kırpma kutusuyla her gönderim
-geçerli bir JPEG (≤ 100 KB) taşımalı ve okuma kopyasıyla aynı boyutta olmalı
-(ikisi aynı kırpıktan). Kutusu olmayan BÜTÜN senaryolarda bu alan hiç
-gönderilmemeli. `test_kurulum.py`'de dört test kanıt kopyasını sıkıştırmayı,
-sığmayan/kodlanamayan fotoğrafta istisna değil None dönmesini, sınırın
-`serit.ts` ile aynı sayı olmasını ve her denemede aynı kopyanın gitmesini
-tutuyor.
-
-`test_kurulum.py`'deki 128 birim testi kurulum tarafını tutuyor — ayar yükleme,
-kayıt dosyası, durum ekranı, görev komutu. Orası bozulursa köprü hiç
-**başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
+`test_kurulum.py`'deki 138 birim testi kurulum tarafını tutuyor — ayar yükleme,
+kayıt dosyası, durum ekranı, görev komutu, kırpma sayfası (hariç alan dâhil),
+`--plaka` kipi, paket ön/son kontrolleri ve lisanslar. Orası bozulursa köprü
+hiç **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,
 arabası olmayan bir otoparka benziyor.
 
 Beşi, kurulumu yazarken gerçekten yapılmış hataları tutuyor:
@@ -778,7 +699,18 @@ bağlantıyı sıfırlıyor ve istemci 403'ü okuyamadan "bağlantı kesildi"
 alıyordu. Gerçek kullanımda yalnızca reddedilen istekler o yoldan geçer; testte
 `test_kirpma_sunucusu_bos_port_ve_belirtec` bu yüzden ara sıra düşüyordu.
 
-Eşikler **seçilen kutunun içinde** ölçülür: köprü hareketi kırpılmış görüntüde
+**Hariç alan (1.3.0).** Kutu çizildikten sonra **Hariç alan çiz**'e basıp
+kutunun içinde ikinci bir dikdörtgen çizilir (park etmiş araçların üstü);
+kırmızı taralı görünür, kutunun dışına taşan kısmı kesilir — görülen =
+kaydedilen. **Hariç alanı sil** onu kaldırır; **Tüm kareyi kullan** hariç alan
+göndermez. Kutunun dışında kalan ya da kutunun tamamını kaplayan hariç alanla
+Kaydet kapalıdır; sunucu tarafı (`_kutu_coz`) aynı ikisini 400 ile reddeder ve
+köprünün kuralıyla (`kopru.haric_metni_coz`) birebir aynıdır — 3000 rastgele
+kutuda sınandı. Gövde geriye uyumlu: `null` | `{x,y,w,h}` |
+`{x,y,w,h,"haric":{x,y,w,h}}`. Sihirbaz `KIRPMA_HARIC`'i HER ZAMAN yazar (yoksa
+`""`): yeniden kurulumda eski hariç alan yeni kutuya geri dönmesin.
+
+Eşikler **seçilen kutunun içinde** ölçülür (hariç alan griye boyanmış olarak): köprü hareketi kırpılmış görüntüde
 ölçtüğü için tüm kareden çıkarılan eşik başka bir sinyalden çıkarılmış olurdu.
 Kutu kaydedildikten sonra altı saniye izlenir. O sürede gerçek bir hareket
 görülmediyse (çoğu zaman böyledir) eşik UYDURULMAZ: varsayılanlar (2.0 / 6.0)
@@ -838,10 +770,17 @@ park with no cars. Two things guard against it:
   (at most hourly) when it drifts more than a minute.
 - **Turn the camera on in the app**: Yönetim → Otopark ayarları → *Kamera girişi
   açık*. Until then the webhook refuses everything with 403.
-- **Plate reading must be on too** (`plaka_saglayici` ≠ `KAPALI`) and the API
-  key set. A photo arriving with reading switched off is refused with 409 —
-  unlike the old build, this bridge has no local fallback.
-- **Watch the first day's logs.** Every send and every refusal is printed.
-- Cross-check `plaka_okuma_log` after a week: `onerilen` versus `kabul_edilen`
-  is the real accuracy rate. Camera reads have no operator to confirm them, so
-  this log is the only place a drift in accuracy will show up.
+- **Deploy `kamera-webhook` first.** 1.3.0 needs the webhook that knows
+  `okunamadi` (an older one would drop every unsure car); the installer checks
+  and stops otherwise. The server's plate-reading setting (`plaka_saglayici`)
+  no longer matters for the camera — it only drives the phone's OCR.
+- **Run `--plaka` on installation day,** with cars, in daylight **and** after
+  dark: every car should show `EMİN` with its correct plate at least once.
+- **Watch the first days.** `durum`'s `personele` and `plakasız hareket`
+  counts, and every camera ticket's plate against the car. Camera reads have
+  no operator to confirm them, so this is where a drift in accuracy shows up.
+  A wrong sure read is the one failure the design aims at zero; report any.
+- **Rollback** is the released 1.2.6 package: the webhook change is additive,
+  so 1.2.6 works against the new server unchanged — but it reads in the cloud
+  again, so leave the server's plate reading and API key in place until 1.3.0
+  has proven itself.

@@ -24,7 +24,9 @@ bir şüphe sebebi ve kazanç birkaç on MB.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata as md
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,7 +41,10 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.2.6"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
+SURUM = "1.3.0"   # 1.3.0: plaka bu bilgisayarda okunur (YOLOv9 + fast-plate-ocr, ONNX);
+                  #        kameranın SMD olayları ve sunucuda okuma yok; L biçimli alan
+                  #        (KIRPMA_HARIC); internet yokken araçlar diskte bekler (giden.py)
+                  # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
                   # 1.2.6: yalnızca kameranın araç olayı olan geçiş gönderilir (olay.py),
                   #        olaylar yoksa 1.2.5 gibi; desenli zeminde tam araç karesi
                   # 1.2.1: kurulum günü düzeltmeleri (şifre kilidi, saat, gece eşiği,
@@ -56,15 +61,193 @@ SURUM = "1.2.6"   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kend
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "olay"]
+            "plaka", "okuma", "giden"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 HARIC = ["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PyQt6",
          "PySide2", "PySide6", "IPython", "pytest", "setuptools", "pip"]
 
+GEREKSINIM = os.path.join(BURASI, "requirements.txt")
+MODEL_KLASORU = os.path.join(BURASI, "modeller")
+# 1.3.0: pakete giren model klasörü dosyaları — açık liste (klasördeki
+# .gitattributes ve ileride bırakılabilecek başka bir şey pakete girmesin).
+MODEL_DOSYALARI = ["yolo-v9-t-640-license-plates-end2end.onnx", "cct_s_v2_global.onnx",
+                   "cct_s_v2_global_plate_config.yaml", "LISANS.txt"]
+
+# Lisans dosyası sayılan adlar (dist-info içinde).
+_LISANS_ADI = re.compile(r"(LICEN[CS]E|COPYING|NOTICE)", re.I)
+# Paket klasörünün KENDİSİNDE (dist-info dışında) duran bildirimler.
+EK_BILDIRIMLER = {"onnxruntime": ["LICENSE", "ThirdPartyNotices.txt", "Privacy.md"]}
+# Tekerleği lisans METNİ taşımayan paket → aynı lisansın tam metnini taşıyan
+# başka bir paket (derlemede doğrulanır: "Apache License / Version 2.0").
+METINSIZ = {"flatbuffers": ("Apache-2.0", "requests", "LICENSE")}
+
 
 def yaz(m: str = "") -> None:
     print(m, flush=True)
+
+
+# ------------------------------------------------------------ ön kontrol ---
+
+def sabitlenenler(yol: str = GEREKSINIM) -> dict[str, str | None]:
+    """requirements.txt → {ad: sürüm}; `==` ile sabitlenmemiş satırın sürümü None."""
+    pins: dict[str, str | None] = {}
+    with open(yol, encoding="utf-8") as f:
+        for satir in f:
+            satir = satir.split("#", 1)[0].strip()
+            if not satir:
+                continue
+            m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([A-Za-z0-9.+!-]+)", satir)
+            if m:
+                pins[m.group(1).lower()] = m.group(2)
+            else:
+                pins[satir] = None
+    return pins
+
+
+def surum_sorunlari(yol: str = GEREKSINIM) -> list[str]:
+    """
+    Sabitlenen her sürüm, DERLEYEN Python'da kurulu olanla aynı mı? Başka
+    sürümle derlenmiş bir .exe sınanmamış bir okuyucu demektir (plaka.py'nin
+    altın çıktısı onnxruntime 1.31.0 ile ölçüldü).
+    """
+    sorunlar = []
+    for ad, surum in sabitlenenler(yol).items():
+        if surum is None:
+            sorunlar.append(f"{ad}: sürüm sabitlenmemiş (ad==sürüm yazın)")
+            continue
+        try:
+            kurulu = md.version(ad)
+        except md.PackageNotFoundError:
+            sorunlar.append(f"{ad}=={surum} bu Python'da kurulu değil")
+            continue
+        if kurulu != surum:
+            sorunlar.append(f"{ad}: requirements.txt {surum}, kurulu {kurulu}")
+    return sorunlar
+
+
+def model_sorunlari(dizin: str = MODEL_KLASORU) -> list[str]:
+    """Modeller yerinde ve özetleri plaka.py'deki sabitlerle aynı mı?"""
+    import plaka
+    sorunlar = []
+    for m in (plaka.BULUCU, plaka.OKUYUCU):
+        yol = os.path.join(dizin, m.dosya)
+        if not os.path.isfile(yol):
+            sorunlar.append(f"model yok: {m.dosya}")
+        elif plaka.sha256_dosya(yol) != m.sha256:
+            sorunlar.append(f"model özeti plaka.py ile tutmuyor: {m.dosya}")
+    return sorunlar
+
+
+# --------------------------------------------------------------- lisanslar ---
+
+def _normal(ad: str) -> str:
+    return re.sub(r"[-_.]+", "-", ad).lower()
+
+
+def calisma_paketleri(kokler) -> list:
+    """
+    Kökler ve çalışma bağımlılıkları (DERLEYEN Python'dan): pakete girenler.
+    `extra` bağımlılıkları alınmaz; ortam işaretli olanlar yalnızca kuruluysa.
+    """
+    bulunan: dict = {}
+    yigin = list(kokler)
+    while yigin:
+        ad = yigin.pop()
+        if _normal(ad) in bulunan:
+            continue
+        try:
+            dist = md.distribution(ad)
+        except md.PackageNotFoundError:
+            sys.exit(f"  ✗ {ad} kurulu değil — lisansı toplanamadı")
+        bulunan[_normal(ad)] = dist
+        for gereken in dist.requires or []:
+            if re.search(r"extra\s*==", gereken):
+                continue
+            alt = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", gereken).group(1)
+            if ";" in gereken:
+                try:
+                    md.distribution(alt)
+                except md.PackageNotFoundError:
+                    continue
+            yigin.append(alt)
+    return sorted(bulunan.values(), key=lambda d: _normal(d.metadata["Name"]))
+
+
+def _lisans_adi(dist) -> str:
+    m = dist.metadata
+    if m.get("License-Expression"):
+        return m["License-Expression"]
+    siniflar = [c.split("::")[-1].strip() for c in (m.get_all("Classifier") or [])
+                if c.startswith("License ::")]
+    if siniflar:
+        return ", ".join(siniflar)
+    ilk = (m.get("License") or "").strip().splitlines()
+    return ilk[0] if ilk and len(ilk[0]) <= 60 else "metne bakın"
+
+
+def _kopyala(kaynak: str, hedef: str, ust: str = "") -> None:
+    with open(kaynak, "rb") as a:
+        veri = a.read()
+    with open(hedef, "wb") as b:
+        b.write(ust.encode("utf-8"))
+        b.write(veri)
+
+
+def lisanslari_topla(hedef: str, kokler) -> str:
+    """
+    Pakete giren her üçüncü taraf paketin lisans metni, DERLEME ANINDA kurulu
+    sürümden `<hedef>/lisanslar/` klasörüne; dizin LISANSLAR.txt. Elle
+    kopyalanmış metin sürüm değişince ayrışırdı. Lisans metni bulunamayan paket
+    derlemeyi durdurur: lisanssız dağıtılmaz. Modellerin lisansı (modeller/
+    LISANS.txt) ve Python'un kendi lisansı da eklenir.
+    """
+    klasor = os.path.join(hedef, "lisanslar")
+    os.makedirs(klasor, exist_ok=True)
+    dagitimlar = calisma_paketleri(kokler)
+    satirlar = ["Otopark kamera köprüsü — üçüncü taraf lisansları",
+                f"(paketle.py {SURUM} derlemesinde, kurulu sürümlerden toplandı)", ""]
+    for dist in dagitimlar:
+        ad = dist.metadata["Name"]
+        dosyalar: list[str] = []
+        ekler = EK_BILDIRIMLER.get(_normal(ad), [])
+        for f in dist.files or []:
+            parcalar = str(f).replace("\\", "/").split("/")
+            dist_info = parcalar[0].endswith(".dist-info") and _LISANS_ADI.search(parcalar[-1])
+            ek = len(parcalar) == 2 and parcalar[1] in ekler
+            if dist_info or ek:
+                ad_hedef = f"{ad}-" + "_".join(parcalar[1:])
+                _kopyala(str(dist.locate_file(f)), os.path.join(klasor, ad_hedef))
+                dosyalar.append(ad_hedef)
+        if not dosyalar and _normal(ad) in METINSIZ:
+            lisans, veren, veren_dosya = METINSIZ[_normal(ad)]
+            vd = md.distribution(veren)
+            yol = next((vd.locate_file(f) for f in vd.files or []
+                        if str(f).split("/")[0].endswith(".dist-info")
+                        and str(f).endswith("/" + veren_dosya)), None)
+            metin = open(yol, encoding="utf-8").read() if yol else ""
+            if "Apache License" not in metin or "Version 2.0" not in metin:
+                sys.exit(f"  ✗ {ad}: {lisans} metni {veren} paketinden alınamadı")
+            ad_hedef = f"{ad}-LICENSE.txt"
+            _kopyala(str(yol), os.path.join(klasor, ad_hedef),
+                     ust=f"{ad} {dist.version}: tekerleği lisans metni taşımıyor; lisansı "
+                         f"{lisans} (paket bilgisi: {_lisans_adi(dist)}). Tam metin:\n\n")
+            dosyalar.append(ad_hedef)
+        if not dosyalar:
+            sys.exit(f"  ✗ {ad} {dist.version}: lisans metni bulunamadı — lisanssız dağıtılmaz")
+        satirlar.append(f"{ad} {dist.version}  —  {_lisans_adi(dist)}")
+        satirlar += [f"    {x}" for x in dosyalar]
+    py = os.path.join(sys.base_prefix, "LICENSE.txt")
+    if os.path.isfile(py):
+        _kopyala(py, os.path.join(klasor, "Python-LICENSE.txt"))
+        satirlar.append(f"Python {sys.version.split()[0]}  —  PSF License")
+        satirlar.append("    Python-LICENSE.txt")
+    _kopyala(os.path.join(MODEL_KLASORU, "LISANS.txt"), os.path.join(klasor, "modeller-LISANS.txt"))
+    satirlar.append("Plaka modelleri (open-image-models, fast-plate-ocr)  —  MIT")
+    satirlar.append("    modeller-LISANS.txt")
+    with open(os.path.join(klasor, "LISANSLAR.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(satirlar) + "\n")
+    return klasor
 
 
 def surum_dosyasi() -> str:
@@ -133,6 +316,12 @@ def derle() -> str:
         komut += ["--hidden-import", m]
     for m in HARIC:
         komut += ["--exclude-module", m]
+    # 1.3.0: modeller `_internal\modeller` klasörüne (plaka.MODEL_DIZINI =
+    # plaka modülünün klasörü + "modeller"; paketlenmişte o `_internal`).
+    for ad in MODEL_DOSYALARI:
+        komut += ["--add-data", f"{os.path.join(MODEL_KLASORU, ad)}{os.pathsep}modeller"]
+    # onnxruntime'ın paket bilgisi de girsin (sürümünü okuyan kod çökmesin).
+    komut += ["--copy-metadata", "onnxruntime"]
     ikon = simge()
     if ikon:
         komut += ["--icon", ikon]
@@ -142,6 +331,33 @@ def derle() -> str:
     if r.returncode:
         sys.exit("  ✗ Derleme başarısız.")
     return os.path.join(YAPI, "dist", AD)
+
+
+def derleme_sinamasi(klasor: str) -> None:
+    """
+    Derlenmiş .exe'yi GERÇEKTEN çalıştırır: modeller pakette ve özetleri doğru
+    mu, onnxruntime (DLL'leriyle) açılıyor mu, öz sınama geçiyor mu
+    (`--plaka-sina`). Eksik bir DLL ya da model sahada değil burada görülür.
+
+    `__COMPAT_LAYER=RunAsInvoker`: .exe yönetici izni ister (--uac-admin);
+    öz sınama için gerekmez ve izinsiz süreç onu başka türlü başlatamaz.
+    """
+    sorunlar = model_sorunlari(os.path.join(klasor, "_internal", "modeller"))
+    if sorunlar:
+        sys.exit("  ✗ Pakette model sorunu:\n    " + "\n    ".join(sorunlar))
+    exe = os.path.join(klasor, f"{AD}.exe")
+    yaz("  Derlenen .exe sınanıyor (--plaka-sina)…")
+    try:
+        r = subprocess.run([exe, "--plaka-sina"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=300,
+                           env={**os.environ, "__COMPAT_LAYER": "RunAsInvoker"})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"  ✗ Derlenen .exe çalıştırılamadı: {e}")
+    if r.returncode != 0 or "hazır" not in r.stdout:
+        sys.exit(f"  ✗ Derlenen .exe'de plaka okuyucu çalışmıyor (çıkış {r.returncode}):\n"
+                 f"{(r.stdout + r.stderr)[-1500:]}")
+    yaz("  ✓ Derlenen .exe'de plaka okuyucu hazır.")
 
 
 def oku_beni(klasor: str) -> None:
@@ -177,7 +393,18 @@ def main() -> int:
         return 1
 
     yaz(f"\n  OTOPARK — kamera köprüsü paketleniyor  (sürüm {SURUM})\n")
+    sorunlar = surum_sorunlari() + model_sorunlari()
+    if sorunlar:
+        yaz("  ✗ Derlemeden önce düzeltilmeli:")
+        for s in sorunlar:
+            yaz(f"    · {s}")
+        yaz("\n  Paket venv'inde: <venv>\\Scripts\\python -m pip install -r requirements.txt")
+        return 1
+    yaz("  ✓ Sürümler ve model özetleri doğru.")
     klasor = derle()
+    derleme_sinamasi(klasor)
+    lisanslari_topla(klasor, list(sabitlenenler()))
+    yaz("  ✓ Lisanslar eklendi (lisanslar\\LISANSLAR.txt).")
     oku_beni(klasor)
     zip_yolu = zipleyip_ozetle(klasor)
 

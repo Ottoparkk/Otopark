@@ -1,0 +1,2 @@
+# ONNX modelleri ikilidir: satır sonu çevrimi (core.autocrlf) onları bozar.
+*.onnx binary

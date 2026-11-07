@@ -124,6 +124,23 @@ AG_DONDU_ISARETI = "internet bağlantısı geri geldi"
 # 1.2.4: bekçi, yakalama döngüsünün BEKCI_SN boyunca hiç ilerlemediğini gördü
 # ve süreci kapattı (görev onu bir dakika içinde yeniden başlatır).
 TAKILDI_ISARETI = "köprü takıldı"
+# 1.3.0: gönderim kutusu (giden.py). Her araç gönderilmeden önce diske yazılır;
+# bunlar o kutunun sorunları. `durum` kutunun kendisini sayar (giden.ozet).
+GIDEN_DOLU_ISARETI = "gönderim kutusu dolu"
+GIDEN_YAZILAMADI_ISARETI = "gönderim kutusuna yazılamadı"
+GIDEN_BOZUK_ISARETI = "gönderim kutusunda bozuk kayıt"
+# 1.3.0: plaka okuyucu (plaka.py / okuma.py). "Plakasız hareket" hata değil
+# ("[i]"): yaya, gölge, kadraja giren bir şey — sayılır, gönderilmez.
+PLAKASIZ_ISARETI = "hareket — plaka görülmedi"
+OKUYUCU_BOZUK_ISARETI = "plaka okuyucu çalışmıyor"
+PLAKA_HAZIR_ISARETI = "plaka okuyucu hazır"
+PLAKA_KAPALI_ISARETI = "plaka okuyucu kapalı"
+# Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).
+PERSONELE_ISARETI = "personele bırakıldı"
+# Sunucu "okunamadi"yı tanımıyor (webhook güncellenmemiş): araç KAYIT DIŞI.
+ESKI_SUNUCU_ISARETI = "sunucu okunamadı kaydını yazmadı"
+# Çıkış şeridinde okunamayan araç sunucuya gitmez (orada parayı insan alır).
+CIKIS_OKUNAMADI_ISARETI = "çıkış şeridinde okunamayan araç"
 # Bu bilgisayarın saati sunucununkinden SAAT_TOLERANS_SN'den fazla farklı.
 # Köprü her aracı bu saatle damgalar ve ücret o damgadan hesaplanır.
 SAAT_ISARETI = "bilgisayarın saati sunucudan farklı"

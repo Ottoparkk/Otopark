@@ -2,8 +2,11 @@
   OTOPARK — Kamera Kurulumu
 ========================================================================
 
-Bu program, otoparktaki bilgisayarı kameraya bağlar. Kamera plakayı görür,
-bu bilgisayar fotoğrafı uygulamaya gönderir, bileti uygulama açar.
+Bu program, otoparktaki bilgisayarı kameraya bağlar. Kamera görüntü verir,
+plakayı BU BİLGİSAYAR okur ve uygulamaya gönderir, bileti uygulama açar.
+Okuduğundan emin olmadığı aracı fotoğrafıyla personele bırakır (uygulamada
+"Çözülmemiş kayıtlar"; çıkış şeridinde personel aracı kapıda görür) — asla
+tahmin etmez.
 
 Bilgisayara başka hiçbir şey kurmanız gerekmiyor.
 
@@ -77,22 +80,24 @@ ELİNİZDE HAZIR OLSUN
 
     TEK KAPI: araçlar aynı kapıdan girip çıkıyorsa kamera "tek kapı"
     olarak tanımlanır. Sizin için kurulum aynıdır. Kamerayı, araçların
-    İKİ YÖNDE de geçtiği noktaya çevirin ve plaka kutusunu hem gelen hem
-    giden aracın plakası içinde kalacak genişlikte çizin. Araçların durması
-    gerekmez (1.2.5): durmadan geçen araç geçişin en net karesinden okunur.
+    İKİ YÖNDE de geçtiği noktaya çevirin ve kutuyu hem gelen hem giden
+    aracın plakası içinde kalacak genişlikte çizin. Araçların durması
+    gerekmez: durmadan geçen aracın plakası net karelerden okunur.
     Kamerada enstantaneyi hızlı ayarlayın (yaklaşık 1/500 sn); yoksa hareket
     eden plaka bulanık çıkar.
-    Araçların uzun süre beklediği ya da park ettiği bir yeri göstermesin:
-    orada bekleyen araç yanlışlıkla "çıkıyor" diye işaretlenebilir.
+    Park etmiş araçlar görüntüye giriyorsa üstlerine HARİÇ ALAN çizin
+    (aşağıya bakın): orada duran araç yanlışlıkla "çıkıyor" diye
+    işaretlenebilirdi.
 
   · Kameranın kullanıcı adı ve şifresi — DİKKATLE yazın. Kamera birkaç
     yanlış denemeden sonra girişleri yaklaşık yarım saat kilitler.
 
-    ÖNERİ: kameranın web arayüzünde yalnızca "Canlı" ve "Olay" yetkisi
-    olan AYRI bir kullanıcı açın ve programa onu verin. "admin" böylece
-    hep sizde kalır: programın kullandığı hesap bir gün kilitlense bile
-    kameranın ayarlarına girebilirsiniz. "Olay" yetkisi 1.2.6'dan beri
-    gerekli: program kameranın araç algılamasını bu yetkiyle dinler.
+    ÖNERİ: kameranın web arayüzünde yalnızca "Canlı" yetkisi olan AYRI
+    bir kullanıcı açın ve programa onu verin. "admin" böylece hep sizde
+    kalır: programın kullandığı hesap bir gün kilitlense bile kameranın
+    ayarlarına girebilirsiniz. (1.3.0 kameranın araç algılamasını / "Olay"
+    iznini KULLANMAZ; kameradaki Akıllı Hareket Algılama ayarı önemli
+    değil.)
 
   · Bu bilgisayarın saati doğru olmalı (Ayarlar → Saat ve dil → "Saati
     otomatik olarak ayarla"). Araçların giriş saati BU bilgisayarın
@@ -100,9 +105,15 @@ ELİNİZDE HAZIR OLSUN
 
   Kameranın RTSP adresini BİLMENİZE GEREK YOK — program kendisi bulur.
 
-  Kurulum sırasında tarayıcıda canlı görüntü açılacak ve plakanın
-  etrafını fareyle sürüklemeniz istenecek. Bariyerde bir araç varken
-  yapın; kutu yeşil olana kadar büyütün.
+  Kurulum sırasında tarayıcıda canlı görüntü açılacak ve şeridin
+  etrafına fareyle bir kutu sürüklemeniz istenecek:
+    · sol ve sağ kenar: şeridin genişliği (sokak girmesin),
+    · üst kenar: araçların durduğu yerin biraz ÜSTÜ (kutu uzun olabilir),
+    · kutu yeşil olana kadar büyütün; plaka kutunun kenarına değmesin.
+  Kutunun içinde PARK ETMİŞ araçlar görünüyorsa "Hariç alan çiz"e basıp
+  onların üstüne ikinci bir dikdörtgen çizin (kırmızı taralı görünür).
+  Orası gri boyanır: hareketi sayılmaz, plakası okunmaz, fotoğrafta da
+  görünmez. Yanlış çizdiyseniz "Hariç alanı sil".
 
 
 ÇALIŞIYOR MU?
@@ -112,45 +123,38 @@ ELİNİZDE HAZIR OLSUN
   Kurulumdan sonraki ilk gün bir kez bakın. Kamera okumayı kesmişse
   hiçbir şey hata vermez — otopark boş görünür, o kadar.
 
-  BOŞ ŞERİT: araç gidince kamera boş yolu da görür. Program boş yolun
-  neye benzediğini birkaç araçtan sonra KENDİSİ öğrenir (gündüz ve gece
-  için ayrı ayrı) ve boş yolun fotoğrafını göndermeyi bırakır. Kayıtta
-  "boş şerit — gönderilmedi" satırları görmek NORMALDİR; Durum ekranında
-  "Boş şerit : ... okundu, ... atlandı" olarak sayılır. Hiçbir ayar
-  gerekmez.
+  Durum ekranında şunlar görünür:
+      Plaka okuma  : hazır
+      Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket
+  "personele" = plakası emin okunamayıp fotoğrafıyla "Çözülmemiş
+  kayıtlar"a düşen araçlar; personel uygulamadan karar verir.
+  "plakasız hareket" = kutudan geçen ama araç olmayan şeyler (yürüyen
+  biri, gölge, far); bunlar HİÇBİR YERE gönderilmez. İkisini de görmek
+  NORMALDİR.
 
-  YALNIZCA ARAÇLAR (1.2.6): program bir fotoğrafı ancak KAMERANIN
-  KENDİSİ o anda bir araç gördüyse gönderir. Kutudan yürüyerek geçen
-  biri, gölge, far ya da lamba titremesi gönderilmez; "okunamadı"
-  kaydı ve bildirim üretmez. Bunun için kamerada:
-    · Akıllı Hareket Algılama AÇIK, hedef "Motorlu Araç" seçili,
-    · algılama BÖLGESİ yalnızca şerit (plaka kutusunun çevresi) — sokak
-      ve kaldırım bölgenin dışında kalsın.
-  Durum ekranında "Araç olayları: etkin" yazar ve "Bugün" satırında
-  "... atlandı (araç olayı yok)" sayılır. Kamera araç bildirmiyorsa
-  (izin yok, algılama kapalı, bağlantı yok) program ESKİSİ GİBİ her
-  geçişi gönderir — hiçbir araç bu yüzden kaybolmaz; Durum ekranı o
-  zaman "... hareketle çalışıyor" der.
+  Gönderilmeyen durumlar da normaldir: aynı plaka 60 saniye içinde
+  ikinci kez gönderilmez; duran aracın GİDİŞİ gönderilmez.
 
-  MOTOSİKLET: kamera motosikleti araç saymaz; motosikletleri
+  MOTOSİKLET: önünde plaka olmadığı için okunamaz; motosikletleri
   uygulamadan elle girin.
 
-  KONTROL (kurulumdan sonra bir kez): Başlat'a "cmd" yazın, sağ tık →
-  "Yönetici olarak çalıştır", sonra programın yolunu --olay ile yazın:
-      "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --olay
-  İki dakika boyunca kameranın bildirdiklerini gösterir. Bir araç
-  geçirin: "← ARAÇ" işaretli satırlar görünmeli. Bir insan geçirin:
-  "← ARAÇ" görünmemeli. Sonunda "✓ Kamera araç olaylarını gönderiyor"
-  yazmalı. Yazmıyorsa ekranın fotoğrafını iletin.
+  KONTROL (kurulumdan sonra, GÜNDÜZ ve GECE birer kez): Başlat'a "cmd"
+  yazın, sağ tık → "Yönetici olarak çalıştır", sonra programın yolunu
+  --plaka ile yazın:
+      "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --plaka
+  İki dakika boyunca bulduğu plakaları ve okumalarını gösterir; hiçbir
+  şey göndermez, hiçbir şey kaydetmez. Birkaç araç geçirin: her araç en
+  az bir kez doğru plakasıyla "EMİN" görünmeli. "kesik" = plaka kutunun
+  kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
+  (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —
+  geçen araçlarla karşılaştırın; yanlış olan varsa ekranın fotoğrafını
+  iletin.
 
-  Atlanan geçişlerin son 50 fotoğrafı yalnızca yöneticilerin açabildiği
-  C:\ProgramData\Otopark\kayit\atlanan klasöründe durur: ilk günlerde
-  oraya bakın — içinde gerçek bir araç OLMAMALI.
-
-  FOTOĞRAF: program her aracın plaka bölgesinin küçük bir fotoğrafını da
-  gönderir; uygulamada biletin ve istisnanın üstünde görünür ve
-  uygulamadaki fotoğraf saklama süresi dolunca silinir. Kırpma kutusu
-  seçilmediyse fotoğraf gönderilmez (tüm kare sokağı da gösterirdi).
+  FOTOĞRAF: program her aracın kutudaki görüntüsünün küçük bir
+  fotoğrafını da gönderir; uygulamada biletin ve istisnanın üstünde
+  görünür ve uygulamadaki fotoğraf saklama süresi dolunca silinir. Hariç
+  alan fotoğrafta gridir. Kırpma kutusu seçilmediyse fotoğraf gönderilmez
+  (tüm kare sokağı da gösterirdi).
 
 
 BİR ŞEY TERS GİDERSE
@@ -218,9 +222,9 @@ BİR ŞEY TERS GİDERSE
       Program ve kamera çalışıyor ama bu bilgisayar internete
       ulaşamıyor. Modemi ve Wi-Fi'yi kontrol edin. İnternet dönünce
       program kendiliğinden devam eder; bir şey yapmanız gerekmez.
-      DİKKAT: internet yokken kameranın gördüğü araçlar uygulamaya
-      gitmez ve sonradan da gönderilmez — o sırada gelen araçları
-      uygulamadan elle girin.
+      Bu sırada gelen araçlar KAYBOLMAZ (1.3.0): bu bilgisayarda bekler
+      ve internet dönünce sırayla, gördüğü saatle gönderilir. Durum
+      ekranında "Bekleyen: N araç" yazar. Elle girmeniz gerekmez.
 
   Durum ekranı "KAMERA ŞİFRESİ REDDEDİLDİ" diyor
       Kamera, programın kayıtlı şifresini kabul etmiyor — çoğu zaman
@@ -236,16 +240,15 @@ BİR ŞEY TERS GİDERSE
       kurulum boyunca kendisi durdurur; kurulum yarıda kalırsa eskisini
       yeniden başlatır.
 
-  "Araç olayları: alınamıyor (kamera kullanıcısının Olay izni yok)"
-      Kameranın web arayüzünde programın kullanıcısına "Olay" yetkisi
-      verin. Program bunu saatte bir yeniden dener; bu arada her geçişi
-      eskisi gibi gönderir.
+  Durum ekranı "PLAKA OKUYUCU ÇALIŞMIYOR" diyor
+      Araçlar kaybolmuyor ama hepsi fotoğrafıyla "Çözülmemiş kayıtlar"a
+      düşüyor. Programı açıp "2) Yeniden kur" deyin. Düzelmezse "Plaka
+      okuma" satırındaki sebebi iletin. Hızlı kontrol (yönetici cmd):
+          "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --plaka-sina
 
-  "Araç olayları: kapalı (otomatik geri dönüş ...)"
-      Kamera bir süredir hiç araç bildirmiyor ama kutudan araç boyutunda
-      şeyler geçiyor. Kameranın Akıllı Hareket Algılama ayarının açık ve
-      hedefin "Motorlu Araç" olduğunu kontrol edin. Kamera yeniden bir
-      araç bildirdiğinde program kendiliğinden "etkin"e döner.
+  "Sunucudaki kamera-webhook bu sürüme göre eski"
+      Uygulamayı yöneten kişi önce sunucuyu güncellemeli; sonra programı
+      yeniden çalıştırın (yeni kurulum kodu gerekmez).
 
   Durum ekranı "KİMLİK REDDEDİLDİ" diyor
       Kamera uygulamadan kaldırılmış ya da devre dışı bırakılmış.

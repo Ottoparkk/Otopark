@@ -630,7 +630,11 @@ hand-installed bridge left switches that watch off on the same screen
 For a car park where cars **enter and leave through the same gate**, pick
 **Tek kapı** as the lane when minting the code (stored as `ORTAK`). The lane
 can no longer say which way a car is going, so `kamera_tek_kapi` decides from
-the ticket state, on the **server's** clock:
+the ticket state. Since **048** the windows below are measured from the
+**event's own time** (when the bridge saw the car), not from when it arrived:
+bridge 1.3.0 keeps cars on disk through an internet outage and sends them
+later, and an entry plus exit delivered together must still read as an entry
+and an exit. Live events behave exactly as before.
 
 | The plate… | Result |
 |---|---|
@@ -654,10 +658,10 @@ them, and none of them moves money:
   leaving whose entry was never recorded (camera or internet was down);
 - a stay shorter than 3 minutes is not flagged at exit;
 - a just-arrived car that waits in front of the camera longer than 3 minutes
-  can be flagged "Kapıda" by mistake: the bridge sends the same car again
-  whenever something moves in view and settles. Aim the camera at the spot
-  where cars stop for a moment (the bridge needs that pause to photograph the
-  plate), not at a place where they queue or park.
+  can be flagged "Kapıda" by mistake: past 60 s the bridge may send the same
+  plate again when something moves in view and it is read again. Aim the camera
+  where cars pass, and draw the installer's **cut-out** over any place where
+  cars queue or park.
 
 Tune the two durations on installation day in **Yönetim → Otopark ayarları →
 Kamera → Tek kapı** (shown while the camera is on; Yönetici only, saved with
@@ -672,13 +676,27 @@ writes `bilet_kapida_temizlendi` to `audit_log`. RPC `bilet_kapida_temizle`:
 any active staff, open tickets only, not callable by the camera. Deploy order:
 `038` → smoke test through **PASS 59** → frontend.
 
-**Empty-lane learning (installer 1.2.0).** The bridge learns what the empty
-lane looks like from the webhook's `arac_yok` answer and stops paying to send
-it — see `tools/kamera-koprusu/README.md`. Needs the webhook deployed with the
-Haiku 5.5 change; `"BOS_OGREN": "0"` in the lane's config turns it off.
+**Local plate reading (installer 1.3.0, owner decision 2026-11-06).** The
+bridge finds and reads the plate on the site PC (YOLOv9 + fast-plate-ocr, ONNX)
+and sends the **plate text**; it never sends a photo for the server to read, so
+the camera path costs nothing per car. A car it is not sure about is sent as
+`okunamadi: true` (+ its best guess, confidence and the compressed photo) and
+becomes **Çözülmemiş kayıtlar** `OKUNAMADI` exactly like the cases below — no
+paid read. That row is also logged in `plaka_okuma_log` (provider `KOPRU`) and
+counted under the camera read cap (040). The installer asks the webhook first
+(`x-kamera-deneme` + `okunamadi` → `{okunamadi_destekli: true}`, nothing
+written) and stops against an older webhook. The camera's SMD events, the
+empty-lane learning (1.2.0) and the vehicle-event gate (1.2.6) are gone. The
+bridge keeps cars on disk while the internet is down and sends them later
+(hence 048). `ANTHROPIC_API_KEY` is still used by the phone's OCR and by a
+1.2.6 rollback. Deploy order: `048` → smoke test through **PASS 70** →
+`kamera-webhook` → install bridge 1.3.0. Details:
+`tools/kamera-koprusu/README.md`.
 
 **A camera car is never lost silently (039).** Two cases used to leave only a
-`plaka_okuma_log` row — no ticket, no exception, nobody told:
+`plaka_okuma_log` row — no ticket, no exception, nobody told (both describe the
+server-side read of bridges up to 1.2.6; 1.3.0 reports its unsure cars itself,
+see above):
 
 - *The plate could not be read* (the model saw a vehicle but its read is under
   the bar, and it did NOT say "no vehicle"). On the entrance and single-gate

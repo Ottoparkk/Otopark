@@ -104,6 +104,11 @@ and two devices queueing the same car added up to a sync engine guarding against
 a rare event with a workable manual fallback. `islem_id` is in place, so the
 door stays open: adding one later needs no schema change.
 
+The **camera bridge** is the one exception (owner decision, 2026-11-06): it
+keeps each car on its own disk until the server confirms it, because a camera
+lane has no person to fall back on. The server judges such late events by
+their own time (048). See `tools/kamera-koprusu/README.md`.
+
 ## Layout
 
 ```

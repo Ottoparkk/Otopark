@@ -550,9 +550,10 @@ def kirpma_ve_esikler(rtsp: str) -> dict:
     import kirpma_sunucu
 
     baslik(3, "Kırpma kutusu")
-    print("  Tarayıcı açılıyor. Bariyerde bir araç varken plakanın")
-    print("  dikdörtgenini sürükleyin, sonra 'Kaydet' deyin.")
-    kutu, olcumler = kirpma_sunucu.kirpma_sec(rtsp)
+    print("  Tarayıcı açılıyor. Şeridi kapsayan dikdörtgeni sürükleyin")
+    print("  (park etmiş araçlar görünüyorsa üstlerine bir hariç alan),")
+    print("  sonra 'Kaydet' deyin.")
+    kutu, haric, olcumler = kirpma_sunucu.kirpma_sec(rtsp)
 
     ayar: dict = {}
     if kutu:
@@ -563,7 +564,14 @@ def kirpma_ve_esikler(rtsp: str) -> dict:
         # gelir ve eski kutuyu taşır. Yazılmasaydı "tüm kare" denirken eski
         # kutu — artık plakayı içermeyen bir bölge — köprüye geri giderdi.
         ayar["KIRPMA"] = ""
-        print("  ! Kırpma seçilmedi — tüm kare gönderilecek, okuma daha kötü olur.")
+        print("  ! Kırpma seçilmedi — tüm kare kullanılacak, okuma daha kötü olur.")
+    # Hariç alan da HER ZAMAN yazılır (boşsa ""), aynı sebeple: eski dosyadaki
+    # hariç alan yeni kutunun içinde plakanın tam üstüne düşebilirdi.
+    if kutu and haric:
+        ayar["KIRPMA_HARIC"] = ",".join(str(v) for v in haric)
+        print(f"  ✓ Hariç alan: {ayar['KIRPMA_HARIC']}")
+    else:
+        ayar["KIRPMA_HARIC"] = ""
 
     durgun, hareket = kirpma_sunucu.esik_oner(olcumler)
     print(f"  ✓ Ölçülen eşikler: DURGUN={durgun}  HAREKET={hareket}")
@@ -579,9 +587,15 @@ TESHIS = {
     403: "Kamera girişi kapalı. Uygulamada Yönetim → Otopark Ayarları → "
          "'Kamera girişi açık' seçeneğini açın.",
     404: "Adres bulunamadı. Webhook adresini kontrol edin.",
-    409: "Plaka okuma kapalı. Aynı ayarlar ekranından açın.",
+    # 1.3.0: plaka bu bilgisayarda okunur, sunucu okumaz. Boş POST'ta 409
+    # yalnızca şerit uyuşmazlığından gelir (_shared/serit.ts seritKarari).
+    409: "Sunucu bu kameranın şeridini kabul etmedi. Uygulamada kameranın "
+         "şeridini (Giriş / Çıkış / Tek kapı) kontrol edin.",
     429: "Hız sınırına takıldı. Biraz bekleyip tekrar deneyin.",
-    502: "Sunucu plakayı okuyamadı — ANTHROPIC_API_KEY eksik ya da geçersiz olabilir.",
+    # Webhook'un 502'si fotoğraf okuyan eski yoldan gelir (1.3.0 köprüsü
+    # fotoğraf okutmaz); yine de anlamsız bir kod gösterilmesin.
+    502: "Sunucu hata verdi. Biraz bekleyip tekrar deneyin; sürerse durumu bildirin.",
+    503: "Sunucu geçici bir hata verdi. Biraz bekleyip tekrar deneyin.",
 }
 
 
@@ -603,11 +617,51 @@ def baglanti_testi(ayar: dict) -> bool:
 
     if kod == 400:
         print("  ✓ Bağlantı ve gizli anahtar doğru.")
+        if not sunucu_guncel_mi(ayar):
+            return False
         return saat_dogru_mu(tarih)
     if kod in TESHIS:
         print(f"  ✗ {TESHIS[kod]}")
         return False
     print(f"  ✗ Beklenmeyen cevap: {kod} {ayrinti[:160]}")
+    return False
+
+
+def sunucu_guncel_mi(ayar: dict) -> bool:
+    """
+    Sunucu 1.3.0'ın "okunamadı" bildirimini tanıyor mu?
+
+    Köprü okuyamadığı aracı `okunamadi: true` ile gönderir; sunucu onu
+    fotoğrafıyla "Çözülmemiş kayıtlar"a yazar. Eski kamera-webhook alanı
+    tanımaz ve hiçbir şey yazmaz — araç personele hiç düşmez. Bu yüzden önce
+    sunucu güncellenir, sonra köprü (deploy sırası).
+
+    Yoklama `x-kamera-deneme` taşır ve yalnızca `okunamadi` içerir: güncel
+    sunucu hiçbir şey yazmadan `okunamadi_destekli` döner, eski sunucu zamansız
+    gövdeyi 400 ile reddeder. İkisinde de kasada kayıt kalmaz.
+    """
+    import requests
+
+    try:
+        r = requests.post(ayar["WEBHOOK_URL"], json={"okunamadi": True},
+                          headers={"x-kamera-secret": ayar["KAMERA_SECRET"],
+                                   "x-kamera-deneme": "1"},
+                          timeout=20)
+    except Exception as e:
+        print(f"  ✗ Sunucu sürümü sınanamadı: {e}")
+        print("    kamera-webhook'a ulaşılamadı; internet bağlantısını kontrol edin.")
+        return False
+    try:
+        veri = json.loads(str(getattr(r, "text", "") or ""))
+    except ValueError:
+        veri = None
+    if r.status_code == 200 and isinstance(veri, dict) and veri.get("okunamadi_destekli") is True:
+        print("  ✓ Sunucu güncel: okunamayan araçlar fotoğrafıyla personele düşer.")
+        return True
+    print(f"  ✗ Sunucudaki kamera-webhook bu sürüme göre eski (cevap {r.status_code}).")
+    print("    Okunamayan araçlar personele DÜŞMEZDİ. Önce sunucuyu güncelleyin:")
+    print("      supabase functions deploy kamera-webhook --no-verify-jwt")
+    print("    sonra bu programı yeniden çalıştırın (yeni kurulum kodu GEREKMEZ).")
     return False
 
 
@@ -975,7 +1029,7 @@ def gorev_xml(program: str, argumanlar: str) -> str:
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>5</Priority>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>999</Count>
@@ -1184,7 +1238,17 @@ def baslangic_dogrula(yon: str, azami_sn: float = 30, kamera_sn: float = 45,
         # deniyordu; ilk kalp atışının cevabı (TLS + soğuk başlangıç) daha geç
         # gelirse sunucunun reddi görülmeden kurulum "tamamlandı" oluyordu.
         if baglandi_at is not None and any(gunluk.SUNUCU_TAMAM_ISARETI in s for s in satirlar):
+            # 1.3.0: okuyucunun sözü kameradan ÖNCE yazılır. Çalışmıyorsa köprü
+            # yine koşar (araçlar personele) ama kurulum "tamam" DEMEZ.
+            plaka_hali, okuyucu_bozuk = durum.plaka_durumu(satirlar)
+            if okuyucu_bozuk:
+                print(f"  ✗ Köprü çalışıyor ama plaka okuyucu {plaka_hali}.")
+                son_uyarilar()
+                print("    Kurulumu yeniden çalıştırın; düzelmezse bu satırı bildirin.")
+                return False
             print("  ✓ Köprü çalışıyor: kamera bağlandı, sunucu kabul etti.")
+            if plaka_hali:
+                print(f"  ✓ Plaka okuyucu {plaka_hali}.")
             return True
         if time.monotonic() >= bitis:
             break

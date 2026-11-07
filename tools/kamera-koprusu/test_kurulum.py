@@ -77,32 +77,6 @@ def test_ayar_json() -> None:
     assert d == ["http://x/kamera-webhook", "CIKIS", "1,2,3,4"], d
 
 
-def test_olay_ayari_serit_dosyasindan() -> None:
-    """
-    1.2.6: şeridin ayar dosyasına yazılan OLAY_ARAC_KODLARI / OLAY_PORT,
-    köprü dinleyiciyi başlattığı anda görülmeli. kopru olay'ı ayar dosyasını
-    yüklemeden ÖNCE içe aktarıyor; olay ayarlarını içe aktarmada okusaydı bu
-    sahadaki tek düzeltme yolu sessizce işlemezdi.
-    """
-    with tempfile.TemporaryDirectory() as klasor:
-        yol = os.path.join(klasor, "kopru-ortak.json")
-        with open(yol, "w", encoding="utf-8") as f:
-            json.dump({"YON": "ORTAK", "OLAY_ARAC_KODLARI": "AracX,AracY",
-                       "OLAY_PORT": 8088}, f)
-        kod = ONYUK + (
-            "import kopru, olay\n"
-            "a = olay.calisma_ayarlari()\n"
-            "print(','.join(a['kodlar']), a['port'])\n"
-        )
-        ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": klasor}
-        for a in ("OLAY_ARAC_KODLARI", "OLAY_PORT", "OTOPARK_AYAR"):
-            ortam.pop(a, None)
-        r = subprocess.run([sys.executable, "-c", kod, "--ayar", yol], capture_output=True,
-                           text=True, encoding="utf-8", env=ortam)
-        assert r.returncode == 0, r.stderr[-800:]
-        assert r.stdout.strip().splitlines()[-1] == "AracX,AracY 8088", r.stdout
-
-
 def test_env_json_yener() -> None:
     """Gerçek ortam değişkeni dosyayı yenmeli: elle çalıştırma yolu bozulmasın."""
     d = kopru_degeri(["YON"], {"YON": "CIKIS"}, env={"YON": "GIRIS"})
@@ -172,7 +146,7 @@ def test_esik_oner() -> None:
 def test_teshis_kapsami() -> None:
     """Webhook'un ürettiği her ret kodunun Türkçe bir karşılığı olmalı."""
     import kurulum
-    for kod in (401, 403, 409, 429, 502):
+    for kod in (401, 403, 409, 429, 502, 503):
         assert kod in kurulum.TESHIS, kod
 
 
@@ -210,13 +184,17 @@ def test_baglanti_teshisi() -> None:
     import kurulum
 
     class Yanit:
-        def __init__(self, k):
+        def __init__(self, k, metin=""):
             self.status_code = k
-            self.text = ""
+            self.text = metin
 
     def sahte(kod):
+        # Güncel sunucu: okunamadı yoklamasına 200 + okunamadi_destekli döner
+        # (bkz. test_baglanti_testi_eski_sunucuyu_yakalar).
         m = types.ModuleType("requests")
-        m.post = lambda *a, **k: Yanit(kod)
+        m.post = lambda *a, json=None, **k: (
+            Yanit(200, '{"okunamadi_destekli": true}')
+            if (json or {}).get("okunamadi") else Yanit(kod))
         return m
 
     ayar = {"WEBHOOK_URL": "http://x", "KAMERA_SECRET": "z" * 32}
@@ -840,7 +818,10 @@ def test_kalp_ag_donunce_bildirir() -> None:
 
 
 def _gonder_ciktisi(kodlar: list[int]) -> str:
-    """Ayrı süreçte kopru.gonder()'i bir kez çağırır; kod 0 = ağ yok."""
+    """
+    Ayrı süreçte kopru.gonder_olay()'ı her cevap kodu için bir kez çağırır
+    (1.3.0: tek POST, yeniden deneme gönderim kutusunun işi); kod 0 = ağ yok.
+    """
     kod = (
         "import sys,types\n"
         "r=types.ModuleType('requests')\n"
@@ -858,10 +839,9 @@ def _gonder_ciktisi(kodlar: list[int]) -> str:
         "r.post=_post\n"
         "sys.modules['requests']=r\n"
         f"sys.path.insert(0, {BURASI!r})\n"
-        "import kopru, time\n"
-        "time.sleep=lambda s: None\n"
-        "from datetime import datetime, timezone\n"
-        "kopru.gonder('AAAA', datetime.now(timezone.utc))\n"
+        "import kopru\n"
+        "for _ in range(len(_k)):\n"
+        "    kopru.gonder_olay({'islem_id': 'abcd1234-0000', 'yon': 'GIRIS'})\n"
     )
     gecici = tempfile.mkdtemp()
     ortam = {**os.environ, "PYTHONIOENCODING": "utf-8", "PROGRAMDATA": gecici,
@@ -884,6 +864,45 @@ def test_gonderim_ag_donunce_bildirir() -> None:
     assert c.index(gunluk.AG_DONDU_ISARETI) < c.index("[+] gönderildi"), c
     c = _gonder_ciktisi([200])
     assert gunluk.AG_DONDU_ISARETI not in c, c
+
+
+def test_gonderim_kayda_plaka_yazmaz() -> None:
+    """
+    1.3.0 kayda plaka YAZMAZ: kayıt yalnızca boyutla döner, plaka orada süresiz
+    kalırdı. Sunucunun ret mesajı plakayı içerebilir ("Bu plaka için zaten açık
+    bir bilet var: 34ABC123", "Geçersiz plaka: …"); köprü mesajın okunur
+    kısmını yazar, plakayı maskeler. Başarı satırı yalnızca karar kodlarını yazar.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    _kopru_yuklu()
+    import giden
+    import kopru
+
+    class Y:
+        def __init__(self, kod, metin):
+            self.status_code, self.text = kod, metin
+
+    cevaplar = [Y(409, '{"hata":"Bu plaka için zaten açık bir bilet var: 34ABC123"}'),
+                Y(400, '{"hata":"Geçersiz plaka: 06 KZ 4581"}'),
+                Y(400, '{"hata":"Geçersiz plaka: 35pa052"}'),
+                Y(200, '{"ok":true,"karar":"GIRIS","sebep":"YENI_GIRIS"}')]
+    eski = kopru.requests.post
+    kopru.requests.post = lambda *a, **k: cevaplar.pop(0)
+    yakala = _io.StringIO()
+    try:
+        with redirect_stdout(yakala):
+            sonuc = [kopru.gonder_olay({"islem_id": "abcd1234-0000-4000-8000-000000000001",
+                                        "yon": "GIRIS", "plaka": "34ABC123"})
+                     for _ in range(4)]
+    finally:
+        kopru.requests.post = eski
+    c = yakala.getvalue()
+    assert sonuc == [giden.RED, giden.RED, giden.RED, giden.TAMAM], (sonuc, c)
+    for plaka in ("34ABC123", "06 KZ 4581", "06KZ4581", "4581", "35pa052"):
+        assert plaka not in c, (plaka, c)
+    assert "reddedildi 409 (abcd1234)" in c and "zaten açık bir bilet var" in c, c
+    assert "Geçersiz plaka" in c and "GIRIS YENI_GIRIS" in c, c
 
 
 def test_durum_internet_yok() -> None:
@@ -1660,6 +1679,10 @@ def test_gorev_xml_varsayilanlari_ezer() -> None:
     # Köprü ölürse (ya da Windows onu öldürürse) kendiliğinden dönsün.
     assert deger("t:Settings/t:RestartOnFailure/t:Interval") == "PT1M"
     assert int(deger("t:Settings/t:RestartOnFailure/t:Count") or 0) >= 100
+    # 1.3.0 (sahibin kararı): NORMAL öncelik (4-6). Varsayılan 7 "normalin
+    # altı"; hibrit işlemcide Windows köprüyü verimlilik çekirdeklerine itiyor,
+    # plaka okuyucu 5 kata kadar yavaşlıyordu (Faz 0 ölçümü).
+    assert deger("t:Settings/t:Priority") == "5"
     # Açılışta, SYSTEM olarak, en yüksek yetkiyle.
     assert kok.find("t:Triggers/t:BootTrigger", ns) is not None
     assert deger("t:Principals/t:Principal/t:UserId") == "S-1-5-18"
@@ -1790,6 +1813,31 @@ def test_baslangic_saglikli() -> None:
     assert ok is True and "✓" in cikti, cikti
 
 
+def test_baslangic_plaka_okuyucu_calismiyorsa_basari_saymaz() -> None:
+    """
+    1.3.0: okuyucu yüklenemezse köprü DÜŞMEZ (araçlar personele gider) ama
+    kurulum "tamamlandı" DEMEMELİ — her araç insana düşer. Sebep söylenir.
+    """
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    ok, cikti = _baslangic([
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:00:00  [!] {gunluk.OKUYUCU_BOZUK_ISARETI}: model doğrulanamadı (özet "
+        "uyuşmuyor): x.onnx — araçlar personele gidecek",
+        f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}",
+        f"{bugun} 09:00:02  [i] {gunluk.SUNUCU_TAMAM_ISARETI}",
+    ])
+    assert ok is False and "✓" not in cikti, cikti
+    assert "plaka okuyucu" in cikti.lower() and "model doğrulanamadı" in cikti, cikti
+    ok, cikti = _baslangic([
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:00:00  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1 iş parçacığı)",
+        f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}",
+        f"{bugun} 09:00:02  [i] {gunluk.SUNUCU_TAMAM_ISARETI}",
+    ])
+    assert ok is True and "plaka okuyucu hazır" in cikti.lower(), cikti
+
+
 def test_baslangic_yazim_gecikse_de_saglikli() -> None:
     """
     Kayıt yazıldıktan sonra makine bir an takılsa da (yük, antivirüs taraması)
@@ -1905,6 +1953,8 @@ def test_kirpma_sunucusu_bos_port_ve_belirtec() -> None:
         kod, _ = _istek(port, "/kaydet", iyi, {"X-Otopark-Belirtec": belirtec})
         assert kod == 200 and bitti.is_set(), kod
         assert sonuc["kutu"] == (10, 20, 300, 120), sonuc
+        # Hariç alan çizilmediyse None — eski gövde biçimi aynen çalışır.
+        assert sonuc["haric"] is None, sonuc
     finally:
         sunucu.shutdown()
         sunucu2.shutdown()
@@ -1955,6 +2005,81 @@ def test_kirpma_sunucusu_reddederken_govdeyi_okur() -> None:
         sunucu.server_close()
     assert cevap.split(b"\r\n", 1)[0].split(b" ")[1:2] == [b"403"], cevap[:80]
     assert not bitti.is_set()
+
+
+def test_kirpma_sunucusu_haric_alan() -> None:
+    """
+    /kaydet gövdesi 1.3.0'da isteğe bağlı bir "haric" dikdörtgeni taşır
+    (park etmiş araçların üstü). Kutunun içine kırpılarak saklanır. Kutuyla
+    hiç kesişmeyen, kutunun tamamını kaplayan ya da bozuk bir hariç alan
+    TÜM isteği reddeder: köprü onu başlangıçta reddederdi, burada söylemek
+    kurulum bittikten sonra başlamayan bir köprüden iyidir.
+    """
+    kutu = {"x": 100, "y": 100, "w": 600, "h": 400}
+    iyi = [
+        ({"x": 100, "y": 100, "w": 200, "h": 150}, (100, 100, 200, 150)),
+        # Kutunun dışına taşan kısım kırpılır.
+        ({"x": 50, "y": 60, "w": 250, "h": 190}, (100, 100, 200, 150)),
+        ({"x": 600, "y": 400, "w": 500, "h": 500}, (600, 400, 100, 100)),
+    ]
+    for haric, beklenen in iyi:
+        ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+        try:
+            govde = json.dumps({**kutu, "haric": haric}).encode()
+            kod, _ = _istek(sunucu.server_address[1], "/kaydet", govde,
+                            {"X-Otopark-Belirtec": belirtec})
+            assert kod == 200 and bitti.is_set(), (haric, kod)
+            assert sonuc["kutu"] == (100, 100, 600, 400), sonuc
+            assert sonuc["haric"] == beklenen, (haric, sonuc)
+        finally:
+            sunucu.shutdown()
+            sunucu.server_close()
+
+    # "haric": null = çizilmedi.
+    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    try:
+        kod, _ = _istek(sunucu.server_address[1], "/kaydet",
+                        json.dumps({**kutu, "haric": None}).encode(),
+                        {"X-Otopark-Belirtec": belirtec})
+        assert kod == 200 and sonuc["haric"] is None, (kod, sonuc)
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+
+    kotu = [
+        {"x": 0, "y": 0, "w": 50, "h": 50},              # kutuyla kesişmiyor
+        {"x": 100, "y": 0, "w": 50, "h": 100},           # yalnızca kenara değiyor
+        {"x": 90, "y": 90, "w": 700, "h": 500},          # kutunun tamamını kaplıyor
+        {"x": 100, "y": 100, "w": 600, "h": 400},        # tam kutu
+        {"x": 100, "y": 100, "w": 0, "h": 10},
+        {"x": -1, "y": 100, "w": 50, "h": 50},
+        {"x": 100.5, "y": 100, "w": 50, "h": 50},
+        {"x": True, "y": 100, "w": 50, "h": 50},
+        {"x": 100, "y": 100, "w": 50},
+        [100, 100, 50, 50],
+        "100,100,50,50",
+    ]
+    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    try:
+        port = sunucu.server_address[1]
+        for haric in kotu:
+            govde = json.dumps({**kutu, "haric": haric}).encode()
+            kod, _ = _istek(port, "/kaydet", govde, {"X-Otopark-Belirtec": belirtec})
+            assert kod == 400 and not bitti.is_set(), (haric, kod)
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+
+    # Sayfa iki modu da sunar: hariç alan çizme ve silme.
+    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    try:
+        kod, sayfa = _istek(sunucu.server_address[1], "/")
+        assert kod == 200
+        metin = sayfa.decode("utf-8")
+        assert "Hariç alan çiz" in metin and "Hariç alanı sil" in metin, metin[:200]
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
 
 
 def test_kirpma_tum_kare_secimi() -> None:
@@ -2015,6 +2140,26 @@ def test_esikler_kirpma_uzerinde_olculur() -> None:
         d.olcum_ekle(kare(ic, 50))
     assert max(d.kirpik_hareketler) > 150, d.kirpik_hareketler
     assert max(d.hareketler) < max(d.kirpik_hareketler) / 4, d.hareketler
+
+    # Hareket yalnızca HARİÇ ALANDA (kutunun içinde ama park etmiş araçların
+    # üstü): köprü orayı griye boyar, eşik ölçümü de görmemeli.
+    def kare_haric(h: int):
+        f = np.full((480, 640, 3), 50, np.uint8)
+        f[100:150, 100:180] = h
+        return f
+
+    d = ks._Durum()
+    d.kutu = kutu
+    d.haric = (100, 100, 80, 50)
+    for h in (10, 200, 10, 200):
+        d.olcum_ekle(kare_haric(h))
+    assert max(d.kirpik_hareketler) == 0.0, d.kirpik_hareketler
+    # Aynı hareket hariç alan YOKKEN kırpmada görünür (sınamanın kendisi sağlam).
+    d = ks._Durum()
+    d.kutu = kutu
+    for h in (10, 200, 10, 200):
+        d.olcum_ekle(kare_haric(h))
+    assert max(d.kirpik_hareketler) > 20, d.kirpik_hareketler
 
     # Kutu yokken ("tüm kare") kırpma serisi tutulmaz; tüm kare zaten doğru sinyal.
     d = ks._Durum()
@@ -2273,158 +2418,9 @@ def test_tek_kapi_seritler_tek_yerde() -> None:
         assert not elle, f"{ad}: şerit listesi elle yazılmış: {elle}"
 
 
-# ------------------------------------------ boş şerit öğrenme (1.2.0) ---
-
-# Ortak hazırlık: 160x120 gri boş şerit ve aynı yerde duran bir "araç".
-_BOS_HAZIRLIK = r"""
-import numpy as np
-bos = np.full((120, 160), 100, np.uint8)
-araba = bos.copy(); araba[20:100, 30:130] = 220
-def seviye(v):
-    return np.full((120, 160), v, np.uint8)
-"""
-
-
-def _bos_kos(govde: str, env: dict | None = None) -> str:
-    kod, cikti = _kopru_calistir(_BOS_HAZIRLIK + govde + "\nprint('TAMAM')\n", env)
-    assert kod == 0 and "TAMAM" in cikti, cikti
-    return cikti
-
-
-def test_bos_ogrenme_arada_okuma_ister() -> None:
-    """
-    Bir boş şerit fotoğrafı ancak ikinci bir "araç yok" cevabıyla ve ARADA
-    OKUNMUŞ bir araçla referans olur. Arada okuma olmadan iki aynı fotoğraf,
-    aynı yerde duran ve okunamayan tek bir aracın iki fotoğrafı da olabilir —
-    onu öğrenmek o aracı ve benzerlerini görünmez yapardı.
-    """
-    _bos_kos(r"""
-b = kopru.BosOgrenme(3.0)
-assert not b.eslesir(bos)[0]
-assert b.arac_yok_geldi(bos) is False          # aday
-assert b.arac_yok_geldi(bos.copy()) is False   # arada okuma yok: doğrulanmaz
-assert not b.eslesir(bos)[0]
-b.okundu()
-assert b.arac_yok_geldi(bos.copy()) is True    # şimdi referans
-ok, d, kaynak = b.eslesir(bos)
-assert ok and d < 3.0 and kaynak.startswith('öğrenilen'), (ok, d, kaynak)
-assert not b.eslesir(araba)[0], 'araç boş şeritle eşleşti'
-""")
-
-
-def test_bos_ogrenme_esik_ve_bicim() -> None:
-    """Eşiğin altı eşleşir, üstü eşleşmez; boyutu farklı görüntü ASLA eşleşmez.
-
-    kopru.fark() boyut farkında 0.0 döner ("aynı"); hareket için zararsız ama
-    burada "boş şerit" demek olurdu — o yüzden eşleştirme kendi kontrolünü yapar.
-    """
-    _bos_kos(r"""
-b = kopru.BosOgrenme(3.0)
-b.arac_yok_geldi(bos); b.okundu(); assert b.arac_yok_geldi(bos)
-assert b.eslesir(seviye(102))[0]               # fark 2 < 3
-assert not b.eslesir(seviye(104))[0]           # fark 4 > 3
-assert not b.eslesir(np.full((60, 80), 100, np.uint8))[0], 'farklı boyut eşleşti'
-assert not b.eslesir(None)[0]
-assert b.arac_yok_geldi(np.full((60, 80), 100, np.uint8)) is False
-
-# Öğrenirken de AYNI eşik: adaydan eşik kadar farklı bir "araç yok" fotoğrafı
-# o adayı doğrulamaz (başka bir sahnedir), yeni aday olur.
-c = kopru.BosOgrenme(3.0)
-c.arac_yok_geldi(seviye(100)); c.okundu()
-assert c.arac_yok_geldi(seviye(104)) is False      # fark 4 > 3
-assert c.referans_sayisi() == 0
-assert c.arac_yok_geldi(seviye(102)) is True       # fark 2 < 3, arada okuma var
-""")
-
-
-def test_bos_ogrenme_kapali_ve_sabit_referans() -> None:
-    """BOS_OGREN=0 hiçbir şey öğrenmez; elle verilen BOS_REFERANS yine çalışır."""
-    _bos_kos(r"""
-b = kopru.BosOgrenme(3.0, ogren=False)
-b.arac_yok_geldi(bos); b.okundu()
-assert b.arac_yok_geldi(bos) is False
-assert not b.eslesir(bos)[0]
-s = kopru.BosOgrenme(3.0, sabit=bos, ogren=False)
-ok, d, kaynak = s.eslesir(bos)
-assert ok and kaynak == 'sabit', (ok, kaynak)
-assert not s.eslesir(araba)[0]
-""")
-
-
-def test_bos_ogrenme_sinirlar() -> None:
-    """
-    En fazla 8 aday, en fazla 6 referans. Yer açmak için EN UZUN SÜREDİR
-    eşleşmeyen referans düşer — kullanılan (örn. gece) referansı yeni gelen
-    atmasın.
-    """
-    _bos_kos(r"""
-b = kopru.BosOgrenme(3.0)
-for v in range(0, 250, 25):                     # 10 farklı aday
-    b.arac_yok_geldi(seviye(v))
-assert len(b._adaylar) == kopru.BosOgrenme.ADAY_EN_COK == 8, len(b._adaylar)
-
-b = kopru.BosOgrenme(3.0)
-seviyeler = [10, 40, 70, 100, 130, 160, 190]
-for v in seviyeler[:6]:
-    b.arac_yok_geldi(seviye(v)); b.okundu(); assert b.arac_yok_geldi(seviye(v)), v
-assert b.referans_sayisi() == 6
-assert b.eslesir(seviye(10))[0]                 # ilki yeniden kullanıldı
-b.arac_yok_geldi(seviye(190)); b.okundu(); assert b.arac_yok_geldi(seviye(190))
-assert b.referans_sayisi() == kopru.BosOgrenme.REFERANS_EN_COK == 6
-assert b.eslesir(seviye(10))[0], 'kullanılan referans atıldı'
-assert not b.eslesir(seviye(40))[0], 'en eski kullanılmayan referans atılmadı'
-assert b.eslesir(seviye(190))[0]
-""")
-
-
-def test_gonder_arac_yok_cevabini_ogrenir() -> None:
-    """
-    422 + arac_yok: hata değil, boş şerit görüntüsü — "[!] reddedildi" yazılmaz
-    (durum onu reddedilme sayardı) ve aday olarak kaydedilir. arac_yok olmayan
-    422 eskisi gibi reddedilmedir ve ÖĞRENİLMEZ; bozuk gövde de köprüyü
-    düşürmez. 2xx bir okumadır.
-    """
-    import gunluk
-    cikti = _bos_kos(r"""
-from datetime import datetime, timezone
-import json as _j
-class Y:
-    def __init__(s, kod, govde): s.status_code = kod; s.text = govde
-cevap = []
-kopru.requests.post = lambda *a, **k: cevap.pop(0)
-kopru._bos = kopru.BosOgrenme(3.0)
-simdi = datetime.now(timezone.utc)
-
-cevap.append(Y(422, _j.dumps({'hata': 'Plaka okunamadı.', 'guven': None, 'arac_yok': True})))
-assert kopru.gonder('eA==', simdi, bos) is False
-assert len(kopru._bos._adaylar) == 1
-
-cevap.append(Y(422, _j.dumps({'hata': 'Plaka okunamadı.', 'guven': 0.4, 'arac_yok': False})))
-assert kopru.gonder('eA==', simdi, seviye(200)) is False
-cevap.append(Y(422, 'bu json degil'))
-assert kopru.gonder('eA==', simdi, seviye(150)) is False
-assert len(kopru._bos._adaylar) == 1, 'arac_yok olmayan 422 öğrenildi'
-
-cevap.append(Y(200, '{"ok":true}'))
-assert kopru.gonder('eA==', simdi, araba) is True
-assert kopru._bos._okunan == 1
-
-cevap.append(Y(422, _j.dumps({'hata': 'x', 'guven': None, 'arac_yok': True})))
-assert kopru.gonder('eA==', simdi, bos.copy()) is False
-assert kopru._bos.referans_sayisi() == 1
-
-kopru._bos = None                                  # öğrenme nesnesi yokken de çalışmalı
-cevap.append(Y(422, _j.dumps({'hata': 'x', 'guven': None, 'arac_yok': True})))
-assert kopru.gonder('eA==', simdi, bos) is False
-""")
-    assert gunluk.BOS_GORUNTU_ISARETI in cikti, cikti
-    assert gunluk.BOS_OGRENILDI_ISARETI in cikti, cikti
-    assert cikti.count("[!] reddedildi 422") == 2, cikti
-
-
 # 1.2.3: her araçla birlikte plakanın SIKIŞTIRILMIŞ bir kopyası gider
 # (`foto_kanit_base64`); sunucu onu bilete/istisnaya fotoğraf olarak bağlar (042).
-# Okuma kopyası (`foto_base64`) değişmez — ağır sıkıştırma okumayı bozardı.
+# 1.3.0'dan beri giden TEK fotoğraf budur — plaka bu bilgisayarda okunur.
 _KANIT_HAZIRLIK = r"""
 import base64 as _b64
 import cv2, numpy as np
@@ -2510,43 +2506,14 @@ def test_kanit_siniri_sunucuyla_ayni() -> None:
     assert deger == [str(sunucu)], (deger, sunucu)
 
 
-def test_gonder_kanit_alani() -> None:
+def test_durum_eski_satirlari_gostermez() -> None:
     """
-    Kanıt kopyası verilirse HER denemede aynısı gider (gövde bir kez kurulur);
-    verilmezse alan hiç gönderilmez. Okuma kopyası her durumda aynı kalır.
-    """
-    _kanit_kos(r"""
-from datetime import datetime, timezone
-class Y:
-    def __init__(s, kod): s.status_code = kod; s.text = '{"ok":true}'
-cevap, giden = [], []
-def post(*a, json=None, **k):
-    giden.append(dict(json)); return cevap.pop(0)
-kopru.requests.post = post
-kopru.time.sleep = lambda s: None
-simdi = datetime.now(timezone.utc)
+    1.3.0'da kameranın araç olayları (SMD kapısı) ve boş şerit öğrenme yok:
+    `durum` "Araç olayları" ve "Boş şerit" satırlarını artık göstermez — güncelleme
+    günü kayıtta kalan 1.2.6 satırları da bir şey göstermemeli.
 
-cevap.extend([Y(503), Y(500), Y(200)])
-assert kopru.gonder('b2t1bWE=', simdi, None, 'a2FuaXQ=') is True
-assert len(giden) == 3, giden
-assert all(g.get('foto_kanit_base64') == 'a2FuaXQ=' for g in giden), giden
-assert all(g['foto_base64'] == 'b2t1bWE=' for g in giden), giden
-assert len({g['islem_id'] for g in giden}) == 1
-
-giden.clear(); cevap.append(Y(200))
-assert kopru.gonder('b2t1bWE=', simdi) is True
-assert 'foto_kanit_base64' not in giden[0], giden[0]
-giden.clear(); cevap.append(Y(200))
-assert kopru.gonder('b2t1bWE=', simdi, None, None) is True
-assert 'foto_kanit_base64' not in giden[0], giden[0]
-""")
-
-
-def test_durum_bos_serit_satirlari() -> None:
-    """
-    Gece boyunca yalnızca atlanan boş şerit satırları olabilir: bu, kameranın
-    görüntü verdiğinin kanıtıdır (KAMERA YOK değil). Boş şerit görüntüsü bir
-    reddedilme de değildir; özet onları ayrı sayar.
+    O satırlar yine de kameranın görüntü verdiğinin KANITI sayılır (KAMERA YOK
+    değil): güncelleme günü gece boyunca yalnızca onlar olabilir.
     """
     import durum
     import gunluk
@@ -2556,76 +2523,25 @@ def test_durum_bos_serit_satirlari() -> None:
         f"{bugun} 01:00:09  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.40, ref=öğrenilen-1)",
     ]) is False
     satirlar = [
+        f"{bugun} 08:00:00  [i] {gunluk.BOS_GORUNTU_ISARETI}",
+        f"{bugun} 08:01:00  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.10, ref=öğrenilen-1)",
+        f"{bugun} 08:02:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=40.0)",
         f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:00:01  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}",
         f"{bugun} 09:01:00  [+] gönderildi -> ok",
-        f"{bugun} 09:02:00  [i] {gunluk.BOS_GORUNTU_ISARETI}",
-        f"{bugun} 09:03:00  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.10, ref=öğrenilen-1)",
-        f"{bugun} 09:04:00  [i] {gunluk.BOS_ATLANDI_ISARETI} (fark=0.20, ref=öğrenilen-1)",
     ]
-    assert durum.bos_ozet(satirlar) == (1, 2), durum.bos_ozet(satirlar)
     ok, cikti = _durum_senaryosu(satirlar)
     assert ok is True, cikti
     assert "1 gönderim, 0 reddedilme" in cikti, cikti
-    assert "Boş şerit    : 1 okundu, 2 atlandı" in cikti, cikti
+    # Ham kayıt satırları "Son satırlar" altında aynen görünebilir; burada
+    # bakılan, durum'un KENDİ yazdığı özet satırları.
+    for eski_satir in ("Boş şerit    :", "Araç olayları:", "atlandı (araç olayı yok)"):
+        assert eski_satir not in cikti, (eski_satir, cikti)
+    for ad in ("bos_ozet", "olay_durumu", "olay_atlanan"):
+        assert not hasattr(durum, ad), ad
 
 
 # ------------------------------------------------ 1.2.6: araç olayları ---
-
-def test_durum_olay_satiri() -> None:
-    """
-    "Araç olayları:" satırı kapının hâlini kayıttan okur — her hâl için SON
-    söz geçerli, köprünün bu başlangıcından önceki satırlar sayılmaz. Geri
-    dönüş (hareketle çalışma) bir ARIZA değildir: köprü 1.2.5 gibi çalışır,
-    hiçbir araç kaybolmaz — sağlık bozulmaz.
-    """
-    import durum
-    import gunluk
-    bugun = time.strftime("%d.%m")
-    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
-    eski = f"{bugun} 08:00:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}"
-    calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
-    durumlar = [
-        ([bas], None),                     # 1.2.5 ya da henüz söz yok: satır yok
-        ([bas, f"{bugun} 09:00:01  [i] {gunluk.OLAY_KAPALI_ISARETI} (OLAY_KAPISI=0)"],
-         "kapalı"),
-        ([bas, f"{bugun} 09:00:01  [i] {gunluk.OLAY_DINLENMIYOR_ISARETI}"],
-         "dinlenmiyor"),
-        ([bas, f"{bugun} 09:00:02  [i] {gunluk.OLAY_BAGLI_ISARETI}"],
-         "henüz araç olayı yok"),
-        ([bas, f"{bugun} 09:00:02  [i] {gunluk.OLAY_BAGLI_ISARETI}",
-          f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}"],
-         "etkin"),
-        ([bas, f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}",
-          f"{bugun} 09:02:00  [!] {gunluk.OLAY_YOK_ISARETI}: olay bağlantısı koptu"],
-         "alınamıyor (olay bağlantısı koptu)"),
-        ([bas, f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}",
-          f"{bugun} 09:30:00  [!] {gunluk.OLAY_GERI_DONUS_ISARETI}"],
-         "otomatik geri dönüş"),
-        # Önceki başlangıçtan kalan "doğrulandı" bu başlangıcı etkin göstermez.
-        ([eski, bas], None),
-    ]
-    for satirlar, beklenen in durumlar:
-        metin = durum.olay_durumu(satirlar)
-        if beklenen is None:
-            assert metin is None, (satirlar, metin)
-        else:
-            assert metin is not None and beklenen in metin, (satirlar, metin)
-    # Bugünün atlanan geçişleri sayılır; dünkü sayılmaz.
-    atlanan = [bas, f"01.01 09:00:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=40.0)",
-               f"{bugun} 09:10:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=40.0)",
-               f"{bugun} 09:11:00  [i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam=9.0)"]
-    assert durum.olay_atlanan(atlanan) == (2 if bugun != "01.01" else 3)
-    # Ekranda: satır, sayı; geri dönüş ve "alınamıyor" sağlığı bozmaz.
-    for son, saglik in (
-            (f"{bugun} 09:01:00  [i] {gunluk.OLAY_DOGRULANDI_ISARETI}", "etkin"),
-            (f"{bugun} 09:02:00  [!] {gunluk.OLAY_YOK_ISARETI}: kamera kullanıcısının "
-             "Olay izni yok", "alınamıyor"),
-            (f"{bugun} 09:30:00  [!] {gunluk.OLAY_GERI_DONUS_ISARETI}", "geri dönüş")):
-        ok, cikti = _durum_senaryosu(atlanan + [son, calisiyor])
-        assert ok is True, cikti
-        assert "Araç olayları: " in cikti and saglik in cikti, cikti
-        assert "atlandı (araç olayı yok)" in cikti, cikti
-
 
 def test_durum_olaysiz_atlama_kamera_kaniti() -> None:
     """
@@ -2663,46 +2579,10 @@ def test_paket_tum_moduller() -> None:
              and f not in ("paketle.py", "giris.py")}
     eksik = kendi - set(paketle.MODULLER)
     assert not eksik, f"paketlenmeyen modül: {sorted(eksik)}"
-
-
-def test_giris_olay_kipi() -> None:
-    """
-    `OtoparkKamera.exe --olay` kurulu şeridin ayar dosyasıyla olay test kipini
-    açar; birden çok şerit varsa her biri sırayla. Kurulum yoksa ne
-    yapılacağını söyler ve hata koduyla döner.
-    """
-    import io as _io
-    from contextlib import redirect_stdout
-    import giris
-    import olay
-    assert "--olay" in giris.KIPLER
-    klasor = tempfile.mkdtemp()
-    eski_pd = os.environ.get("PROGRAMDATA")
-    os.environ["PROGRAMDATA"] = klasor
-    onceki = olay.test_kipi
-    cagrilar: list[str] = []
-    olay.test_kipi = lambda yol, *a, **k: (cagrilar.append(yol), 0)[1]
-    try:
-        yakala = _io.StringIO()
-        with redirect_stdout(yakala):
-            kod = giris.KIPLER["--olay"]()
-        assert kod != 0 and cagrilar == [], (kod, cagrilar)
-        assert "kurulum" in yakala.getvalue().lower(), yakala.getvalue()
-        os.makedirs(os.path.join(klasor, "Otopark"))
-        for ad in ("kopru-giris.json", "kopru-cikis.json"):
-            with open(os.path.join(klasor, "Otopark", ad), "w", encoding="utf-8") as f:
-                f.write("{}")
-        with redirect_stdout(_io.StringIO()):
-            kod = giris.KIPLER["--olay"]()
-        assert kod == 0, kod
-        assert sorted(os.path.basename(c) for c in cagrilar) == [
-            "kopru-cikis.json", "kopru-giris.json"], cagrilar
-    finally:
-        olay.test_kipi = onceki
-        if eski_pd is None:
-            os.environ.pop("PROGRAMDATA", None)
-        else:
-            os.environ["PROGRAMDATA"] = eski_pd
+    # Tersi de: listede olup dosyası olmayan modül (1.3.0'da silinen olay.py)
+    # derlemede yalnızca uyarı verir, .exe'de sessizce eksik kalırdı.
+    yok = set(paketle.MODULLER) - kendi
+    assert not yok, f"MODULLER'de olup dosyası olmayan: {sorted(yok)}"
 
 
 # ------------------------------------------------ 1.2.1: kurulum günü ---
@@ -2760,16 +2640,53 @@ def test_tum_kare_eski_kirpmayi_temizler() -> None:
     import kurulum
 
     eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
-    kirpma_sunucu.kirpma_sec = lambda rtsp: (None, [])
+    kirpma_sunucu.kirpma_sec = lambda rtsp: (None, None, [])
     kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
     try:
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
     finally:
         kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
-    ayar = dict(_KAYITLI)              # KIRPMA "1,2,3,4"
+    ayar = {**_KAYITLI, "KIRPMA_HARIC": "1,2,3,4"}   # KIRPMA "1,2,3,4" + eski hariç alan
     ayar.update(yeni)
     assert ayar.get("KIRPMA") == "", ayar
+    assert ayar.get("KIRPMA_HARIC") == "", ayar
+
+
+def test_haric_alan_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
+    """
+    1.3.0 L biçimli alan: kutu + park etmiş araçların üstünde bir hariç alan.
+
+    Hariç alan çizilmişse KIRPMA_HARIC olarak yazılır ve ekranda gösterilir.
+    Çizilmemişse AÇIKÇA boş yazılır — KIRPMA ile aynı sebep: kayıtlı kimlikle
+    yeniden kurulumda ayar eski dosyadan gelir ve eski hariç alan yeni kutuya
+    geri dönerdi (yeni kutuda plakanın tam üstüne düşebilir).
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import kirpma_sunucu
+    import kurulum
+
+    eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
+    kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
+    try:
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), (10, 20, 200, 150), [])
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        assert yeni["KIRPMA"] == "10,20,600,400", yeni
+        assert yeni["KIRPMA_HARIC"] == "10,20,200,150", yeni
+        assert "10,20,200,150" in yakala.getvalue(), yakala.getvalue()
+
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), None, [])
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        ayar = {**_KAYITLI, "KIRPMA_HARIC": "10,20,200,150"}
+        ayar.update(yeni)
+        assert ayar["KIRPMA"] == "10,20,600,400", ayar
+        assert ayar["KIRPMA_HARIC"] == "", ayar
+    finally:
+        kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
 
 
 def test_kod_dosyasi_en_yenisi_okunur() -> None:
@@ -3223,9 +3140,9 @@ def test_baglanti_testi_saat_farkini_yakalar() -> None:
     import kurulum
 
     class Yanit:
-        def __init__(self, tarih):
-            self.status_code = 400
-            self.text = ""
+        def __init__(self, tarih, kod=400, metin=""):
+            self.status_code = kod
+            self.text = metin
             self.headers = {"Date": tarih} if tarih else {}
 
     ayar = {"WEBHOOK_URL": "https://x/functions/v1/kamera-webhook", "KAMERA_SECRET": "z" * 32}
@@ -3238,7 +3155,9 @@ def test_baglanti_testi_saat_farkini_yakalar() -> None:
     try:
         for tarih, beklenen, kelime in durumlar:
             m = types.ModuleType("requests")
-            m.post = lambda *a, _t=tarih, **k: Yanit(_t)
+            m.post = lambda *a, _t=tarih, json=None, **k: (
+                Yanit(_t, 200, '{"okunamadi_destekli": true}')
+                if (json or {}).get("okunamadi") else Yanit(_t))
             sys.modules["requests"] = m
             yakala = _io.StringIO()
             with redirect_stdout(yakala):
@@ -3249,6 +3168,78 @@ def test_baglanti_testi_saat_farkini_yakalar() -> None:
                 assert kelime in cikti and "saat" in cikti.lower(), cikti
     finally:
         sys.modules.pop("requests", None)
+
+
+def test_baglanti_testi_eski_sunucuyu_yakalar() -> None:
+    """
+    1.3.0 köprüsü okuyamadığı aracı `okunamadi: true` ile gönderir. Eski
+    kamera-webhook bu alanı tanımaz: istisna kaydı yazmaz, araç personele
+    hiç düşmez. Sihirbaz bunu kurulum günü söylemeli — sahada değil.
+
+    Yoklama `x-kamera-deneme` taşır ve ne plaka ne fotoğraf ne zaman içerir:
+    güncel sunucu hiçbir şey yazmadan 200 döner, eski sunucu zamansız gövdeyi
+    400 ile reddeder — iki durumda da kasada kayıt kalmaz.
+    """
+    import io as _io
+    import types
+    from contextlib import redirect_stdout
+    import kurulum
+
+    class Yanit:
+        def __init__(self, kod, metin=""):
+            self.status_code = kod
+            self.text = metin
+            self.headers = {}
+
+    ayar = {"WEBHOOK_URL": "https://x/functions/v1/kamera-webhook", "KAMERA_SECRET": "z" * 32}
+    durumlar = (
+        ((200, '{"okunamadi_destekli": true}'), True),
+        ((400, '{"hata": "Zaman damgası olmadan kabul edilmez."}'), False),   # eski sunucu
+        ((200, "{}"), False),
+        ((200, "html değil json"), False),
+        ((503, '{"hata": "geçici"}'), False),
+        (None, False),                                                       # ulaşılamadı
+    )
+    try:
+        for cevap, beklenen in durumlar:
+            istekler: list[tuple[dict, dict]] = []
+
+            def post(adres, json=None, headers=None, timeout=None, _c=cevap):
+                istekler.append((json or {}, headers or {}))
+                if (json or {}).get("okunamadi"):
+                    if _c is None:
+                        raise OSError("ağ yok")
+                    return Yanit(*_c)
+                return Yanit(400)
+
+            m = types.ModuleType("requests")
+            m.post = post
+            sys.modules["requests"] = m
+            yakala = _io.StringIO()
+            with redirect_stdout(yakala):
+                ok = kurulum.baglanti_testi(ayar)
+            cikti = yakala.getvalue()
+            assert ok is beklenen, (cevap, cikti)
+            yoklama = [i for i in istekler if i[0].get("okunamadi")]
+            assert len(yoklama) == 1, istekler
+            govde, basliklar = yoklama[0]
+            assert basliklar.get("x-kamera-deneme") == "1", basliklar
+            assert basliklar.get("x-kamera-secret") == "z" * 32, basliklar
+            assert set(govde) == {"okunamadi"}, govde
+            if beklenen:
+                assert "okunamayan" in cikti.lower(), cikti
+            else:
+                assert "kamera-webhook" in cikti, cikti
+    finally:
+        sys.modules.pop("requests", None)
+
+    # 1.3.0 plakayı bu bilgisayarda okur: hata metinleri artık bulut okumasını
+    # (ANTHROPIC_API_KEY, "plaka okuma kapalı") anlatmamalı. Boş POST'ta 409
+    # yalnızca şerit uyuşmazlığından gelir (_shared/serit.ts seritKarari).
+    metinler = " ".join(kurulum.TESHIS.values())
+    assert "ANTHROPIC" not in metinler and "okuma kapalı" not in metinler, metinler
+    assert "şerid" in kurulum.TESHIS[409].lower(), kurulum.TESHIS[409]
+    assert 503 in kurulum.TESHIS, kurulum.TESHIS
 
 
 def test_kalp_saat_farkini_yazar() -> None:
@@ -3823,6 +3814,443 @@ def test_alt_surecler_programdata_devralmaz() -> None:
 def _tuzaktakiler(tuzak: str) -> list[str]:
     return sorted(os.path.relpath(os.path.join(kok, ad), tuzak)
                   for kok, _, dosyalar in os.walk(tuzak) for ad in dosyalar)
+
+
+def test_durum_plaka_okuyucu_satiri() -> None:
+    """
+    1.3.0: "Plaka okuma:" satırı okuyucunun hâlini kayıttan okur (bu
+    başlangıçtan beri SON söz). Okuyucu çalışmıyorsa araçlar personele gider —
+    araç kaybolmaz ama her araç insana düşer: sağlık KIRMIZI.
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
+    eski = f"{bugun} 08:00:00  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1 iş parçacığı)"
+    assert durum.plaka_durumu([bas]) == (None, False)
+    assert durum.plaka_durumu([eski, bas]) == (None, False)          # önceki başlangıç sayılmaz
+    m, bozuk = durum.plaka_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1 iş parçacığı)"])
+    assert "hazır" in m and bozuk is False, m
+    m, bozuk = durum.plaka_durumu([bas, f"{bugun} 09:00:01  [!] {gunluk.OKUYUCU_BOZUK_ISARETI}: "
+                                        "model dosyası bulunamadı: x — araçlar personele gidecek"])
+    assert "çalışmıyor" in m and "model dosyası bulunamadı" in m and bozuk is True, m
+    m, bozuk = durum.plaka_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.PLAKA_KAPALI_ISARETI} (PLAKA_BUL=0)"])
+    assert "kapalı" in m and bozuk is True, m
+
+    calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
+    ok, cikti = _durum_senaryosu([bas, f"{bugun} 09:00:01  [!] {gunluk.OKUYUCU_BOZUK_ISARETI}: x",
+                                  f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}", calisiyor])
+    assert ok is False and "PLAKA OKUYUCU ÇALIŞMIYOR" in cikti and "Plaka okuma  : " in cikti, cikti
+    ok, cikti = _durum_senaryosu([bas, f"{bugun} 09:00:01  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1)",
+                                  f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}", calisiyor])
+    assert ok is True and "Plaka okuma  : hazır" in cikti, cikti
+
+
+def test_durum_plaka_ozeti_ve_kamera_kaniti() -> None:
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    satirlar = [
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:01:00  [+] gönderildi -> 1a2b3c4d GIRIS YENI_ARAC",
+        f"{bugun} 09:02:00  [+] gönderildi -> 5e6f7a8b {gunluk.PERSONELE_ISARETI}",
+        f"{bugun} 09:03:00  [i] {gunluk.PLAKASIZ_ISARETI} (0 kutulu kare)",
+        f"01.01 09:03:00  [i] {gunluk.PLAKASIZ_ISARETI} (0 kutulu kare)",      # dün: sayılmaz
+    ]
+    assert durum.plaka_ozet(satirlar) == (1, 1, 1)
+    # Plakasız hareket de kameranın görüntü verdiğinin kanıtıdır.
+    assert durum._son_kamera_sozu(satirlar[:1] + satirlar[3:4]) == "var"
+    ok, cikti = _durum_senaryosu(satirlar[:4] + [f"{bugun} 09:05:00  [i] çalışıyor — 1 kare, 2 gönderim"])
+    assert "2 gönderim, 0 reddedilme, 1 personele, 1 plakasız hareket" in cikti, cikti
+
+
+def test_durum_giden_kutusu_ve_haric_alan() -> None:
+    """
+    1.3.0: internet yokken araçlar KUTUDA bekler — durum kaç araç beklediğini
+    ve en eskisini söyler; internet yok metni artık "elle girin" demez.
+    Kesilen köşe (KIRPMA_HARIC) ayar satırında görünür.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import durum
+    import giden
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    klasor = tempfile.mkdtemp()
+    eski_pd = os.environ.get("PROGRAMDATA")
+    os.environ["PROGRAMDATA"] = klasor
+    onceki = durum.gorev_var_mi
+    try:
+        ayar = os.path.join(klasor, "Otopark", "kopru-giris.json")
+        os.makedirs(os.path.dirname(ayar), exist_ok=True)
+        with open(ayar, "w", encoding="utf-8") as f:
+            json.dump({"YON": "GIRIS", "RTSP_URL": "rtsp://10.0.0.42:554/s1",
+                       "KIRPMA": "31,613,2072,1100", "KIRPMA_HARIC": "31,613,500,300"}, f)
+        log = gunluk.kayit_yolu("GIRIS")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+                f"{bugun} 09:00:01  [i] {gunluk.KAMERA_VAR_ISARETI}",
+                f"{bugun} 09:01:00  [!] {gunluk.AG_HATASI_ISARETI}: bağlanılamadı",
+                f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 2 gönderim"]) + "\n")
+        k = giden.Giden(os.path.join(gunluk.kayit_klasoru(), "giden-giris"), kayit=lambda s: None)
+        k.yaz({"islem_id": "11111111-1111-4111-8111-111111111111", "zaman": "2026-11-06T07:01:00Z"})
+        k.yaz({"islem_id": "22222222-2222-4222-8222-222222222222", "zaman": "2026-11-06T07:03:00Z"})
+        durum.gorev_var_mi = lambda y: True
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            ok = durum.serit_durumu(ayar)
+        cikti = yakala.getvalue()
+        assert ok is False and "İNTERNET YOK" in cikti and "elle girin" not in cikti, cikti
+        assert "Bekleyen     : 2 araç" in cikti and "internet gelince" in cikti, cikti
+        assert "Hariç alan   : 31,613,500,300" in cikti, cikti
+    finally:
+        durum.gorev_var_mi = onceki
+        if eski_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = eski_pd
+
+
+# ------------------------------------------------- 1.3.0: --plaka test kipi ---
+
+def test_kirpma_metinleri_cozulur() -> None:
+    """
+    KIRPMA / KIRPMA_HARIC metinlerini köprü ile `--plaka` kipi AYNI yardımcıyla
+    çözer (kopru.kutu_metni_coz / haric_metni_coz). Kurallar 1.3.0'daki
+    kirpma_kutusu / kirpma_haric ile birebir: bozuk biçim ValueError (köprü
+    onu sys.exit'e çevirir), kutunun dışındaki hariç alan uyarıyla yok sayılır.
+    """
+    _kopru_yuklu()
+    import kopru
+
+    assert kopru.kutu_metni_coz("") is None
+    assert kopru.kutu_metni_coz("820,540,600,220") == (820, 540, 600, 220)
+    assert kopru.kutu_metni_coz(" 820, 540,600,220 ") == (820, 540, 600, 220)
+    for bozuk in ("a", "1,2,3", "1,2,3,4,5", "1,2,0,5", "1,2,5,-1", "1.5,2,3,4"):
+        try:
+            kopru.kutu_metni_coz(bozuk)
+        except ValueError as e:
+            assert "KIRPMA" in str(e), e
+        else:
+            raise AssertionError(f"kabul edildi: {bozuk!r}")
+
+    kutu = (100, 100, 600, 400)
+    assert kopru.haric_metni_coz("", kutu) == (None, None)
+    h, uyari = kopru.haric_metni_coz("100,100,200,150", None)
+    assert h is None and "KIRPMA yok" in uyari, uyari
+    h, uyari = kopru.haric_metni_coz("0,0,50,50", kutu)
+    assert h is None and "dışında" in uyari, uyari
+    assert kopru.haric_metni_coz("100,100,200,150", kutu) == ((100, 100, 200, 150), None)
+    for bozuk in ("a,b,c,d", "1,2,3", "100,100,0,5", "90,90,700,500", "100,100,600,400"):
+        try:
+            kopru.haric_metni_coz(bozuk, kutu)
+        except ValueError as e:
+            assert "KIRPMA_HARIC" in str(e), e
+        else:
+            raise AssertionError(f"kabul edildi: {bozuk!r}")
+
+
+def test_kirpma_sayfasinin_kaydettigi_haric_kopruce_kabul_edilir() -> None:
+    """
+    Kırpma sayfasının kabul edip kaydettiği her hariç alanı köprü de AYNEN
+    kabul etmeli (uyarısız, değiştirmeden). Ayrışsalardı kurulum "kaydedildi"
+    der, köprü ise hariç alanı sessizce yok sayar ya da hiç başlamazdı.
+    """
+    import random
+    import kirpma_sunucu
+    _kopru_yuklu()
+    import kopru
+
+    r = random.Random(1306)
+    kabul = 0
+    for _ in range(3000):
+        kutu = {"x": r.randint(0, 900), "y": r.randint(0, 500),
+                "w": r.randint(1, 1200), "h": r.randint(1, 700)}
+        haric = {"x": r.randint(0, 1500), "y": r.randint(0, 900),
+                 "w": r.randint(1, 900), "h": r.randint(1, 600)}
+        gecerli, k, h = kirpma_sunucu._kutu_coz({**kutu, "haric": haric})
+        if not gecerli:
+            continue
+        kabul += 1
+        metin = ",".join(str(v) for v in h)
+        assert kopru.haric_metni_coz(metin, k) == (h, None), (kutu, haric, h)
+    assert kabul > 500, kabul
+
+
+def test_giris_plaka_kipi() -> None:
+    """
+    `OtoparkKamera.exe --plaka` kurulu her şeridin ayar dosyasıyla plaka test
+    kipini açar. Kurulum yoksa ne yapılacağını söyler ve hata koduyla döner.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import giris
+    _kopru_yuklu()
+    import kopru
+    assert "--plaka" in giris.KIPLER
+    # 1.3.0: kameranın araç olayları (SMD) kullanılmıyor; test kipi de yok.
+    assert "--olay" not in giris.KIPLER
+    klasor = tempfile.mkdtemp()
+    eski_pd = os.environ.get("PROGRAMDATA")
+    os.environ["PROGRAMDATA"] = klasor
+    onceki = kopru.plaka_testi
+    cagrilar: list[str] = []
+    kopru.plaka_testi = lambda yol, *a, **k: (cagrilar.append(yol), 0)[1]
+    try:
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--plaka"]()
+        assert kod != 0 and cagrilar == [], (kod, cagrilar)
+        assert "kurulum" in yakala.getvalue().lower(), yakala.getvalue()
+        os.makedirs(os.path.join(klasor, "Otopark"))
+        for ad in ("kopru-giris.json", "kopru-cikis.json"):
+            with open(os.path.join(klasor, "Otopark", ad), "w", encoding="utf-8") as f:
+                f.write("{}")
+        with redirect_stdout(_io.StringIO()):
+            kod = giris.KIPLER["--plaka"]()
+        assert kod == 0, kod
+        assert sorted(os.path.basename(c) for c in cagrilar) == [
+            "kopru-cikis.json", "kopru-giris.json"], cagrilar
+    finally:
+        kopru.plaka_testi = onceki
+        if eski_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = eski_pd
+
+
+def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False):
+    """kopru.plaka_testi'ni sahte kamera ve sahte okuyucuyla koşar: (kod, çıktı, kamera açıldı mı)."""
+    import io as _io
+    from contextlib import redirect_stdout
+    import numpy as np
+    _kopru_yuklu()
+    import gunluk
+    import kopru
+    import plaka
+
+    K = plaka.Kutu
+    orta = K(600, 300, 800, 345, 0.9)
+
+    class SahtePlakaci:
+        def bul(self, kirpik):
+            return list(kutular if kutular is not None else [orta])
+
+        def oku_cift(self, kirpik, k):
+            return list(okumalar)
+
+    class SahteKamera:
+        def read(self):
+            return True, np.full((720, 1600, 3), 90, np.uint8)
+
+        def release(self):
+            pass
+
+    def yukle(ayar, dizin=None):
+        if yukle_hata:
+            raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
+        return SahtePlakaci()
+
+    def yasak(*a, **k):
+        raise AssertionError("test kipi bir şey göndermemeli / günlük açmamalı")
+
+    klasor = tempfile.mkdtemp()
+    yol = os.path.join(klasor, "kopru-giris.json")
+    with open(yol, "w", encoding="utf-8") as f:
+        json.dump({"YON": "GIRIS", "RTSP_URL": "rtsp://u:p@10.0.0.9:554/1",
+                   "WEBHOOK_URL": "https://x", "KAMERA_SECRET": "z" * 32,
+                   "KIRPMA": "0,0,1600,700", "KIRPMA_HARIC": "", **(ayar_ek or {})}, f)
+    calisma = tempfile.mkdtemp()
+    acildi: list[str] = []
+    eski = (plaka.yukle, gunluk.baslat, kopru.requests.post, os.getcwd())
+    plaka.yukle, gunluk.baslat, kopru.requests.post = yukle, yasak, yasak
+    try:
+        os.chdir(calisma)
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = kopru.plaka_testi(yol, sure_sn=5.0, ara_sn=0.0, en_cok_kare=3,
+                                    kamera=lambda url: (acildi.append(url), SahteKamera())[1])
+    finally:
+        plaka.yukle, gunluk.baslat, kopru.requests.post = eski[:3]
+        os.chdir(eski[3])
+    # Hiçbir dosya yazılmaz: ne çalışma klasörüne ne ayar klasörüne.
+    assert os.listdir(calisma) == [], os.listdir(calisma)
+    assert os.listdir(klasor) == ["kopru-giris.json"], os.listdir(klasor)
+    return kod, yakala.getvalue(), acildi
+
+
+def test_plaka_kipi_emin_okuma() -> None:
+    """
+    `--plaka`: canlı kameradan kutuları, iki kırpıntının okumasını ve süreyi
+    yazar; hiçbir şey göndermez, hiçbir şey kaydetmez, günlük açmaz. Emin
+    okuma varsa 0 döner.
+    """
+    kod, c, acildi = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.97)])
+    assert kod == 0, c
+    assert acildi == ["rtsp://u:p@10.0.0.9:554/1"], acildi
+    assert "34ABC123" in c and "EMİN" in c and " ms" in c, c
+    assert "hazır" in c.lower(), c
+
+
+def test_plaka_kipi_belirsiz_ve_kesik() -> None:
+    """İki kırpıntı anlaşmazsa "belirsiz", kenara değen plaka "kesik"; emin okuma yoksa 2."""
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC128", 0.99)])
+    assert kod == 2 and "belirsiz" in c and "EMİN" not in c, c
+    import plaka
+    kenar = plaka.Kutu(600, 2, 800, 40, 0.9)
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.99)], kutular=[kenar])
+    assert kod == 2 and "kesik" in c and "34ABC123" not in c, c
+
+
+def test_plaka_kipi_okuyucu_yoksa_ve_bozuk_ayar() -> None:
+    """Okuyucu yüklenemezse ya da kırpma ayarı bozuksa kamera hiç açılmadan 1 döner."""
+    kod, c, acildi = _plaka_kipi([], yukle_hata=True)
+    assert kod == 1 and "çalışmıyor" in c and acildi == [], c
+    kod, c, acildi = _plaka_kipi([], ayar_ek={"KIRPMA": "a,b"})
+    assert kod == 1 and "KIRPMA" in c and acildi == [], c
+    kod, c, acildi = _plaka_kipi([], ayar_ek={"KIRPMA_HARIC": "0,0,1600,700"})
+    assert kod == 1 and "KIRPMA_HARIC" in c and acildi == [], c
+
+
+# --------------------------------------------- 1.3.0: paket ön/son kontrol ---
+
+def test_paket_surum_sabitleri() -> None:
+    """
+    paketle derlemeden ÖNCE requirements.txt'deki her sabiti kurulu sürümle
+    karşılaştırır: yanlış sürümle derlenmiş bir .exe, sınanmamış bir okuyucu
+    demektir (altın çıktı 1.31.0'da ölçüldü). Sabitsiz satır da sorundur.
+    """
+    import importlib.metadata as md
+    import paketle
+    pins = paketle.sabitlenenler(os.path.join(BURASI, "requirements.txt"))
+    for ad in ("onnxruntime", "flatbuffers", "packaging", "protobuf",
+               "opencv-python-headless", "numpy", "requests"):
+        assert ad in pins, (ad, pins)
+    assert pins["onnxruntime"] == "1.31.0", pins
+
+    d = tempfile.mkdtemp()
+    yol = os.path.join(d, "requirements.txt")
+    with open(yol, "w", encoding="utf-8") as f:
+        f.write(f"# açıklama\nnumpy=={md.version('numpy')}   # BSD\n"
+                "requests==0.0.1\nyok-boyle-bir-paket==1.0\n")
+    sorunlar = paketle.surum_sorunlari(yol)
+    assert len(sorunlar) == 2, sorunlar
+    assert any("requests" in s for s in sorunlar) and any("yok-boyle-bir-paket" in s for s in sorunlar)
+    with open(yol, "w", encoding="utf-8") as f:
+        f.write("numpy\n")
+    assert paketle.surum_sorunlari(yol), "sabitsiz satır kabul edildi"
+
+
+def test_paket_model_kontrolu() -> None:
+    """Paketlenecek modeller plaka.py'deki özetlerle birebir olmalı; eksik ya da farklıysa derleme durur."""
+    import paketle
+    import plaka
+    assert paketle.model_sorunlari(plaka.MODEL_DIZINI) == []
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, plaka.BULUCU.dosya), "wb") as f:
+        f.write(b"bozuk")
+    sorunlar = paketle.model_sorunlari(d)
+    assert len(sorunlar) == 2, sorunlar
+    assert any(plaka.BULUCU.dosya in s for s in sorunlar) and any(plaka.OKUYUCU.dosya in s for s in sorunlar)
+
+
+def test_model_lisansi_yaninda() -> None:
+    """
+    Modellerin lisansı ve kaynağı modellerle birlikte durur ve pakete girer:
+    iki MIT metni, sürümler, özetler ve bulucu ağırlıklarının lisansının
+    belirtilmediği (sahibin 2026-11-06 kabulü).
+    """
+    import plaka
+    with open(os.path.join(plaka.MODEL_DIZINI, "LISANS.txt"), encoding="utf-8") as f:
+        metin = f.read()
+    assert metin.count("MIT License") == 2, metin[:200]
+    for gerekli in ("open-image-models", "fast-plate-ocr", plaka.BULUCU.sha256,
+                    plaka.OKUYUCU.sha256, plaka.BULUCU.dosya, plaka.OKUYUCU.dosya):
+        assert gerekli in metin, gerekli
+
+
+def test_paket_lisanslari_toplanir() -> None:
+    """
+    Pakete giren her çalışma paketinin lisansı derleme anında KURULU sürümden
+    toplanır (elle kopyalanan metin sürümle ayrışırdı); modellerin lisansı da
+    eklenir. Lisansı bulunamayan paket derlemeyi durdurur.
+    """
+    import importlib.metadata as md
+    import re
+    import paketle
+
+    def kurulu(ad: str) -> bool:
+        try:
+            md.distribution(ad)
+            return True
+        except md.PackageNotFoundError:
+            return False
+
+    def normal(ad: str) -> str:
+        return re.sub(r"[-_.]+", "-", ad).lower()
+
+    # Bu Python'da hangileri kuruluysa (paket venv'inde hepsi; sistem
+    # Python'unda requests olmayabilir).
+    kokler = [ad for ad in ("numpy", "requests", "onnxruntime", "opencv-python",
+                            "opencv-python-headless") if kurulu(ad)]
+    assert "numpy" in kokler, kokler
+    d = tempfile.mkdtemp()
+    klasor = paketle.lisanslari_topla(d, kokler)
+    dosyalar = sorted(os.listdir(klasor))
+    with open(os.path.join(klasor, "LISANSLAR.txt"), encoding="utf-8") as f:
+        dizin = f.read()
+    satir_adlari = {normal(s.split()[0]) for s in dizin.splitlines()
+                    if s and not s.startswith((" ", "Otopark", "("))}
+    for ad in kokler:
+        dist = md.distribution(ad)
+        assert f"{dist.metadata['Name']} {dist.version}" in dizin, (ad, dizin)
+        assert any(x.startswith(dist.metadata["Name"] + "-") for x in dosyalar), (ad, dosyalar)
+        # Koşulsuz bağımlılıkları da pakete giriyor: onların lisansı da toplanmalı.
+        for gereken in dist.requires or []:
+            if "extra" in gereken or ";" in gereken:
+                continue
+            alt = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", gereken).group(1)
+            assert normal(alt) in satir_adlari, (ad, alt, sorted(satir_adlari))
+    assert "modeller-LISANS.txt" in dosyalar and "fast-plate-ocr" in dizin, (dosyalar, dizin)
+    try:
+        paketle.lisanslari_topla(tempfile.mkdtemp(), ["yok-boyle-bir-paket"])
+    except SystemExit as e:
+        assert "yok-boyle-bir-paket" in str(e), e
+    else:
+        raise AssertionError("kurulu olmayan paket sessizce geçti")
+
+
+def test_giris_plaka_sinama_kipi() -> None:
+    """
+    `--plaka-sina`: modelleri yükler ve öz sınamayı çalıştırır, başka hiçbir
+    şey yapmaz. paketle derlenmiş .exe'yi bununla sınar (eksik DLL ya da model
+    sahada değil, derlemede yakalanır); sahada da hızlı bir "okuyucu çalışıyor
+    mu" sorusudur.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import giris
+    import plaka
+    assert "--plaka-sina" in giris.KIPLER
+    eski = plaka.yukle
+    try:
+        plaka.yukle = lambda ayar, dizin=None: object()
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--plaka-sina"]()
+        assert kod == 0 and "hazır" in yakala.getvalue(), yakala.getvalue()
+
+        def bozuk(ayar, dizin=None):
+            raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
+        plaka.yukle = bozuk
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--plaka-sina"]()
+        assert kod == 1 and "çalışmıyor" in yakala.getvalue(), yakala.getvalue()
+    finally:
+        plaka.yukle = eski
 
 
 if __name__ == "__main__":

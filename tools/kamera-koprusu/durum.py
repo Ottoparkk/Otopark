@@ -26,6 +26,7 @@ for _a in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import giden  # noqa: E402  (yalnızca stdlib + gunluk: durum cv2 yüklemez)
 import gunluk  # noqa: E402
 
 AYAR_KLASORU = os.path.join(
@@ -166,7 +167,9 @@ def _son_kamera_sozu(satirlar: list[str]) -> str | None:
                 or gunluk.BOS_ATLANDI_ISARETI in satir
                 or gunluk.BOS_GORUNTU_ISARETI in satir
                 or gunluk.OLAY_ATLANDI_ISARETI in satir
-                or gunluk.AYRILIS_ISARETI in satir):
+                or gunluk.AYRILIS_ISARETI in satir
+                # 1.3.0: plakasız hareket de görüntüden doğar.
+                or gunluk.PLAKASIZ_ISARETI in satir):
             return "var"
         if "köprü başladı" in satir:
             return None
@@ -214,58 +217,57 @@ def ozet(satirlar: list[str]) -> tuple[int, int, str | None]:
     return gonderim, red, son_hata
 
 
-def bos_ozet(satirlar: list[str]) -> tuple[int, int]:
+def plaka_durumu(satirlar: list[str]) -> tuple[str | None, bool]:
     """
-    Bugün kaç boş şerit fotoğrafı OKUNDU (sunucuya gitti, parası ödendi) ve
-    kaçı ATLANDI (öğrenilmiş boş şeritle eşleşti, hiç gönderilmedi). İkisi
-    birlikte boş şerit öğrenmenin işe yarayıp yaramadığını söyler.
+    1.3.0 plaka okuyucusunun hâli (metin, bozuk_mu) — bu başlangıçtan beri SON
+    söz. Bozuk ya da kapalı okuyucu araç KAYBETTİRMEZ (personele gider) ama
+    her aracı insana bırakır: sağlık kırmızıdır.
     """
+    for satir in reversed(satirlar):
+        if gunluk.OKUYUCU_BOZUK_ISARETI in satir:
+            sebep = satir.split(gunluk.OKUYUCU_BOZUK_ISARETI, 1)[1].lstrip(": ").strip()
+            sebep = sebep.split(" — ")[0].strip()
+            return f"çalışmıyor ({sebep or 'bilinmiyor'}) — araçlar personele gidiyor", True
+        if gunluk.PLAKA_KAPALI_ISARETI in satir:
+            return "kapalı (PLAKA_BUL=0) — araçlar personele gidiyor", True
+        if gunluk.PLAKA_HAZIR_ISARETI in satir:
+            return "hazır", False
+        if "köprü başladı" in satir:
+            return None, False
+    return None, False
+
+
+def plaka_ozet(satirlar: list[str]) -> tuple[int, int, int]:
+    """Bugün: (plakası okunup gönderilen, personele bırakılan, plakasız hareket)."""
     bugun = time.strftime("%d.%m")
-    okunan = atlanan = 0
+    okunan = personele = plakasiz = 0
     for s in satirlar:
         if not s.startswith(bugun):
             continue
-        if gunluk.BOS_GORUNTU_ISARETI in s:
-            okunan += 1
-        elif gunluk.BOS_ATLANDI_ISARETI in s:
-            atlanan += 1
-    return okunan, atlanan
+        if "[+] gönderildi" in s:
+            if gunluk.PERSONELE_ISARETI in s:
+                personele += 1
+            else:
+                okunan += 1
+        elif gunluk.PLAKASIZ_ISARETI in s:
+            plakasiz += 1
+    return okunan, personele, plakasiz
 
 
-def olay_durumu(satirlar: list[str]) -> str | None:
-    """
-    1.2.6 araç olayı kapısının hâli — bu başlangıçtan beri SON söz. None: söz
-    yok (1.2.5 kaydı ya da dinleyici henüz bir şey demedi), satır yazılmaz.
-    Hiçbiri sağlığı bozmaz: kapı kapalıyken köprü 1.2.5 gibi her geçişi
-    gönderir, araç kaybolmaz.
-    """
-    hareketle = " — hareketle çalışıyor (her geçiş gönderilir)"
-    for satir in reversed(satirlar):
-        if gunluk.OLAY_GERI_DONUS_ISARETI in satir:
-            return ("kapalı (otomatik geri dönüş: araç olayı gelmiyor)" + hareketle
-                    + " — kameranın Akıllı Hareket Algılama ayarını kontrol edin")
-        if gunluk.OLAY_DOGRULANDI_ISARETI in satir:
-            return "etkin — yalnızca araç olayı olan geçişler gönderiliyor"
-        if gunluk.OLAY_YOK_ISARETI in satir:
-            sebep = satir.split(gunluk.OLAY_YOK_ISARETI, 1)[1].lstrip(": ").strip()
-            return f"alınamıyor ({sebep or 'bilinmiyor'})" + hareketle
-        if gunluk.OLAY_BAGLI_ISARETI in satir:
-            return "bağlı, henüz araç olayı yok" + hareketle
-        if gunluk.OLAY_DINLENMIYOR_ISARETI in satir:
-            return ("dinlenmiyor (kamera adresinde kullanıcı yok ya da olay ayarı "
-                    "hatalı — bir önceki satıra bakın)" + hareketle)
-        if gunluk.OLAY_KAPALI_ISARETI in satir:
-            return "kapalı (OLAY_KAPISI=0)" + hareketle
-        if "köprü başladı" in satir:
-            return None
-    return None
-
-
-def olay_atlanan(satirlar: list[str]) -> int:
-    """Bugün araç olayı olmadığı için gönderilmeyen geçiş sayısı."""
-    bugun = time.strftime("%d.%m")
-    return sum(1 for s in satirlar
-               if s.startswith(bugun) and gunluk.OLAY_ATLANDI_ISARETI in s)
+def _bekleyen_metni(yon: str) -> str | None:
+    """Gönderim kutusunda (giden.py) bekleyen araçlar — internet yokken birikir."""
+    sayi, en_eski = giden.ozet(os.path.join(gunluk.kayit_klasoru(), f"giden-{yon.lower()}"))
+    if not sayi:
+        return None
+    zaman = ""
+    if en_eski:
+        try:
+            from datetime import datetime
+            z = datetime.fromisoformat(str(en_eski).replace("Z", "+00:00")).astimezone()
+            zaman = f" (en eski {z.strftime('%d.%m %H:%M')})"
+        except ValueError:
+            pass
+    return f"{sayi} araç{zaman} — internet gelince sırayla gönderilecek"
 
 
 def gorev_var_mi(yon: str) -> bool:
@@ -300,6 +302,8 @@ def serit_durumu(ayar_yolu: str) -> bool:
     print(f"     Ayar dosyası : {ayar_yolu}")
     print(f"     Kamera       : {rtsp_gizle(ayar.get('RTSP_URL', ''))}")
     print(f"     Kırpma       : {ayar.get('KIRPMA') or '(yok — tüm kare)'}")
+    if ayar.get("KIRPMA_HARIC"):
+        print(f"     Hariç alan   : {ayar['KIRPMA_HARIC']} (kesilen köşe)")
 
     # Görev yoksa köprü BU AÇILIŞTA koşuyor olabilir ama bilgisayar yeniden
     # başlayınca bir daha dönmez — sağlıklı sayılamaz. Yalnızca Windows'ta
@@ -320,8 +324,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
     ret = sunucu_reddi(satirlar)
     kamera_yok = kamera_kopuk(satirlar)
     ag_yok = internet_yok(satirlar)
+    plaka_hali, okuyucu_bozuk = plaka_durumu(satirlar)
     saglikli = (taze and not durdu and gorev and ret is None and not kamera_yok
-                and not ag_yok)
+                and not ag_yok and not okuyucu_bozuk)
 
     print(f"     Kayıt dosyası: {yol}")
     print(f"     Son hareket  : {sure_metni(yas)}")
@@ -337,10 +342,14 @@ def serit_durumu(ayar_yolu: str) -> bool:
     elif ag_yok:
         # After the camera (send the person there first), before the server's
         # verdicts: with no connection there is no verdict to read.
+        # 1.3.0: araçlar kaybolmuyor — gönderim kutusunda bekliyor (giden.py).
         hal = ("İNTERNET YOK — köprü ve kamera çalışıyor ama sunucuya "
-               "ulaşılamıyor. Bu sırada geçen araçlar gönderilemez, elle girin. "
-               "Modemi / Wi-Fi'yi kontrol edin; internet dönünce kendiliğinden "
-               "düzelir.")
+               "ulaşılamıyor. Araçlar bu bilgisayarda bekliyor ve internet "
+               "dönünce sırayla gönderilecek. Modemi / Wi-Fi'yi kontrol edin.")
+    elif okuyucu_bozuk:
+        hal = ("PLAKA OKUYUCU ÇALIŞMIYOR — araçlar kaybolmuyor ama hepsi "
+               "'Çözülmemiş kayıtlar'a düşüyor. Programı açıp 'Yeniden kur' "
+               "deyin; düzelmezse 'Plaka okuma' satırındaki sebebi bildirin.")
     elif ret == "kimlik":
         hal = ("KİMLİK REDDEDİLDİ — sunucu bu kamerayı tanımıyor. Uygulamada "
                "Kamera Kurulumu'ndan yeni kod alıp kurulumu tekrarlayın.")
@@ -357,16 +366,17 @@ def serit_durumu(ayar_yolu: str) -> bool:
         hal = "ÇALIŞIYOR"
     print(f"     Durum        : {hal}")
 
-    olay_hali = olay_durumu(satirlar)
-    if olay_hali:
-        print(f"     Araç olayları: {olay_hali}")
+    if plaka_hali:
+        print(f"     Plaka okuma  : {plaka_hali}")
+    bekleyen = _bekleyen_metni(yon)
+    if bekleyen:
+        print(f"     Bekleyen     : {bekleyen}")
     gonderim, red, son_hata = ozet(satirlar)
-    atlanan = olay_atlanan(satirlar)
-    ek = f", {atlanan} atlandı (araç olayı yok)" if atlanan else ""
+    _okunan, personele, plakasiz = plaka_ozet(satirlar)
+    ek = ""
+    if personele or plakasiz:
+        ek = f", {personele} personele, {plakasiz} plakasız hareket"
     print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme{ek}")
-    bos_okunan, bos_atlanan = bos_ozet(satirlar)
-    if bos_okunan or bos_atlanan:
-        print(f"     Boş şerit    : {bos_okunan} okundu, {bos_atlanan} atlandı")
     if son_hata:
         print(f"     Son uyarı    : {son_hata[:110]}")
     print("     Son satırlar :")

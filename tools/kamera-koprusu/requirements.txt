@@ -1,11 +1,21 @@
 # Permissive licences only — no AGPL, no enterprise licence, no GPU.
-# The plate is read server-side, so nothing here does inference.
+# 1.3.0: the plate is read ON THIS COMPUTER (plaka.py: YOLOv9 plate finder +
+# fast-plate-ocr reader, both ONNX, both run by onnxruntime on the CPU). The
+# models themselves are in modeller/ (licence and source: modeller/LISANS.txt).
 #
 # Pin to versions that EXIST. 4.13.0.88 was pinned here and is not a release
 # opencv ever published (4.13.0 ships as .90/.92; .88 belongs to 4.12.0), so
 # `pip install -r requirements.txt` — the first command in the setup path —
 # failed for everyone on every platform. Check a pin against PyPI before
 # writing it down; a wrong one fails at the only moment nobody can debug it.
+# paketle.py refuses to build when an installed version differs from a pin.
+# Checked 2026-11-06: all on PyPI, no OSV advisory for any of these versions.
 opencv-python-headless==4.13.0.92   # Apache-2.0 (headless: no GUI libs on a server)
 numpy==2.3.4                        # BSD-3-Clause
 requests==2.33.0                    # Apache-2.0
+# onnxruntime sends telemetry to Microsoft BY DEFAULT; plaka._ort_yukle turns
+# it off (ORT_DISABLE_TELEMETRY=1 before the first import, plus the API).
+onnxruntime==1.31.0                 # MIT (plaka.py's golden output was measured on it)
+flatbuffers==25.12.19               # Apache-2.0  (onnxruntime dependency)
+packaging==26.3                     # Apache-2.0 OR BSD-2-Clause  (onnxruntime dependency)
+protobuf==7.36.2                    # BSD-3-Clause  (onnxruntime dependency)

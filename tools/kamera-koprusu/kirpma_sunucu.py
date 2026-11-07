@@ -46,12 +46,18 @@ SAYFA = """<!doctype html>
  .bas{background:#5ecfe8;color:#0f1013}
  .bas:disabled{opacity:.4;cursor:not-allowed}
  .ikinci{background:#2a2f36;color:#ececec;margin-left:8px}
+ .mod{background:#1c1f24;color:#ececec;border:1px solid #2a2f36;
+      padding:10px 16px;margin:0 8px 8px 0}
+ .mod.secili{border-color:#5ecfe8;color:#5ecfe8}
+ .mod.haric.secili{border-color:#f87171;color:#f87171}
+ .mod:disabled{opacity:.4;cursor:not-allowed}
  .ipuc{background:#1c1f24;border-left:3px solid #5ecfe8;border-radius:8px;
        padding:12px 14px;margin:16px 0;color:#c9ced6;font-size:14px}
 </style></head><body><div class="sar">
 <h1>Kırpma kutusunu seçin</h1>
-<p class="alt">Bir araç bariyerde dururken, plakanın bulunduğu dikdörtgeni
-fareyle sürükleyin. Bol tutun — kutu plakanın kenarlarına yapışmasın.</p>
+<p class="alt">Şeridi kapsayan dikdörtgeni fareyle sürükleyin: sol ve sağ kenar
+şeridin genişliği (sokak girmesin), üst kenar araçların durduğu yerin biraz
+üstü. Kutu plakaya yapışmasın — plakayı bu bilgisayar kendisi bulur.</p>
 
 <div class="ipuc" id="bekle">Kameradan görüntü bekleniyor… Birkaç saniye içinde
 gelmezse kameranın açık ve bu bilgisayarla aynı ağda olduğunu kontrol edin.</div>
@@ -60,8 +66,20 @@ gelmezse kameranın açık ve bu bilgisayarla aynı ağda olduğunu kontrol edin
 <div class="kutu">
   <div class="kart"><b>Kırpma</b><span id="olcu">—</span></div>
   <div class="kart"><b>Okunabilirlik</b><span id="kalite">—</span></div>
+  <div class="kart"><b>Hariç alan</b><span id="haricOlcu">Yok</span></div>
   <div class="kart"><b>Hareket (canlı)</b><span id="hareket">—</span></div>
 </div>
+
+<div>
+  <button class="mod secili" id="kutuCiz">Kutuyu çiz</button>
+  <button class="mod haric" id="haricCiz" disabled>Hariç alan çiz</button>
+  <button class="mod" id="haricSil" disabled>Hariç alanı sil</button>
+</div>
+
+<div class="ipuc">Kutunun içinde park etmiş araçlar görünüyorsa
+<b>Hariç alan çiz</b>'e basıp onların üstüne ikinci bir dikdörtgen çizin.
+Orası gri boyanır: hareketi sayılmaz, plakası okunmaz, fotoğrafta da
+görünmez.</div>
 
 <div class="ipuc" id="ipuc">Kutuyu çizin. Uzun kenarı <b>200 pikselin</b>
 altında kalırsa plaka güvenilir okunmaz — kamerayı yaklaştırın ya da zoom
@@ -71,16 +89,42 @@ yapın.</div>
 <button class="ikinci" id="tumu">Tüm kareyi kullan</button>
 </div><script>
 const t=document.getElementById('t'),c=t.getContext('2d');
-let img=new Image(),kutu=null,ciz=false,bas=null,olcek=1,kaynak=[0,0];
+// mod: 'kutu' kırpma kutusunu, 'haric' kutunun içindeki hariç alanı çizer.
+let img=new Image(),kutu=null,haric=null,mod='kutu',ciz=false,bas=null,kaynak=[0,0];
+
+// Hariç alanın kutunun İÇİNDE kalan kısmı (kaydedilen de bu); kesişmiyorsa null.
+function haricKirp(k){
+  if(!haric||!k)return null;
+  const x0=Math.max(haric.x,k.x),y0=Math.max(haric.y,k.y),
+        x1=Math.min(haric.x+haric.w,k.x+k.w),y1=Math.min(haric.y+haric.h,k.y+k.h);
+  if(x1<=x0||y1<=y0)return null;
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+function tamami(h,k){return h&&k&&h.x===k.x&&h.y===k.y&&h.w===k.w&&h.h===k.h;}
 
 function boya(){
   if(!img.width)return;
   t.width=img.width;t.height=img.height;kaynak=[img.width,img.height];
   c.drawImage(img,0,0);
+  const lw=Math.max(2,img.width/400);
   if(kutu){
-    c.strokeStyle='#5ecfe8';c.lineWidth=Math.max(2,img.width/400);
+    c.strokeStyle='#5ecfe8';c.lineWidth=lw;
     c.setLineDash([]);c.strokeRect(kutu.x,kutu.y,kutu.w,kutu.h);
     c.fillStyle='rgba(94,207,232,.15)';c.fillRect(kutu.x,kutu.y,kutu.w,kutu.h);
+  }
+  // Kutunun içindeyse kaydedilecek (kırpılmış) hâli çizilir: görülen = saklanan.
+  const h=haricKirp(kutu)||haric;
+  if(h){
+    c.save();
+    c.beginPath();c.rect(h.x,h.y,h.w,h.h);c.clip();
+    c.fillStyle='rgba(248,113,113,.25)';c.fillRect(h.x,h.y,h.w,h.h);
+    c.strokeStyle='rgba(248,113,113,.7)';c.lineWidth=lw;
+    const ara=Math.max(12,img.width/80);
+    c.beginPath();
+    for(let i=-h.h;i<h.w;i+=ara){c.moveTo(h.x+i,h.y+h.h);c.lineTo(h.x+i+h.h,h.y);}
+    c.stroke();c.restore();
+    c.strokeStyle='#f87171';c.lineWidth=lw;c.setLineDash([]);
+    c.strokeRect(h.x,h.y,h.w,h.h);
   }
 }
 function yenile(){
@@ -102,34 +146,73 @@ function nokta(e){
 t.addEventListener('pointerdown',e=>{ciz=true;bas=nokta(e);t.setPointerCapture(e.pointerId);});
 t.addEventListener('pointermove',e=>{
   if(!ciz)return;const p=nokta(e);
-  kutu={x:Math.min(bas.x,p.x),y:Math.min(bas.y,p.y),
-        w:Math.abs(p.x-bas.x),h:Math.abs(p.y-bas.y)};
+  const r={x:Math.min(bas.x,p.x),y:Math.min(bas.y,p.y),
+           w:Math.abs(p.x-bas.x),h:Math.abs(p.y-bas.y)};
+  if(mod==='haric')haric=r;else kutu=r;
   boya();guncelle();
 });
-t.addEventListener('pointerup',()=>{ciz=false;});
+t.addEventListener('pointerup',()=>{
+  ciz=false;
+  // Tek tıklama ya da kıl kadar bir dikdörtgen hariç alan sayılmaz.
+  if(mod==='haric'&&haric&&(haric.w<8||haric.h<8)){haric=null;boya();}
+  guncelle();
+});
+function modSec(m){mod=m;guncelle();}
 function guncelle(){
   const o=document.getElementById('olcu'),k=document.getElementById('kalite'),
-        b=document.getElementById('kaydet');
-  if(!kutu||kutu.w<8||kutu.h<8){o.textContent='—';k.textContent='—';b.disabled=true;return;}
+        b=document.getElementById('kaydet'),ho=document.getElementById('haricOlcu'),
+        hc=document.getElementById('haricCiz'),hs=document.getElementById('haricSil');
+  const kutuVar=kutu&&kutu.w>=8&&kutu.h>=8;
+  if(!kutuVar&&mod==='haric')mod='kutu';
+  hc.disabled=!kutuVar;hs.disabled=!haric;
+  document.getElementById('kutuCiz').classList.toggle('secili',mod==='kutu');
+  hc.classList.toggle('secili',mod==='haric');
+  t.style.cursor='crosshair';
+  if(!kutuVar){
+    o.textContent='—';k.textContent='—';b.disabled=true;
+    ho.textContent=haric?'—':'Yok';ho.className='';return;
+  }
   o.textContent=kutu.w+'×'+kutu.h+' px';
   const uzun=Math.max(kutu.w,kutu.h),iyi=uzun>=200;
   k.textContent=iyi?'Yeterli':'Çok küçük';
   k.className=iyi?'iyi':'kotu';
-  b.disabled=false;
+  // Kutunun dışında kalan ya da kutunun tamamını kaplayan bir hariç alan
+  // kaydedilemez (sunucu ve köprü de reddeder): Kaydet kapalı, sebep yazılı.
+  let haricTamam=true;
+  const h=haricKirp(kutu);
+  if(!haric){ho.textContent='Yok';ho.className='';}
+  else if(!h){ho.textContent='Kutunun dışında';ho.className='kotu';haricTamam=false;}
+  else if(tamami(h,kutu)){ho.textContent='Kutunun tamamı';ho.className='kotu';haricTamam=false;}
+  else{ho.textContent=h.w+'×'+h.h+' px';ho.className='';}
+  b.disabled=!haricTamam;
 }
+document.getElementById('kutuCiz').onclick=()=>modSec('kutu');
+document.getElementById('haricCiz').onclick=()=>modSec('haric');
+document.getElementById('haricSil').onclick=()=>{haric=null;mod='kutu';boya();guncelle();};
 document.getElementById('kaydet').onclick=()=>gonder(kutu);
+// "Tüm kare"de kesilecek bir kutu yok: hariç alan da gönderilmez.
 document.getElementById('tumu').onclick=()=>gonder(null);
 function gonder(k){
   // Kutu KARENİN içine sıkıştırılır: fare tuvalin dışına sürüklenince
   // koordinatlar eksiye ya da karenin ötesine taşabiliyor.
+  let govde=null;
   if(k){
     const x=Math.max(0,Math.min(k.x,kaynak[0]-1)),y=Math.max(0,Math.min(k.y,kaynak[1]-1));
     k={x:x,y:y,w:Math.max(1,Math.min(k.x+k.w,kaynak[0])-x),
        h:Math.max(1,Math.min(k.y+k.h,kaynak[1])-y)};
+    // Hariç alan sıkıştırılmış kutuya göre kırpılır; ortada kalmıyorsa
+    // sessizce düşürülmez, kullanıcıya söylenir.
+    const h=haricKirp(k);
+    if(haric&&(!h||tamami(h,k))){
+      document.getElementById('ipuc').textContent=
+        'Hariç alan kutunun dışında ya da kutunun tamamını kaplıyor. Hariç alanı silin ya da yeniden çizin.';
+      return;
+    }
+    govde=Object.assign({},k,{haric:h});
   }
   fetch('/kaydet',{method:'POST',
     headers:{'Content-Type':'application/json','X-Otopark-Belirtec':'__BELIRTEC__'},
-    body:JSON.stringify(k)}).then(r=>{
+    body:JSON.stringify(govde)}).then(r=>{
       // Reddedilen bir kayıt "Kaydedildi" DEMEMELİ: sihirbaz hâlâ bekliyor.
       if(!r.ok){
         document.getElementById('ipuc').textContent=
@@ -182,6 +265,8 @@ class _Durum:
         self.hareketler: list[float] = []          # tüm kare
         self.kirpik_hareketler: list[float] = []   # yalnızca seçilen kutu
         self.kutu: tuple[int, int, int, int] | None = None
+        # 1.3.0: kutunun içinde griye boyanan alan (park etmiş araçlar).
+        self.haric: tuple[int, int, int, int] | None = None
         self._onceki: np.ndarray | None = None
         self._onceki_kirpik: np.ndarray | None = None
         self.kilit = threading.Lock()
@@ -196,17 +281,19 @@ class _Durum:
         (kopru.main: gri_kucuk(olcekle(kirp(...)))); eşikler tüm kareden
         çıkarılırsa başka bir sinyalden çıkarılmış olur: kutunun dışındaki
         hareket eşiğe girer, içindeki ise bütün kareye yayılıp küçülür.
-        Aynı üç yardımcı kullanılıyor ki iki taraf ayrışamasın.
+        Aynı yardımcılar kullanılıyor ki iki taraf ayrışamasın — hariç alan
+        da köprüdeki gibi griye boyanır (kirp_maskeli), oradaki hareket
+        eşiklere girmez.
         """
         # Geç içe aktarma: kopru modülün tamamını (dolayısıyla `requests`'i)
         # gerektiriyor; kırpma sayfası onsuz da içe aktarılabilmeli.
-        from kopru import fark, gri_kucuk, kirp, olcekle
+        from kopru import fark, gri_kucuk, kirp_maskeli, olcekle
 
         g = gri_kucuk(kare)
         h = fark(self._onceki, g)
         with self.kilit:
-            kutu = self.kutu
-        kg = gri_kucuk(olcekle(kirp(kare, kutu))) if kutu else None
+            kutu, haric = self.kutu, self.haric
+        kg = gri_kucuk(olcekle(kirp_maskeli(kare, kutu, haric))) if kutu else None
         kh = fark(self._onceki_kirpik, kg) if kutu else None
         self._onceki, self._onceki_kirpik = g, kg
         with self.kilit:
@@ -265,29 +352,57 @@ def _okuyucu(rtsp: str, d: _Durum) -> None:
     cap.release()
 
 
-def _kutu_coz(veri) -> tuple[bool, tuple[int, int, int, int] | None]:
-    """
-    /kaydet gövdesi: `null` = tüm kare, ya da {x, y, w, h}. (geçerli mi, kutu)
-
-    Dört değer de GERÇEK tamsayı olmalı (bool ve kesir değil), konum negatif
-    olamaz, boyut pozitif olmalı. Kutu ayar dosyasına ve oradan köprüye
-    gidiyor; orada patlayacak bir değeri burada reddetmek, kurulum bittikten
-    sonra başlamayan bir köprüden iyidir.
-    """
-    if veri is None:
-        return True, None
+def _dikdortgen(veri) -> tuple[int, int, int, int] | None:
+    """{x, y, w, h} → demet; dört değer GERÇEK tamsayı, konum ≥ 0, boyut > 0."""
     if not isinstance(veri, dict):
-        return False, None
+        return None
     try:
         x, y, w, h = (veri[k] for k in ("x", "y", "w", "h"))
     except KeyError:
-        return False, None
+        return None
     for v in (x, y, w, h):
         if isinstance(v, bool) or not isinstance(v, int):
-            return False, None
+            return None
     if x < 0 or y < 0 or w <= 0 or h <= 0:
-        return False, None
-    return True, (x, y, w, h)
+        return None
+    return x, y, w, h
+
+
+def _kutu_coz(veri) -> tuple[bool, tuple[int, int, int, int] | None,
+                             tuple[int, int, int, int] | None]:
+    """
+    /kaydet gövdesi: `null` = tüm kare, ya da {x, y, w, h} — 1.3.0'dan beri
+    isteğe bağlı bir "haric": {x, y, w, h} ile. (geçerli mi, kutu, hariç alan)
+
+    Değerler GERÇEK tamsayı olmalı (bool ve kesir değil), konum negatif
+    olamaz, boyut pozitif olmalı. Kutu ayar dosyasına ve oradan köprüye
+    gidiyor; orada patlayacak bir değeri burada reddetmek, kurulum bittikten
+    sonra başlamayan bir köprüden iyidir.
+
+    Hariç alan kutunun İÇİNE kırpılarak döner (sayfa da öyle çizer: görülen =
+    saklanan). Kutuyla kesişmeyen ya da kutunun tamamını kaplayan hariç alan
+    isteği reddettirir — köprü de aynı ikisini kabul etmez (kopru.kirpma_haric).
+    """
+    if veri is None:
+        return True, None, None
+    kutu = _dikdortgen(veri)
+    if kutu is None:
+        return False, None, None
+    ham = veri.get("haric")
+    if ham is None:
+        return True, kutu, None
+    h = _dikdortgen(ham)
+    if h is None:
+        return False, None, None
+    kx, ky, kw, kh = kutu
+    x0, y0 = max(h[0], kx), max(h[1], ky)
+    x1, y1 = min(h[0] + h[2], kx + kw), min(h[1] + h[3], ky + kh)
+    if x1 <= x0 or y1 <= y0:
+        return False, None, None
+    haric = (x0, y0, x1 - x0, y1 - y0)
+    if haric == kutu:
+        return False, None, None
+    return True, kutu, haric
 
 
 def sunucu_baslat(d: _Durum, port: int = 0):
@@ -398,7 +513,7 @@ def sunucu_baslat(d: _Durum, port: int = 0):
             except Exception:
                 self._yaz(400, "application/json", b'{"hata":"govde"}')
                 return
-            gecerli, kutu = _kutu_coz(veri)
+            gecerli, kutu, haric = _kutu_coz(veri)
             if not gecerli:
                 self._yaz(400, "application/json", b'{"hata":"kutu"}')
                 return
@@ -407,6 +522,7 @@ def sunucu_baslat(d: _Durum, port: int = 0):
             # gerekir. kirpma_sec kapatmadan önce kısa bir süre bekliyor, yani
             # bu cevap yine de gider.
             sonuc["kutu"] = kutu
+            sonuc["haric"] = haric
             bitti.set()
             self._yaz(200, "application/json", b'{"ok":true}')
 
@@ -420,13 +536,15 @@ def sunucu_baslat(d: _Durum, port: int = 0):
 
 
 def kirpma_sec(rtsp: str, port: int = 0) -> tuple[tuple[int, int, int, int] | None,
+                                                  tuple[int, int, int, int] | None,
                                                   list[float]]:
     """
     Tarayıcıyı açar, kullanıcı kutuyu çizene kadar bekler.
 
-    Döndürür: (kutu ya da None, eşik önerisi için hareket değerleri).
-    None = "tüm kareyi kullan". Kutu seçildiyse hareket değerleri o KUTUNUN
-    içinden ölçülür (bkz. _Durum.olcum_ekle).
+    Döndürür: (kutu ya da None, hariç alan ya da None, eşik önerisi için
+    hareket değerleri). Kutu None = "tüm kareyi kullan". Kutu seçildiyse
+    hareket değerleri o KUTUNUN içinden, hariç alan griye boyanmış olarak
+    ölçülür (bkz. _Durum.olcum_ekle).
     """
     d = _Durum()
     threading.Thread(target=_okuyucu, args=(rtsp, d), daemon=True).start()
@@ -449,17 +567,18 @@ def kirpma_sec(rtsp: str, port: int = 0) -> tuple[tuple[int, int, int, int] | No
     sunucu.server_close()
 
     kutu = sonuc.get("kutu")
+    haric = sonuc.get("haric") if kutu else None
     if kutu:
         # Kutu ancak şimdi biliniyor. Birkaç saniye daha izlenip hareket bu
         # kez kutunun içinde ölçülür; eşikler bundan çıkar.
         print("  Seçilen kutuda hareket ölçülüyor…", flush=True)
         with d.kilit:
-            d.kutu = kutu
+            d.kutu, d.haric = kutu, haric
         time.sleep(KIRPIK_OLCUM_SN)
     d.dur = True
     with d.kilit:
         olcumler = esik_secimi(kutu, list(d.hareketler), list(d.kirpik_hareketler))
-    return kutu, olcumler
+    return kutu, haric, olcumler
 
 
 def esik_oner(olcumler: list[float]) -> tuple[float, float]:

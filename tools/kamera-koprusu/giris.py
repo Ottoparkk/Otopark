@@ -9,7 +9,8 @@ kırılgan MERGE'ü demekti. Kip ilk argümandan seçiliyor.
     OtoparkKamera.exe --kopru --ayar X → köprünün kendisi (Görev Zamanlayıcı)
     OtoparkKamera.exe --durum          → çalışıyor mu
     OtoparkKamera.exe --kaldir         → kaldır
-    OtoparkKamera.exe --olay           → kameranın araç olaylarını canlı göster (1.2.6)
+    OtoparkKamera.exe --plaka          → plaka bulma ve okumayı canlı göster (1.3.0)
+    OtoparkKamera.exe --plaka-sina     → plaka okuyucu yükleniyor mu (öz sınama)
 
 Çift tıklayan kişi hiçbir argüman bilmek zorunda değil: ilk kurulumda doğrudan
 sihirbaz açılır, sonrasında menü çıkar.
@@ -85,28 +86,47 @@ def _kurulum() -> int:
     return kurulum.main()
 
 
-def _olay() -> int:
+def _plaka() -> int:
     """
-    Kurulu her şeridin kamerasının araç olaylarını sırayla gösterir (yönetici
-    olarak açılmalı: ayar dosyası yalnızca yöneticilere açık). Köprü çalışırken
-    de güvenle koşar — olay aboneliği görüntü akışından ayrıdır.
+    Kurulu her şeridin kamerasında plaka bulma ve okumayı sırayla gösterir
+    (yönetici olarak açılmalı: ayar dosyası yalnızca yöneticilere açık).
+    Hiçbir şey göndermez ve kaydetmez — köprü çalışırken de güvenle koşar.
     """
-    import olay
     ayarlar = sorted(glob.glob(os.path.join(_ayar_klasoru(), "kopru-*.json")))
     if not ayarlar:
         print("\n  Kurulu bir köprü bulunamadı — önce kurulumu çalıştırın.")
         return 1
+    import kopru
     kod = 0
     for yol in ayarlar:
         print(f"\n  ── {os.path.basename(yol)} ──")
-        kod = olay.test_kipi(yol) or kod
+        kod = kopru.plaka_testi(yol) or kod
     return kod
+
+
+def _plaka_sina() -> int:
+    """
+    Modelleri doğrular, yükler ve öz sınamayı çalıştırır — kamera, ağ ya da
+    kurulum gerekmez. paketle derlenmiş .exe'yi bununla sınar; sahada da
+    "plaka okuyucu çalışıyor mu" sorusunun en kısa cevabıdır.
+    """
+    import plaka
+    ayar, uyarilar = plaka.calisma_ayarlari()
+    for u in uyarilar:
+        print(f"  ! {u}")
+    try:
+        plaka.yukle(ayar)
+    except plaka.PlakaHatasi as e:
+        print(f"\n  ✗ Plaka okuyucu çalışmıyor: {e}")
+        return 1
+    print("\n  ✓ Plaka okuyucu hazır (modeller doğrulandı, öz sınama geçti).")
+    return 0
 
 
 # Geç içe aktarma bilerek: `--durum` cv2'ye hiç dokunmasın ve paketlenmemiş
 # kurulumda opencv olmadan da çalışabilsin.
 KIPLER = {"--durum": _durum, "--kaldir": _kaldir, "--kurulum": _kurulum,
-          "--olay": _olay}
+          "--plaka": _plaka, "--plaka-sina": _plaka_sina}
 
 
 def main() -> int:
@@ -132,7 +152,7 @@ def main() -> int:
         # Duraklamadan ÖNCE yazılmalı: ters sırada mesaj "Enter'a basın"ın
         # altında kalır ve kullanıcı neyi yanlış yazdığını göremez.
         print(f"\n  Bilinmeyen seçenek: {kip}")
-        print("  Kullanım: --durum | --kaldir | --kurulum | --olay | "
+        print("  Kullanım: --durum | --kaldir | --kurulum | --plaka | --plaka-sina | "
               "--kopru --ayar <dosya>")
         if DONMUS:
             bekle()

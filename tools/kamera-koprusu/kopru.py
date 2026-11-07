@@ -1,39 +1,42 @@
 """
-Kamera köprüsü — sends plate photos to kamera-webhook; the server reads them.
+Kamera köprüsü — reads plates on this computer and sends them to kamera-webhook.
 
 Runs on a computer at the car park, on the same LAN as the camera. Nothing
 about it is trusted by the server: it authenticates with a shared secret and
-can only reach the webhook, which can only open tickets. It never touches the
-database, the tariffs or the till.
+can only reach the webhook, which can only record vehicles (entries, exits,
+exception rows). It never touches the database, the tariffs or the till.
 
-WHY A BRIDGE AT ALL: a plain IP camera can see a plate but cannot read one,
-and the camera must not be exposed to the internet. The camera talks only to
-this machine, and only this machine talks out.
+WHY A BRIDGE AT ALL: a plain IP camera cannot read plates, and the camera must
+not be exposed to the internet. The camera talks only to this machine, and
+only this machine talks out.
 
-Pipeline, per frame:
+Pipeline (1.3.0, owner decision 2026-11-06):
 
-    RTSP frame -> fixed crop -> wait for the car to SETTLE -> POST the JPEG
-    -> the server reads it with the same model the phone app uses
+    RTSP frame -> crop box (KIRPMA) with a grey cut-out (KIRPMA_HARIC) over
+    parked cars -> motion starts a "pass" -> plaka.py finds plate boxes
+    (YOLOv9, ONNX) and reads complete ones twice (fast-plate-ocr, ONNX) ->
+    okuma.py votes across frames -> one decision per pass:
+      * SURE plate        -> {plaka, zaman, photo}
+      * unsure / no plate -> {okunamadi: true, photo}: the server writes an
+                             exception row and staff decide ("Çözülmemiş
+                             kayıtlar"). Never a guess, never a cloud read.
+    -> written to the on-disk outbox (giden.py) FIRST, then sent; the file is
+       deleted only on a definitive answer, so an internet outage loses no car.
 
-WHAT THIS DELIBERATELY DOES NOT DO, and why:
+WHAT THIS DELIBERATELY DOES NOT DO:
 
-  * It does not read the plate. An earlier version ran YOLOv8 + EasyOCR here.
-    Two reasons that is gone. Ultralytics' licence (AGPL-3.0) requires an
-    enterprise licence for proprietary internal use, and a second OCR engine
-    means a second accuracy question nobody has measured on Turkish plates —
-    while the server's engine is the one we tune, log and can improve. Now the
-    camera path and the phone path read plates identically, by construction.
+  * It does not send a photo for the server to read (`foto_base64`). The
+    camera's own SMD events and the cloud reader were dropped in 1.3.0: tuning
+    them cost more than they saved and photos were often taken at the wrong
+    moment. The only photo sent is the compressed evidence copy.
+  * It does not use YOLOv8 / Ultralytics (AGPL-3.0). The detector is
+    open-image-models' YOLOv9 export (code MIT; the weights' licence is not
+    stated — owner accepted the risk) and the reader's weights are MIT.
+  * It does not log plate text: logs rotate by size only, so correlation is by
+    `islem_id`.
 
-  * It does not detect the plate either. The camera is fixed, aimed at one
-    lane, at cars that STOP at a barrier, so the plate lands in the same
-    rectangle of every frame. A configured crop box does what a detector would
-    do here, with no model, no GPU and no licence. Set KIRPMA once with
-    `--kare` and `--test`.
-
-The one thing measured to matter is how much of the frame the plate fills: the
-same car photographed far away read three characters wrong, and framed close
-read perfectly. That is what the crop is for — it is not a bandwidth
-optimisation, it is the accuracy lever.
+The crop is still the accuracy lever: the plate must fill enough of it. Set
+KIRPMA (and the cut-out) with the installer's crop page; check with `--plaka`.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-import queue
+import re
 import sys
 import threading
 import time
@@ -52,9 +55,11 @@ import cv2
 import numpy as np
 import requests
 
+import giden
 import gunluk
 import kesif
-import olay
+import okuma
+import plaka
 
 # Read by FFMPEG when a VideoCapture is CONSTRUCTED, so it has to be set before
 # the first one exists. The default is UDP, which drops packets on a busy link
@@ -166,15 +171,16 @@ CIHAZ = os.environ.get("CIHAZ", "kopru-1")
 # Empty = send the whole frame, which works but reads worse.
 KIRPMA = os.environ.get("KIRPMA", "").strip()
 
-# The model downscales anything longer than this, so sending more is wasted
-# upload and latency. 1568 for Haiku 4.5; 2576 if plaka_model is a
-# high-resolution model (Claude 4.7 and later, e.g. claude-sonnet-5) — keep in
-# step with ocrMaxEdge() in src/lib/image.ts.
-MAX_KENAR = int(os.environ.get("MAX_KENAR", "1568"))
+# 1.3.0, L şekli: kutunun içinden KESİLEN tek bir dikdörtgen ("x,y,w,h", tam
+# kare pikseli) — sahada park etmiş araçların köşesi. Orası düz griye boyanır:
+# hareket, plaka ve saklanan fotoğraf için yok. Boş = kesilen köşe yok.
+KIRPMA_HARIC = os.environ.get("KIRPMA_HARIC", "").strip()
 
-# Gentle: heavy JPEG compression makes text hard to read, and a plate read is
-# text reading. This is the same reasoning as compressForOcr() in the app.
-JPEG_KALITE = int(os.environ.get("JPEG_KALITE", "92"))
+# The crop is downscaled to this long edge before anything looks at it. 1.3.0:
+# the plate finder sees the crop at 640 px (plaka.BULUCU_BOYUT), so this no
+# longer follows a cloud model's limit; 1568 keeps motion thresholds measured
+# by the installer valid and the stored photo the same size as before.
+MAX_KENAR = int(os.environ.get("MAX_KENAR", "1568"))
 
 # 1.2.3: the COMPRESSED copy of the same crop, stored by the server as the
 # ticket / exception photo (042, `foto_kanit_base64`). The phone's model: the
@@ -203,11 +209,10 @@ MIN_KENAR_UYARI = 200
 # motion window by the time it lifted. Anything arriving ~5-49s behind another
 # vehicle was dropped with no ticket and no istisnalar row to find later.
 #
-# MIN stops a flickering scene machine-gunning the API. Kept SHORT on purpose:
-# without BOS_REFERANS a departing car produces a photo of the empty lane it
-# left behind, and that send disarms us — measured, a 5s floor was long enough
-# for the next vehicle to arrive, settle and leave again entirely unseen. The
-# floor has to be shorter than a plausible dwell at the barrier.
+# MIN stops a flickering scene firing decision after decision. Kept SHORT on
+# purpose: measured in 1.2.x, a 5s floor was long enough for the next vehicle
+# to arrive, settle and leave again entirely unseen. The floor has to be
+# shorter than a plausible dwell at the barrier.
 #
 # MAX is pure insurance: if scene-change detection ever wedged, the failure mode
 # would be every subsequent car lost, so time forces a re-arm regardless.
@@ -267,85 +272,23 @@ DURGUN_KARE = int(os.environ.get("DURGUN_KARE", "5"))
 # Motion older than this is a car that already left, not one still arriving.
 HAREKET_PENCERESI_SN = float(os.environ.get("HAREKET_PENCERESI_SN", "12"))
 
-# OPSİYONEL boş şerit referansı, `--bos` ile kaydedilir.
-#
-# Bir aracın GELMESİ ile GİTMESİ kameradan aynı görünür: hareket, sonra
-# durgunluk. Referans olmadan köprü ikisini de gönderir, yani her araç için
-# bir de boş şerit fotoğrafı okunur — araç başına maliyet iki katına çıkar.
-#
-# Ayarlanmadığında davranış aynen eskisi gibidir ve bu bilinçli: yanlış
-# ayarlanmış bir referans ARAÇ KAÇIRMAMALI. Referans yanlışsa (içinde araç
-# varken çekilmişse, ya da gündüz çekilip gece kullanılıyorsa) boş şerit de
-# ondan farklı görünür ve köprü yine gönderir — yani en kötü ihtimalle bugünkü
-# davranışa düşer, hiçbir aracı atlamaz.
-BOS_REFERANS = os.environ.get("BOS_REFERANS", "").strip()
-BOS_ESIGI = float(os.environ.get("BOS_ESIGI", "3.0"))
-
-# Boş şeridi KENDİ öğrenme (1.2.0) — bkz. BosOgrenme. Varsayılan AÇIK; "0"
-# sahada kapatma anahtarıdır ve davranışı birebir 1.1.0'a döndürür.
-#
-# Kurulumda "şerit şu an boş" fotoğrafı çekmek yerine bu: o fotoğraf yanlışlıkla
-# araç varken çekilirse benzer bir aracı GİZLEYEBİLİRDİ. Burada referans yalnızca
-# sunucudaki modelin "görselde HİÇ ARAÇ yok" dediği fotoğraflardan doğar; gece
-# ve gündüz için ayrı ayrı, kendiliğinden.
-BOS_OGREN = os.environ.get("BOS_OGREN", "1").strip() != "0"
-
-# DURMADAN GEÇEN araç (1.2.5) — bariyersiz kapı, ~10 km/sa.
-#
-# Yukarıdaki mantık bir aracı ancak kadrajda DURUNCA gönderir. Durmayan araç
-# kadrajdayken hep hareketlidir; sahne ancak araç GİTTİKTEN sonra durulur ve
-# gönderilen kare boş şerittir — araç hiç okunmaz, sessizce kaybolur.
-#
-# Çözüm gönderimin ANINI değil KARESİNİ değiştirir: silahlıyken bir hareket
-# başlayınca, kadrajda bir şey varken (sahne hareketten önceki hâlinden
-# SAHNE_ESIGI kadar farklıyken) gelen her karenin keskinliği ölçülür, en
-# keskini tutulur. "Durdu" anı geldiğinde sahne hareketten önceki hâline
-# DÖNDÜYSE (araç gitti) o tutulan kare gönderilir; dönmediyse (araç kadrajda
-# durdu) eskisi gibi durduğu kare. Silahlanma, kuyruk, yeniden deneme ve zaman
-# damgası kuralları değişmez.
-#
-# "0" sahada kapatma anahtarıdır ve davranışı birebir 1.2.4'e döndürür.
-GECIS_YAKALA = os.environ.get("GECIS_YAKALA", "1").strip() != "0"
-
 # Güvenlik ağı: araç gitti ama sahne hiç DURULMUYOR (yağmur, gece kumlanması,
-# sallanan ağaç) — "durdu" anı hiç gelmez. Bekleyen bir kare varsa, bu kadar
-# süre güçlü hareket olmadıysa VE sahne hareketten önceki hâline döndüyse yine
-# gönderilir. "Döndüyse" şartı bilerek: duran, sonra gürültülü havada giden bir
+# sallanan ağaç) — "durdu" anı hiç gelmez. Açık bir geçiş varsa, bu kadar
+# süre güçlü hareket olmadıysa VE sahne geçişten önceki hâline döndüyse yine
+# karara bağlanır. "Döndüyse" şartı bilerek: duran, sonra gürültülü havada giden bir
 # araçta tutulan kare GİDEN aracın karesidir — gönderilseydi tek kapıda girişin
 # hemen ardından sahte bir "çıkış" olurdu.
 GECIS_BEKLE_SN = float(os.environ.get("GECIS_BEKLE_SN", "2"))
 
-# Keskinlik ölçüsü küçültülmüş gri kırpıkta alınır: her hareketli karede tam
-# çözünürlükte Laplacian gereksiz işlemci harcar, sıralama aynı kalır.
-KESKINLIK_GENISLIK = 640
-
-# 1.2.6 kare puanı: yalnızca arka plandan bu kadar (0-255) farklı pikseller
-# sayılır. Desenli zemin (asfalt) böylece puana girmez — 1.2.5 orada aracın
-# kutuyu EN AZ kapladığı kareyi seçiyordu.
-MASKE_ESIGI = 20
-
-# KAMERANIN ARAÇ OLAYLARI (1.2.6) — bkz. olay.py ve Kapi.
-#
-# Kamera "Akıllı Hareket Algılama — Motorlu Araç" ile her geçen araç için bir
-# olay üretir; insan, gölge, ışık değişimi için üretmez. Kapı açıkken bir
-# fotoğraf ancak bu geçişe denk gelen bir araç olayı varsa gönderilir.
-#
-# Kapı YALNIZCA olay akışı sağlıklıyken VE bu süreçte en az bir tanınan araç
-# olayı görülmüşken açılır; aksi hâlde köprü birebir 1.2.5 gibi çalışır (sahibin
-# kararı: olay sorunu hiçbir aracı kaybettirmez). "0" sahada kapatma anahtarı.
-OLAY_KAPISI = os.environ.get("OLAY_KAPISI", "1").strip() != "0"
-OLAY_ONCE_SN = float(os.environ.get("OLAY_ONCE_SN", "5"))      # olay, geçişten önce gelebilir
-OLAY_BEKLE_SN = float(os.environ.get("OLAY_BEKLE_SN", "5"))    # olay geç gelirse kararın bekleyişi
-OLAY_PENCERE_MAX_SN = 15.0     # bir geçişin penceresi en çok bu kadar geriye uzanır
-# Otomatik geri dönüş: kapı açıkken araç boyutunda üç geçiş üst üste olaysız
-# atlandı ve son araç olayından beri bu kadar geçti → biri kameranın araç
-# algılamasını kapatmış olabilir; kapı kendini kapatır, sonraki olayda açılır.
-OLAY_GERI_DONUS_SN = float(os.environ.get("OLAY_GERI_DONUS_SN", "600"))
-OLAY_GERI_DONUS_ATLAMA = 3
+# Araç boyu: bir geçiş boyunca kırpık, geçişten önceki hâlinden en az bu
+# kadar (fark ölçüsü) değiştiyse geçiş araç boyutundadır. Duran ama plakası
+# görülmeyen araç ve bozuk okuyucuda personele gidecek geçişler bununla
+# ayrılır — yaya ve gölge personeli boğmaz.
 ARAC_KAPSAM_ESIGI = float(os.environ.get("ARAC_KAPSAM_ESIGI", "15"))
-# Olaysız atlanan geçişlerin kırpığı, sahada "gerçek bir araç atlandı mı"
-# sorusunu cevaplamak için kayıt klasörüne (yalnızca yöneticiler) saklanır.
-ATLANAN_SAKLA = int(os.environ.get("ATLANAN_SAKLA", "50"))
+
+# 1.3.0: plaka okuyucunun TEK bir karesi bu kadar sürerse okuyucu takılmıştır
+# (model, sürücü) — bekçi gibi süreç kapatılır, Görev Zamanlayıcı yeniden açar.
+OKUYUCU_TAKILMA_SN = 30.0
 
 # The watchdog marks a camera dead if it has not heard anything. A quiet night
 # is not a fault, so ping on a timer as well as on events.
@@ -355,16 +298,56 @@ KALP_ARALIGI_SN = 300
 # ---------------------------------------------------------------- görüntü ---
 
 
-def kirpma_kutusu() -> tuple[int, int, int, int] | None:
-    if not KIRPMA:
+def kutu_metni_coz(metin: str) -> tuple[int, int, int, int] | None:
+    """
+    KIRPMA metni → (x, y, w, h), boşsa None; bozuksa ValueError (Türkçe).
+
+    Köprü (kirpma_kutusu) ile `--plaka` test kipi bunu paylaşır.
+    """
+    metin = (metin or "").strip()
+    if not metin:
         return None
     try:
-        x, y, w, h = (int(p) for p in KIRPMA.split(","))
+        x, y, w, h = (int(p) for p in metin.split(","))
     except ValueError:
-        sys.exit('KIRPMA "x,y,w,h" biçiminde olmalı (piksel), örn. "820,540,600,220"')
+        raise ValueError('KIRPMA "x,y,w,h" biçiminde olmalı (piksel), örn. "820,540,600,220"')
     if w <= 0 or h <= 0:
-        sys.exit("KIRPMA genişlik ve yükseklik pozitif olmalı")
+        raise ValueError("KIRPMA genişlik ve yükseklik pozitif olmalı")
     return x, y, w, h
+
+
+def haric_metni_coz(metin: str, kutu) -> tuple[tuple[int, int, int, int] | None, str | None]:
+    """
+    KIRPMA_HARIC metni → (hariç alan ya da None, uyarı ya da None).
+
+    Bozuk biçim ve kutunun TAMAMINI kaplayan alan ValueError — köprü hiçbir
+    şey göremezdi. Kutu yoksa ya da alan kutunun dışındaysa yok sayılır, bir
+    uyarıyla. Kurallar kırpma sayfasınınkiyle aynı (kirpma_sunucu._kutu_coz).
+    """
+    metin = (metin or "").strip()
+    if not metin:
+        return None, None
+    if kutu is None:
+        return None, "KIRPMA_HARIC verildi ama KIRPMA yok — kesilen köşe yok sayılıyor"
+    try:
+        x, y, w, h = (int(p) for p in metin.split(","))
+    except ValueError:
+        raise ValueError('KIRPMA_HARIC "x,y,w,h" biçiminde olmalı (piksel), örn. "0,0,500,200"')
+    if w <= 0 or h <= 0:
+        raise ValueError("KIRPMA_HARIC genişlik ve yükseklik pozitif olmalı")
+    kx, ky, kw, kh = kutu
+    if x >= kx + kw or y >= ky + kh or x + w <= kx or y + h <= ky:
+        return None, "KIRPMA_HARIC kırpma kutusunun dışında — kesilen köşe yok sayılıyor"
+    if x <= kx and y <= ky and x + w >= kx + kw and y + h >= ky + kh:
+        raise ValueError("KIRPMA_HARIC kırpma kutusunun tamamını kaplıyor — köprü hiçbir şey göremezdi")
+    return (x, y, w, h), None
+
+
+def kirpma_kutusu() -> tuple[int, int, int, int] | None:
+    try:
+        return kutu_metni_coz(KIRPMA)
+    except ValueError as e:
+        sys.exit(str(e))
 
 
 def kirp(frame: np.ndarray, kutu: tuple[int, int, int, int] | None) -> np.ndarray:
@@ -380,6 +363,64 @@ def kirp(frame: np.ndarray, kutu: tuple[int, int, int, int] | None) -> np.ndarra
     return frame[y0:y1, x0:x1]
 
 
+def kirpma_haric(kutu: tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
+    """KIRPMA_HARIC → (x, y, w, h) tam kare pikseli, ya da None."""
+    try:
+        haric, uyari = haric_metni_coz(KIRPMA_HARIC, kutu)
+    except ValueError as e:
+        sys.exit(str(e))
+    if uyari:
+        print(f"[!] {uyari}", flush=True)
+    return haric
+
+
+def _haric_kirpintida(frame_sekli: tuple, kutu, haric) -> tuple[int, int, int, int] | None:
+    """Kesilen köşe, kırpıntının (ölçeklenmeden önce) kendi koordinatlarında."""
+    if haric is None or kutu is None:
+        return None
+    yh, yw = frame_sekli[:2]
+    x, y, w, h = kutu
+    x0, y0 = max(0, min(x, yw - 1)), max(0, min(y, yh - 1))
+    x1, y1 = max(x0 + 1, min(x + w, yw)), max(y0 + 1, min(y + h, yh))
+    hx, hy, hw, hh = haric
+    a0, b0 = max(hx - x0, 0), max(hy - y0, 0)
+    a1, b1 = min(hx + hw - x0, x1 - x0), min(hy + hh - y0, y1 - y0)
+    if a1 <= a0 or b1 <= b0:
+        return None
+    return a0, b0, a1 - a0, b1 - b0
+
+
+def kirp_maskeli(frame: np.ndarray, kutu, haric) -> np.ndarray:
+    """
+    kirp() + kesilen köşe düz griye (114) boyanır. Kesilen köşe varsa KOPYA
+    döner (kirp bir görünüm verir; kameranın karesi değişmemeli), yoksa
+    kirp()'in kendisi — davranış 1.2.x ile birebir.
+    """
+    parca = kirp(frame, kutu)
+    h = _haric_kirpintida(frame.shape, kutu, haric)
+    if h is None:
+        return parca
+    parca = parca.copy()
+    a, b, w, hh = h
+    parca[b:b + hh, a:a + w] = 114
+    return parca
+
+
+def haric_olcekli(frame_sekli: tuple, kutu, haric, kirpik_sekli: tuple):
+    """Kesilen köşe, ölçeklenmiş kırpıntının (kirpik) koordinatlarında — okuyucu için."""
+    h = _haric_kirpintida(frame_sekli, kutu, haric)
+    if h is None:
+        return None
+    yh, yw = frame_sekli[:2]
+    x, y, w, hh_ = kutu
+    x0, y0 = max(0, min(x, yw - 1)), max(0, min(y, yh - 1))
+    cw = max(x0 + 1, min(x + w, yw)) - x0
+    ch = max(y0 + 1, min(y + hh_, yh)) - y0
+    sx, sy = kirpik_sekli[1] / cw, kirpik_sekli[0] / ch
+    a, b, ww, hh = h
+    return a * sx, b * sy, ww * sx, hh * sy
+
+
 def olcekle(img: np.ndarray) -> np.ndarray:
     yh, yw = img.shape[:2]
     uzun = max(yh, yw)
@@ -387,13 +428,6 @@ def olcekle(img: np.ndarray) -> np.ndarray:
         return img
     k = MAX_KENAR / uzun
     return cv2.resize(img, (int(yw * k), int(yh * k)), interpolation=cv2.INTER_AREA)
-
-
-def jpeg_base64(img: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_KALITE])
-    if not ok:
-        raise RuntimeError("JPEG kodlanamadı")
-    return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
 def kanit_base64(img: np.ndarray | None) -> str | None:
@@ -436,466 +470,152 @@ def gri_kucuk(img: np.ndarray) -> np.ndarray:
     return cv2.resize(g, (160, 120), interpolation=cv2.INTER_AREA)
 
 
-def keskinlik(img: np.ndarray) -> float:
-    """
-    How sharp a crop is: the variance of its Laplacian (edge strength). A plate
-    is mostly edges, and motion blur is what erases them, so among the frames
-    of one passing car the highest value is the one a reader can read.
-    Measured on a grey copy no wider than KESKINLIK_GENISLIK.
-    """
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-    h, w = g.shape[:2]
-    if w > KESKINLIK_GENISLIK:
-        g = cv2.resize(g, (KESKINLIK_GENISLIK, max(1, int(h * KESKINLIK_GENISLIK / w))),
-                       interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(g, cv2.CV_64F).var())
-
-
 def _arkaya_dondu(gri: np.ndarray, gecis_arka: np.ndarray | None) -> bool:
     """
     Has the scene gone back to how it looked before THIS pass began? True means
-    the vehicle came and LEFT without stopping, so the held frame is the one to
-    read (1.2.5, GECIS_YAKALA).
+    the vehicle came and LEFT without stopping: the pass is decided as a
+    rolling car, not a stopped one.
 
-    Deliberately NOT "or it looks like the learned empty lane". A car that
-    STOPPED, was sent, and then drives off can re-arm the bridge mid-departure:
-    that pass starts from the stopped car and holds frames of it LEAVING. When
-    the lane empties, it matches the learned empty lane but not this pass's
-    start — and accepting the empty lane here sent the departing car a second
-    time (test_kopru bos_ogrenme caught it). At a single gate that second read
-    is an exit right after the entry.
+    Deliberately compared with THIS pass's start, never with some "empty lane"
+    picture. A car that STOPPED, was sent, and then drives off can re-arm the
+    bridge mid-departure: that pass starts from the stopped car. When the lane
+    empties it no longer looks like that start, so the pass is not mistaken
+    for a new car that came and went (1.2.x lesson: a second send of the
+    departing car is an exit right after the entry at a single gate).
     """
     return gecis_arka is not None and fark(gri, gecis_arka) <= SAHNE_ESIGI
-
-
-def _gecti_satiri(aday: tuple[float, np.ndarray, datetime, float], aday_sayisi: int) -> str:
-    """The log line for a passing car. The numbers are for tuning on site."""
-    s, _, _, f_arka = aday
-    return (f"[i] {gunluk.ARAC_GECTI_ISARETI} (skor={s:.0f}, "
-            f"fark={f_arka:.1f}, {aday_sayisi} aday) — gönderiliyor")
-
-
-def maskeli_enerji(img: np.ndarray, gri: np.ndarray, arka: np.ndarray | None) -> float:
-    """
-    1.2.6 kare puanı: Laplacian enerjisi, YALNIZCA arka plandan farklı
-    piksellerde. Zemin dokusu düşer; keskin ve kutuyu çok kaplayan araç kazanır
-    (dilimden çok kenarı, bulanık hâlinden çok enerjisi var). Arka plan yoksa
-    1.2.5'in ölçüsüne düşer.
-    """
-    if arka is None or gri is None or arka.shape != gri.shape:
-        return keskinlik(img)
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-    h, w = g.shape[:2]
-    if w > KESKINLIK_GENISLIK:
-        g = cv2.resize(g, (KESKINLIK_GENISLIK, max(1, int(h * KESKINLIK_GENISLIK / w))),
-                       interpolation=cv2.INTER_AREA)
-    maske = (cv2.absdiff(gri, arka) > MASKE_ESIGI).astype(np.uint8)
-    maske = cv2.resize(maske, (g.shape[1], g.shape[0]), interpolation=cv2.INTER_NEAREST)
-    lap = cv2.Laplacian(g, cv2.CV_64F)
-    return float((lap * lap * maske).mean())
-
-
-def kirpik_gonder(kirpik: np.ndarray, gorulme: datetime, ogren_gri: np.ndarray | None,
-                  kutu) -> None:
-    """Bir kırpığı kodlar ve gönderim kuyruğuna koyar. Kodlama hatası döngüyü durdurmaz."""
-    global _gonderim_sayaci
-    _gonderim_sayaci += 1
-    try:
-        foto = jpeg_base64(kirpik)
-        # Only with a box: without one the crop IS the whole frame.
-        kanit = kanit_base64(kirpik) if kutu is not None else None
-        if kutu is not None and kanit is None:
-            print("[i] kanıt fotoğrafı 100 KB'a sığmadı — fotoğrafsız "
-                  "gönderiliyor", flush=True)
-        kuyruga_al(foto, gorulme, ogren_gri, kanit)
-    except Exception as e:  # encoding, not network — never kill the loop
-        print(f"[!] gönderilemedi: {e}", flush=True)
 
 
 _gonderim_sayaci = 0
 
 
-def atlanan_kaydet(kirpik: np.ndarray, sakla: int = ATLANAN_SAKLA) -> None:
-    """
-    Olaysız atlanan geçişin kırpığı: kayıt klasörünün içine (`kayit\\atlanan`),
-    ki kurulumun kayıt klasörüne koyduğu "yalnızca yöneticiler" izni ona da
-    geçsin. En yeni `sakla` dosya tutulur. Hata yakalamayı ASLA etkilemez.
-    """
-    if sakla <= 0:
-        return
-    try:
-        klasor = os.path.join(gunluk.kayit_klasoru(), "atlanan")
-        os.makedirs(klasor, exist_ok=True)
-        ad = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.jpg"
-        cv2.imwrite(os.path.join(klasor, ad), kirpik, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        dosyalar = sorted(f for f in os.listdir(klasor) if f.lower().endswith(".jpg"))
-        for eski in dosyalar[:-sakla]:
-            os.remove(os.path.join(klasor, eski))
-    except Exception:  # noqa: BLE001
-        pass
-
-
-class Kapi:
-    """
-    1.2.6 gönderim kapısı: bir karar (göndermeye hazır kırpık) ancak kameranın
-    bu geçişe denk gelen bir araç olayı varsa gönderilir.
-
-    - Pencere: [ilk hareket − OLAY_ONCE_SN, şimdi], en çok OLAY_PENCERE_MAX_SN
-      geriye; eski bir olay yeni bir geçişe yetki vermez.
-    - Olay henüz yoksa karar OLAY_BEKLE_SN bekletilir (TEK bekleyen); olay
-      gelirse gönderilir, gelmezse atlanır ve kırpığı saklanır.
-    - Ayrılış kuralı: DURUP gönderilmiş bir araç, sonra giderse gidişi
-      gönderilmez (o gidiş de bir araç olayıdır; 1.2.5 ardından boş şeridi
-      gönderiyordu). Yalnızca geçiş O aracın duruş görüntüsünden başladıysa.
-    - Otomatik geri dönüş: bkz. OLAY_GERI_DONUS_SN.
-    """
-
-    def __init__(self, defter, gonder, bos_mu, acik_mi: bool = True):
-        self.defter = defter
-        self._gonder = gonder          # (kırpık, görülme, öğrenme grisi) -> None
-        self._bos_mu = bos_mu          # gri -> bool (öğrenilmiş boş şerit)
-        self._ac = acik_mi
-        self.bekleyen: dict | None = None
-        self.duran: dict | None = None
-        self.art_arda = 0
-        self.geri_donus_t: float | None = None
-        self._bildirildi = False
-        # Son kararın anı: bir kararın penceresi bundan geriye uzanmaz — önceki
-        # aracın olayı, ardından kıpırdayan başka bir şeye yetki vermesin.
-        self.son_karar = float("-inf")
-
-    def acik(self, simdi: float) -> bool:
-        if not self._ac:
-            return False
-        d = self.defter
-        if self.geri_donus_t is not None:
-            son = d.son_arac()
-            if son is None or son <= self.geri_donus_t:
-                return False
-            self.geri_donus_t = None          # yeni bir araç olayı: kapı yeniden açılır
-            self.art_arda = 0
-            self._bildirildi = False
-        acik = d.saglikli(simdi) and d.dogrulandi()
-        if acik and not self._bildirildi:
-            print(f"[i] {gunluk.OLAY_DOGRULANDI_ISARETI}", flush=True)
-        self._bildirildi = acik
-        return acik
-
-    def karar(self, simdi: float, yol: str, kirpik: np.ndarray, gorulme: datetime,
-              ogren_gri, satir: str, gri: np.ndarray, pas_arka, ilk_hareket,
-              kapsam: float) -> None:
-        if self.bekleyen is not None:
-            self.coz(simdi, son=True)
-        d = self.duran
-        if d is not None:
-            # "Sahne hâlâ duran araca benziyor → aynı araç, atla" kuralı BİLEREK
-            # yok: duran aracın yerine şerit boşalmadan benzer bir araç gelip
-            # durursa pikseller ayırt edemez ve o araç kaybolurdu
-            # (`olay_arac_yerine_arac`). Bedeli 1.2.5'teki gibi: kıpırdayan
-            # duran araç ara sıra ikinci kez gönderilebilir — kaçırmaktan ucuz.
-            # Geçiş o aracın DURUŞ görüntüsünden başladı ve sahne aracın
-            # gelmesinden önceki hâline (ya da öğrenilmiş boş şeride) döndü.
-            # Geçiş YOKSA (`ilk_hareket` None) hareketin tamamı gönderimden
-            # sonraki silahsız beklemede oldu: araç o beklemede gitti. Bu durumda
-            # da yalnızca sahne arka plana döndüyse ayrılış sayılır — beklemede
-            # GELEN yeni bir araç arka plana benzemez ve gönderilir.
-            basladi = ilk_hareket is None or (
-                pas_arka is not None and fark(pas_arka, d["gri"]) <= SAHNE_ESIGI)
-            dondu = ((d["arka"] is not None and fark(gri, d["arka"]) <= SAHNE_ESIGI)
-                     or self._bos_mu(gri))
-            if basladi and dondu:
-                print(f"[i] {gunluk.AYRILIS_ISARETI}", flush=True)
-                self.son_karar = simdi          # gidişin olayı da "kullanıldı"
-                self.duran = None
-                return
-        bas = max(simdi - OLAY_PENCERE_MAX_SN, self.son_karar)
-        if ilk_hareket is not None:
-            bas = max(ilk_hareket - OLAY_ONCE_SN, bas)
-        self.son_karar = simdi
-        # Kopya: karar OLAY_BEKLE_SN kadar bekleyebilir; kameranın tamponu o
-        # arada yeniden kullanılırsa tutulan kare altımızda değişmemeli.
-        b = dict(yol=yol, kirpik=kirpik.copy(), gorulme=gorulme, ogren=ogren_gri,
-                 satir=satir,
-                 gri=gri, pas_arka=pas_arka, bas=bas, bitis=simdi + OLAY_BEKLE_SN,
-                 kapsam=kapsam)
-        if self.defter.arac_var(bas, simdi):
-            self._gonder_b(b)
-        else:
-            self.bekleyen = b
-
-    def coz(self, simdi: float, son: bool = False) -> None:
-        b = self.bekleyen
-        if b is None:
-            return
-        if self.defter.arac_var(b["bas"], simdi):
-            self.bekleyen = None
-            self._gonder_b(b)
-            return
-        acik = self.acik(simdi)
-        if simdi < b["bitis"] and not son and acik:
-            return
-        self.bekleyen = None
-        if not acik:
-            # Kapı beklerken kapandı (akış koptu, sağlık düştü): olay kaybolmuş
-            # olabilir — atlamak yerine HEMEN, 1.2.5 gibi gönderilir.
-            self._gonder_b(b)
-            self.duran = None
-            return
-        print(f"[i] {gunluk.OLAY_ATLANDI_ISARETI} (kapsam={b['kapsam']:.1f})", flush=True)
-        atlanan_kaydet(b["kirpik"])
-        if b["kapsam"] >= ARAC_KAPSAM_ESIGI:
-            self.art_arda += 1
-        son_arac = self.defter.son_arac()
-        if (self.art_arda >= OLAY_GERI_DONUS_ATLAMA
-                and (son_arac is None or simdi - son_arac >= OLAY_GERI_DONUS_SN)):
-            self.geri_donus_t = simdi
-            self.art_arda = 0
-            print(f"[!] {gunluk.OLAY_GERI_DONUS_ISARETI}", flush=True)
-
-    def bekle_coz(self, uyu_fn) -> None:
-        """Kamera koptuğunda uzun beklemeden ÖNCE: bekleyen karar sonuçlansın."""
-        while self.bekleyen is not None:
-            simdi = time.monotonic()
-            self.coz(simdi)
-            if self.bekleyen is None:
-                return
-            uyu_fn(max(0.05, min(0.2, self.bekleyen["bitis"] - simdi)))
-
-    def _gonder_b(self, b: dict) -> None:
-        print(b["satir"], flush=True)
-        self._gonder(b["kirpik"], b["gorulme"], b["ogren"])
-        self.art_arda = 0
-        # Yalnızca kadrajda GERÇEKTEN bir şey duruyorsa hatırlanır: geçişin arka
-        # planı bilinmeli, sahne ondan farklı olmalı ve öğrenilmiş boş şerit
-        # olmamalı. Boş şerit "duran araç" diye hatırlansaydı, ardından geçen
-        # HER aracın bıraktığı boş sahne "aynı araç" sayılıp atlanırdı.
-        arac_duruyor = (b["yol"] == "durdu" and b["pas_arka"] is not None
-                        and fark(b["gri"], b["pas_arka"]) > SAHNE_ESIGI
-                        and not self._bos_mu(b["gri"]))
-        self.duran = ({"gri": b["gri"], "arka": b["pas_arka"], "t": time.monotonic()}
-                      if arac_duruyor else None)
-
-
-class BosOgrenme:
-    """
-    What the EMPTY lane looks like, learned from the server's own answers.
-
-    Every departure leaves the empty lane behind, and to the motion logic that
-    is "motion, then stillness" — so it gets photographed and paid for like a
-    car. Once this knows what the empty lane looks like, a settled picture that
-    matches is not sent.
-
-    THE RULE THAT KEEPS IT SAFE: a picture becomes a reference only when
-      1. the server's model said "no vehicle at all" (`arac_yok`, not merely
-         "plate unreadable") about it, AND
-      2. a LATER picture got the same answer and looks the same, AND
-      3. at least one car was READ (a 2xx) in between.
-    (3) is what stops one parked, unreadable car photographed twice from
-    becoming "the empty lane". A car changes the crop a lot, so a reference can
-    only ever stop pictures that look like the empty road; the worst a bad one
-    can do is cost the reads it was meant to save — never a missed car.
-
-    Several references, because the empty lane looks different by day, at dusk,
-    under infrared at night and on a wet road. Kept in memory only: after a
-    restart the first departures are paid for again and the references come
-    back by themselves.
-
-    Shared by the capture thread (eslesir) and the sender thread (the rest),
-    hence the lock.
-    """
-
-    ADAY_EN_COK = 8
-    REFERANS_EN_COK = 6
-
-    def __init__(self, esik: float, sabit: np.ndarray | None = None, ogren: bool = True):
-        self.esik = esik
-        self.ogren = ogren
-        self._sabit = sabit            # elle verilen BOS_REFERANS — hiç düşmez
-        self._adaylar: list[tuple[np.ndarray, int]] = []   # (görüntü, o anki okunan)
-        self._referanslar: list[list] = []                  # [görüntü, son kullanım]
-        self._okunan = 0
-        self._sira = 0
-        self._kilit = threading.Lock()
-
-    @staticmethod
-    def _fark(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
-        # NOT kopru.fark(): that returns 0.0 ("identical") for a size mismatch,
-        # harmless for motion but here it would mean "empty lane" — a skipped
-        # car. Different sizes are simply not comparable.
-        if a is None or b is None or a.shape != b.shape:
-            return None
-        return float(np.mean(cv2.absdiff(a, b)))
-
-    def _benzer(self, a: np.ndarray | None, b: np.ndarray | None) -> bool:
-        d = self._fark(a, b)
-        return d is not None and d < self.esik
-
-    def referans_sayisi(self) -> int:
-        with self._kilit:
-            return len(self._referanslar)
-
-    def okundu(self) -> None:
-        """A car's plate was read (any 2xx for a photo)."""
-        with self._kilit:
-            self._okunan += 1
-
-    def arac_yok_geldi(self, gri: np.ndarray | None) -> bool:
-        """The server said "no vehicle" about `gri`. True when it became a reference."""
-        if not self.ogren or gri is None:
-            return False
-        with self._kilit:
-            # Already covered (the reference may have been learned while this
-            # picture waited in the send queue): nothing to do.
-            if any(self._benzer(r[0], gri) for r in self._referanslar):
-                return False
-            for i, (aday, okunan_o_an) in enumerate(self._adaylar):
-                if not self._benzer(aday, gri):
-                    continue
-                if self._okunan <= okunan_o_an:
-                    # Same picture, but no car read since: keep waiting.
-                    return False
-                del self._adaylar[i]
-                if len(self._referanslar) >= self.REFERANS_EN_COK:
-                    # Drop the one unused for longest, so the night reference
-                    # survives a sunny week instead of the newest one winning.
-                    eski = min(range(len(self._referanslar)),
-                               key=lambda k: self._referanslar[k][1])
-                    del self._referanslar[eski]
-                self._sira += 1
-                self._referanslar.append([gri, self._sira])
-                return True
-            self._adaylar.append((gri, self._okunan))
-            if len(self._adaylar) > self.ADAY_EN_COK:
-                del self._adaylar[0]
-            return False
-
-    def eslesir(self, gri: np.ndarray | None) -> tuple[bool, float, str]:
-        """(does `gri` look like the empty lane, how close, which reference)."""
-        with self._kilit:
-            d = self._fark(self._sabit, gri)
-            if d is not None and d < self.esik:
-                return True, d, "sabit"
-            for i, r in enumerate(self._referanslar):
-                d = self._fark(r[0], gri)
-                if d is not None and d < self.esik:
-                    self._sira += 1
-                    r[1] = self._sira
-                    return True, d, f"öğrenilen-{i + 1}"
-            return False, 0.0, ""
-
-
 # --------------------------------------------------------------- gönderim ---
 
 
-# Set by main(); None in the setup modes and in tests that call gonder alone.
-_bos: BosOgrenme | None = None
-
-# Tries per vehicle, all with the same islem_id (replay-safe on the server).
+# Tries of the in-memory fallback (_yedek_gonder: the outbox could not be
+# written), all with the same islem_id — replay-safe on the server.
 DENEME_SAYISI = 4
 
 
-def _arac_yok_mu(govde: str) -> bool:
-    """Did the webhook's 422 say "no vehicle at all"? Anything unparseable: no."""
-    try:
-        return json.loads(govde).get("arac_yok") is True
-    except (ValueError, AttributeError):
-        return False
+# ------------------------------------------------- 1.3.0 gönderim (kutu) ---
+
+# main() kurar; testlerde ve kurulum kiplerinde None.
+_giden: giden.Giden | None = None
+_isci: okuma.Isci | None = None
 
 
-def gonder(foto_base64: str, gorulme: datetime, gri: np.ndarray | None = None,
-           kanit_base64: str | None = None) -> bool:
+def olay_govdesi(g: okuma.Gonderim, kutu) -> dict:
     """
-    One vehicle, one POST.
-
-    `islem_id` is generated ONCE and reused across retries — that is what makes
-    a retry safe. bilet_ac is idempotent on it, so a request that actually
-    succeeded but whose response we never saw cannot become a second ticket.
-
-    `zaman` is when the car was SEEN, not when the server finished reading it.
-    The server bills from this timestamp, so sending "now" after a slow read
-    would quietly shorten every stay.
-
-    Sending the same car twice is safe beyond the retry too: the plate resolves
-    to the same value and the one-open-ticket-per-plate unique index refuses
-    the second. The disarm in main() saves API calls; it is not what protects
-    the data, which is why it may re-arm early on a lighting change.
-
-    On the single-gate lane (YON=ORTAK) the same holds for a different reason:
-    there the server ignores a plate whose ticket was opened or closed in the
-    last few minutes (037 kamera_tek_kapi), so a repeat send is neither a
-    second ticket nor a false "leaving" flag.
-
-    `kanit_base64` (1.2.3) is the compressed copy the server stores as the
-    photo; absent when there is none, and the server then simply stores no
-    photo. Built into the body once, so every retry carries the same one.
+    Bir araç olayının gövdesi — kutuya YAZILAN ve her denemede AYNEN giden.
+    islem_id bir kez üretilir (sunucu aynı kimliğe ilk cevabını verir).
+    Okunacak fotoğraf (foto_base64) YOK: 1.3.0 plakayı burada okur, sunucu
+    okutmaz. Saklanan fotoğraf yalnızca kırpma kutusu varsa (KVKK, 1.2.3).
     """
-    islem_id = str(uuid.uuid4())
     govde = {
         "yon": YON,
-        "zaman": gorulme.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "islem_id": islem_id,
+        "zaman": g.zaman.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "islem_id": str(uuid.uuid4()),
         "cihaz": CIHAZ,
-        "foto_base64": foto_base64,
     }
-    if kanit_base64 is not None:
-        govde["foto_kanit_base64"] = kanit_base64
+    if g.tur == "PLAKA":
+        govde["plaka"] = g.plaka
+    else:
+        govde["okunamadi"] = True
+        if g.tahmin:
+            govde["tahmin"] = g.tahmin
+        if g.guven is not None:
+            govde["guven"] = round(float(g.guven), 4)
+    if kutu is not None and g.kirpik is not None:
+        kanit = kanit_base64(g.kirpik)
+        if kanit is not None:
+            govde["foto_kanit_base64"] = kanit
+    return govde
 
-    for deneme in range(DENEME_SAYISI):
-        basliklar = {"x-kamera-secret": KAMERA_SECRET}
-        # The LAST try says so. If plate reading itself is down, the server
-        # turns the car into an exception row only on this request (039):
-        # written on an earlier try, it would make the single gate refuse a
-        # later try that DID read the plate, and that car would never get its
-        # ticket. Earlier tries only raise the hourly alert.
-        if deneme == DENEME_SAYISI - 1:
-            basliklar["x-kamera-son-gonderim"] = "1"
+
+# Kayda plaka YAZILMAZ (1.3.0): kayıt yalnızca boyutla döner. Sunucunun ret
+# mesajı plakayı içerebilir ("… açık bir bilet var: 34ABC123"); harf ve rakamı
+# birlikte taşıyan her sözcük ve boşluklu plaka biçimi maskelenir.
+_PLAKA_GIBI = re.compile(
+    r"\b\d{2}\s+[A-Za-zÇĞİÖŞÜçğıöşü]{1,3}\s+\d{2,5}\b"
+    r"|\b(?=\w*\d)(?=\w*[A-Za-zÇĞİÖŞÜçğıöşü])\w{4,}\b")
+
+
+def _plakasiz(metin: str) -> str:
+    return _PLAKA_GIBI.sub("•••", metin)
+
+
+def _karar_metni(govde_metni: str) -> str:
+    try:
+        v = json.loads(govde_metni)
+        return f"{v.get('karar') or ''} {v.get('sebep') or ''}".strip()
+    except (ValueError, AttributeError):
+        return ""
+
+
+def gonder_olay(govde: dict) -> str:
+    """
+    TEK bir POST: giden.TAMAM / RED / TEKRAR. Yeniden deneme kutunun işi
+    (giden.calistir) — araç kesin cevaba kadar diskte kalır. Kayda plaka
+    YAZILMAZ: islem_id ve sunucunun kararı yeter.
+    """
+    kimlik = str(govde.get("islem_id", ""))[:8]
+    try:
+        r = requests.post(WEBHOOK_URL, json=govde,
+                          headers={"x-kamera-secret": KAMERA_SECRET}, timeout=30)
+    except requests.RequestException as e:
+        print(f"[!] {gunluk.AG_HATASI_ISARETI}: {e}", flush=True)
+        _ag_gitti()
+        return giden.TEKRAR
+    _ag_geldi()
+    metin = getattr(r, "text", "") or ""
+    ret_kaydet(r.status_code, metin)
+    if r.status_code < 300:
+        print(f"[+] gönderildi -> {kimlik} {_karar_metni(metin)}".rstrip(), flush=True)
+        return giden.TAMAM
+    if r.status_code == 422 and govde.get("okunamadi"):
         try:
-            r = requests.post(
-                WEBHOOK_URL,
-                json=govde,
-                headers=basliklar,
-                timeout=30,  # a plate read happens server-side inside this call
-            )
-            _ag_geldi()
-            # Before anything else: a refused bridge must be visible to `durum`
-            # whichever request discovers it, and an accepted one must clear it.
-            ret_kaydet(r.status_code, getattr(r, "text", "") or "")
-            if r.status_code < 300:
-                print(f"[+] gönderildi -> {r.text[:160]}", flush=True)
-                if _bos is not None:
-                    _bos.okundu()
-                return True
-            # Not a refusal: the model looked and saw an empty lane. Logged as
-            # information, so `durum` does not count it as a rejection, and
-            # handed to the learner. A 422 WITHOUT the flag ("a car I cannot
-            # read") falls through to the ordinary refusal below and is never
-            # learned from.
-            if r.status_code == 422 and _arac_yok_mu(getattr(r, "text", "") or ""):
-                print(f"[i] {gunluk.BOS_GORUNTU_ISARETI}", flush=True)
-                if _bos is not None and _bos.arac_yok_geldi(gri):
-                    print(f"[i] {gunluk.BOS_OGRENILDI_ISARETI} "
-                          f"({_bos.referans_sayisi()} referans)", flush=True)
-                return False
-            # 429 is the ONE 4xx that DOES fix itself — the webhook's 30/min
-            # and 2000/day caps. Lumping it in with the rest meant a
-            # rate-limited vehicle was thrown away instead of retried.
-            if r.status_code == 429:
-                print("[!] hız sınırı (429), tekrar denenecek", flush=True)
-            # The rest of 4xx is our fault and will not fix itself: a wrong
-            # secret, reading switched off, a body we built wrong. Retrying
-            # just makes noise.
-            elif 400 <= r.status_code < 500:
-                print(f"[!] reddedildi {r.status_code}: {r.text[:200]}", flush=True)
-                return False
-            else:
-                print(f"[!] sunucu {r.status_code}, tekrar denenecek", flush=True)
-        except requests.RequestException as e:
-            print(f"[!] {gunluk.AG_HATASI_ISARETI}: {e}", flush=True)
-            _ag_gitti()
-        time.sleep(2**deneme)
+            istisna = json.loads(metin).get("istisna") is True
+        except (ValueError, AttributeError):
+            istisna = False
+        if istisna:
+            print(f"[+] gönderildi -> {kimlik} {gunluk.PERSONELE_ISARETI}", flush=True)
+            return giden.TAMAM
+        print(f"[!] {gunluk.ESKI_SUNUCU_ISARETI} ({kimlik}) — kamera-webhook güncel değil; "
+              "bu araç elle girilmeli", flush=True)
+        return giden.RED
+    if r.status_code == 429:
+        print("[!] hız sınırı (429), tekrar denenecek", flush=True)
+        return giden.TEKRAR
+    if r.status_code in (401, 403):
+        # ret_kaydet söyledi; araç KUTUDA kalır, kamera yeniden açılınca gider.
+        return giden.TEKRAR
+    if 400 <= r.status_code < 500:
+        print(f"[!] reddedildi {r.status_code} ({kimlik}): {_plakasiz(metin)[:120]}", flush=True)
+        return giden.RED
+    print(f"[!] sunucu {r.status_code}, tekrar denenecek", flush=True)
+    return giden.TEKRAR
 
+
+def _yedek_gonder(govde: dict) -> None:
+    """Kutuya yazılamadıysa (disk): 1.2.x gibi bellekten, sınırlı deneme."""
+    for deneme in range(DENEME_SAYISI):
+        if gonder_olay(govde) != giden.TEKRAR:
+            return
+        time.sleep(2 ** deneme)
     print("[!] gönderilemedi — araç elle girilmeli", flush=True)
-    return False
+
+
+def araci_gonder(g: okuma.Gonderim, kutu) -> None:
+    """Kararı kutuya yazar (gönderici iş parçacığı yollar)."""
+    global _gonderim_sayaci
+    if g.tur == "OKUNAMADI" and YON == "CIKIS":
+        print(f"[i] {gunluk.CIKIS_OKUNAMADI_ISARETI} — sunucuya gönderilmedi, "
+              "personel kapıda görür", flush=True)
+        return
+    _gonderim_sayaci += 1
+    govde = olay_govdesi(g, kutu)
+    if _giden is None or _giden.yaz(govde) is None:
+        threading.Thread(target=_yedek_gonder, args=(govde,), daemon=True).start()
 
 
 def kalp() -> None:
@@ -963,6 +683,9 @@ def _ag_geldi() -> None:
             return
         _ag_yok = False
     print(f"[i] {gunluk.AG_DONDU_ISARETI}", flush=True)
+    # 1.3.0: kutuda bekleyen araçlar beklemeden gitsin.
+    if _giden is not None:
+        _giden.uyandir()
 
 
 # Monotonic time of the last clock warning: at most one an hour.
@@ -1041,48 +764,6 @@ def ret_kaydet(kod: int | None, govde: str = "") -> None:
     elif _reddedildi and kod is not None and (kod < 300 or kod in _KIMLIK_SONRASI):
         _reddedildi = False
         print(f"[i] {gunluk.KABUL_ISARETI}", flush=True)
-
-
-# ------------------------------------------------------------------ kuyruk ---
-
-# Sending happens OFF the capture thread. Inline, a slow webhook blocked
-# cap.read() for up to ~134s (a 30s timeout x 4 attempts, plus backoff) and
-# every vehicle arriving in that window was lost — the same silent loss the
-# re-arm fix exists to stop.
-#
-# Bounded, and full means DROP rather than block: falling behind must never
-# turn back into the capture loop stalling, which is the whole point of this.
-_kuyruk: "queue.Queue[tuple[str, datetime, np.ndarray | None, str | None]]" = \
-    queue.Queue(maxsize=4)
-
-
-def gonderici() -> None:
-    while True:
-        foto, gorulme, gri, kanit = _kuyruk.get()
-        try:
-            gonder(foto, gorulme, gri, kanit)
-        except Exception as e:  # one bad send must never kill the worker
-            print(f"[!] gönderim hatası: {e}", flush=True)
-        finally:
-            _kuyruk.task_done()
-
-
-def kuyruga_al(foto: str, gorulme: datetime, gri: np.ndarray | None = None,
-               kanit: str | None = None) -> None:
-    """
-    `gorulme` is stamped by the CALLER, at the moment the car settled — never
-    by the worker. The server bills from this timestamp, so letting a queued
-    item pick up the time it was finally dequeued would quietly shorten every
-    stay by however long the backlog happened to be.
-
-    `gri` is the small grey version of the SAME picture, so the answer can be
-    learned against exactly what was sent (BosOgrenme). `kanit` is the
-    compressed copy of the same picture, or None (see kanit_base64).
-    """
-    try:
-        _kuyruk.put_nowait((foto, gorulme, gri, kanit))
-    except queue.Full:
-        print("[!] gönderim kuyruğu dolu — bu araç atlandı", flush=True)
 
 
 # ------------------------------------------------------------------- bekçi ---
@@ -1228,7 +909,7 @@ def kamera_ac(bekle: bool = False) -> cv2.VideoCapture:
     """
     Startup path.
 
-    `bekle=False` (the setup modes --kare / --bos / --test): a camera that will
+    `bekle=False` (the setup modes --kare / --test): a camera that will
     not open is fatal, because someone is sitting in front of the screen and
     needs the answer now.
 
@@ -1277,22 +958,12 @@ def kare_kaydet() -> None:
     print("Plakanın bulunduğu dikdörtgeni ölçün ve KIRPMA=\"x,y,w,h\" olarak verin.")
 
 
-def bos_kaydet() -> None:
-    """`--bos`: ŞERİT BOŞKEN bir referans karesi kaydeder."""
-    cap = kamera_ac()
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        sys.exit("kare alınamadı")
-    cv2.imwrite("bos.jpg", frame)
-    print("bos.jpg yazıldı — şerit BOŞKEN çekildiğinden emin olun.", flush=True)
-    print('Sonra BOS_REFERANS="bos.jpg" verin. Yanlış bir referans yalnızca')
-    print("fazladan okuma yaptırır; hiçbir aracı atlatmaz.")
-
-
 def kirpma_test() -> None:
     """`--test`: save the cropped region and print live motion values."""
     kutu = kirpma_kutusu()
+    # 1.3.0: hariç alan köprüdeki gibi griye boyanır — kaydedilen kırpık ve
+    # hareket değerleri köprünün gördüğüyle aynı olsun.
+    haric = kirpma_haric(kutu)
     cap = kamera_ac()
     onceki = None
     # Bir bayrakla, `i == 0` ile DEĞİL: ilk kare düşerse (RTSP'de bağlandıktan
@@ -1306,7 +977,7 @@ def kirpma_test() -> None:
             ok, frame = cap.read()
             if not ok:
                 continue
-            k = olcekle(kirp(frame, kutu))
+            k = olcekle(kirp_maskeli(frame, kutu, haric))
             if not yazildi:
                 yazildi = True
                 cv2.imwrite("kirpik.jpg", k)
@@ -1324,6 +995,146 @@ def kirpma_test() -> None:
     except KeyboardInterrupt:
         pass
     cap.release()
+
+
+PLAKA_TEST_SN = 120.0
+PLAKA_TEST_SESSIZ_SN = 10.0     # plaka yokken bu aralıkla "plaka yok" satırı
+
+
+def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float = 0.3,
+                en_cok_kare: int | None = None, kamera=None) -> int:
+    """
+    `OtoparkKamera.exe --plaka` (1.3.0): şeridin kamerasında plaka bulma ve
+    okumayı canlı gösterir — kurulum günü, gündüz ve gece, araç geçirerek.
+
+    Köprünün KENDİ adımlarını kullanır (kirp_maskeli, olcekle,
+    okuma.kutulari_bul, okuma.kutuyu_oku): burada EMİN görünen okuma köprüde
+    de emin sayılır. Hiçbir şey göndermez, hiçbir dosya yazmaz, günlük açmaz
+    (gunluk.baslat çağrılmaz) — köprü çalışırken de güvenle koşar. Plaka
+    metni yalnızca bu ekrana yazılır, hiçbir kayda geçmez.
+
+    0: en az bir emin okuma · 1: çalıştırılamadı · 2: bu sürede emin okuma yok.
+    """
+    import json
+    from urllib.parse import urlparse
+
+    try:
+        with open(ayar_yolu, encoding="utf-8-sig") as f:
+            ayar = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"  ✗ Ayar dosyası okunamadı ({ayar_yolu}): {e}")
+        return 1
+    if not isinstance(ayar, dict):
+        print(f"  ✗ Ayar dosyası bozuk ({ayar_yolu}).")
+        return 1
+    try:
+        kutu = kutu_metni_coz(str(ayar.get("KIRPMA") or ""))
+        haric, uyari = haric_metni_coz(str(ayar.get("KIRPMA_HARIC") or ""), kutu)
+    except ValueError as e:
+        print(f"  ✗ Ayar dosyasında hatalı kırpma: {e}")
+        return 1
+    if uyari:
+        print(f"  ! {uyari}")
+    if kutu is None:
+        print("  ! Kırpma kutusu yok — tüm kare okunacak, plaka küçük kalır.")
+    rtsp = str(ayar.get("RTSP_URL") or "")
+    if not rtsp:
+        print("  ✗ Ayar dosyasında kamera adresi (RTSP_URL) yok.")
+        return 1
+
+    p_ayar, uyarilar = plaka.calisma_ayarlari(ayar)
+    for u in uyarilar:
+        print(f"  ! {u}")
+    if not p_ayar["acik"]:
+        print("  ! PLAKA_BUL=0: köprü bu şeritte plaka okumuyor — test yine de yapılıyor.")
+    try:
+        p = plaka.yukle(p_ayar)
+    except plaka.PlakaHatasi as e:
+        print(f"  ✗ Plaka okuyucu çalışmıyor: {e}")
+        return 1
+    print("  ✓ Plaka okuyucu hazır.")
+
+    # Adres şifre taşır: ekrana yalnızca kameranın adresi yazılır.
+    try:
+        host = urlparse(rtsp).hostname or "?"
+    except ValueError:
+        host = "?"
+    print(f"  Kamera: {host}   ({int(sure_sn)} sn; Ctrl+C ile erken bitirebilirsiniz)")
+    print("  Araç geçirin. Her satır: saat · süre · kutu skoru → okuma (iki kırpıntı).\n")
+
+    cap = (kamera or kamera_baglan)(rtsp)
+    kareler = kutulu = bos = 0
+    emin: dict[str, int] = {}
+    sureler: list[float] = []
+    haric_k = None
+    sekil: tuple | None = None
+    son_satir = time.monotonic()
+    bitis = time.monotonic() + sure_sn
+    try:
+        while time.monotonic() < bitis and (en_cok_kare is None or kareler < en_cok_kare):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                bos += 1
+                if bos >= 50:
+                    print("  ✗ Kameradan görüntü alınamıyor.")
+                    return 1
+                time.sleep(0.1)
+                continue
+            bos = 0
+            kareler += 1
+            kirpik = olcekle(kirp_maskeli(frame, kutu, haric))
+            if haric is not None and sekil != kirpik.shape:
+                sekil = kirpik.shape
+                haric_k = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
+            t0 = time.perf_counter()
+            try:
+                parcalar = []
+                for k in okuma.kutulari_bul(p, kirpik, haric_k):
+                    s = okuma.kutuyu_oku(p, kirpik, k, haric_k, p_ayar["oku_esik"])
+                    if s is None:
+                        parcalar.append(f"{k.skor:.2f} kesik (kenara değiyor, okunmaz)")
+                        continue
+                    (m1, e1), (m2, e2) = s[0]
+                    if s[1] is not None:
+                        emin[s[1][0]] = emin.get(s[1][0], 0) + 1
+                        parcalar.append(f"{k.skor:.2f} → {s[1][0]} ({e1:.3f} / {e2:.3f}) EMİN")
+                    else:
+                        parcalar.append(f"{k.skor:.2f} → belirsiz: {m1} ({e1:.3f}) / {m2} ({e2:.3f})")
+            except Exception as e:  # noqa: BLE001 — test kipi: sebebi göster, dur
+                print(f"  ✗ Plaka okuyucu hata verdi: {type(e).__name__}: {e}")
+                return 1
+            ms = (time.perf_counter() - t0) * 1000
+            sureler.append(ms)
+            simdi = time.monotonic()
+            if parcalar:
+                kutulu += 1
+                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  " + " · ".join(parcalar),
+                      flush=True)
+                son_satir = simdi
+            elif simdi - son_satir >= PLAKA_TEST_SESSIZ_SN:
+                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  plaka yok", flush=True)
+                son_satir = simdi
+            if ara_sn:
+                time.sleep(ara_sn)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.release()
+
+    print()
+    if not kareler:
+        print("  ✗ Kameradan hiç görüntü gelmedi.")
+        return 1
+    print(f"  {kareler} kare · {kutulu} karede plaka kutusu · süre ortalama "
+          f"{sum(sureler) / len(sureler):.0f} ms, en çok {max(sureler):.0f} ms")
+    if emin:
+        print("  ✓ Emin okunan plakalar: "
+              + ", ".join(f"{m} ×{n}" for m, n in sorted(emin.items(), key=lambda x: -x[1])))
+        print("    Geçen araçların plakasıyla karşılaştırın; yanlış olan varsa Claude'a iletin.")
+        return 0
+    print("  ! Bu sürede emin okunan plaka olmadı. Araç geçti mi, plaka kutunun içinde mi?")
+    print("    Okunamayan araçlar köprüde personele düşer.")
+    return 2
 
 
 # --------------------------------------------------------------------- ana ---
@@ -1346,26 +1157,36 @@ def main() -> None:
                  "Şerit tahmin edilmez — yanlışı, çıkan araçlara bilet açar.")
 
     kutu = kirpma_kutusu()
+    haric = kirpma_haric(kutu)
     if kutu is None:
-        print("[!] KIRPMA verilmedi — tüm kare gönderilecek, okuma daha kötü olur", flush=True)
+        print("[!] KIRPMA verilmedi — tüm kare okunacak, plaka küçük kalır", flush=True)
         # `[i]`: not a fault, durum must not show it as the last error.
         print("[i] kırpma kutusu yok — bu şeritte araç fotoğrafı saklanmayacak", flush=True)
+    if haric is not None:
+        print(f"[i] kesilen köşe {','.join(str(v) for v in haric)} — orada hareket ve plaka "
+              "yok sayılır", flush=True)
 
-    # Tam kare olarak saklanır ve burada aynı kutuyla kırpılır: KIRPMA
-    # değişirse referans yeniden çekilmek zorunda kalmaz.
-    bos_gri: np.ndarray | None = None
-    if BOS_REFERANS:
-        ref = cv2.imread(BOS_REFERANS)
-        if ref is None:
-            print(f"[!] boş referans okunamadı: {BOS_REFERANS} — referanssız devam",
+    # ---- 1.3.0: plaka okuyucu. Yüklenemezse köprü DÜŞMEZ: araçlar personele.
+    p_ayar, p_uyarilar = plaka.calisma_ayarlari()
+    for u in p_uyarilar:
+        print(f"[!] {u}", flush=True)
+    plakaci = None
+    sebep: str | None = None
+    if p_ayar["acik"]:
+        try:
+            plakaci = plaka.yukle(p_ayar)
+            print(f"[i] {gunluk.PLAKA_HAZIR_ISARETI} ({p_ayar['iplik']} iş parçacığı)", flush=True)
+        except plaka.PlakaHatasi as e:
+            sebep = str(e)
+            print(f"[!] {gunluk.OKUYUCU_BOZUK_ISARETI}: {sebep} — araçlar personele gidecek",
                   flush=True)
-        else:
-            bos_gri = gri_kucuk(olcekle(kirp(ref, kutu)))
-            print("[i] boş şerit referansı yüklendi", flush=True)
-    global _bos
-    _bos = BosOgrenme(BOS_ESIGI, sabit=bos_gri, ogren=BOS_OGREN)
-    if not BOS_OGREN:
-        print("[i] boş şerit öğrenme kapalı (BOS_OGREN=0)", flush=True)
+    else:
+        sebep = "kapalı (PLAKA_BUL=0)"
+        print(f"[i] {gunluk.PLAKA_KAPALI_ISARETI} (PLAKA_BUL=0) — araçlar personele gidecek",
+              flush=True)
+    global _isci, _giden
+    isci = okuma.Isci(plakaci, haric=None, oku_esik=p_ayar["oku_esik"], sebep=sebep)
+    _isci = isci
 
     # Before the first camera wait: a startup that hangs is as blind as a loop
     # that hangs. The waits themselves stamp through uyu().
@@ -1376,97 +1197,102 @@ def main() -> None:
     cap = kamera_ac(bekle=True)
     print(f"[i] {gunluk.KAMERA_VAR_ISARETI}", flush=True)
 
-    threading.Thread(target=gonderici, daemon=True).start()
-
-    # 1.2.6: kameranın araç olaylarını dinleyen iş parçacığı. Başlamazsa
-    # (kimlik yok, kapı kapalı) kapı hiç açılmaz ve köprü 1.2.5 gibi çalışır.
-    if OLAY_KAPISI:
-        if olay.baslat(RTSP_URL, kayit=lambda s: print(s, flush=True)):
-            print("[i] kamera araç olayları dinleniyor — fotoğraf yalnızca araç "
-                  "olayı olan geçişte gönderilecek", flush=True)
-        else:
-            print(f"[i] {gunluk.OLAY_DINLENMIYOR_ISARETI} — hareketle çalışılıyor",
-                  flush=True)
-    else:
-        print(f"[i] {gunluk.OLAY_KAPALI_ISARETI} (OLAY_KAPISI=0) — hareketle "
-              "çalışılıyor", flush=True)
-    kapi = Kapi(olay.defter(),
-                lambda k, z, o: kirpik_gonder(k, z, o, kutu),
-                lambda g: _bos.eslesir(g)[0],
-                acik_mi=OLAY_KAPISI)
+    # ---- 1.3.0: gönderim kutusu. Her araç ÖNCE diske, sonra sunucuya.
+    _giden = giden.Giden(os.path.join(gunluk.kayit_klasoru(), f"giden-{YON.lower()}"))
+    bekleyen, _en_eski = giden.ozet(_giden.klasor)
+    if bekleyen:
+        print(f"[i] gönderim kutusunda {bekleyen} araç bekliyordu — gönderiliyor", flush=True)
+    threading.Thread(target=giden.calistir, args=(_giden, gonder_olay), daemon=True,
+                     name="gonderici").start()
 
     onceki: np.ndarray | None = None
     son_hareket = 0.0        # monotonic, last time the scene moved
     durgun_sayaci = 0        # consecutive still frames
-    # -inf, not 0.0: monotonic() counts from boot, so 0.0 delayed the first
-    # heartbeat until the PC had been up five minutes — after a power cut the
-    # server heard nothing for that long. The first frame now sends one.
     son_kalp = float("-inf")
     kalp_isi: threading.Thread | None = None
     uyarildi = False
-    kare_sayaci = 0          # yalnızca düzenli "çalışıyor" satırı için
+    kare_sayaci = 0
 
-    # Re-arm state. `silahli` False means we are still looking at a vehicle we
-    # have already sent, and must not send again until it leaves.
+    # Re-arm state (1.2.x, değişmedi). `silahli` False: gönderilmiş aracı hâlâ
+    # görüyoruz, o gidene kadar yeni karar yok.
     silahli = True
     gonderilen_gri: np.ndarray | None = None
-    bekleme_bitis = 0.0      # monotonic, earliest possible re-arm
-    zorunlu_arm = 0.0        # monotonic, re-arm regardless once past this
-
-    # Motion seen since the last send. A SECOND re-arm signal beside the scene
-    # change, and it is the one that saves a car: if the next vehicle stops in
-    # roughly the same spot and looks similar, the crop may not differ enough
-    # to trip SAHNE_ESIGI, and without this we would sit disarmed until
-    # MAX_BEKLEME_SN — two silent minutes at a barrier.
+    bekleme_bitis = 0.0
+    zorunlu_arm = 0.0
     hareket_oldu = False
 
-    # 1.2.5 geçen araç (bkz. GECIS_YAKALA). `son_durgun_gri`: bir geçişin
-    # DIŞINDA görülen son durgun sahne. `gecis_arka`: o sahnenin, silahlıyken
-    # başlayan bir hareketin başında dondurulmuş hâli — None ise geçiş yok.
-    # `aday`: o geçişin en keskin karesi (keskinlik, tam kırpık, görülme anı,
-    # arka plandan fark); `aday_sayisi` ölçülen kare sayısı (yalnızca kayıt).
+    # Bir geçişin DIŞINDA görülen son durgun sahne (gri + kırpık): geçişin
+    # arka planı ve ayrılışı tanımak için okunan kare.
     son_durgun_gri: np.ndarray | None = None
+    son_durgun_kirpik: np.ndarray | None = None
+
+    # ---- 1.3.0 geçiş (okuma.Gecis): ilk güçlü hareketten karara kadar.
+    gecis: okuma.Gecis | None = None
+    gecis_no = 0
     gecis_arka: np.ndarray | None = None
-    aday: tuple[float, np.ndarray, datetime, float] | None = None
-    aday_sayisi = 0
+    kapsam = 0.0                 # geçiş boyunca arka plandan en büyük fark (araç boyu)
+    ayrilis_sahne = False        # geçiş, gönderilmiş DURAN aracın görüntüsünden başladı
+    gorunum = 0                  # sahne değiştikçe artar: duran aracın kareleri tek görünüm
+    # Durarak gönderilmiş son araç (ayrılışını tanımak için) ve son 60 sn'de
+    # gidenler (aynı plaka ikinci kez gitmesin).
+    son_gonderim_gri: np.ndarray | None = None
+    son_durdu_plaka: str | None = None
+    son_gonderilen: list[tuple[str | None, float]] = []
+    haric_sekli: tuple | None = None
 
-    # 1.2.6 geçiş takibi (kapı için; GECIS_YAKALA'dan bağımsız). `ilk_hareket`:
-    # silahlıyken son karar/atlama/kapanıştan beri ilk güçlü hareket — olay
-    # penceresinin başı. `pas_arka`: o anki durgun sahne (ayrılış kuralı).
-    # `pas_kapsam`: geçiş boyunca arka plandan en büyük fark (araç boyutu mu).
-    ilk_hareket: float | None = None
-    pas_arka: np.ndarray | None = None
-    pas_kapsam = 0.0
-
-    # True from a failed read until the next good one. The recovery is LOGGED:
-    # without that line the last camera entry in the log stays "kare alınamadı"
-    # and `durum` reports KAMERA YOK for up to five minutes (until the next
-    # "çalışıyor" line) about a camera that came back three seconds later.
     kopuk = False
-    # Wait before the next reconnect: doubles while the camera stays away,
-    # back to the base on the first good frame (see YENIDEN_BAGLAN_SN).
     bekleme = YENIDEN_BAGLAN_SN
+
+    def yeni_gecis(zaman: datetime) -> okuma.Gecis:
+        nonlocal gecis_no
+        gecis_no += 1
+        return okuma.Gecis(gecis_no, zaman, plaka.Oylama(tek_esik=p_ayar["tek_esik"]))
+
+    def bitir(durdu: bool, simdi: float, gri_simdi: np.ndarray | None, d: float) -> bool:
+        """Geçişi karara bağlar ve sonucu kutuya yazar. Bir şey gönderildi mi."""
+        nonlocal gecis, gecis_arka, son_gonderim_gri, son_durdu_plaka, son_gonderilen
+        isci.bekle(gecis, p_ayar["bekle_sn"])
+        gonderimler, satirlar = okuma.karar_ver(
+            gecis, durdu=durdu, arac_boyu=kapsam >= ARAC_KAPSAM_ESIGI,
+            ayrilis_sahne=ayrilis_sahne, son_durdu_plaka=son_durdu_plaka,
+            bozuk=isci.bozuk is not None, son_gonderilen=son_gonderilen, simdi=simdi)
+        plaka_sayisi = sum(1 for g in gonderimler if g.tur == "PLAKA")
+        personel = len(gonderimler) - plaka_sayisi
+        ozet = (f"{plaka_sayisi} plaka" if plaka_sayisi else "") + \
+            (", " if plaka_sayisi and personel else "") + \
+            (f"{personel} personele" if personel else "")
+        olay_adi = "araç durdu" if durdu else gunluk.ARAC_GECTI_ISARETI
+        print(f"[i] {olay_adi} (fark={d:.2f}, kapsam={kapsam:.1f}) — "
+              f"{ozet + ' gönderiliyor' if ozet else 'gönderim yok'}", flush=True)
+        for s in satirlar:
+            print(s, flush=True)
+        for g in gonderimler:
+            araci_gonder(g, kutu)
+            son_gonderilen.append((g.plaka or g.tahmin, simdi))
+        son_gonderilen = [(p, t) for p, t in son_gonderilen if simdi - t <= okuma.YAKIN_SN]
+        if durdu and gonderimler and gri_simdi is not None:
+            son_gonderim_gri = gri_simdi
+            son_durdu_plaka = next((g.plaka for g in gonderimler if g.tur == "PLAKA"), None)
+        else:
+            son_gonderim_gri = None
+            son_durdu_plaka = None
+        gecis = None
+        gecis_arka = None
+        return bool(gonderimler)
 
     while True:
         canli()
         ok, frame = cap.read()
         if not ok:
-            # An RTSP stream drops. Reconnecting beats exiting: nobody is
-            # watching this process at 03:00, and a bridge that dies silently
-            # looks exactly like a car park with no cars.
             print(f"[!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor "
                   f"({_sure(bekleme)} sonra)", flush=True)
             kopuk = True
             cap.release()
-            # Bekleyen karar uzun beklemeden ÖNCE sonuçlanır (en çok
-            # OLAY_BEKLE_SN): kopukluk bir aracın fotoğrafını geciktirmesin.
-            kapi.bekle_coz(uyu)
-            ilk_hareket = None
-            pas_arka = None
+            # Süren geçiş uzun beklemeden ÖNCE karara bağlanır (atılmaz).
+            if gecis is not None:
+                bitir(False, time.monotonic(), onceki, 0.0)
             uyu(bekleme)
             bekleme = min(bekleme * 2, YENIDEN_BAGLAN_MAX_SN)
-            # Every reconnect is a login. Ask about the password once first;
-            # a rejected one is never tried on the stream (1.2.2).
             sifre_kabul_edilene_kadar_bekle()
             cap = kamera_baglan()
             onceki = None
@@ -1477,99 +1303,72 @@ def main() -> None:
             print(f"[i] {gunluk.KAMERA_VAR_ISARETI} (yeniden)", flush=True)
 
         simdi = time.monotonic()
+        zaman = datetime.now(timezone.utc)
         kare_sayaci += 1
         if simdi - son_kalp > KALP_ARALIGI_SN:
-            # WHEN to beat stays here, below the reconnect `continue`: no
-            # frames, no heartbeat — a dead camera must go quiet, that is all
-            # the server watchdog sees. Only the network call leaves this
-            # thread; a slow answer used to freeze the camera for up to 20 s
-            # and a car arriving meanwhile was never seen. One in flight at
-            # most.
             if kalp_isi is None or not kalp_isi.is_alive():
                 kalp_isi = threading.Thread(target=kalp, daemon=True)
                 kalp_isi.start()
             son_kalp = simdi
-            # Sağlıklı bir köprü saatlerce TEK SATIR yazmayabilir: boş bir
-            # otoparkta ne gönderim olur ne hata. O sessizlik ölü bir köprüden
-            # ayırt edilemiyordu — kayıt dosyasına bakan kişi de, `durum`
-            # komutu da "çalışıyor mu" sorusuna cevap veremiyordu. Düzenli iz
-            # aynı zamanda arızanın SAATİNİ veriyor: son satır, öldüğü an.
             print(f"[i] çalışıyor — {kare_sayaci} kare, "
                   f"{_gonderim_sayaci} gönderim", flush=True)
 
-        # Bekleyen karar her karede sonuçlanmaya çalışılır; `acik` da her
-        # karede sorulur ki "doğrulandı" satırı ilk araç olayında düşsün.
-        kapi.coz(simdi)
-        kapi_acik = kapi.acik(simdi)
-
-        kirpik = olcekle(kirp(frame, kutu))
+        kirpik = olcekle(kirp_maskeli(frame, kutu, haric))
+        if haric is not None and haric_sekli != kirpik.shape:
+            haric_sekli = kirpik.shape
+            isci.haric = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
         if not uyarildi:
             yh, yw = kirpik.shape[:2]
             if max(yh, yw) < MIN_KENAR_UYARI:
-                print(
-                    f"[!] kırpma {yw}x{yh} — {MIN_KENAR_UYARI}px altında okuma güvenilmez",
-                    flush=True,
-                )
+                print(f"[!] kırpma {yw}x{yh} — {MIN_KENAR_UYARI}px altında plaka küçük kalır",
+                      flush=True)
             uyarildi = True
 
         gri = gri_kucuk(kirpik)
         d = fark(onceki, gri)
         onceki = gri
 
-        # Has the vehicle we photographed actually gone? Checked BEFORE the
-        # motion branch below on purpose: a car driving off IS motion, and that
-        # branch `continue`s, so testing after it would skip exactly the frames
-        # where the scene changes most.
         if not silahli and simdi >= bekleme_bitis:
             ayrildi = gonderilen_gri is None or fark(gri, gonderilen_gri) > SAHNE_ESIGI
             if ayrildi or hareket_oldu or simdi >= zorunlu_arm:
                 if not (ayrildi or hareket_oldu):
-                    print("[!] sahne değişmedi ama süre doldu — yeniden kuruldu",
-                          flush=True)
+                    print("[!] sahne değişmedi ama süre doldu — yeniden kuruldu", flush=True)
                 silahli = True
                 gonderilen_gri = None
                 hareket_oldu = False
 
-        # ---- 1.2.6: geçiş takibi (olay penceresi, ayrılış, araç boyutu) -----
-        # Bayat geçiş önce kapanır: hareket penceresi dolmuş, ne 1.2.5 geçişi
-        # ne bekleyen karar var — yoksa saatler önceki bir kıpırtı yeni bir
-        # geçişin penceresini açardı (pencere ayrıca 15 sn ile sınırlı).
-        if (ilk_hareket is not None and gecis_arka is None and kapi.bekleyen is None
-                and simdi - son_hareket > HAREKET_PENCERESI_SN):
-            ilk_hareket = None
-            pas_arka = None
-        if silahli and ilk_hareket is None and d > HAREKET_ESIGI:
-            ilk_hareket = simdi
-            pas_arka = son_durgun_gri
-            pas_kapsam = 0.0
-        if ilk_hareket is not None and pas_arka is not None:
-            pas_kapsam = max(pas_kapsam, fark(gri, pas_arka))
-
-        # ---- 1.2.5: geçen araç — geçişin en keskin karesini tut ------------
-        # Hareket dalından ÖNCE: o dal `continue` eder ve aracın kadrajdaki
-        # karelerinin neredeyse hepsi oradan geçer. Geçiş yalnızca SİLAHLIYKEN
-        # ve elde bir durgun sahne varken başlar (köprü bir aracın ortasında
-        # açıldıysa arka plan yoktur; o geçiş 1.2.4 gibi işlenir).
-        if GECIS_YAKALA and silahli:
-            if gecis_arka is None and d > HAREKET_ESIGI and son_durgun_gri is not None:
-                gecis_arka = son_durgun_gri
-                aday = None
-                aday_sayisi = 0
+        # ---- 1.3.0 geçiş: silahlıyken ilk güçlü hareket başlatır.
+        if gecis is None and silahli and d > HAREKET_ESIGI:
+            gecis = yeni_gecis(zaman)
+            gecis_arka = son_durgun_gri
+            kapsam = 0.0
+            ayrilis_sahne = (son_gonderim_gri is not None and gecis_arka is not None
+                             and fark(gecis_arka, son_gonderim_gri) <= SAHNE_ESIGI)
+            # Geçişten önce kadrajda bir araç duruyor muydu? Önceki durgun kare
+            # her geçişte okunur (oy değil): gönderilmiş aracın gidişi ışık
+            # değişse de tanınır, ve plakalı araç gidince durulan boş şerit
+            # "plakasız araç durdu" sanılmaz (test_kopru `kuyruk`).
+            if son_durgun_kirpik is not None:
+                isci.ver(okuma.Is(gecis, son_durgun_kirpik.copy(), zaman, 0, arka=True),
+                         oncelik=True)
+        if gecis is not None:
             if gecis_arka is not None:
-                f_arka = fark(gri, gecis_arka)
-                if f_arka > SAHNE_ESIGI:          # kadrajda bir şey var
-                    aday_sayisi += 1
-                    # 1.2.6: yalnızca değişen piksellerin kenar enerjisi —
-                    # desenli zemin puana girmez (bkz. maskeli_enerji).
-                    ks = maskeli_enerji(kirpik, gri, gecis_arka)
-                    if aday is None or ks > aday[0]:
-                        # Kopya: kameranın tamponu yeniden kullanılabilir; tutulan
-                        # kare altımızda değişmemeli.
-                        aday = (ks, kirpik.copy(), datetime.now(timezone.utc), f_arka)
-        # Arka plan adayı: bir geçişin DIŞINDA görülen son durgun sahne. Geçiş
-        # sürerken güncellenmez — yavaşlayan aracın karesi arka plan olmasın.
-        if d < DURGUN_ESIGI and gecis_arka is None:
+                kapsam = max(kapsam, fark(gri, gecis_arka))
+            if d >= DURGUN_ESIGI:
+                gorunum += 1
+            gecis.son_kirpik = kirpik
+            # Okuyucu boştaysa en yeni kare verilir (kopyası: kameranın karesi
+            # değişebilir). Meşgulse bu kare atlanır — döngü ASLA beklemez.
+            if isci.bos_mu():
+                isci.ver(okuma.Is(gecis, kirpik.copy(), zaman, gorunum))
+        if isci.takildi(simdi, OKUYUCU_TAKILMA_SN):
+            print(f"[!] {gunluk.TAKILDI_ISARETI}: plaka okuyucu {OKUYUCU_TAKILMA_SN:.0f} sn'dir "
+                  "dönmüyor — köprü yeniden başlatılıyor", flush=True)
+            _bekci_cik()
+
+        if d < DURGUN_ESIGI and gecis is None:
             son_durgun_gri = gri
+            son_durgun_kirpik = kirpik
 
         if d > HAREKET_ESIGI:
             son_hareket = simdi
@@ -1582,103 +1381,41 @@ def main() -> None:
         else:
             durgun_sayaci = 0
 
-        # Gönderilecek kare: (kırpık, görülme anı, öğrenme için gri, kayıt satırı).
-        gonder: tuple[np.ndarray, datetime, np.ndarray | None, str] | None = None
-        # "gecti" (geçişin en iyi karesi) ya da "durdu" (yerleşmiş kare): kapı
-        # yalnızca DURAN aracı, ayrılışında tanımak için hatırlar.
-        yol = "gecti"
-
-        # A car ARRIVED (there was motion recently) and has now SETTLED (still
-        # for several frames). That settled frame is both the moment the plate
-        # is in position and the sharpest one available — a moving car is the
-        # blurry one, and blur is what costs characters.
+        gonderildi = None
         gecerli_pencere = simdi - son_hareket < HAREKET_PENCERESI_SN
         if silahli and durgun_sayaci >= DURGUN_KARE and gecerli_pencere:
-            if aday is not None and _arkaya_dondu(gri, gecis_arka):
-                # Araç DURMADAN geçip gitti: sahne eski hâline döndü. Durulan
-                # kare boş şerit; okunacak kare geçişin en keskin karesi. Boş
-                # şerit öğrenmesine ise ŞİMDİKİ kare (gerçekten boş şerit)
-                # verilir, araç karesi değil: sunucu "araç yok" derse
-                # öğrenilen, aracın ardında kalan sahnedir.
-                gonder = (aday[1], aday[2], gri, _gecti_satiri(aday, aday_sayisi))
-            else:
-                # Şerit boş görünüyorsa bu, GELEN değil GİDEN aracın bıraktığı
-                # durgunluktur. Referans yoksa (elle verilmemiş, henüz
-                # öğrenilmemiş) bu dal hiç çalışmaz ve davranış eskisiyle birebir
-                # aynıdır — kaçırmaktansa fazladan okumak. Satır her yerleşmede
-                # BİR kez yazılır (son_hareket sıfırlanınca bir sonraki harekete
-                # kadar bu dala girilmez); `fark` değeri sahada eşiği ayarlamanın
-                # ölçüsüdür.
-                bos_mu, bos_fark, bos_ref = _bos.eslesir(gri)
-                if bos_mu:
-                    print(f"[i] {gunluk.BOS_ATLANDI_ISARETI} "
-                          f"(fark={bos_fark:.2f}, ref={bos_ref})", flush=True)
-                    durgun_sayaci = 0
-                    son_hareket = 0.0
-                    gecis_arka = None
-                    aday = None
-                    ilk_hareket = None
-                    pas_arka = None
-                    # Şerit boş: hatırlanan duran araç artık yok.
-                    kapi.duran = None
-                    continue
-                gonder = (kirpik, datetime.now(timezone.utc), gri,
-                          f"[i] araç durdu (fark={d:.2f}) — gönderiliyor")
-                yol = "durdu"
-        elif silahli and aday is not None and simdi - son_hareket >= GECIS_BEKLE_SN:
-            # Güvenlik ağı (GECIS_BEKLE_SN): araç gitti ama sahne durulmuyor.
-            # Yalnızca sahne eski hâline döndüyse gönderilir; dönmediyse araç
-            # kadrajda duruyor ya da başka bir şey var demektir — tutulan kare
-            # bekler, sahne durulunca yukarıdaki dal karar verir. Öğrenmeye
-            # hiçbir şey verilmez: durulmamış bir kare boş şerit kanıtı değil.
-            if _arkaya_dondu(gri, gecis_arka):
-                gonder = (aday[1], aday[2], None, _gecti_satiri(aday, aday_sayisi))
-            elif simdi - son_hareket >= HAREKET_PENCERESI_SN:
-                # Hareket penceresi de doldu: bu geçiş artık kapanır (1.2.4'te
-                # de bu kadar eski bir hareket gönderim üretmezdi).
+            # Sahne DURULDU. Geçiş yoksa (köprü bir aracın ortasında açıldı, ya
+            # da hareket silahsızken başladı) burada açılır.
+            if gecis is None:
+                gecis = yeni_gecis(zaman)
                 gecis_arka = None
-                aday = None
-                ilk_hareket = None
-                pas_arka = None
+                kapsam = fark(gri, son_durgun_gri) if son_durgun_gri is not None else 0.0
+                ayrilis_sahne = son_gonderim_gri is not None
+            # Sahne geçişten önceki hâline döndüyse araç DURMADAN geçti; yoksa
+            # bir şey durdu — onun karesi öncelikle okunur.
+            durdu = not _arkaya_dondu(gri, gecis_arka)
+            if durdu:
+                gecis.durgun_kirpik = kirpik.copy()
+                isci.ver(okuma.Is(gecis, gecis.durgun_kirpik, zaman, gorunum), oncelik=True)
+            gonderildi = bitir(durdu, simdi, gri, d)
+        elif (gecis is not None and simdi - son_hareket >= GECIS_BEKLE_SN
+              and _arkaya_dondu(gri, gecis_arka)):
+            # Güvenlik ağı: araç gitti ama sahne durulmuyor (yağmur, kumlanma).
+            gonderildi = bitir(False, simdi, gri, d)
+        elif gecis is not None and simdi - son_hareket >= HAREKET_PENCERESI_SN:
+            # Bayat geçiş: atılmaz, karara bağlanır (1.2.x'te düşüyordu).
+            gonderildi = bitir(False, simdi, gri, d)
 
-        if gonder is not None:
-            g_kirpik, g_zaman, g_ogren, satir = gonder
-            if kapi_acik:
-                # 1.2.6: gönder, beklet ya da atla — kapı karar verir. Aşağıdaki
-                # silahsızlandırma her üç sonuçta da AYNI: atlanan ya da
-                # bekletilen geçiş de "işlenmiş" sayılır, aynı araç ikinci bir
-                # karar üretmez.
-                kapi.karar(simdi, yol, g_kirpik, g_zaman, g_ogren, satir, gri,
-                           pas_arka, ilk_hareket,
-                           # Geçiş yoksa boyut bilinmez: önceki geçişinki değil 0.
-                           pas_kapsam if ilk_hareket is not None else 0.0)
-            else:
-                # Geri dönüş = 1.2.5 birebir. Eski bir bekleyen karar varsa önce
-                # o sonuçlanır (kapı kapalıyken olaysız karar GÖNDERİLİR).
-                kapi.coz(simdi, son=True)
-                print(satir, flush=True)
-                kirpik_gonder(g_kirpik, g_zaman, g_ogren, kutu)
-                kapi.duran = None
-            ilk_hareket = None
-            pas_arka = None
-            # Disarmed until this vehicle leaves the frame, not until a clock
-            # runs out. `gri` is a fresh array from gri_kucuk() every frame, so
-            # holding the reference cannot alias with `onceki`. It is the scene
-            # AS IT IS NOW (for a passing car: the empty lane it left behind),
-            # so the next car — not this one — is what re-arms.
-            silahli = False
-            gonderilen_gri = gri
-            bekleme_bitis = simdi + MIN_BEKLEME_SN
-            zorunlu_arm = simdi + MAX_BEKLEME_SN
+        if gonderildi is not None:
             durgun_sayaci = 0
             son_hareket = 0.0
-            # Cleared here or the flag means "motion since the last re-arm"
-            # rather than "since the last send": the motion that BROUGHT this
-            # car would otherwise still be set and re-arm us the instant
-            # MIN_BEKLEME_SN elapsed, while the car is still sitting there.
-            hareket_oldu = False
-            gecis_arka = None
-            aday = None
+            if gonderildi:
+                # Disarmed until this vehicle leaves the frame (1.2.x).
+                silahli = False
+                gonderilen_gri = gri
+                bekleme_bitis = simdi + MIN_BEKLEME_SN
+                zorunlu_arm = simdi + MAX_BEKLEME_SN
+                hareket_oldu = False
 
 
 def cli() -> None:
@@ -1690,8 +1427,6 @@ def cli() -> None:
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     if arg == "--kare":
         kare_kaydet()
-    elif arg == "--bos":
-        bos_kaydet()
     elif arg == "--test":
         kirpma_test()
     else:
