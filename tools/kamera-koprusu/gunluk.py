@@ -135,6 +135,19 @@ PLAKASIZ_ISARETI = "hareket — plaka görülmedi"
 OKUYUCU_BOZUK_ISARETI = "plaka okuyucu çalışmıyor"
 PLAKA_HAZIR_ISARETI = "plaka okuyucu hazır"
 PLAKA_KAPALI_ISARETI = "plaka okuyucu kapalı"
+# 1.3.1: araç bulucu (arac.py). Çalışmıyorsa köprü 1.3.0 kuralıyla sürer
+# (duran plakasız her şey personele) — araç kaybolmaz, sağlık kırmızı olmaz.
+ARAC_HAZIR_ISARETI = "araç bulucu hazır"
+ARAC_BOZUK_ISARETI = "araç bulucu çalışmıyor"
+ARAC_KAPALI_ISARETI = "araç bulucu kapalı"
+# Duran plakasız şeyde araç görülmedi: gönderilmez (PLAKASIZ ile aynı satırda).
+ARAC_YOK_ISARETI = "araç görülmedi"
+# Karar anında durulan kare henüz ölçülmemişti: 1.3.0 kuralı (personele).
+# Sık görülürse dizüstü yavaş demektir.
+ARAC_YETISMEDI_ISARETI = "araç bulucu durulan kareye yetişmedi"
+# Durmadan geçen, plakası okunamayan araç personele bırakıldı. PLAKASIZ_ISARETI
+# içermez: "plakasız hareket" sayımına girmesin.
+PLAKASIZ_ARAC_ISARETI = "plakasız araç geçti"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).
 PERSONELE_ISARETI = "personele bırakıldı"
 # Sunucu "okunamadi"yı tanımıyor (webhook güncellenmemiş): araç KAYIT DIŞI.

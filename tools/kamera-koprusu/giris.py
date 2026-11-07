@@ -9,8 +9,8 @@ kırılgan MERGE'ü demekti. Kip ilk argümandan seçiliyor.
     OtoparkKamera.exe --kopru --ayar X → köprünün kendisi (Görev Zamanlayıcı)
     OtoparkKamera.exe --durum          → çalışıyor mu
     OtoparkKamera.exe --kaldir         → kaldır
-    OtoparkKamera.exe --plaka          → plaka bulma ve okumayı canlı göster (1.3.0)
-    OtoparkKamera.exe --plaka-sina     → plaka okuyucu yükleniyor mu (öz sınama)
+    OtoparkKamera.exe --plaka          → plaka okumayı ve araç bulucuyu canlı göster
+    OtoparkKamera.exe --plaka-sina     → plaka okuyucu ve araç bulucu yükleniyor mu (öz sınama)
 
 Çift tıklayan kişi hiçbir argüman bilmek zorunda değil: ilk kurulumda doğrudan
 sihirbaz açılır, sonrasında menü çıkar.
@@ -110,6 +110,7 @@ def _plaka_sina() -> int:
     kurulum gerekmez. paketle derlenmiş .exe'yi bununla sınar; sahada da
     "plaka okuyucu çalışıyor mu" sorusunun en kısa cevabıdır.
     """
+    import arac
     import plaka
     ayar, uyarilar = plaka.calisma_ayarlari()
     for u in uyarilar:
@@ -120,6 +121,13 @@ def _plaka_sina() -> int:
         print(f"\n  ✗ Plaka okuyucu çalışmıyor: {e}")
         return 1
     print("\n  ✓ Plaka okuyucu hazır (modeller doğrulandı, öz sınama geçti).")
+    # 1.3.1: paketteki araç modeli de sınanır (eksik DLL / model derlemede görülsün).
+    try:
+        arac.yukle(ayar)
+    except plaka.PlakaHatasi as e:
+        print(f"  ✗ Araç bulucu çalışmıyor: {e}")
+        return 1
+    print("  ✓ Araç bulucu hazır (model doğrulandı, öz sınama geçti).")
     return 0
 
 

@@ -1249,6 +1249,13 @@ def baslangic_dogrula(yon: str, azami_sn: float = 30, kamera_sn: float = 45,
             print("  ✓ Köprü çalışıyor: kamera bağlandı, sunucu kabul etti.")
             if plaka_hali:
                 print(f"  ✓ Plaka okuyucu {plaka_hali}.")
+            # 1.3.1: araç bulucu çalışmasa da kurulum tamamdır (köprü 1.3.0
+            # kuralıyla sürer, araç kaybolmaz) — ama söylenir.
+            arac_hali = durum.arac_durumu(satirlar)
+            if arac_hali == "hazır":
+                print("  ✓ Araç bulucu hazır.")
+            elif arac_hali:
+                print(f"  ! Araç bulucu {arac_hali}.")
             return True
         if time.monotonic() >= bitis:
             break

@@ -237,6 +237,33 @@ def plaka_durumu(satirlar: list[str]) -> tuple[str | None, bool]:
     return None, False
 
 
+def arac_durumu(satirlar: list[str]) -> str | None:
+    """
+    1.3.1 araç bulucusunun hâli — bu başlangıçtan beri SON söz. Çalışmıyorsa
+    köprü 1.3.0 kuralıyla sürer (duran plakasız her şey personele): araç
+    kaybolmaz, sağlık kırmızı OLMAZ — ama yaya yine kayıt açabilir.
+    """
+    for satir in reversed(satirlar):
+        if gunluk.ARAC_BOZUK_ISARETI in satir:
+            sebep = satir.split(gunluk.ARAC_BOZUK_ISARETI, 1)[1].lstrip(": ").strip()
+            sebep = sebep.split(" — ")[0].strip()
+            return (f"çalışmıyor ({sebep or 'bilinmiyor'}) — plakasız duranlar 1.3.0 "
+                    "kuralıyla personele gidiyor")
+        if gunluk.ARAC_KAPALI_ISARETI in satir:
+            return "kapalı (ARAC_BUL=0) — plakasız duranlar 1.3.0 kuralıyla personele gidiyor"
+        if gunluk.ARAC_HAZIR_ISARETI in satir:
+            return "hazır"
+        if "köprü başladı" in satir:
+            return None
+    return None
+
+
+def arac_yok_sayisi(satirlar: list[str]) -> int:
+    """Bugün: duran plakasız şeyde araç görülmedi, gönderilmedi (yaya)."""
+    bugun = time.strftime("%d.%m")
+    return sum(1 for s in satirlar if s.startswith(bugun) and gunluk.ARAC_YOK_ISARETI in s)
+
+
 def plaka_ozet(satirlar: list[str]) -> tuple[int, int, int]:
     """Bugün: (plakası okunup gönderilen, personele bırakılan, plakasız hareket)."""
     bugun = time.strftime("%d.%m")
@@ -368,6 +395,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
 
     if plaka_hali:
         print(f"     Plaka okuma  : {plaka_hali}")
+    arac_hali = arac_durumu(satirlar)
+    if arac_hali:
+        print(f"     Araç bulucu  : {arac_hali}")
     bekleyen = _bekleyen_metni(yon)
     if bekleyen:
         print(f"     Bekleyen     : {bekleyen}")
@@ -376,6 +406,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
     ek = ""
     if personele or plakasiz:
         ek = f", {personele} personele, {plakasiz} plakasız hareket"
+        arac_yok = arac_yok_sayisi(satirlar)
+        if arac_yok:
+            ek += f" (araç görülmedi: {arac_yok})"
     print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme{ek}")
     if son_hata:
         print(f"     Son uyarı    : {son_hata[:110]}")

@@ -55,6 +55,7 @@ import cv2
 import numpy as np
 import requests
 
+import arac
 import giden
 import gunluk
 import kesif
@@ -1053,6 +1054,17 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
         print(f"  ✗ Plaka okuyucu çalışmıyor: {e}")
         return 1
     print("  ✓ Plaka okuyucu hazır.")
+    # 1.3.1: araç bulucu da — çalışmasa test sürer (köprü de 1.3.0 kuralıyla sürer).
+    bulucu = None
+    if not p_ayar["arac_acik"]:
+        print("  ! ARAC_BUL=0: köprü bu şeritte araç bulucuyu kullanmıyor.")
+    else:
+        try:
+            bulucu = arac.yukle(p_ayar)
+            print(f"  ✓ Araç bulucu hazır (duran ≥{bulucu.esik:.2f}, geçen ≥{bulucu.gecis_esik:.2f}).")
+        except plaka.PlakaHatasi as e:
+            print(f"  ! Araç bulucu çalışmıyor: {e} — köprü plakasız duranları 1.3.0 "
+                  "kuralıyla personele bırakır.")
 
     # Adres şifre taşır: ekrana yalnızca kameranın adresi yazılır.
     try:
@@ -1060,10 +1072,14 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     except ValueError:
         host = "?"
     print(f"  Kamera: {host}   ({int(sure_sn)} sn; Ctrl+C ile erken bitirebilirsiniz)")
-    print("  Araç geçirin. Her satır: saat · süre · kutu skoru → okuma (iki kırpıntı).\n")
+    print("  Araç geçirin. Her satır: saat · süre · kutu skoru → okuma (iki kırpıntı)"
+          + (" · araç / insan puanı" if bulucu else "") + ".")
+    print("  Süre, köprünün bir karede yaptığı TÜM iş (plaka + araç bulucu).\n")
 
     cap = (kamera or kamera_baglan)(rtsp)
     kareler = kutulu = bos = 0
+    arac_kare = 0
+    arac_enb = 0.0
     emin: dict[str, int] = {}
     sureler: list[float] = []
     haric_k = None
@@ -1103,16 +1119,33 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
             except Exception as e:  # noqa: BLE001 — test kipi: sebebi göster, dur
                 print(f"  ✗ Plaka okuyucu hata verdi: {type(e).__name__}: {e}")
                 return 1
+            puan = ""
+            arac_var = False
+            if bulucu is not None:
+                try:
+                    a, i = bulucu.skor(kirpik, haric_k)
+                except Exception as e:  # noqa: BLE001 — köprüde de plaka okumayı durdurmaz
+                    print(f"  ! Araç bulucu hata verdi: {type(e).__name__}: {e}")
+                    bulucu = None
+                else:
+                    puan = f"araç {a:.2f} / insan {i:.2f}"
+                    arac_enb = max(arac_enb, a)
+                    if a >= bulucu.esik:
+                        arac_var = True
+                        arac_kare += 1
             ms = (time.perf_counter() - t0) * 1000
             sureler.append(ms)
             simdi = time.monotonic()
-            if parcalar:
-                kutulu += 1
-                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  " + " · ".join(parcalar),
+            if parcalar or arac_var:
+                if parcalar:
+                    kutulu += 1
+                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  "
+                      + " · ".join((parcalar or ["plaka yok"]) + ([puan] if puan else [])),
                       flush=True)
                 son_satir = simdi
             elif simdi - son_satir >= PLAKA_TEST_SESSIZ_SN:
-                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  plaka yok", flush=True)
+                print(f"  {time.strftime('%H:%M:%S')}  {ms:5.0f} ms  plaka yok"
+                      + (f" · {puan}" if puan else ""), flush=True)
                 son_satir = simdi
             if ara_sn:
                 time.sleep(ara_sn)
@@ -1127,6 +1160,9 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
         return 1
     print(f"  {kareler} kare · {kutulu} karede plaka kutusu · süre ortalama "
           f"{sum(sureler) / len(sureler):.0f} ms, en çok {max(sureler):.0f} ms")
+    if bulucu is not None:
+        print(f"  Araç bulucu: {arac_kare} karede araç (≥{bulucu.esik:.2f}), "
+              f"en yüksek puan {arac_enb:.2f}.")
     if emin:
         print("  ✓ Emin okunan plakalar: "
               + ", ".join(f"{m} ×{n}" for m, n in sorted(emin.items(), key=lambda x: -x[1])))
@@ -1184,8 +1220,24 @@ def main() -> None:
         sebep = "kapalı (PLAKA_BUL=0)"
         print(f"[i] {gunluk.PLAKA_KAPALI_ISARETI} (PLAKA_BUL=0) — araçlar personele gidecek",
               flush=True)
+    # ---- 1.3.1: araç bulucu. Yüklenemezse köprü DÜŞMEZ: 1.3.0 kuralıyla sürer
+    # (duran plakasız her şey personele) — araç kaybolmaz.
+    bulucu = None
+    if plakaci is None:
+        pass        # okuyucu yoksa işçi iş almaz; bulucu da çalışamaz
+    elif p_ayar["arac_acik"]:
+        try:
+            bulucu = arac.yukle(p_ayar)
+            print(f"[i] {gunluk.ARAC_HAZIR_ISARETI} (duran ≥{p_ayar['arac_esik']:.2f}, "
+                  f"geçen ≥{p_ayar['arac_gecis_esik']:.2f})", flush=True)
+        except plaka.PlakaHatasi as e:
+            print(f"[!] {gunluk.ARAC_BOZUK_ISARETI}: {e} — plakasız araçlar 1.3.0 "
+                  "kuralıyla personele gidecek", flush=True)
+    else:
+        print(f"[i] {gunluk.ARAC_KAPALI_ISARETI} (ARAC_BUL=0)", flush=True)
     global _isci, _giden
-    isci = okuma.Isci(plakaci, haric=None, oku_esik=p_ayar["oku_esik"], sebep=sebep)
+    isci = okuma.Isci(plakaci, haric=None, oku_esik=p_ayar["oku_esik"], sebep=sebep,
+                      arac=bulucu)
     _isci = isci
 
     # Before the first camera wait: a startup that hangs is as blind as a loop
@@ -1251,11 +1303,16 @@ def main() -> None:
     def bitir(durdu: bool, simdi: float, gri_simdi: np.ndarray | None, d: float) -> bool:
         """Geçişi karara bağlar ve sonucu kutuya yazar. Bir şey gönderildi mi."""
         nonlocal gecis, gecis_arka, son_gonderim_gri, son_durdu_plaka, son_gonderilen
-        isci.bekle(gecis, p_ayar["bekle_sn"])
+        # 1.3.1: bekleme kare süresine uyar — yavaş dizüstünde de durulan
+        # karenin araç ölçümü karara yetişsin (yetişmezse 1.3.0 kuralı).
+        isci.bekle(gecis, isci.bekleme_suresi(p_ayar["bekle_sn"]))
+        esikler = isci.arac_esikleri()          # None: bulucu yok/bozuk → 1.3.0 kuralı
         gonderimler, satirlar = okuma.karar_ver(
             gecis, durdu=durdu, arac_boyu=kapsam >= ARAC_KAPSAM_ESIGI,
             ayrilis_sahne=ayrilis_sahne, son_durdu_plaka=son_durdu_plaka,
-            bozuk=isci.bozuk is not None, son_gonderilen=son_gonderilen, simdi=simdi)
+            bozuk=isci.bozuk is not None, son_gonderilen=son_gonderilen, simdi=simdi,
+            arac_esik=esikler[0] if esikler else None,
+            arac_gecis_esik=esikler[1] if esikler else None)
         plaka_sayisi = sum(1 for g in gonderimler if g.tur == "PLAKA")
         personel = len(gonderimler) - plaka_sayisi
         ozet = (f"{plaka_sayisi} plaka" if plaka_sayisi else "") + \
@@ -1396,7 +1453,8 @@ def main() -> None:
             durdu = not _arkaya_dondu(gri, gecis_arka)
             if durdu:
                 gecis.durgun_kirpik = kirpik.copy()
-                isci.ver(okuma.Is(gecis, gecis.durgun_kirpik, zaman, gorunum), oncelik=True)
+                isci.ver(okuma.Is(gecis, gecis.durgun_kirpik, zaman, gorunum, durgun=True),
+                         oncelik=True)
             gonderildi = bitir(durdu, simdi, gri, d)
         elif (gecis is not None and simdi - son_hareket >= GECIS_BEKLE_SN
               and _arkaya_dondu(gri, gecis_arka)):

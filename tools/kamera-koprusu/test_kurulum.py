@@ -3846,6 +3846,63 @@ def test_durum_plaka_okuyucu_satiri() -> None:
     assert ok is True and "Plaka okuma  : hazır" in cikti, cikti
 
 
+def test_durum_arac_bulucu_satiri() -> None:
+    """
+    1.3.1: "Araç bulucu:" satırı bulucunun hâlini kayıttan okur (bu
+    başlangıçtan beri SON söz). Bulucu çalışmıyorsa köprü 1.3.0 kuralıyla
+    sürer (duran plakasız her şey personele) — araç kaybolmaz, sağlık
+    KIRMIZI olmaz; ama satır bunu açıkça söyler.
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
+    eski = f"{bugun} 08:00:00  [i] {gunluk.ARAC_HAZIR_ISARETI}"
+    assert durum.arac_durumu([bas]) is None
+    assert durum.arac_durumu([eski, bas]) is None                    # önceki başlangıç sayılmaz
+    assert durum.arac_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.ARAC_HAZIR_ISARETI}"]) == "hazır"
+    bozuk = (f"{bugun} 09:00:01  [!] {gunluk.ARAC_BOZUK_ISARETI}: araç bulucu dosyası "
+             "bulunamadı: yolox_tiny.onnx — plakasız araçlar 1.3.0 kuralıyla personele gidecek")
+    m = durum.arac_durumu([bas, bozuk])
+    assert "çalışmıyor" in m and "yolox_tiny.onnx" in m and "1.3.0" in m, m
+    m = durum.arac_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.ARAC_KAPALI_ISARETI} (ARAC_BUL=0)"])
+    assert "kapalı" in m, m
+
+    calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
+    plaka_hazir = f"{bugun} 09:00:01  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1)"
+    ok, cikti = _durum_senaryosu([bas, plaka_hazir, bozuk,
+                                  f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}", calisiyor])
+    assert ok is True and "Araç bulucu  : çalışmıyor" in cikti, cikti
+    ok, cikti = _durum_senaryosu([bas, plaka_hazir, f"{bugun} 09:00:01  [i] {gunluk.ARAC_HAZIR_ISARETI}",
+                                  f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}", calisiyor])
+    assert ok is True and "Araç bulucu  : hazır" in cikti, cikti
+    # Kurulum: bulucu çalışmasa da kurulum tamamlanır, ama söylenir.
+    ok, cikti = _baslangic([bas, plaka_hazir, bozuk,
+                            f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}",
+                            f"{bugun} 09:00:03  [i] {gunluk.SUNUCU_TAMAM_ISARETI}"])
+    assert ok is True and "araç bulucu çalışmıyor" in cikti.lower(), cikti
+
+
+def test_durum_arac_gorulmedi_sayilir() -> None:
+    """Bugün kaç duran plakasız şeyde araç görülmedi (gönderilmedi) — ayrıca yazılır."""
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    satirlar = [
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:03:00  [i] {gunluk.PLAKASIZ_ISARETI} (0 kutulu kare) — "
+        f"{gunluk.ARAC_YOK_ISARETI} (araç 0.10, insan 0.91)",
+        f"{bugun} 09:04:00  [i] {gunluk.PLAKASIZ_ISARETI} (0 kutulu kare)",
+        f"01.01 09:03:00  [i] {gunluk.PLAKASIZ_ISARETI} (0 kutulu kare) — "
+        f"{gunluk.ARAC_YOK_ISARETI} (araç 0.10, insan 0.91)",                  # dün
+    ]
+    assert durum.plaka_ozet(satirlar) == (0, 0, 2)
+    assert durum.arac_yok_sayisi(satirlar) == 1
+    ok, cikti = _durum_senaryosu(satirlar + [f"{bugun} 09:05:00  [i] {gunluk.KAMERA_VAR_ISARETI}",
+                                             f"{bugun} 09:05:00  [i] çalışıyor — 9 kare, 0 gönderim"])
+    assert "2 plakasız hareket (araç görülmedi: 1)" in cikti, cikti
+
+
 def test_durum_plaka_ozeti_ve_kamera_kaniti() -> None:
     import durum
     import gunluk
@@ -4021,15 +4078,27 @@ def test_giris_plaka_kipi() -> None:
             os.environ["PROGRAMDATA"] = eski_pd
 
 
-def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False):
+def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hata=False):
     """kopru.plaka_testi'ni sahte kamera ve sahte okuyucuyla koşar: (kod, çıktı, kamera açıldı mı)."""
     import io as _io
     from contextlib import redirect_stdout
     import numpy as np
     _kopru_yuklu()
+    import arac
     import gunluk
     import kopru
     import plaka
+
+    class SahteArac:
+        esik, gecis_esik = 0.35, 0.60
+
+        def skor(self, kirpik, haric):
+            return 0.9, 0.05
+
+    def arac_yukle(ayar, dizin=None):
+        if arac_hata:
+            raise plaka.PlakaHatasi("araç bulucu dosyası bulunamadı: (test)")
+        return SahteArac()
 
     K = plaka.Kutu
     orta = K(600, 300, 800, 345, 0.9)
@@ -4064,8 +4133,9 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False):
                    "KIRPMA": "0,0,1600,700", "KIRPMA_HARIC": "", **(ayar_ek or {})}, f)
     calisma = tempfile.mkdtemp()
     acildi: list[str] = []
-    eski = (plaka.yukle, gunluk.baslat, kopru.requests.post, os.getcwd())
+    eski = (plaka.yukle, gunluk.baslat, kopru.requests.post, os.getcwd(), arac.yukle)
     plaka.yukle, gunluk.baslat, kopru.requests.post = yukle, yasak, yasak
+    arac.yukle = arac_yukle
     try:
         os.chdir(calisma)
         yakala = _io.StringIO()
@@ -4074,6 +4144,7 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False):
                                     kamera=lambda url: (acildi.append(url), SahteKamera())[1])
     finally:
         plaka.yukle, gunluk.baslat, kopru.requests.post = eski[:3]
+        arac.yukle = eski[4]
         os.chdir(eski[3])
     # Hiçbir dosya yazılmaz: ne çalışma klasörüne ne ayar klasörüne.
     assert os.listdir(calisma) == [], os.listdir(calisma)
@@ -4092,6 +4163,15 @@ def test_plaka_kipi_emin_okuma() -> None:
     assert acildi == ["rtsp://u:p@10.0.0.9:554/1"], acildi
     assert "34ABC123" in c and "EMİN" in c and " ms" in c, c
     assert "hazır" in c.lower(), c
+    # 1.3.1: araç bulucunun puanı da her satırda; ms ikisinin toplam süresi.
+    assert "Araç bulucu hazır" in c and "araç 0.90" in c, c
+
+
+def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:
+    """Araç bulucu yüklenemese de `--plaka` plakayı sınar (köprü de böyle sürer)."""
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.97)], arac_hata=True)
+    assert kod == 0 and "EMİN" in c, c
+    assert "Araç bulucu çalışmıyor" in c and "araç 0." not in c, c
 
 
 def test_plaka_kipi_belirsiz_ve_kesik() -> None:
@@ -4145,6 +4225,7 @@ def test_paket_surum_sabitleri() -> None:
 
 def test_paket_model_kontrolu() -> None:
     """Paketlenecek modeller plaka.py'deki özetlerle birebir olmalı; eksik ya da farklıysa derleme durur."""
+    import arac
     import paketle
     import plaka
     assert paketle.model_sorunlari(plaka.MODEL_DIZINI) == []
@@ -4152,8 +4233,12 @@ def test_paket_model_kontrolu() -> None:
     with open(os.path.join(d, plaka.BULUCU.dosya), "wb") as f:
         f.write(b"bozuk")
     sorunlar = paketle.model_sorunlari(d)
-    assert len(sorunlar) == 2, sorunlar
-    assert any(plaka.BULUCU.dosya in s for s in sorunlar) and any(plaka.OKUYUCU.dosya in s for s in sorunlar)
+    # 1.3.1: araç modeli ve öz sınama resmi de (biri bozuk, üçü eksik).
+    assert len(sorunlar) == 4, sorunlar
+    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA):
+        assert any(m.dosya in s for s in sorunlar), (m.dosya, sorunlar)
+    for ad in (arac.MODEL.dosya, arac.SINAMA.dosya):
+        assert ad in paketle.MODEL_DOSYALARI, ad
 
 
 def test_model_lisansi_yaninda() -> None:
@@ -4162,12 +4247,21 @@ def test_model_lisansi_yaninda() -> None:
     iki MIT metni, sürümler, özetler ve bulucu ağırlıklarının lisansının
     belirtilmediği (sahibin 2026-11-06 kabulü).
     """
+    import arac
     import plaka
     with open(os.path.join(plaka.MODEL_DIZINI, "LISANS.txt"), encoding="utf-8") as f:
         metin = f.read()
     assert metin.count("MIT License") == 2, metin[:200]
     for gerekli in ("open-image-models", "fast-plate-ocr", plaka.BULUCU.sha256,
                     plaka.OKUYUCU.sha256, plaka.BULUCU.dosya, plaka.OKUYUCU.dosya):
+        assert gerekli in metin, gerekli
+    # 1.3.1: araç bulucu (YOLOX, Apache-2.0) ve öz sınama resmi.
+    # Apache-2.0'ın TAM metni bir kez (başlığı metinde tek geçer) ve YOLOX'un
+    # telif satırı (lisans koşulu: bildirimler korunur).
+    assert metin.count("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION") == 1
+    assert "Copyright (c) 2021-2022 Megvii Inc." in metin
+    for gerekli in ("YOLOX", arac.MODEL.sha256, arac.MODEL.dosya, arac.MODEL.kaynak,
+                    arac.SINAMA.sha256, arac.SINAMA.dosya):
         assert gerekli in metin, gerekli
 
 
@@ -4214,6 +4308,7 @@ def test_paket_lisanslari_toplanir() -> None:
             alt = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", gereken).group(1)
             assert normal(alt) in satir_adlari, (ad, alt, sorted(satir_adlari))
     assert "modeller-LISANS.txt" in dosyalar and "fast-plate-ocr" in dizin, (dosyalar, dizin)
+    assert "YOLOX" in dizin and "Apache-2.0" in dizin, dizin
     try:
         paketle.lisanslari_topla(tempfile.mkdtemp(), ["yok-boyle-bir-paket"])
     except SystemExit as e:
@@ -4231,26 +4326,36 @@ def test_giris_plaka_sinama_kipi() -> None:
     """
     import io as _io
     from contextlib import redirect_stdout
+    import arac
     import giris
     import plaka
     assert "--plaka-sina" in giris.KIPLER
-    eski = plaka.yukle
+    eski = plaka.yukle, arac.yukle
+
+    def bozuk(ayar, dizin=None):
+        raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
+
+    def kos() -> tuple[int, str]:
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--plaka-sina"]()
+        return kod, yakala.getvalue()
+
     try:
         plaka.yukle = lambda ayar, dizin=None: object()
-        yakala = _io.StringIO()
-        with redirect_stdout(yakala):
-            kod = giris.KIPLER["--plaka-sina"]()
-        assert kod == 0 and "hazır" in yakala.getvalue(), yakala.getvalue()
-
-        def bozuk(ayar, dizin=None):
-            raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
+        arac.yukle = lambda ayar, dizin=None: object()
+        kod, c = kos()
+        assert kod == 0 and "Plaka okuyucu hazır" in c and "Araç bulucu hazır" in c, c
         plaka.yukle = bozuk
-        yakala = _io.StringIO()
-        with redirect_stdout(yakala):
-            kod = giris.KIPLER["--plaka-sina"]()
-        assert kod == 1 and "çalışmıyor" in yakala.getvalue(), yakala.getvalue()
+        kod, c = kos()
+        assert kod == 1 and "Plaka okuyucu çalışmıyor" in c, c
+        # 1.3.1: paketteki araç modeli eksik/bozuksa derleme sınaması da düşmeli.
+        plaka.yukle = lambda ayar, dizin=None: object()
+        arac.yukle = bozuk
+        kod, c = kos()
+        assert kod == 1 and "Araç bulucu çalışmıyor" in c, c
     finally:
-        plaka.yukle = eski
+        plaka.yukle, arac.yukle = eski
 
 
 if __name__ == "__main__":

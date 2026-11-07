@@ -112,7 +112,8 @@ class PlakaHatasi(Exception):
 # ------------------------------------------------------------------ ayarlar ----
 
 AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK",
-               "PLAKA_IPLIK", "PLAKA_BEKLE_SN")
+               "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
+               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK")
 
 
 def _oran(alt_dahil: bool):
@@ -129,6 +130,12 @@ _KURALLAR = (
     ("PLAKA_TEK_ESIK", "tek_esik", 0.99, float, _oran(False)),
     ("PLAKA_IPLIK", "iplik", 1, int, lambda v: 1 <= v <= 8),
     ("PLAKA_BEKLE_SN", "bekle_sn", 0.4, float, lambda v: 0 <= v <= 5),
+    # 1.3.1 araç bulucu (arac.py). Faz 0: araçlar 0.40-0.94, insanlar ≤0.27.
+    # Duran şey ARAC_BUL_ESIK altındaysa araç sayılmaz; durmadan geçen plakasız
+    # şey ancak ARAC_GECIS_ESIK'i geçerse araç sayılır (gölge kart açmasın).
+    ("ARAC_BUL", "arac_acik", True, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
+    ("ARAC_BUL_ESIK", "arac_esik", 0.35, float, lambda v: 0 < v < 1),
+    ("ARAC_GECIS_ESIK", "arac_gecis_esik", 0.60, float, lambda v: 0 < v < 1),
 )
 
 
@@ -523,6 +530,18 @@ def _ort_yukle():
     return ort
 
 
+def oturum_ayarlari(ort, iplik: int):
+    """Köprünün iki modülünün (plaka, araç) ortak onnxruntime oturum ayarları."""
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = int(iplik)
+    so.inter_op_num_threads = 1
+    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    so.log_severity_level = 3
+    # Boşta dönen iş parçacığı bir çekirdeği yakar; köprü 7/24 çalışıyor.
+    so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    return so
+
+
 def yukle(ayar: dict, dizin: str | None = None) -> Plakaci:
     """
     İki modeli doğrular, açar ve sınar. Her hata PlakaHatasi (Türkçe sebep);
@@ -541,13 +560,7 @@ def yukle(ayar: dict, dizin: str | None = None) -> Plakaci:
     except ImportError as e:
         raise PlakaHatasi(f"onnxruntime yüklenemedi: {e}") from None
     try:
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = int(ayar["iplik"])
-        so.inter_op_num_threads = 1
-        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        so.log_severity_level = 3
-        # Boşta dönen iş parçacığı bir çekirdeği yakar; köprü 7/24 çalışıyor.
-        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        so = oturum_ayarlari(ort, ayar["iplik"])
         saglayici = ["CPUExecutionProvider"]
         bulucu = ort.InferenceSession(os.path.join(d, BULUCU.dosya), so, providers=saglayici)
         okuyucu = ort.InferenceSession(os.path.join(d, OKUYUCU.dosya), so, providers=saglayici)

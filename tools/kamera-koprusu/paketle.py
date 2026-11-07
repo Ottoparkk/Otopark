@@ -41,7 +41,9 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.3.0"   # 1.3.0: plaka bu bilgisayarda okunur (YOLOv9 + fast-plate-ocr, ONNX);
+SURUM = "1.3.1"   # 1.3.1: araç bulucu (YOLOX-tiny, Apache-2.0) her karede: duran
+                  #        yaya kayıt açmaz; durmadan geçen plakasız araç personele
+                  # 1.3.0: plaka bu bilgisayarda okunur (YOLOv9 + fast-plate-ocr, ONNX);
                   #        kameranın SMD olayları ve sunucuda okuma yok; L biçimli alan
                   #        (KIRPMA_HARIC); internet yokken araçlar diskte bekler (giden.py)
                   # 1.1.0: tek kapı (ORTAK şeridi) · 1.2.0: boş şeridi kendi öğrenir · 1.2.3: sıkıştırılmış plaka fotoğrafı · 1.2.5: durmadan geçen araç
@@ -61,7 +63,7 @@ SURUM = "1.3.0"   # 1.3.0: plaka bu bilgisayarda okunur (YOLOv9 + fast-plate-ocr
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "plaka", "okuma", "giden"]
+            "plaka", "okuma", "giden", "arac"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 HARIC = ["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PyQt6",
@@ -72,7 +74,9 @@ MODEL_KLASORU = os.path.join(BURASI, "modeller")
 # 1.3.0: pakete giren model klasörü dosyaları — açık liste (klasördeki
 # .gitattributes ve ileride bırakılabilecek başka bir şey pakete girmesin).
 MODEL_DOSYALARI = ["yolo-v9-t-640-license-plates-end2end.onnx", "cct_s_v2_global.onnx",
-                   "cct_s_v2_global_plate_config.yaml", "LISANS.txt"]
+                   "cct_s_v2_global_plate_config.yaml", "LISANS.txt",
+                   # 1.3.1: araç bulucu ve öz sınama resmi
+                   "yolox_tiny.onnx", "arac_sinama.jpg"]
 
 # Lisans dosyası sayılan adlar (dist-info içinde).
 _LISANS_ADI = re.compile(r"(LICEN[CS]E|COPYING|NOTICE)", re.I)
@@ -127,15 +131,16 @@ def surum_sorunlari(yol: str = GEREKSINIM) -> list[str]:
 
 
 def model_sorunlari(dizin: str = MODEL_KLASORU) -> list[str]:
-    """Modeller yerinde ve özetleri plaka.py'deki sabitlerle aynı mı?"""
+    """Modeller yerinde ve özetleri plaka.py / arac.py'deki sabitlerle aynı mı?"""
+    import arac
     import plaka
     sorunlar = []
-    for m in (plaka.BULUCU, plaka.OKUYUCU):
+    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA):
         yol = os.path.join(dizin, m.dosya)
         if not os.path.isfile(yol):
             sorunlar.append(f"model yok: {m.dosya}")
         elif plaka.sha256_dosya(yol) != m.sha256:
-            sorunlar.append(f"model özeti plaka.py ile tutmuyor: {m.dosya}")
+            sorunlar.append(f"model özeti kodla (plaka.py / arac.py) tutmuyor: {m.dosya}")
     return sorunlar
 
 
@@ -244,6 +249,7 @@ def lisanslari_topla(hedef: str, kokler) -> str:
         satirlar.append("    Python-LICENSE.txt")
     _kopyala(os.path.join(MODEL_KLASORU, "LISANS.txt"), os.path.join(klasor, "modeller-LISANS.txt"))
     satirlar.append("Plaka modelleri (open-image-models, fast-plate-ocr)  —  MIT")
+    satirlar.append("Araç bulucu (YOLOX-tiny, Megvii) ve öz sınama resmi  —  Apache-2.0")
     satirlar.append("    modeller-LISANS.txt")
     with open(os.path.join(klasor, "LISANSLAR.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(satirlar) + "\n")

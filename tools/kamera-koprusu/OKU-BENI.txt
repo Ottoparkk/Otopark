@@ -125,26 +125,40 @@ ELİNİZDE HAZIR OLSUN
 
   Durum ekranında şunlar görünür:
       Plaka okuma  : hazır
-      Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket
+      Araç bulucu  : hazır
+      Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket (araç görülmedi: 4)
   "personele" = plakası emin okunamayıp fotoğrafıyla "Çözülmemiş
   kayıtlar"a düşen araçlar; personel uygulamadan karar verir.
   "plakasız hareket" = kutudan geçen ama araç olmayan şeyler (yürüyen
   biri, gölge, far); bunlar HİÇBİR YERE gönderilmez. İkisini de görmek
   NORMALDİR.
+  "araç görülmedi" (1.3.1) = kameranın önünde DURAN ama araç olmayan
+  şeyler (çoğu zaman insanlar); bunlar da gönderilmez.
+  "Araç bulucu" satırı "çalışmıyor" derse araçlar KAYBOLMAZ, ama önünde
+  duran insanlar yine "Çözülmemiş kayıt" açabilir: programı açıp
+  "2) Yeniden kur" deyin; düzelmezse satırı iletin.
 
   Gönderilmeyen durumlar da normaldir: aynı plaka 60 saniye içinde
   ikinci kez gönderilmez; duran aracın GİDİŞİ gönderilmez.
 
-  MOTOSİKLET: önünde plaka olmadığı için okunamaz; motosikletleri
-  uygulamadan elle girin.
+  MOTOSİKLET: önünde plaka olmadığı için okunamaz. 1.3.1'den beri kamera
+  onu araç olarak görürse fotoğrafıyla "Çözülmemiş kayıtlar"a düşer
+  (oradan karar verin); görmezse uygulamadan elle girin.
+
+  PLAKASI OKUNAMAYAN ARAÇ (1.3.1): durmadan geçen ve plakası hiç
+  okunamayan bir araç da fotoğrafıyla "Çözülmemiş kayıtlar"a düşer
+  (1.3.0'da sessizce kayboluyordu).
 
   KONTROL (kurulumdan sonra, GÜNDÜZ ve GECE birer kez): Başlat'a "cmd"
   yazın, sağ tık → "Yönetici olarak çalıştır", sonra programın yolunu
   --plaka ile yazın:
       "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --plaka
-  İki dakika boyunca bulduğu plakaları ve okumalarını gösterir; hiçbir
-  şey göndermez, hiçbir şey kaydetmez. Birkaç araç geçirin: her araç en
-  az bir kez doğru plakasıyla "EMİN" görünmeli. "kesik" = plaka kutunun
+  İki dakika boyunca bulduğu plakaları ve okumalarını, 1.3.1'den beri
+  her satırda "araç / insan" puanını da gösterir; hiçbir şey göndermez,
+  hiçbir şey kaydetmez. Birkaç araç geçirin: her araç en az bir kez doğru
+  plakasıyla "EMİN" görünmeli ve araç puanı 0.35'in üstüne çıkmalı;
+  kameranın önünde bir kişi durunca araç puanı 0.35'in ALTINDA kalmalı.
+  Satırdaki "ms" bir karenin tüm işidir; 400 ms'yi sık geçiyorsa iletin. "kesik" = plaka kutunun
   kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
   (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —
   geçen araçlarla karşılaştırın; yanlış olan varsa ekranın fotoğrafını

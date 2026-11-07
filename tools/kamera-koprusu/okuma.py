@@ -22,6 +22,16 @@ Kurallar (işletme sahibinin kararları, 2026-11-06):
   · Aynı plaka (ya da bir karakter farklısı) 60 sn içinde ikinci kez gitmez.
   · Okuyucu bozuksa (model yok / çöktü) araç boyutundaki her geçiş personele.
 Kayıt satırlarına plaka YAZILMAZ.
+
+1.3.1 — araç bulucu (arac.py, sahibin kararları 2026-11-07):
+  · Her karede çalışır (plaka kutusu olan karede de); plaka okumasından
+    sonra, ondan bağımsız. Çökerse plaka okuma SÜRER, bulucu kapanır.
+  · Duran, araç boyunda, plakasız şey: durduğu karede araç yoksa (ve geçişte
+    önceden olmayan net bir araç da görülmediyse) personele GİTMEZ — duran
+    insanlar. Durduğu kare ölçülemediyse 1.3.0 kuralı (personele).
+  · Durmadan geçen, plakası hiç okunamayan, NET bir araç (geçişten önce
+    orada olmayan) da personele gider (1.3.0'da sessizce düşüyordu).
+  · Bulucu yok / bozuk / kapalı: kararlar 1.3.0 ile birebir aynı.
 """
 from __future__ import annotations
 
@@ -37,6 +47,16 @@ import plaka
 AYRILIS_ISARETI = gunluk.AYRILIS_ISARETI
 PLAKASIZ_ISARETI = gunluk.PLAKASIZ_ISARETI
 OKUYUCU_BOZUK_ISARETI = gunluk.OKUYUCU_BOZUK_ISARETI
+ARAC_BOZUK_ISARETI = gunluk.ARAC_BOZUK_ISARETI
+ARAC_YOK_ISARETI = gunluk.ARAC_YOK_ISARETI
+ARAC_YETISMEDI_ISARETI = gunluk.ARAC_YETISMEDI_ISARETI
+PLAKASIZ_ARAC_ISARETI = gunluk.PLAKASIZ_ARAC_ISARETI
+
+# 1.3.1: karar, durulan karenin sonucunu işçinin ölçülen kare süresinin bu
+# katı kadar bekler (bir süren iş + durulan kare ≈ 2 kare), en az
+# PLAKA_BEKLE_SN, en çok BEKLE_TAVAN_SN (o sırada yakalama döngüsü bekler).
+BEKLE_KAT = 2.5
+BEKLE_TAVAN_SN = 2.0
 
 # Arka plan (geçişten önceki durgun kare) okuması: ayrılışı tanımak için, oy değil.
 ARKA_ESIK = 0.80
@@ -65,6 +85,12 @@ class Gecis:
         self.arka_kutulu = False
         self.durgun_kirpik: np.ndarray | None = None
         self.son_kirpik: np.ndarray | None = None
+        # 1.3.1 araç bulucu: None = ÖLÇÜLMEDİ (bulucu yok, iş yetişmedi).
+        self.arac_max: float | None = None          # geçişin karelerinde en yüksek
+        self.arac_kirpik: np.ndarray | None = None  # o karenin kendisi (fotoğraf)
+        self.arac_durgun: float | None = None       # durulan karede
+        self.arac_arka: float | None = None         # geçişten ÖNCEKİ durgun karede
+        self.insan_max: float | None = None         # yalnızca kayıt satırı için
         self.kilit = threading.Lock()
 
 
@@ -91,8 +117,35 @@ def kutuyu_oku(p, kirpik: np.ndarray, k, haric, esik: float):
 
 
 def kareyi_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
-                oku_esik: float, arka: bool = False) -> None:
-    """Bir kareyi okur ve sonucu geçişe yazar (işçi çağırır; testler de)."""
+                oku_esik: float, arka: bool = False, arac_skoru=None,
+                durgun: bool = False) -> None:
+    """
+    Bir kareyi okur ve sonucu geçişe yazar (işçi çağırır; testler de).
+    `arac_skoru(kirpik, haric)` → (araç, insan) ya da None (ölçülemedi);
+    verilmişse plaka işinden SONRA her karede çağrılır.
+    """
+    _plaka_isle(p, gecis, kirpik, zaman, gorunum, haric, oku_esik, arka)
+    if arac_skoru is None:
+        return
+    olcum = arac_skoru(kirpik, haric)
+    if olcum is None:
+        return
+    a, i = olcum
+    with gecis.kilit:
+        if arka:
+            # Geçişten önceki sahne: bu geçişin aracı DEĞİL, karşılaştırma için.
+            gecis.arac_arka = a if gecis.arac_arka is None else max(gecis.arac_arka, a)
+            return
+        if gecis.arac_max is None or a > gecis.arac_max:
+            gecis.arac_max = a
+            gecis.arac_kirpik = kirpik
+        gecis.insan_max = i if gecis.insan_max is None else max(gecis.insan_max, i)
+        if durgun:
+            gecis.arac_durgun = a
+
+
+def _plaka_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
+                oku_esik: float, arka: bool) -> None:
     kutular = kutulari_bul(p, kirpik, haric)
     if arka:
         if kutular:
@@ -135,21 +188,28 @@ class Is(NamedTuple):
     zaman: object
     gorunum: int
     arka: bool = False
+    durgun: bool = False     # aracın durduğu kare (araç bulucu ayrıca saklar)
 
 
 class Isci:
     """
     Modelleri kendi iş parçacığında çalıştırır. `plakaci` None ise (modeller
     yüklenemedi) baştan bozuktur ve iş almaz — köprü yine çalışır, araçlar
-    personele gider.
+    personele gider. `arac` (1.3.1, arac.AracBulucu ya da None) her karede
+    plaka işinden sonra çalışır; hataları plaka okuyucusundan AYRI sayılır.
     """
 
-    def __init__(self, plakaci, haric, oku_esik: float, kayit=None, sebep: str | None = None):
+    def __init__(self, plakaci, haric, oku_esik: float, kayit=None, sebep: str | None = None,
+                 arac=None):
         self._p = plakaci
         self.haric = haric
         self.oku_esik = oku_esik
         self._kayit = kayit or (lambda s: print(s, flush=True))
         self.bozuk: str | None = sebep if plakaci is None else None
+        self._arac = arac
+        self.arac_bozuk: str | None = None
+        self._arac_ardisik = 0
+        self._ort_sure: float | None = None      # bir işin süresi (üstel ortalama, sn)
         self._kosul = threading.Condition()
         self._slot: Is | None = None
         self._oncelik: Is | None = None
@@ -192,6 +252,13 @@ class Isci:
                 self._kosul.wait(kalan)
             return True
 
+    def bekleme_suresi(self, taban: float) -> float:
+        """Karar bu geçişin işlerini en çok ne kadar beklesin (sn)."""
+        with self._kosul:
+            ort = self._ort_sure
+        sure = taban if ort is None else max(taban, BEKLE_KAT * ort)
+        return min(sure, BEKLE_TAVAN_SN)
+
     def takildi(self, simdi: float, sinir: float) -> bool:
         with self._kosul:
             return self._basladi is not None and simdi - self._basladi > sinir
@@ -200,6 +267,31 @@ class Isci:
         with self._kosul:
             self._dur = True
             self._kosul.notify_all()
+
+    def arac_esikleri(self) -> tuple[float, float] | None:
+        """
+        (duran eşiği, geçen eşiği) — araç bulucu kullanılabiliyorsa; yoksa
+        None ve karar 1.3.0 kuralına döner.
+        """
+        if self._arac is None or self.arac_bozuk is not None or self.bozuk is not None:
+            return None
+        return float(self._arac.esik), float(self._arac.gecis_esik)
+
+    def _arac_skoru(self, kirpik: np.ndarray, haric):
+        """Araç bulucuyu çalıştırır; hatası plaka okumasını ASLA durdurmaz."""
+        if self.arac_bozuk is not None:
+            return None
+        try:
+            olcum = self._arac.skor(kirpik, haric)
+        except Exception as e:  # noqa: BLE001 — bulucu okuyucuyu öldürmesin
+            self._arac_ardisik += 1
+            if self._arac_ardisik >= ARDISIK_HATA:
+                self.arac_bozuk = f"{type(e).__name__}: {e}"
+                self._kayit(f"[!] {ARAC_BOZUK_ISARETI}: {self.arac_bozuk} — plakasız "
+                            "araçlar 1.3.0 kuralıyla personele gidecek")
+            return None
+        self._arac_ardisik = 0
+        return olcum
 
     # ------------------------------------------------------------ işçi tarafı --
 
@@ -218,7 +310,9 @@ class Isci:
                 self._basladi = time.monotonic()
             try:
                 kareyi_isle(self._p, is_.gecis, is_.kirpik, is_.zaman, is_.gorunum,
-                            self.haric, self.oku_esik, arka=is_.arka)
+                            self.haric, self.oku_esik, arka=is_.arka,
+                            arac_skoru=self._arac_skoru if self._arac is not None else None,
+                            durgun=is_.durgun)
                 self._ardisik = 0
             except Exception as e:  # noqa: BLE001 — bir kare okuyucuyu öldürmesin
                 self._ardisik += 1
@@ -228,6 +322,9 @@ class Isci:
                                 "personele gidecek")
             finally:
                 with self._kosul:
+                    if self._basladi is not None:
+                        s = time.monotonic() - self._basladi
+                        self._ort_sure = s if self._ort_sure is None else 0.8 * self._ort_sure + 0.2 * s
                     self._calisan = None
                     self._basladi = None
                     self.islenen += 1
@@ -253,12 +350,22 @@ def _foto(gecis: Gecis) -> np.ndarray | None:
     return gecis.durgun_kirpik if gecis.durgun_kirpik is not None else gecis.son_kirpik
 
 
+def _puanlar(arac: float | None, insan: float | None) -> str:
+    a = "?" if arac is None else f"{arac:.2f}"
+    i = "?" if insan is None else f"{insan:.2f}"
+    return f"araç {a}, insan {i}"
+
+
 def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool,
               son_durdu_plaka: str | None, bozuk: bool,
-              son_gonderilen: list, simdi: float) -> tuple[list[Gonderim], list[str]]:
+              son_gonderilen: list, simdi: float,
+              arac_esik: float | None = None,
+              arac_gecis_esik: float | None = None) -> tuple[list[Gonderim], list[str]]:
     """
     (gönderilecekler, kayıt satırları). `son_gonderilen`: [(plaka, monotonic)].
     `son_durdu_plaka`: duran olarak gönderilmiş son aracın plakası (ayrılış).
+    `arac_esik` / `arac_gecis_esik` (1.3.1): araç bulucu kullanılabiliyorsa
+    eşikleri; None ise kararlar 1.3.0 ile birebir aynıdır.
     """
     satirlar: list[str] = []
     with gecis.kilit:
@@ -266,6 +373,13 @@ def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool
         en_iyi = dict(gecis.en_iyi)
         arka = set(gecis.arka_okunan)
         arka_kutulu = gecis.arka_kutulu
+        arac_max, arac_durgun = gecis.arac_max, gecis.arac_durgun
+        arac_arka, insan_max = gecis.arac_arka, gecis.insan_max
+        arac_kirpik = gecis.arac_kirpik
+    bulucu = arac_esik is not None and arac_gecis_esik is not None
+    # Bu geçişte NET bir araç görüldü ve geçişten önce orada değildi.
+    net_arac = (bulucu and arac_max is not None and arac_max >= arac_gecis_esik
+                and arac_arka is not None and arac_arka < arac_esik)
     ayrilis = ayrilis_sahne or (son_durdu_plaka is not None
                                 and any(_yakin(son_durdu_plaka, a) for a in arka))
 
@@ -304,9 +418,27 @@ def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool
             # Geçişten önce kadrajda plakalı bir araç VARDIYSA ve şimdi hiç
             # plaka yoksa değişen şey o aracın GİDİŞİdir, bir şey durmadı
             # (test_kopru `kuyruk`): personele yazılmaz.
-            gonder.append(Gonderim("OKUNAMADI", None, None, None, gecis.baslangic, _foto(gecis)))
+            arac_yok = (bulucu and arac_durgun is not None
+                        and arac_durgun < arac_esik and not net_arac)
+            if arac_yok:
+                # 1.3.1: duran şey araç değil (sahada: kameranın önünde duran insanlar).
+                satirlar.append(f"[i] {PLAKASIZ_ISARETI} ({k.kutulu_kare} kutulu kare) — "
+                                f"{ARAC_YOK_ISARETI} ({_puanlar(arac_durgun, insan_max)})")
+            else:
+                if bulucu and arac_durgun is None and not net_arac:
+                    satirlar.append(f"[i] {ARAC_YETISMEDI_ISARETI} — 1.3.0 kuralı: personele")
+                gonder.append(Gonderim("OKUNAMADI", None, None, None, gecis.baslangic,
+                                       _foto(gecis)))
+        elif not durdu and arac_boyu and not arka_kutulu and net_arac:
+            # 1.3.1: durmadan geçen, plakası hiç okunamayan araç → personele.
+            # Fotoğraf aracın en iyi görüldüğü kare (son kare boş şerit olabilir).
+            satirlar.append(f"[i] {PLAKASIZ_ARAC_ISARETI} — personele "
+                            f"({_puanlar(arac_max, insan_max)})")
+            foto = arac_kirpik if arac_kirpik is not None else _foto(gecis)
+            gonder.append(Gonderim("OKUNAMADI", None, None, None, gecis.baslangic, foto))
         else:
-            satirlar.append(f"[i] {PLAKASIZ_ISARETI} ({k.kutulu_kare} kutulu kare)")
+            ek = "" if arac_max is None else f" — {_puanlar(arac_max, insan_max)}"
+            satirlar.append(f"[i] {PLAKASIZ_ISARETI} ({k.kutulu_kare} kutulu kare){ek}")
 
     gonder.sort(key=lambda g: g.zaman)
     return gonder, satirlar

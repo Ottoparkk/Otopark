@@ -41,6 +41,9 @@ BOS, GELIYOR, DURDU = "bos", "geliyor", "durdu"
 #   GOLGE    araç OLMAYAN hareket (yürüyen biri, gölge): koyu, plakasız.
 #   GURULTU  araç gittikten sonra sahne hiç DURULMAZ (yağmur, gece kumlanması).
 GECIYOR, GOLGE, GURULTU = "geciyor", "golge", "gurultu"
+#   YAYA_GELIYOR / YAYA_DURDU  araç boyunda ama araç OLMAYAN bir şey (koyu,
+#            plakasız) gelir ve DURUR — kameranın önünde duran insanlar (1.3.1).
+YAYA_GELIYOR, YAYA_DURDU = "yaya_geliyor", "yaya_durdu"
 
 PLAKALAR = ["34ABC123", "06KZ4581", "35PA052", "81Z9999", "01A12345"]
 
@@ -254,6 +257,31 @@ SENARYOLAR = {
                (5, 5.9, GECIYOR, 0), (5.9, 9, BOS)],
         sure=9.0, pencereler=[(2.4, 3.8)], gonderim_sayisi=1, gonderilmez=[(5, 9)],
     ),
+    # ---- 1.3.1 (araç bulucu) -----------------------------------------------
+    # Sahada 2026-11-07: kameranın önünde DURAN iki kişi "Çözülmemiş kayıt"
+    # oldu. Araç bulucu araç görmüyor: hiçbir şey gönderilmez.
+    "yaya_durur": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, YAYA_GELIYOR), (1.8, 6, YAYA_DURDU)],
+        sure=6.0, pencereler=[], gonderim_sayisi=0, gonderilmez=[(0, 6)],
+        kayitta_sirayla=["araç bulucu hazır", "araç görülmedi"],
+    ),
+    # Araç bulucu yüklenemedi: köprü DÜŞMEZ ve 1.3.0 kuralına döner (duran,
+    # araç boyunda, plakasız → personele) — araç bulucu yüzünden araç kaybolmaz.
+    "yaya_durur_bulucusuz": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, YAYA_GELIYOR), (1.8, 6, YAYA_DURDU)],
+        sure=6.0, pencereler=[(1.8, 3.6)], arac="yok",
+        personele=[(1.8, 3.6, None)], gonderim_sayisi=1,
+        kayitta_sirayla=["araç bulucu çalışmıyor"],
+    ),
+    # Sahibin kararı (2026-11-07): durmadan geçen, plakası hiç okunamayan ARAÇ
+    # personele (1.3.0'da sessizce düşüyordu). Fotoğraf aracın TAMAMINI
+    # gösteren kare olmalı, araç gittikten sonraki boş şerit değil.
+    "plakasiz_gecen": dict(
+        sahne=[(0, 1.5, BOS), (1.5, 2.4, GECIYOR), (2.4, 6, BOS)],
+        sure=6.0, pencereler=[(2.4, 4.0)], personele=[(2.4, 4.0, None)],
+        gonderim_sayisi=1, kirpma="0,0,640,480", tam_arac=True,
+        kayitta_sirayla=["plakasız araç geçti"],
+    ),
 }
 
 KESKIN_ARALIK = 130
@@ -314,6 +342,21 @@ class SahtePlakaci:
         metin = PLAKALAR[no % len(PLAKALAR)]
         ikinci = metin[:-1] + ("8" if metin[-1] != "8" else "9") if self.anlasmazlik else metin
         return [(metin, self.guven), (ikinci, self.guven)]
+
+
+class SahteArac:
+    """
+    arac.AracBulucu yerine: araç gövdesi (açık gri, ≥200) kırpıntının ne
+    kadarını kaplıyorsa o kadar "araç". Koyu şekil (yaya, gölge) ve boş
+    şerit 0. Tam görünen araç ≈0.94, yarısı görünen ≈0.47 — en iyi kare
+    aracın tamamını gösteren karedir.
+    """
+
+    esik, gecis_esik = 0.35, 0.60
+
+    def skor(self, kirpik: np.ndarray, haric):
+        oran = float((kirpik.min(axis=2) >= 200).mean())
+        return (0.0 if oran < 0.05 else min(0.95, oran * 2.4)), 0.0
 
 
 def hepsini_kos() -> int:
@@ -411,6 +454,16 @@ def tek_kos(ad: str) -> int:
     else:
         plaka.yukle = lambda ayar, dizin=None: SahtePlakaci(S)
 
+    # 1.3.1: araç bulucu her senaryoda TAKLİT edilir (gerçek model test
+    # karelerindeki gri dikdörtgeni araç sanmaz); "yok" = yüklenemedi.
+    import arac
+    if S.get("arac") == "yok":
+        def _arac_yok(ayar, dizin=None):
+            raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
+        arac.yukle = _arac_yok
+    else:
+        arac.yukle = lambda ayar, dizin=None: SahteArac()
+
     import kopru
     import kesif
 
@@ -468,6 +521,11 @@ def tek_kos(ad: str) -> int:
                     f[90:390, x0:x1] = katman[90:390, x0:x1]
                 return f
             return gecen_ciz(f, x, deger=220, no=no, keskin=keskin)
+        if e in (YAYA_GELIYOR, YAYA_DURDU):
+            # GELIYOR/DURDU ile aynı hareket ve boyut, ama koyu ve plakasız.
+            x = 120 if e == YAYA_DURDU else int((t * 2000) % 400)
+            f[90:390, x:x + 400] = 0
+            return f
         x = 120 if e == DURDU else int((t * 2000) % 400)
         f[90:390, x:x + 400] = 220
         if no is not None:

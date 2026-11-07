@@ -113,6 +113,42 @@ MUTASYONLAR = [
     ("çıkışta okunamayan araç gönderilmez", "kopru.py",
      '    if g.tur == "OKUNAMADI" and YON == "CIKIS":', "    if False:",
      _senaryo("cikis_belirsiz")),
+    # ---- 1.3.1 araç bulucu ------------------------------------------------
+    ("duran ama araç görülmeyen gönderilmez", "okuma.py",
+     "            arac_yok = (bulucu and arac_durgun is not None",
+     "            arac_yok = (False and arac_durgun is not None",
+     _fn("test_okuma", "test_karar_duran_ama_arac_gorulmedi_gonderilmez")),
+    ("durulan kare ölçülmediyse 1.3.0 kuralı (personele)", "okuma.py",
+     "            arac_yok = (bulucu and arac_durgun is not None\n"
+     "                        and arac_durgun < arac_esik and not net_arac)",
+     "            arac_yok = (bulucu and (arac_durgun if arac_durgun is not None else 0.0)"
+     " < arac_esik and not net_arac)",
+     _fn("test_okuma", "test_karar_duran_arac_bilinmiyorsa_bugunku_kural")),
+    ("geçişten önce orada olan araç bu geçişin aracı değil", "okuma.py",
+     "                and arac_arka is not None and arac_arka < arac_esik)", "                )",
+     _fn("test_okuma", "test_karar_gecen_arac_her_kosul_gerekli")),
+    ("durmadan geçen plakasız araç personele", "okuma.py",
+     "        elif not durdu and arac_boyu and not arka_kutulu and net_arac:", "        elif False:",
+     _senaryo("plakasiz_gecen")),
+    ("araç bulucu hatası plaka okumayı durdurmaz", "okuma.py",
+     "        except Exception as e:  # noqa: BLE001 — bulucu okuyucuyu öldürmesin",
+     "        except ZeroDivisionError as e:",
+     _fn("test_okuma", "test_isci_arac_hatasi_okumayi_durdurmaz")),
+    ("karar kare süresine göre bekler", "okuma.py",
+     "        sure = taban if ort is None else max(taban, BEKLE_KAT * ort)", "        sure = taban",
+     _fn("test_okuma", "test_isci_bekleme_suresi_kare_suresine_uyar")),
+    ("araç bulucu girdisi BGR, ham (legacy değil)", "arac.py",
+     "    return np.ascontiguousarray(tuval.transpose(2, 0, 1)[None], dtype=np.float32), r",
+     "    return np.ascontiguousarray(tuval[:, :, ::-1].transpose(2, 0, 1)[None], "
+     "dtype=np.float32), r",
+     _fn("test_arac", "test_on_isle_bgr_ham_sol_ust")),
+    ("kesilen köşedeki araç sayılmaz", "arac.py",
+     "        tut = _haric_orani(kutular, haric) <= HARIC_DUSUR",
+     "        tut = _haric_orani(kutular, haric) <= 1.0",
+     _fn("test_arac", "test_skorla_kesilen_koseyi_atlar")),
+    ("araç modeli özeti tutmazsa açılmaz", "arac.py",
+     "        if plaka.sha256_dosya(yol) != m.sha256:", "        if False:",
+     _fn("test_arac", "test_yukle_bozuk_dosya")),
 ]
 
 

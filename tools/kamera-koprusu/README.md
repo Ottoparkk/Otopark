@@ -38,9 +38,34 @@ The crop still carries the accuracy: the plate must be big enough in it. Since
 1.3.0 the box can be drawn taller, with a **cut-out** over parked cars (see
 *Kırpma sayfası*).
 
-Files: `plaka.py` (finder, reader, votes), `okuma.py` (one decision per pass),
-`giden.py` (the outbox), models in `modeller/` (licence and source:
-`modeller/LISANS.txt`, SHA-256 checked at every start).
+### Vehicle finder (1.3.1)
+
+On 1.3.0's first day (2026-11-07) two people standing still in front of the
+camera became a "Çözülmemiş kayıt": 1.3.0's only model finds **plates**, and
+"is it a car" was answered by how big the movement was. 1.3.1 adds a vehicle
+finder that runs on **every frame**, after the plate work (owner decision —
+no skipping: the plate finder once boxed something that was not a car).
+
+- **Model:** YOLOX-tiny (Megvii, **Apache-2.0**), the official 0.1.1rc0 ONNX
+  file, unchanged. COCO classes car / motorcycle / bus / truck count as a
+  vehicle; person is logged only.
+- **Bake-off on 180 real camera photos from this site:** real cars 0.40–0.94,
+  people ≤ 0.27. YOLOX-nano was rejected — it missed close cars seen from
+  above (0.01–0.12). ~55 ms per frame here on top of the plate finder (~84 ms);
+  check the site laptop with `--plaka` (it prints ms per frame for both).
+- **Input format matters and fails silently:** these files want raw BGR 0–255,
+  top-left letterbox, pad 114. The older "legacy" format (RGB + ImageNet
+  mean/std) found **zero** vehicles with no error. The start-up self-test
+  (a real image must score 0.808 ± 0.05) and `test_arac` lock this.
+- **Decisions** (see *When it sends*): a stopped plateless thing goes to staff
+  only if a vehicle is seen; a rolling plateless **vehicle** now goes to staff
+  too (1.3.0 dropped it silently). When the finder is missing, broken or off,
+  every decision is exactly 1.3.0's — a car is never lost because of it.
+
+Files: `plaka.py` (finder, reader, votes), `arac.py` (vehicle finder),
+`okuma.py` (one decision per pass), `giden.py` (the outbox), models in
+`modeller/` (licence and source: `modeller/LISANS.txt`, SHA-256 checked at
+every start).
 
 ## What you need
 
@@ -231,7 +256,8 @@ bağlanamadan ölebilir ve `schtasks` bunu **başarı** olarak bildirir; kurulum
      Son hareket  : 12 saniye önce
      Durum        : ÇALIŞIYOR
      Plaka okuma  : hazır
-     Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket
+     Araç bulucu  : hazır
+     Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket (araç görülmedi: 4)
 ```
 
 `gönderim` sunucunun kabul ettiği her aracı sayar; `personele` onların
@@ -241,6 +267,13 @@ görülmedi, araç da durmadı); kameranın görüntü verdiğinin kanıtı say�
 İnternet yokken bekleyen araç varsa `Bekleyen     : N araç (en eski …) —
 internet gelince sırayla gönderilecek` satırı çıkar. 1.2.6'nın `Araç olayları`
 ve `Boş şerit` satırları 1.3.0'da yok.
+
+1.3.1: `Araç bulucu` satırı araç bulucunun hâlini söyler. `çalışmıyor` /
+`kapalı` ise köprü 1.3.0 kuralıyla sürer (duran plakasız her şey personele) —
+araç kaybolmaz, bu yüzden sağlık kırmızı **olmaz**, ama kameranın önünde duran
+yaya yine kayıt açar. `araç görülmedi: N` = bugün duran ama araç olmadığı için
+gönderilmeyen plakasız şeyler (insanlar); `plakasız hareket` sayısının içindedir.
+Kayıtta sık sık `araç bulucu durulan kareye yetişmedi` görülürse dizüstü yavaştır.
 
 Yedi koşulun **yedisi birden** aranır, çünkü her biri ötekinin kör noktasını
 kapatıyor:
@@ -338,7 +371,8 @@ doğrulamanın tek yolu.
 
 - **Derlemeden önce:** `requirements.txt`'deki her sürüm kurulu olanla aynı mı
   (plaka okuyucunun altın çıktısı onnxruntime 1.31.0 ile ölçüldü) ve
-  modellerin SHA-256'sı `plaka.py`'dekiyle aynı mı.
+  modellerin (1.3.1: araç modeli ve öz sınama resmi dâhil) SHA-256'sı
+  `plaka.py` / `arac.py`'dekiyle aynı mı.
 - **Derledikten sonra:** derlenen `.exe`'yi `--plaka-sina` ile GERÇEKTEN
   çalıştırır — modeller pakette mi, onnxruntime DLL'leriyle açılıyor mu, öz
   sınama geçiyor mu. Eksik bir DLL sahada değil burada görülür.
@@ -442,15 +476,19 @@ A pass is **decided** when the car has stopped (the crop is still and does not
 look like the background), when the scene goes back to the background (a car
 that rolled through), after `GECIS_BEKLE_SN` without strong motion if the
 scene never settles (rain, night grain), or when the stream drops. At the
-decision the bridge waits at most `PLAKA_BEKLE_SN` (0.4 s) for a read in
-flight, then:
+decision the bridge waits for the reads in flight — at least `PLAKA_BEKLE_SN`
+(0.4 s), and since 1.3.1 up to 2.5 × the worker's measured time per frame
+(at most 2 s), so the stopped frame's vehicle score is in on a slow laptop
+too — then:
 
 | What was seen | What is sent |
 |---|---|
 | a **sure** plate (see *How it reads plates*) | the plate, with the photo of its best read; `zaman` = when it was **first** read |
 | two different sure plates | both, in time order |
 | plate boxes in ≥ 2 frames, nothing sure | `okunamadi` + the best guess and its confidence + photo → staff |
-| a car-sized thing **stopped**, no plate box at all (and none in the background) | `okunamadi` + photo → staff |
+| a car-sized thing **stopped**, no plate box at all (and none in the background) | `okunamadi` + photo → staff — **1.3.1:** only if the vehicle finder sees a vehicle in the stopped frame (≥ `ARAC_BUL_ESIK`), or saw a clear one (≥ `ARAC_GECIS_ESIK`) in the pass that was not there before it; if the stopped frame was not measured in time, 1.3.0's rule (staff) |
+| the same, but **no vehicle** seen (people standing in front of the camera) | nothing; the log says `hareket — plaka görülmedi … — araç görülmedi (araç 0.10, insan 0.91)` |
+| **1.3.1:** a car-sized pass that did **not** stop, no plate read, a clear vehicle (≥ `ARAC_GECIS_ESIK`) that was not in the background | `okunamadi` + the frame where the vehicle was seen best → staff (`plakasız araç geçti`) |
 | motion, no plate, nothing stopped (people, shadows, light) | nothing; the log says `hareket — plaka görülmedi` |
 | the departure of a stopped car that was sent | nothing (`gönderilmiş araç — tekrar gönderilmedi`) |
 | the same plate (or one character away) sent in the last 60 s | nothing |
@@ -508,7 +546,7 @@ the whole street view. The bridge says so once at startup.
 ### Tuning
 
 All of these can be set in the lane's config file (`kopru-<şerit>.json`) or as
-environment variables. A bad `PLAKA_*` value never stops the bridge — the
+environment variables. A bad `PLAKA_*` / `ARAC_*` value never stops the bridge — the
 default is used and a `[!]` line says so; the motion and timing values are
 numbers that must be valid, or the bridge stops at start (and `durum` says so).
 
@@ -530,7 +568,10 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `PLAKA_OKU_ESIK` | `0.95` | Both crops' lowest character probability must reach this. |
 | `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
 | `PLAKA_IPLIK` | `1` | Reader threads. One is measured; the bridge is 24/7 on an old laptop. |
-| `PLAKA_BEKLE_SN` | `0.4` | How long a decision waits for a read in flight. |
+| `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
+| `ARAC_BUL` | `1` | `0` switches the vehicle finder (1.3.1) off: every decision is 1.3.0's. |
+| `ARAC_BUL_ESIK` | `0.35` | A stopped plateless thing counts as a vehicle at this score. Bake-off: cars 0.40–0.94, people ≤ 0.27. |
+| `ARAC_GECIS_ESIK` | `0.60` | A rolling plateless thing counts as a vehicle (→ staff) only at this score — shadows and car edges score up to ~0.55. |
 | `YENIDEN_BAGLAN_SN` / `YENIDEN_BAGLAN_MAX_SN` | `3` / `60` | Wait before reconnecting after the stream drops; doubles up to the cap, back to the base on the first good frame (1.2.2). |
 | `SIFRE_RED_BEKLEME_SN` | `600` | Wait after the camera rejects the stored password; the stream is not opened meanwhile (1.2.2). Keep it under 15 min, `durum`'s staleness limit. |
 
@@ -541,13 +582,14 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 30 senaryo
+python test_kopru.py            # yakalama döngüsü, 33 senaryo
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı, 138 birim testi
-python test_okuma.py            # geçiş kararları (okuma.py), 29 test
+python test_kurulum.py          # kurulum tarafı, 141 birim testi
+python test_okuma.py            # geçiş kararları (okuma.py), 45 test
 python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 34 test
+python test_arac.py             # araç bulucu (arac.py), 12 test
 python test_giden.py            # gönderim kutusu (giden.py), 13 test
-python test_mutasyon.py         # 21 kural tek tek bozulur; her biri yakalanmalı
+python test_mutasyon.py         # 30 kural tek tek bozulur; her biri yakalanmalı
 ```
 
 `test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,
@@ -556,8 +598,9 @@ hariç alan, telemetri, eski sunucu, çıkış şeridi…) köprü klasörünün
 kopyasında bozar ve onu tutan testin düştüğünü doğrular; önce her testin
 bozulmamış kodda geçtiğini sınar. Depoya dokunmaz, hiçbir şey silmez.
 
-`test_plaka.py`'nin iki testi gerçek modelleri çalıştırır ve yalnızca
-onnxruntime kuruluysa koşar (paket venv'i); kurulu değilse "atlandı" der —
+`test_plaka.py`'nin iki testi ve `test_arac.py`'nin bir testi gerçek
+modelleri çalıştırır ve yalnızca onnxruntime kuruluysa koşar (paket venv'i);
+kurulu değilse "atlandı" der —
 sürüm öncesi hepsi paket venv'inde de koşulmalı. 1.2.6'nın `olay.py` ve
 `test_olay.py` dosyaları 1.3.0 ile kaldırıldı (kamera olayları kullanılmıyor).
 
@@ -569,7 +612,10 @@ yolunu yazar. Klasör silinmez; elle temizlenir. Hiçbir test bir şey silmez.
 sahte bir plaka okuyucuyla çalıştırır — karar mantığı (okuma.py, plaka.Oylama,
 giden.py) taklit edilmez. Sahte plaka aracın altında işaret renginde
 çizgilerdir; sahte okuyucu işareti bulur (bulanık karede bulamaz, gerçekte de
-bulanık plaka okunmaz) ve numarasına göre plakayı okur. `requests` kurulu
+bulanık plaka okunmaz) ve numarasına göre plakayı okur. 1.3.1'den beri sahte
+bir araç bulucu da var: açık gri gövde kırpıntının ne kadarını kaplıyorsa o
+kadar "araç" der; koyu şekil (yaya, gölge) ve boş şerit 0 — gerçek model
+test karelerindeki gri dikdörtgeni araç sanmazdı. `requests` kurulu
 olmasa da koşar.
 
 Bir zamanlar araç düşüren gerçek hatalardan gelenler: `iki_arac`, `429`,
@@ -605,7 +651,7 @@ telemetrisinin kapalı açıldığını ve gerçek okuyucunun sabit bir girdide 
 yalnızca kesin cevapta silmeyi, geçici hatada beklemeyi, dolu kutuda alarmı
 (ama yazmayı) ve bozuk dosyanın silinmeyip ayrılmasını tutar.
 
-`test_kurulum.py`'deki 138 birim testi kurulum tarafını tutuyor — ayar yükleme,
+`test_kurulum.py`'deki 141 birim testi kurulum tarafını tutuyor — ayar yükleme,
 kayıt dosyası, durum ekranı, görev komutu, kırpma sayfası (hariç alan dâhil),
 `--plaka` kipi, paket ön/son kontrolleri ve lisanslar. Orası bozulursa köprü
 hiç **başlamaz** ve bunu kimse fark etmez: bariyerde sessizce duran bir süreç,

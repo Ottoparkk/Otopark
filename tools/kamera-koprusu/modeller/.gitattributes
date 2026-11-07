@@ -1,2 +1,4 @@
 # ONNX modelleri ikilidir: satır sonu çevrimi (core.autocrlf) onları bozar.
 *.onnx binary
+# Öz sınama resmi (arac_sinama.jpg) da ikilidir.
+*.jpg binary
