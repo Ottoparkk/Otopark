@@ -528,8 +528,14 @@ The app works completely without plate OCR. To enable it, go to **Yönetim →
 Ayarlar**:
 
 Flip **Plaka okuma açık**. That is the whole switch: on = Claude reads the
-photo, off = the camera only takes a picture. One photo can only go to one
-reader, so there is no "all providers at once" setting to make.
+photo staff take with the phone on Giriş, off = the phone only takes a
+picture. One photo can only go to one reader, so there is no "all providers
+at once" setting to make.
+
+The car park camera does **not** use this switch: since bridge 1.3.0 it reads
+plates on the laptop and sends the text. Only a bridge rolled back to 1.2.x
+still sends photos for the server to read — keep the switch on while that
+rollback is possible, or the webhook refuses those cars.
 
 **Which model reads.** When the toggle is on, an **Okuma modeli** list appears
 under it (Yönetici only, saved with Kaydet). Empty = the default, **Claude

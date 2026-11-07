@@ -472,8 +472,12 @@ export default function OtoparkAyarlari() {
             checked={saglayici !== 'KAPALI'}
             onChange={(v) => setSaglayici(v ? 'VLM' : 'KAPALI')}
             label="Plaka okuma açık"
-            hint="Fotoğraftan plaka önerilir. Kapalıyken kamera yalnızca fotoğraf çeker."
+            hint="Telefonla çekilen fotoğraftan plaka önerilir. Kamera plakayı kendisi okur; bu ayardan etkilenmez."
           />
+          {/* Since bridge 1.3.0 the camera reads plates on the laptop and never
+              asks the server, so this switch only drives the phone's OCR
+              (plaka-oku). Exception: a bridge rolled back to 1.2.x still sends
+              photos, and kamera-webhook refuses them with this switch off. */}
           {/* Only for the Claude reader: the other provider has no models, and
               this would read as a choice that does nothing. */}
           {saglayici === 'VLM' && (
