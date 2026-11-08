@@ -166,6 +166,25 @@ def test_kesilen_koseler_birden_cok():
     assert abs(arac.skorla(h, 0.5, 800, 600, ayni)[0] - 0.9) < 1e-6
 
 
+def test_kirpma_alani_cokgen():
+    # 1.4.0: kırpma ALANI (çokgen). Kutusunun yarısından fazlası alanın
+    # DIŞINDA kalan aday düşer — hariç dikdörtgendeki kural (%50) aynen.
+    i8 = 52 * 5 + 3                      # r=0.5 → (0, 56, 136, 120)
+    h = _ham((i8, 2, 1.0, 0.9, (0.5, 0.5, np.log(10), np.log(4))),
+             (52 * 40 + 40, 7, 1.0, 0.5, (0.5, 0.5, 0.0, 0.0)))   # (624, 624, 688, 688)→ kırpılır
+    # Sol üst köşesi kesilmiş alan: (0..200, 0..150) dışarıda → ilk kutu ~%70 dışarıda.
+    alan = [(200, 0), (800, 0), (800, 600), (0, 600), (0, 150), (200, 150)]
+    m = plaka.AlanMaskesi.cokgenden(alan, 800, 600)
+    assert abs(arac.skorla(h, 0.5, 800, 600, m)[0] - 0.5) < 1e-6
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, m)
+    assert [round(k.skor, 3) for k in kutular] == [0.5], kutular
+    # Kesilen kısım küçükse (kutunun %50'sinden az) aday kalır.
+    alan = [(40, 0), (800, 0), (800, 600), (0, 600), (0, 150), (40, 150)]
+    m = plaka.AlanMaskesi.cokgenden(alan, 800, 600)
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, m)
+    assert [round(k.skor, 3) for k in kutular] == [0.9, 0.5], kutular
+
+
 # ------------------------------------------------------------------ ayarlar ---
 
 def _ortamsiz(f):

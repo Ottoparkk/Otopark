@@ -2085,18 +2085,107 @@ def test_kirpma_sunucusu_haric_alan() -> None:
         sunucu.shutdown()
         sunucu.server_close()
 
-    # Sayfa iki modu da sunar: hariç alan çizme ve silme (1.3.3: her alan
-    # ayrı silinir, en çok 3).
+    # 1.4.0: sayfa artık hariç dikdörtgen değil çokgen çizer (bkz.
+    # test_kirpma_sunucusu_alan_ve_kapi); eski gövde yukarıdaki gibi kabul
+    # edilmeye devam eder (eski sayfa açık kalmışsa).
+
+
+def _alan_kaydet(govde, kare=True):
+    """1.4.0 gövdesini /kaydet'e gönderir: (kod, sonuc, bitti)."""
+    import numpy as np
     ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    if kare:
+        d.kare = np.zeros((1000, 2000, 3), np.uint8)          # en 2000, boy 1000
     try:
-        kod, sayfa = _istek(sunucu.server_address[1], "/")
-        assert kod == 200
-        metin = sayfa.decode("utf-8")
-        assert "Hariç alan çiz" in metin and "Hariç alanı sil" in metin, metin[:200]
-        assert "haricSil(" in metin and "HARIC_EN_COK=3" in metin, metin[:200]
+        kod, _ = _istek(sunucu.server_address[1], "/kaydet", json.dumps(govde).encode(),
+                        {"X-Otopark-Belirtec": belirtec})
+        return kod, dict(sonuc), bitti.is_set()
     finally:
         sunucu.shutdown()
         sunucu.server_close()
+
+
+def test_kirpma_sunucusu_alan_ve_kapi() -> None:
+    """
+    1.4.0: /kaydet {"alan": [[x, y], …] | null, "kapi": [[x, y], …] | null}.
+    Köşeler 3-8, tamsayı, kenarları kesişmez (plaka.cokgen_coz — köprüyle
+    aynı kural). Karenin kenarına %3'ten yakın kırpma köşesi KENARA yapışır
+    (kenardan giren aracın alttan kesilen kutusu alanın içinde kalsın);
+    kapı köşeleri kırpma alanının çevreleyen dikdörtgenine yapışır. Kapı
+    alanı kırpmanın dışına taşabilir ama kırpmayla HİÇ kesişmiyorsa
+    reddedilir (köprü onu hiçbir zaman göremezdi). Python esastır: sayfanın
+    yapıştırması yalnızca görüntü.
+    """
+    dik = [[100, 100], [1900, 100], [1900, 900], [100, 900]]
+    kod, s, bitti = _alan_kaydet({"alan": dik, "kapi": None})
+    assert kod == 200 and bitti, kod
+    assert s["alan"] == ((100, 100), (1900, 100), (1900, 900), (100, 900)), s
+    assert s["kutu"] == (100, 100, 1800, 800) and s["haric"] is None and s["kapi"] is None, s
+
+    # Kenara %3'ten yakın (x ≤ 60 / ≥ 1940, y ≤ 30 / ≥ 970) ya da dışına taşan köşe kenara yapışır.
+    kod, s, _ = _alan_kaydet({"alan": [[40, 20], [1990, 10], [2050, 995], [30, 980]], "kapi": None})
+    assert kod == 200 and s["alan"] == ((0, 0), (2000, 0), (2000, 1000), (0, 1000)), s
+    assert s["kutu"] == (0, 0, 2000, 1000), s
+
+    # Kapı köşeleri kırpmanın çevreleyen dikdörtgenine yapışır (%3: x 54, y 24 px).
+    kod, s, _ = _alan_kaydet({"alan": dik, "kapi": [[110, 600], [700, 600], [700, 890], [110, 890]]})
+    assert kod == 200 and s["kapi"] == ((100, 600), (700, 600), (700, 900), (100, 900)), s
+    # Kırpmanın dışına taşan kapı alanı kabul edilir (araç kenardan girer).
+    kod, s, _ = _alan_kaydet({"alan": dik, "kapi": [[0, 800], [600, 800], [600, 1000], [0, 1000]]})
+    assert kod == 200 and s["kapi"] == ((0, 800), (600, 800), (600, 1000), (0, 1000)), s
+    # Kırpma yok (tüm kare) + kapı: kapı karenin kenarına yapışır.
+    kod, s, _ = _alan_kaydet({"alan": None, "kapi": [[20, 600], [700, 600], [700, 980], [20, 980]]})
+    assert kod == 200 and s["kutu"] is None and s["alan"] is None, s
+    assert s["kapi"] == ((0, 600), (700, 600), (700, 1000), (0, 1000)), s
+    kod, s, _ = _alan_kaydet({"alan": None, "kapi": None})
+    assert kod == 200 and s["kutu"] is None and s["alan"] is None and s["kapi"] is None, s
+
+    kotu = [
+        {"alan": [[i * 100 + 100, (i % 2) * 300 + 100] for i in range(9)], "kapi": None},   # 9 köşe
+        {"alan": [[100, 100], [900, 100], [100, 900], [900, 900]], "kapi": None},          # papyon
+        {"alan": [[100, 100], [900.5, 100], [500, 900]], "kapi": None},                    # kesir
+        {"alan": [[100, 100], [True, 100], [500, 900]], "kapi": None},                     # bool
+        {"alan": [[100, 100], [900, -5], [500, 900]], "kapi": None},                       # eksi
+        {"alan": [[100, 100], [900, 100]], "kapi": None},                                  # 2 köşe
+        {"alan": "100,100;900,100;500,900", "kapi": None},                                 # metin
+        {"alan": [[10, 10], [20, 15], [1000, 10], [1000, 900]], "kapi": None},   # yapışınca aynı köşe
+        # Kapı kırpmayla hiç kesişmiyor (kırpma üst yarı, kapı alt kenar).
+        {"alan": [[100, 100], [1900, 100], [1900, 500], [100, 500]],
+         "kapi": [[100, 800], [600, 800], [600, 990], [100, 990]]},
+        {"alan": dik, "kapi": [[100, 600], [700, 600]]},                                   # kapı 2 köşe
+    ]
+    for govde in kotu:
+        kod, s, bitti = _alan_kaydet(govde)
+        assert kod == 400 and not bitti, (govde, kod)
+    # Kare hiç gelmediyse (sayfa çizemezdi) çokgen kaydedilemez.
+    kod, s, bitti = _alan_kaydet({"alan": dik, "kapi": None}, kare=False)
+    assert kod == 400 and not bitti, kod
+
+    # Sayfa iki çizimi de sunar: kırpma alanı ve kapı alanı, köşe köşe.
+    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    try:
+        kod, sayfa = _istek(sunucu.server_address[1], "/")
+        metin = sayfa.decode("utf-8")
+        for parca in ("Kırpma alanı", "Kapı alanı", "Son köşeyi sil", "COKGEN_EN_COK=8",
+                      "YAPIS=0.03"):
+            assert parca in metin, parca
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+
+
+def test_kirpma_alani_esikleri_alanin_icinde_olcer() -> None:
+    """Kaydedilen alanın DIŞINDAKİ hareket eşik ölçümüne girmez (köprü orayı griye boyar)."""
+    import numpy as np
+    import kirpma_sunucu
+    d = kirpma_sunucu._Durum()
+    alan = ((0, 0), (400, 0), (400, 150), (0, 150))           # üst yarı
+    d.kutu, d.alan = (0, 0, 400, 300), alan
+    for i in range(6):
+        kare = np.zeros((300, 400, 3), np.uint8)
+        kare[200:300, :] = 255 if i % 2 else 0                 # yalnızca alt yarı yanıp söner
+        d.olcum_ekle(kare)
+    assert d.kirpik_hareketler and max(d.kirpik_hareketler) == 0.0, d.kirpik_hareketler
 
 
 def test_kirpma_tum_kare_secimi() -> None:
@@ -2713,6 +2802,58 @@ def test_haric_alan_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
         ayar.update(yeni)
         assert ayar["KIRPMA"] == "10,20,600,400", ayar
         assert ayar["KIRPMA_HARIC"] == "", ayar
+    finally:
+        kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
+
+
+def test_kirpma_alani_ve_kapi_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
+    """
+    1.4.0: kırpma sayfası (kutu, haric, ölçümler, alan, kapı) döndürür. Alan
+    çizildiyse KIRPMA_ALAN yazılır ve eski KIRPMA / KIRPMA_HARIC AÇIKÇA
+    boşaltılır (tek doğru kaynak). KIRPMA_ALAN ve KAPI_ALANI da HER ZAMAN
+    yazılır (boşsa "") — yeniden kurulumda eski dosyadan gelen eski alan yeni
+    kırpmanın üstüne dönmesin. Eski (3 değerli) dönüş de çalışır: o zaman
+    ikisi de "" yazılır. TAKIP hiç yazılmaz (elle konmuş 0 korunsun).
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import kirpma_sunucu
+    import kurulum
+
+    eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
+    kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
+    alan = ((100, 100), (1900, 100), (1900, 900), (100, 900))
+    kapi = ((100, 600), (700, 600), (700, 900), (100, 900))
+    onceki = {**_KAYITLI, "KIRPMA_HARIC": "10,20,200,150", "KIRPMA_ALAN": "1,1;50,1;1,50",
+              "KAPI_ALANI": "1,1;50,1;1,50", "TAKIP": "0"}
+    try:
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((100, 100, 1800, 800), None, [], alan, kapi)
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        assert yeni["KIRPMA_ALAN"] == "100,100;1900,100;1900,900;100,900", yeni
+        assert yeni["KAPI_ALANI"] == "100,600;700,600;700,900;100,900", yeni
+        assert yeni["KIRPMA"] == "" and yeni["KIRPMA_HARIC"] == "", yeni
+        assert "TAKIP" not in yeni, yeni
+        assert "Kırpma alanı" in yakala.getvalue() and "Kapı alanı" in yakala.getvalue(), \
+            yakala.getvalue()
+        ayar = {**onceki, **yeni}
+        assert ayar["TAKIP"] == "0" and ayar["KIRPMA"] == "" and ayar["KIRPMA_HARIC"] == ""
+
+        # Tüm kare + kapı: kırpma yok, kapı yazılır.
+        kirpma_sunucu.kirpma_sec = lambda rtsp: (None, None, [], None, kapi)
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        assert yeni["KIRPMA_ALAN"] == "" and yeni["KIRPMA"] == "", yeni
+        assert yeni["KAPI_ALANI"] == "100,600;700,600;700,900;100,900", yeni
+
+        # Eski 3 değerli dönüş: alanlar AÇIKÇA boş (eskileri silinir).
+        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), None, [])
+        with redirect_stdout(_io.StringIO()):
+            yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
+        ayar = {**onceki, **yeni}
+        assert ayar["KIRPMA"] == "10,20,600,400" and ayar["KIRPMA_ALAN"] == "", ayar
+        assert ayar["KAPI_ALANI"] == "" and ayar["KIRPMA_HARIC"] == "", ayar
     finally:
         kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
 
@@ -3882,6 +4023,55 @@ def test_durum_plaka_okuyucu_satiri() -> None:
     assert ok is True and "Plaka okuma  : hazır" in cikti, cikti
 
 
+def test_durum_arac_izleme_satiri() -> None:
+    """
+    1.4.0: "Araç izleme:" satırı izlemenin hâlini kayıttan okur (bu
+    başlangıçtan beri SON söz). Kapalıysa köprü 1.3.4 geçiş kuralıyla sürer —
+    hata değil, sağlık kırmızı OLMAZ. "Bugün" satırı giriş / çıkış / otopark
+    içi hareket sayılarını gösterir. İzleme olayları kameranın görüntü
+    verdiğinin kanıtıdır (KAMERA YOK gösterilmez).
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———"
+    acik = f"{bugun} 09:00:01  [i] {gunluk.TAKIP_ACIK_ISARETI} (kapı alanı var)"
+    assert durum.takip_durumu([bas]) is None
+    assert durum.takip_durumu([acik, bas]) is None                   # önceki başlangıç sayılmaz
+    assert durum.takip_durumu([bas, acik]) == "açık (kapı alanı var)"
+    m = durum.takip_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.TAKIP_KAPALI_ISARETI} "
+                                 "(TAKIP=0) — 1.3.4 geçiş kuralı"])
+    assert "kapalı" in m and "TAKIP=0" in m and "1.3.4" in m, m
+    m = durum.takip_durumu([bas, acik, f"{bugun} 10:00:00  [!] {gunluk.TAKIP_KAPANDI_ISARETI} "
+                                       "— 1.3.4 geçiş kuralı"])
+    assert "kapandı" in m and "1.3.4" in m, m
+
+    satirlar = [bas, acik,
+                f"{bugun} 09:10:00  [i] {gunluk.GIRDI_ISARETI} (iz 3, 4 görünüm) — 1 plaka gönderiliyor",
+                f"{bugun} 09:20:00  [i] {gunluk.GIRDI_ISARETI} (iz 5, 6 görünüm) — 1 personele gönderiliyor",
+                f"{bugun} 09:30:00  [i] {gunluk.CIKTI_ISARETI} (iz 3, 9 görünüm) — 1 plaka gönderiliyor",
+                f"{bugun} 09:31:00  [i] {gunluk.CIKTI_ISARETI} — {gunluk.YON_DISI_ISARETI} (iz 8)",
+                f"{bugun} 09:40:00  [i] {gunluk.ICERIDE_ISARETI} (iz 7)",
+                f"{bugun} 09:41:00  [i] {gunluk.ICERIDE_ISARETI} (iz 9)",
+                f"{bugun} 09:42:00  [i] {gunluk.KAPIDA_BEKLIYOR_ISARETI} (iz 9)"]
+    assert durum.izleme_ozet(satirlar) == (2, 1, 2, 1), durum.izleme_ozet(satirlar)
+
+    kopuk = f"{bugun} 09:00:05  [!] {gunluk.KARE_YOK_ISARETI}, yeniden bağlanılıyor"
+    for iyi in (f"{bugun} 09:10:00  [i] {gunluk.GIRDI_ISARETI} (iz 3, 4 görünüm) — gönderim yok",
+                f"{bugun} 09:10:00  [i] {gunluk.ICERIDE_ISARETI} (iz 7)",
+                f"{bugun} 09:10:00  [i] {gunluk.GERI_DONDU_ISARETI} (iz 7)",
+                f"{bugun} 09:10:00  [i] {gunluk.KAPISIZ_ISARETI} (iz 7, 2 görünüm) — gönderim yok"):
+        assert durum.kamera_kopuk([kopuk, iyi]) is False, iyi
+
+    calisiyor = f"{bugun} 09:50:00  [i] çalışıyor — 900 kare, 0 gönderim"
+    ok, cikti = _durum_senaryosu(satirlar + [f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}",
+                                             calisiyor])
+    assert ok is True, cikti
+    assert "Araç izleme  : açık (kapı alanı var)" in cikti, cikti
+    assert "2 giriş, 1 çıkış, 2 otopark içi hareket" in cikti, cikti
+    assert "kapıda bekleyen: 1" in cikti, cikti
+
+
 def test_durum_arac_bulucu_satiri() -> None:
     """
     1.3.1: "Araç bulucu:" satırı bulucunun hâlini kayıttan okur (bu
@@ -4075,6 +4265,60 @@ def test_kirp_maskeli_birden_cok_alan() -> None:
     assert (k1[10:50, 10:60] == 114).all() and (k1[100:160, 200:260] == 255).all()
 
 
+def test_kirpma_alani_metni_ve_kutusu() -> None:
+    """
+    1.4.0: KIRPMA_ALAN ("x,y;x,y;…", tam kare pikseli, 3-8 köşe). Bozuk metin
+    ValueError (köprü sys.exit'e çevirir — KIRPMA gibi); kutu = alanın
+    çevreleyen dikdörtgeni (fotoğraf yolu "kutu varsa fotoğraf" kuralıyla sürer).
+    """
+    _kopru_yuklu()
+    import kopru
+    assert kopru.alan_metni_coz("") is None and kopru.alan_metni_coz("  ") is None
+    assert kopru.alan_metni_coz("100,100;700,100;700,500;100,500") == \
+        ((100, 100), (700, 100), (700, 500), (100, 500))
+    for bozuk in ("a", "1,2;3,4", "0,0;100,0;0,100;100,100", "0,0;100,0;-5,50",
+                  "0,0;1,0;0,1"):
+        try:
+            kopru.alan_metni_coz(bozuk)
+        except ValueError as e:
+            assert "KIRPMA_ALAN" in str(e), e
+        else:
+            raise AssertionError(f"kabul edildi: {bozuk!r}")
+    assert kopru.alan_kutusu(((100, 120), (700, 100), (650, 500), (90, 480))) == (90, 100, 610, 400)
+
+
+def test_kirp_maskeli_cokgen() -> None:
+    """1.4.0: alanın DIŞI griye (114) boyanır; kameranın karesi değişmez."""
+    import numpy as np
+    _kopru_yuklu()
+    import kopru
+    kare = np.full((200, 300, 3), 255, np.uint8)
+    ucgen = ((0, 0), (300, 0), (0, 200))
+    kutu = kopru.alan_kutusu(ucgen)
+    assert kutu == (0, 0, 300, 200)
+    k = kopru.kirp_maskeli(kare, kutu, None, ucgen)
+    assert (k[10, 10] == 255).all() and (k[190, 290] == 114).all() and (k[5, 280] == 255).all()
+    assert (kare == 255).all()
+    # Dikdörtgen alan: hiçbir şey boyanmaz (eski kırpmayla aynı görüntü).
+    dik = ((100, 50), (250, 50), (250, 150), (100, 150))
+    kutu = kopru.alan_kutusu(dik)
+    assert kutu == (100, 50, 150, 100)
+    k = kopru.kirp_maskeli(kare, kutu, None, dik)
+    assert k.shape == (100, 150, 3) and (k == 255).all()
+    # Ölçeklenmiş kırpıntının maskesi: aynı şekil, kırpıntı pikselinde.
+    L = ((150, 50), (250, 50), (250, 150), (100, 150), (100, 100), (150, 100))
+    kutu = kopru.alan_kutusu(L)                                   # (100, 50, 150, 100)
+    m = kopru.alan_maskesi(kare.shape, kutu, L, (50, 75, 3))
+    assert (m.en, m.boy) == (75, 50)
+    import plaka
+    assert plaka.haric_orani(plaka.Kutu(0, 0, 20, 20, 0.9), m) == 1.0     # kesilen köşe
+    assert plaka.haric_orani(plaka.Kutu(40, 30, 70, 48, 0.9), m) == 0.0
+    # Kapı alanı aynı dönüşümle, KIRPILMADAN (kırpıntının dışına taşabilir).
+    kapi = ((100, 150), (300, 150), (300, 250))
+    assert np.allclose(kopru.kapi_kirpikta(kare.shape, kutu, kapi, (50, 75, 3)),
+                       [(0, 50), (100, 50), (100, 100)])
+
+
 def test_kirpma_sayfasinin_kaydettigi_haric_kopruce_kabul_edilir() -> None:
     """
     Kırpma sayfasının kabul edip kaydettiği her hariç alanı köprü de AYNEN
@@ -4161,8 +4405,16 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
     class SahteArac:
         esik, gecis_esik = 0.35, 0.60
 
-        def skor(self, kirpik, haric):
-            return 0.9, 0.05
+        def kutular(self, kirpik, haric):
+            # Beyaz blok = araç (izleme testi); yoksa kareyi kaplayan tek kutu.
+            m = kirpik.min(axis=2) >= 250
+            if m.any():
+                ys, xs = np.nonzero(m)
+                k = arac.AracKutu(float(xs.min()), float(ys.min()), float(xs.max() + 1),
+                                  float(ys.max() + 1), 0.9)
+            else:
+                k = arac.AracKutu(10.0, 10.0, 300.0, 200.0, 0.9)
+            return [k], 0.05
 
     def arac_yukle(ayar, dizin=None):
         if arac_hata:
@@ -4174,14 +4426,32 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
 
     class SahtePlakaci:
         def bul(self, kirpik):
+            if yol_ is not None:
+                # İzleme testi: plaka beyaz bloğun (aracın) alt ortasında.
+                m = kirpik.min(axis=2) >= 250
+                if not m.any():
+                    return []
+                ys, xs = np.nonzero(m)
+                x1, x2, y2 = float(xs.min()), float(xs.max() + 1), float(ys.max() + 1)
+                w = x2 - x1
+                return [K(x1 + 0.35 * w, y2 - 50, x1 + 0.65 * w, y2 - 25, 0.9)]
             return list(kutular if kutular is not None else [orta])
 
         def oku_cift(self, kirpik, k):
             return list(okumalar)
 
+    yol_ = ayar_ek.pop("_yol", None) if ayar_ek else None
+    sayac = [0]
+
     class SahteKamera:
         def read(self):
-            return True, np.full((720, 1600, 3), 90, np.uint8)
+            f = np.full((720, 1600, 3), 90, np.uint8)
+            if yol_ is not None:
+                # Aracın (beyaz blok) kare kare konumu (tam kare pikseli).
+                x, y = yol_[min(sayac[0], len(yol_) - 1)]
+                sayac[0] += 1
+                f[max(0, y):min(720, y + 200), max(0, x):min(1600, x + 300)] = 255
+            return True, f
 
         def release(self):
             pass
@@ -4209,7 +4479,8 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
         os.chdir(calisma)
         yakala = _io.StringIO()
         with redirect_stdout(yakala):
-            kod = kopru.plaka_testi(yol, sure_sn=5.0, ara_sn=0.0, en_cok_kare=3,
+            kod = kopru.plaka_testi(yol, sure_sn=15.0, ara_sn=0.1 if yol_ else 0.0,
+                                    en_cok_kare=len(yol_) if yol_ else 3,
                                     kamera=lambda url: (acildi.append(url), SahteKamera())[1])
     finally:
         plaka.yukle, gunluk.baslat, kopru.requests.post = eski[:3]
@@ -4241,6 +4512,28 @@ def test_plaka_kipi_emin_okuma() -> None:
     # 1.3.4: kırpıntı (1600 px) küçültülüyor → her kutu İKİ yoldan okunur ve
     # sonunda hangisinin kaç emin okuma verdiği yazar (sahada ölçmek için).
     assert "küçük:" in c and "Emin okuma: tam çözünürlükte 3 kare, küçültülmüşte 3 kare" in c, c
+
+
+def test_plaka_kipi_izleme_ve_kirpma_alani() -> None:
+    """
+    1.4.0: `--plaka` köprünün izleyicisini de çalıştırır ve kapı alanının
+    doğru çizildiğini sahada gösterir: araç kapıdan girip durunca
+    "ARAÇ GİRDİ" ve hangi plakanın gideceği yazılır (yalnızca ekrana).
+    Kırpma alanı (çokgen) ve kapı alanı ayar dosyasından okunur.
+    """
+    # İlk kareler boş (ısınma); araç sonra kapıdan girer ve durur.
+    yol = ([(-2000, -2000)] * 3 + [(50, 520)] * 2
+           + [(50 + 43 * i, 520 - 21 * i) for i in range(1, 21)] + [(910, 100)] * 30)
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.99)], ayar_ek={
+        "KIRPMA": "", "KIRPMA_ALAN": "0,0;1600,0;1600,720;0,720",
+        "KAPI_ALANI": "0,400;500,400;600,720;0,720", "_yol": yol})
+    assert kod == 0, c
+    assert "Araç izleme: kapı alanı var" in c, c
+    assert "ARAÇ GİRDİ" in c and "34ABC123 gönderilirdi" in c, c
+    assert "İzleme: 1 giriş, 0 çıkış" in c, c
+    # Bozuk kapı alanı: kamera açılmadan 1.
+    kod, c, acildi = _plaka_kipi([], ayar_ek={"KAPI_ALANI": "0,0;1,1"})
+    assert kod == 1 and "KAPI_ALANI" in c and acildi == [], c
 
 
 def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:

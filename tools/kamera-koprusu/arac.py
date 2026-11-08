@@ -140,6 +140,10 @@ def _haric_orani(kutular: np.ndarray, haric) -> np.ndarray:
 
 def _haricsiz(kutular: np.ndarray, arac: np.ndarray, insan: np.ndarray, haric):
     """Kutusunun yarısından fazlası kesilen köşelerde kalan adayları atar."""
+    if isinstance(haric, plaka.AlanMaskesi):
+        # 1.4.0: kırpma ALANI (çokgen) — "kesilen köşe" yerine alanın dışı.
+        tut = haric.oranlar(kutular) <= HARIC_DUSUR
+        return kutular[tut], arac[tut], insan[tut]
     if not plaka.haric_listesi(haric):
         return kutular, arac, insan
     tut = _haric_orani(kutular, haric) <= HARIC_DUSUR

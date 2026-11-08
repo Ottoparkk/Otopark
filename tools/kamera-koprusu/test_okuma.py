@@ -26,6 +26,7 @@ sys.path.insert(0, BURASI)
 
 import numpy as np  # noqa: E402
 
+import gunluk  # noqa: E402
 import okuma  # noqa: E402
 import plaka  # noqa: E402
 
@@ -913,6 +914,155 @@ def test_karar_satirlarinda_plaka_yok():
     _gonder, satirlar = _karar(g)
     for s in satirlar:
         assert "34ABC123" not in s and "06KZ4581" not in s, s
+
+
+# ------------------------------------------- 1.4.0: araç izleme (kare işi) ---
+
+def _gri() -> np.ndarray:
+    return np.zeros((120, 160), np.uint8)
+
+
+def _bekle_kare(isci, n=1, sn=3.0):
+    bitis, sonuc = time.monotonic() + sn, []
+    while time.monotonic() < bitis and len(sonuc) < n:
+        sonuc += isci.biten_kareler()
+        time.sleep(0.01)
+    return sonuc
+
+
+def test_isci_kare_iki_modelin_sonucunu_birlestirir():
+    # İzleme bir karenin İKİ modelden sonucunu birlikte ister (plaka → araç ataması).
+    p = SahtePlakaci({1: [ORTA, KENAR]}, {(1, ORTA): [("34ABC123", 0.99), ("34ABC123", 0.99)]},
+                     bekle=0.05)
+    a = SahteArac({1: ([YAKIN + (0.8,)], 0.3)}, bekle=0.2)
+    isci = okuma.Isci(p, haric=None, oku_esik=0.95, kayit=lambda s: None, arac=a)
+    try:
+        assert isci.ikisi_bos()
+        isci.ver(okuma.Is(None, _kare(1), _z(1), 0, kare=okuma.KareIsi(7, 12.5, _gri())))
+        time.sleep(0.1)
+        assert isci.bos_mu() and not isci.ikisi_bos(), "araç bulucu sürerken ikisi boş değil"
+        sonuc = _bekle_kare(isci)
+        assert len(sonuc) == 1 and isci.ikisi_bos(), sonuc
+        o = sonuc[0]
+        assert (o.no, o.mono, o.zaman) == (7, 12.5, _z(1)) and int(o.kirpik[0, 0, 0]) == 1
+        assert [round(k.skor, 2) for k in o.araclar] == [0.8], o.araclar
+        assert [k for k, _ in o.plakalar] == [ORTA, KENAR], o.plakalar
+        assert o.plakalar[0][1][1] == ("34ABC123", 0.99) and o.plakalar[1][1] is None, o.plakalar
+        assert isci.biten_kareler() == []
+    finally:
+        isci.durdur()
+
+
+def test_isci_kare_model_hatasi_birlesimi_bitirir():
+    # Bir modelin hatası o kısmı None yapar; kare yine biter (izci "ölçülmedi" sayar).
+    isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac(hata=True))
+    try:
+        isci.ver(okuma.Is(None, _kare(1), _z(1), 0, kare=okuma.KareIsi(1, 1.0, _gri())))
+        o = _bekle_kare(isci)[0]
+        assert o.araclar is None and o.plakalar == [], o
+    finally:
+        isci.durdur()
+    isci = okuma.Isci(SahtePlakaci(hata=True), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac({1: ([YAKIN + (0.8,)], 0.0)}))
+    try:
+        isci.ver(okuma.Is(None, _kare(1), _z(1), 0, kare=okuma.KareIsi(1, 1.0, _gri())))
+        o = _bekle_kare(isci)[0]
+        assert o.plakalar is None and len(o.araclar) == 1, o
+    finally:
+        isci.durdur()
+    # Bulucusuz işçi: kare yalnızca plakayla biter.
+    isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None)
+    try:
+        isci.ver(okuma.Is(None, _kare(1), _z(1), 0, kare=okuma.KareIsi(1, 1.0, _gri())))
+        o = _bekle_kare(isci)[0]
+        assert o.araclar is None and o.plakalar == [], o
+    finally:
+        isci.durdur()
+
+
+def test_plakalari_yaz_plaka_isle_ile_ayni():
+    # İzin plaka yazımı geçişinkiyle (1.3.4) birebir: aynı kare, aynı oylama.
+    okumalar = {(1, ORTA): [("34ABC123", 0.99), ("34ABC123", 0.97)],
+                (1, KENAR): [("06KZ4581", 1.0), ("06KZ4581", 1.0)],
+                (2, ORTA): [("34ABC123", 0.96), ("34ABC12", 0.90)]}
+    p = SahtePlakaci({1: [ORTA, KENAR], 2: [ORTA]}, okumalar)
+    g1, g2 = _gecis(1), _gecis(2)
+    for no in (1, 2):
+        okuma._plaka_isle(p, g1, _kare(no), _z(no), no, None, 0.95, False)
+        olc = okuma.plakalari_olc(p, _kare(no), None, 0.95)
+        okuma.plakalari_yaz(g2, _kare(no), _z(no), no, olc)
+    k1, k2 = g1.oylama.karar(), g2.oylama.karar()
+    assert k1 == k2, (k1, k2)
+    assert g1.kutulu[0] == g2.kutulu[0] and set(g1.en_iyi) == set(g2.en_iyi)
+
+
+def test_kirpma_alaninin_kenarindaki_plaka_okunmaz():
+    # 1.4.0: kırpma alanının (çokgen) eğik kenarı da bir KENARDIR: ona değen
+    # plaka kesik sayılır, okuyucu çağrılmaz; çoğu dışarıdaki kutu hiç sayılmaz.
+    m = plaka.AlanMaskesi.cokgenden([(0, 0), (EN, 0), (0, BOY)], EN, BOY)   # sol üst üçgen
+    ic = K(100, 100, 300, 145, 0.9)
+    # Köşegen y = 668 − 0.426·x kutunun sağ alt köşesini kesiyor (~%8 dışarıda).
+    kesik = K(700, 300, 800, 345, 0.9)
+    disari = K(1300, 500, 1500, 545, 0.9)       # tamamen dışarıda
+    okumalar = {(1, k): [("34ABC123", 0.99), ("34ABC123", 0.99)] for k in (ic, kesik, disari)}
+    p = SahtePlakaci({1: [ic, kesik, disari]}, okumalar)
+    assert okuma.kutulari_bul(p, _kare(1), m) == [ic, kesik], okuma.kutulari_bul(p, _kare(1), m)
+    assert okuma.kutuyu_oku(p, _kare(1), ic, m, 0.95) is not None
+    assert okuma.kutuyu_oku(p, _kare(1), kesik, m, 0.95) is None
+
+
+def _iz_karari(g, **kw):
+    v = dict(olay_zamani=_z(50), son_gonderilen=[], simdi=1000.0, arac_gecis_esik=0.60)
+    v.update(kw)
+    return okuma.iz_karari(g, **v)
+
+
+def test_iz_karari():
+    # Emin plaka → PLAKA; zamanı OLAYIN anı (ilk okunduğu an değil — saatlerce
+    # duran aracın çıkışı eski zamanla gitmesin).
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    gonder, _ = _iz_karari(g)
+    assert [(x.tur, x.plaka, x.zaman) for x in gonder] == [("PLAKA", "34ABC123", _z(50))]
+    # 60 sn içinde aynı plaka gitmez (sunucunun kuralıyla aynı).
+    gonder, satir = _iz_karari(g, son_gonderilen=[("34ABC123", 990.0)])
+    assert gonder == [] and any(gunluk.AYRILIS_ISARETI in s for s in satir), satir
+    # Personele (ısınmada kapıda olan araç): emin plaka TAHMİN olarak gider.
+    gonder, _ = _iz_karari(g, personele=True)
+    assert [(x.tur, x.tahmin) for x in gonder] == [("OKUNAMADI", "34ABC123")], gonder
+    # Bir izde iki FARKLI emin plaka: iki araç karışmış — personele, plaka gitmez.
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    _oy(g, "06KZ4581", [3, 4])
+    gonder, satir = _iz_karari(g)
+    assert [x.tur for x in gonder] == ["OKUNAMADI"] and gonder[0].plaka is None, gonder
+    assert any("iki plaka" in s for s in satir), satir
+    for s in satir:
+        assert "34ABC123" not in s and "06KZ4581" not in s, s
+    # Emin + belirsiz: yalnızca emin gider.
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    _oy(g, "06KZ4581", [3], enk=0.96)
+    g.oylama.kutu(_z(9), 9)
+    gonder, _ = _iz_karari(g)
+    assert [(x.tur, x.plaka) for x in gonder] == [("PLAKA", "34ABC123")], gonder
+    # Yalnız belirsiz → tahminle personele.
+    g = _gecis()
+    _oy(g, "34ABC123", [1], enk=0.96)
+    g.oylama.kutu(_z(2), 1)
+    g.kutulu = (0.8, _kare(5))
+    gonder, _ = _iz_karari(g)
+    assert [(x.tur, x.tahmin, x.zaman) for x in gonder] == [("OKUNAMADI", "34ABC123", _z(50))]
+    # Plakasız: net araç (≥ 0.60) personele, en iyi göründüğü kareyle; zayıfsa hiç.
+    g = _gecis()
+    g.arac_max, g.arac_kirpik = 0.7, _kare(8)
+    gonder, satir = _iz_karari(g)
+    assert [x.tur for x in gonder] == ["OKUNAMADI"] and int(gonder[0].kirpik[0, 0, 0]) == 8
+    assert any(gunluk.PLAKASIZ_ARAC_ISARETI in s for s in satir), satir
+    g.arac_max = 0.5
+    gonder, satir = _iz_karari(g)
+    assert gonder == [] and any(gunluk.ARAC_YOK_ISARETI in s for s in satir), satir
 
 
 if __name__ == "__main__":

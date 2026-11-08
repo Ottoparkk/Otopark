@@ -549,14 +549,26 @@ def port_sor() -> int:
 def kirpma_ve_esikler(rtsp: str) -> dict:
     import kirpma_sunucu
 
-    baslik(3, "Kırpma kutusu")
-    print("  Tarayıcı açılıyor. Şeridi kapsayan dikdörtgeni sürükleyin")
-    print("  (park etmiş araçlar görünüyorsa üstlerine bir hariç alan),")
-    print("  sonra 'Kaydet' deyin.")
-    kutu, haric, olcumler = kirpma_sunucu.kirpma_sec(rtsp)
+    baslik(3, "Kırpma alanı")
+    print("  Tarayıcı açılıyor. İzlenecek alanın köşelerini tıklayın (park etmiş")
+    print("  araçları dışarıda bırakın), sonra kapının önünü 'Kapı alanı' olarak")
+    print("  çizin ve 'Kaydet' deyin.")
+    secim = kirpma_sunucu.kirpma_sec(rtsp)
+    kutu, haric, olcumler = secim[:3]
+    # 1.4.0: çokgen alan ve kapı alanı (eski 3 değerli dönüşte ikisi de yok).
+    alan, kapi = (secim[3], secim[4]) if len(secim) > 3 else (None, None)
 
+    import plaka
     ayar: dict = {}
-    if kutu:
+    # 1.4.0: ikisi de HER ZAMAN yazılır (boşsa ""), KIRPMA ile aynı sebeple:
+    # yeniden kurulumda eski dosyadan gelen eski alan yeni kırpmanın üstüne dönerdi.
+    ayar["KIRPMA_ALAN"] = plaka.cokgen_metni(alan) if alan else ""
+    ayar["KAPI_ALANI"] = plaka.cokgen_metni(kapi) if kapi else ""
+    if alan:
+        # Tek doğru kaynak: alan varken eski kutu ve hariç alanlar AÇIKÇA boş.
+        ayar["KIRPMA"] = ""
+        print(f"  ✓ Kırpma alanı: {ayar['KIRPMA_ALAN']}")
+    elif kutu:
         ayar["KIRPMA"] = ",".join(str(v) for v in kutu)
         print(f"  ✓ Kırpma: {ayar['KIRPMA']}")
     else:
@@ -565,11 +577,14 @@ def kirpma_ve_esikler(rtsp: str) -> dict:
         # kutu — artık plakayı içermeyen bir bölge — köprüye geri giderdi.
         ayar["KIRPMA"] = ""
         print("  ! Kırpma seçilmedi — tüm kare kullanılacak, okuma daha kötü olur.")
+    if kapi:
+        print(f"  ✓ Kapı alanı: {ayar['KAPI_ALANI']}")
+    else:
+        print("  ! Kapı alanı çizilmedi — araçlar durunca / kaybolunca sayılacak.")
     # Hariç alan da HER ZAMAN yazılır (boşsa ""), aynı sebeple: eski dosyadaki
     # hariç alan yeni kutunun içinde plakanın tam üstüne düşebilirdi.
     # 1.3.3: en çok 3 alan, ";" ile (tek alan 1.3.0 ile aynı metin).
-    import plaka
-    alanlar = plaka.haric_listesi(haric) if kutu else ()
+    alanlar = plaka.haric_listesi(haric) if kutu and not alan else ()
     if alanlar:
         ayar["KIRPMA_HARIC"] = ";".join(",".join(str(v) for v in a) for a in alanlar)
         print(f"  ✓ Hariç alan: {ayar['KIRPMA_HARIC']}")

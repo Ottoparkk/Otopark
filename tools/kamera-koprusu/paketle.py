@@ -41,7 +41,10 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.3.4"   # 1.3.4: plaka küçültülmüş kırpıntıda bulunur, TAM çözünürlükten okunur
+SURUM = "1.4.0"   # 1.4.0: her araç İZLENİR (takip.py), karar araç başına bir kez; kapı
+                  #        alanı (girdi / çıktı, otopark içi sayılmaz); kırpma alanı
+                  #        tıklanan çokgen (hariç dikdörtgenler yerine); TAKIP=0 eskisi
+                  # 1.3.4: plaka küçültülmüş kırpıntıda bulunur, TAM çözünürlükten okunur
                   #        (sahada 2124 → 1568 px; kare plakanın küçük harfleri); PLAKA_TAM=0
                   #        eskisi; --plaka iki yolu karşılaştırır
                   # 1.3.3: plaka okuyucu ve araç bulucu AYNI ANDA (ayrı iş parçacıkları;
@@ -74,7 +77,7 @@ SURUM = "1.3.4"   # 1.3.4: plaka küçültülmüş kırpıntıda bulunur, TAM ç
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "plaka", "okuma", "giden", "arac"]
+            "plaka", "okuma", "giden", "arac", "takip"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 HARIC = ["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PyQt6",

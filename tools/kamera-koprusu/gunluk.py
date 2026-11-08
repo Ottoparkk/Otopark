@@ -148,6 +148,22 @@ ARAC_YETISMEDI_ISARETI = "araç bulucu durulan kareye yetişmedi"
 # Durmadan geçen, plakası okunamayan araç personele bırakıldı. PLAKASIZ_ISARETI
 # içermez: "plakasız hareket" sayımına girmesin.
 PLAKASIZ_ARAC_ISARETI = "plakasız araç geçti"
+# 1.4.0: araç izleme (takip.py). Kapalıysa köprü 1.3.4 geçiş kuralıyla sürer
+# (TAKIP=0, araç bulucu yok/bozuk) — hata değil, sağlık kırmızı olmaz.
+TAKIP_ACIK_ISARETI = "araç izleme açık"
+TAKIP_KAPALI_ISARETI = "araç izleme kapalı"
+TAKIP_KAPANDI_ISARETI = "araç izleme kapandı"
+# Olaylar: hiçbiri plaka içermez. GİRDİ / ÇIKTI / ESKİ / KAPISIZ gönderir;
+# ötekiler yalnızca kayda yazılır.
+GIRDI_ISARETI = "araç girdi"
+CIKTI_ISARETI = "araç çıktı"
+ESKI_GIRDI_ISARETI = "araç kapıdan otoparka geçti (köprü açılırken kapıdaydı) — personele"
+KAPISIZ_ISARETI = "araç hareketi bitti (kapı alanı yok)"
+ICERIDE_ISARETI = "otopark içinde hareket — sayılmadı"
+GERI_DONDU_ISARETI = "kapıdan geri döndü — sayılmadı"
+KAPIDA_BEKLIYOR_ISARETI = "kapı alanında uzun bekleyen araç (kapı alanı park yerine mi çizildi?)"
+YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
+KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).
 PERSONELE_ISARETI = "personele bırakıldı"
 # Sunucu "okunamadi"yı tanımıyor (webhook güncellenmemiş): araç KAYIT DIŞI.

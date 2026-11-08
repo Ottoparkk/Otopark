@@ -114,7 +114,7 @@ class PlakaHatasi(Exception):
 
 AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK",
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
-               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM")
+               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP")
 
 
 def _oran(alt_dahil: bool):
@@ -142,6 +142,9 @@ _KURALLAR = (
     ("ARAC_BUL", "arac_acik", True, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
     ("ARAC_BUL_ESIK", "arac_esik", 0.35, float, lambda v: 0 < v < 1),
     ("ARAC_GECIS_ESIK", "arac_gecis_esik", 0.60, float, lambda v: 0 < v < 1),
+    # 1.4.0: her aracı izle (takip.py), karar araç başına bir kez. 0 = 1.3.4
+    # geçiş kuralı birebir. Araç bulucu yok/bozuksa zaten 1.3.4'e döner.
+    ("TAKIP", "takip", True, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
 )
 
 
@@ -250,6 +253,11 @@ def haric_listesi(haric) -> tuple:
     """
     if haric is None:
         return ()
+    if isinstance(haric, AlanMaskesi):
+        # 1.4.0: çokgen alan dikdörtgen listesi DEĞİLDİR. Onu buraya getiren
+        # yol çokgen dalını unutmuştur — sessizce "kesilen köşe yok" saymak
+        # yerine düşer (test_haric_listesi_alan_maskesini_kabul_etmez).
+        raise TypeError("AlanMaskesi dikdörtgen listesi değildir")
     ogeler = list(haric)
     if len(ogeler) == 4 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in ogeler):
         return (tuple(v.item() if hasattr(v, "item") else v for v in ogeler),)
@@ -286,6 +294,8 @@ def tam_mi(k: Kutu, en: int, boy: int, haric: tuple | None = None) -> bool:
     Kutu kırpıntının her kenarından (ve HER kesilen köşeden) en az
     max(3 px, %1) uzakta mı? Değiyorsa plaka büyük olasılıkla kesik: okunmaz.
     """
+    if isinstance(haric, AlanMaskesi):
+        return haric.tam_mi(k)
     px, py = _paylar(en, boy)
     if k.x1 < px or k.y1 < py or k.x2 > en - px or k.y2 > boy - py:
         return False
@@ -298,10 +308,188 @@ def tam_mi(k: Kutu, en: int, boy: int, haric: tuple | None = None) -> bool:
 
 def haric_orani(k: Kutu, haric: tuple | None) -> float:
     """Kutunun kesilen köşelerde (birleşimlerinde) kalan alan oranı (0..1)."""
+    if isinstance(haric, AlanMaskesi):
+        return haric.oran(k)
     alan = (k.x2 - k.x1) * (k.y2 - k.y1)
     if alan <= 0:
         return 0.0
     return kesilen_alan(k.x1, k.y1, k.x2, k.y2, haric) / alan
+
+
+# ------------------------------------------- 1.4.0: kırpma ALANI (çokgen) ----
+
+# Kırpma sayfasında tıklanan alanın en çok köşesi.
+COKGEN_EN_COK = 8
+# Bundan küçük alan çizim hatasıdır (8×8 px): köprü hiçbir şey göremezdi.
+COKGEN_EN_AZ_ALAN = 64
+# Kayan nokta payı (piksel): sınırdaki kutu yuvarlama hatasıyla dışarı taşmasın.
+_KAYAN = 1e-6
+
+
+def _yon(a, b, c) -> int:
+    v = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return (v > 0) - (v < 0)
+
+
+def _uzerinde(a, b, c) -> bool:
+    """c, a-b doğru parçasının üzerinde mi (üç nokta aynı doğrudayken)."""
+    return min(a[0], b[0]) <= c[0] <= max(a[0], b[0]) and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+
+
+def _parcalar_kesisir(a, b, c, d) -> bool:
+    """a-b ile c-d doğru parçaları kesişiyor ya da DEĞİYOR mu."""
+    y1, y2, y3, y4 = _yon(a, b, c), _yon(a, b, d), _yon(c, d, a), _yon(c, d, b)
+    if y1 != y2 and y3 != y4:
+        return True
+    return ((y1 == 0 and _uzerinde(a, b, c)) or (y2 == 0 and _uzerinde(a, b, d))
+            or (y3 == 0 and _uzerinde(c, d, a)) or (y4 == 0 and _uzerinde(c, d, b)))
+
+
+def cokgen_alani(noktalar) -> float:
+    """Ayakkabı bağı formülü: çokgenin alanı (px²), yönden bağımsız."""
+    n = len(noktalar)
+    return abs(sum(noktalar[i][0] * noktalar[(i + 1) % n][1] - noktalar[(i + 1) % n][0] * noktalar[i][1]
+                   for i in range(n))) / 2.0
+
+
+def cokgen_coz(noktalar) -> tuple:
+    """
+    Tıklanan köşeler → ((x, y), …) tamsayı tuple; geçersizse ValueError
+    (Türkçe). Kurallar: 3..COKGEN_EN_COK köşe, eksi olmayan tamsayılar (bool
+    değil), aynı köşe iki kez yok, kenarlar birbirini KESMEZ (papyon şekli
+    içini belirsiz bırakır), alan ≥ COKGEN_EN_AZ_ALAN. Köprü (KIRPMA_ALAN,
+    KAPI_ALANI) ve kırpma sayfası bunu paylaşır: iki taraf ayrışamaz.
+    """
+    try:
+        liste = [tuple(n) for n in noktalar]
+    except TypeError:
+        raise ValueError("alan köşelerin listesi olmalı") from None
+    if not 3 <= len(liste) <= COKGEN_EN_COK:
+        raise ValueError(f"alan 3 ile {COKGEN_EN_COK} arasında köşeden oluşmalı")
+    for n in liste:
+        if len(n) != 2 or any(isinstance(v, bool) or not isinstance(v, (int, np.integer)) for v in n):
+            raise ValueError("alan köşeleri tamsayı (x, y) piksel olmalı")
+        if n[0] < 0 or n[1] < 0:
+            raise ValueError("alan köşeleri eksi olamaz")
+    liste = [(int(x), int(y)) for x, y in liste]
+    if len(set(liste)) != len(liste):
+        raise ValueError("alanda aynı köşe iki kez var")
+    k = len(liste)
+    for i in range(k):
+        for j in range(i + 1, k):
+            if j == i + 1 or (i == 0 and j == k - 1):
+                continue                      # komşu kenarlar köşede buluşur
+            if _parcalar_kesisir(liste[i], liste[(i + 1) % k], liste[j], liste[(j + 1) % k]):
+                raise ValueError("alanın kenarları birbirini kesiyor — köşeleri sırayla tıklayın")
+    if cokgen_alani(liste) < COKGEN_EN_AZ_ALAN:
+        raise ValueError("alan çok küçük")
+    return tuple(liste)
+
+
+def cokgen_kutusu(noktalar) -> tuple[int, int, int, int]:
+    """Çokgenin çevreleyen dikdörtgeni (x, y, w, h) — köprü bunu kırpar."""
+    xs, ys = [p[0] for p in noktalar], [p[1] for p in noktalar]
+    return min(xs), min(ys), max(1, max(xs) - min(xs)), max(1, max(ys) - min(ys))
+
+
+def cokgen_metni(noktalar) -> str:
+    """((x, y), …) → ayar dosyasındaki "x,y;x,y;…" metni."""
+    return ";".join(f"{x},{y}" for x, y in noktalar)
+
+
+def cokgen_metinden(metin: str | None) -> tuple | None:
+    """Ayar metni → doğrulanmış köşeler; boşsa None; bozuksa ValueError (Türkçe)."""
+    metin = (metin or "").strip()
+    if not metin:
+        return None
+    noktalar = []
+    for parca in metin.split(";"):
+        try:
+            x, y = (int(v) for v in parca.split(","))
+        except ValueError:
+            raise ValueError('alan "x,y;x,y;x,y" biçiminde olmalı (piksel, en az 3 köşe)') from None
+        noktalar.append((x, y))
+    return cokgen_coz(noktalar)
+
+
+def cokgen_dis_maskesi(noktalar, en: int, boy: int) -> np.ndarray:
+    """
+    (boy, en) uint8: 1 = çokgenin DIŞI. Köşeler kesirli olabilir (1/16 px
+    hassasiyetle çizilir). Griye boyama (kopru.kirp_maskeli) ve kurallar
+    (AlanMaskesi) bu TEK çizimi kullanır.
+    """
+    maske = np.ones((int(boy), int(en)), np.uint8)
+    nokta = np.round(np.asarray(noktalar, dtype=np.float64) * 16).astype(np.int32)
+    cv2.fillPoly(maske, [nokta.reshape(-1, 1, 2)], 0, cv2.LINE_8, 4)
+    return maske
+
+
+class AlanMaskesi:
+    """
+    1.4.0: kırpma ALANI (tıklanan çokgen), ölçeklenmiş kırpıntının
+    pikselinde. Hariç dikdörtgenlerin genellemesi: alanın dışı griye boyanır
+    ve plaka / araç kuralları "kesilen köşe" yerine "alanın dışı"na bakar.
+
+    Kenar kuralı (tam_mi) eskisiyle aynı ölçüdedir: kutu, `_paylar` kadar
+    genişletildiğinde alanın dışına (ya da kırpıntının dışına) TEK piksel
+    taşımıyorsa tamdır. Dikdörtgen ve L şekilli alanlarda eski kuralla
+    birebir aynı sonucu verir (test_alan_maskesi_*). Sayım tümleşik görüntü
+    ile O(1): her karede onlarca kutu için ucuz.
+    """
+
+    def __init__(self, dis: np.ndarray):
+        dis = np.asarray(dis) != 0                       # True = alanın DIŞI
+        self.boy, self.en = dis.shape[:2]
+        self._ii = cv2.integral(dis.astype(np.uint8))    # (boy+1, en+1)
+
+    @classmethod
+    def cokgenden(cls, noktalar, en: int, boy: int) -> "AlanMaskesi":
+        """Köşeler (bu maskenin pikselinde, kesirli olabilir) → maske."""
+        return cls(cokgen_dis_maskesi(noktalar, en, boy))
+
+    def _say(self, x1: int, y1: int, x2: int, y2: int) -> int:
+        ii = self._ii
+        return int(ii[y2, x2]) - int(ii[y1, x2]) - int(ii[y2, x1]) + int(ii[y1, x1])
+
+    def disarida_px(self, x1: float, y1: float, x2: float, y2: float) -> int:
+        """Kutunun (dışa yuvarlanmış) piksellerinden alanın DIŞINDA kalanlar;
+        kırpıntının dışına taşan pikseller de dışarıda sayılır. _KAYAN: tam
+        sınırdaki kutu (515.68 − 15.68 = 499.99999999999994) eski kuraldaki
+        gibi içeride sayılsın."""
+        a1, b1 = math.floor(x1 + _KAYAN), math.floor(y1 + _KAYAN)
+        a2, b2 = math.ceil(x2 - _KAYAN), math.ceil(y2 - _KAYAN)
+        if a2 <= a1 or b2 <= b1:
+            return 0
+        toplam = (a2 - a1) * (b2 - b1)
+        c1, d1, c2, d2 = max(a1, 0), max(b1, 0), min(a2, self.en), min(b2, self.boy)
+        if c2 <= c1 or d2 <= d1:
+            return toplam
+        return toplam - (c2 - c1) * (d2 - d1) + self._say(c1, d1, c2, d2)
+
+    def tam_mi(self, k) -> bool:
+        px, py = _paylar(self.en, self.boy)
+        return self.disarida_px(k.x1 - px, k.y1 - py, k.x2 + px, k.y2 + py) == 0
+
+    def oran(self, k) -> float:
+        """Kutunun (kırpıntı içinde kalan kısmının) alanın dışındaki oranı."""
+        return float(self.oranlar(np.array([[k.x1, k.y1, k.x2, k.y2]], dtype=np.float64))[0])
+
+    def oranlar(self, kutular: np.ndarray) -> np.ndarray:
+        """(N, ≥4) x1 y1 x2 y2 → (N,) dışarıda kalan oran (vektör)."""
+        k = np.asarray(kutular, dtype=np.float64)
+        if k.size == 0:
+            return np.zeros(0)
+        k = k.reshape(-1, k.shape[-1])
+        x1 = np.clip(np.floor(k[:, 0] + _KAYAN), 0, self.en).astype(np.int64)
+        y1 = np.clip(np.floor(k[:, 1] + _KAYAN), 0, self.boy).astype(np.int64)
+        x2 = np.clip(np.ceil(k[:, 2] - _KAYAN), 0, self.en).astype(np.int64)
+        y2 = np.clip(np.ceil(k[:, 3] - _KAYAN), 0, self.boy).astype(np.int64)
+        alan = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        ii = self._ii.astype(np.int64)
+        x2, y2 = np.maximum(x2, x1), np.maximum(y2, y1)
+        dis = ii[y2, x2] - ii[y1, x2] - ii[y2, x1] + ii[y1, x1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(alan > 0, dis / np.maximum(alan, 1), 0.0)
 
 
 def kutu_olcekle(k: Kutu, sx: float, sy: float) -> Kutu:

@@ -107,17 +107,24 @@ ELİNİZDE HAZIR OLSUN
 
   Kameranın RTSP adresini BİLMENİZE GEREK YOK — program kendisi bulur.
 
-  Kurulum sırasında tarayıcıda canlı görüntü açılacak ve şeridin
-  etrafına fareyle bir kutu sürüklemeniz istenecek:
-    · sol ve sağ kenar: şeridin genişliği (sokak girmesin),
-    · üst kenar: araçların durduğu yerin biraz ÜSTÜ (kutu uzun olabilir),
-    · kutu yeşil olana kadar büyütün; plaka kutunun kenarına değmesin.
-  Kutunun içinde PARK ETMİŞ araçlar görünüyorsa "Hariç alan çiz"e basıp
-  her birinin üstüne bir dikdörtgen çizin (en çok 3; kırmızı taralı ve
-  numaralı görünür). Oralar gri boyanır: hareketi sayılmaz, plakası
-  okunmaz, fotoğrafta da görünmez. Plakası görünen park etmiş araçları
-  MUTLAKA örtün: yoksa başka bir araç geçerken onun plakası da okunur.
-  Yanlış çizdiğiniz alanı listede kendi "Hariç alanı sil" düğmesiyle silin.
+  Kurulum sırasında tarayıcıda canlı görüntü açılacak ve iki alan
+  çizmeniz istenecek (1.4.0) — ikisi de görüntüye TIKLAYARAK, köşe köşe
+  (en çok 8 köşe; ilk köşeye yeniden tıklayınca alan kapanır; yanlış
+  tıklamayı "Son köşeyi sil" geri alır):
+    1. KIRPMA ALANI — izlenecek yer: araçların geçtiği zemin ve kapı.
+       PARK ETMİŞ araçları alanın DIŞINDA bırakın: dışı karartılır;
+       orada hareket sayılmaz, plaka okunmaz, fotoğrafta da görünmez.
+       Plakası görünen park etmiş araçlar MUTLAKA dışarıda kalsın: yoksa
+       başka bir araç geçerken onun plakası da okunur.
+    2. KAPI ALANI — "Kapı alanı" düğmesine basıp kapının önünü çizin:
+       araçların girip çıktığı yer. Resmin KENARINA kadar uzansın (araç
+       oradan görünmeye başlar), içine en az bir araç boyu girsin ve
+       araçların PARK ETMEDİĞİ bir yer olsun. Program bir aracı ancak
+       buradan girip otoparka geçtiyse "girdi", otoparktan gelip burada
+       kaybolduysa "çıktı" sayar; otopark içindeki hareket (park etme,
+       personelin aracı kaydırması) SAYILMAZ.
+  Kenara çok yakın tıkladığınız köşe kenara yapışır. Kamerayı yeniden
+  yönlendirdiyseniz alanları yeniden çizin ("Yeniden kur").
 
 
 ÇALIŞIYOR MU?
@@ -130,7 +137,13 @@ ELİNİZDE HAZIR OLSUN
   Durum ekranında şunlar görünür:
       Plaka okuma  : hazır
       Araç bulucu  : hazır
-      Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket (araç görülmedi: 4)
+      Araç izleme  : açık (kapı alanı var)
+      Bugün        : 143 gönderim, 0 reddedilme, 6 personele, 21 plakasız hareket (araç görülmedi: 4); 70 giriş, 68 çıkış, 35 otopark içi hareket
+  "otopark içi hareket" (1.4.0) = park eden / yer değiştiren araçlar;
+  bunlar HİÇBİR YERE gönderilmez. "kapıda bekleyen" yazarsa kapı alanı
+  araçların park ettiği bir yere çizilmiş olabilir: yeniden çizin.
+  "Araç izleme: kapalı" ya da "kapandı" araç bulucu çalışmıyor demektir;
+  araçlar KAYBOLMAZ, program eski (1.3.4) kuralla sürer.
   "personele" = plakası emin okunamayıp fotoğrafıyla "Çözülmemiş
   kayıtlar"a düşen araçlar; personel uygulamadan karar verir.
   "plakasız hareket" = kutudan geçen ama araç olmayan şeyler (yürüyen
@@ -167,7 +180,12 @@ ELİNİZDE HAZIR OLSUN
   saniyede kaç kare okuyacağı yazar — bunu iletin. 1.3.4: kırpma kutusu
   büyükse her plaka iki yoldan okunur ("küçük:" eski yol); sonunda
   "Emin okuma: tam çözünürlükte N kare, küçültülmüşte M kare" yazar —
-  bunu da iletin. "kesik" = plaka kutunun
+  bunu da iletin. 1.4.0: araç kapıdan girip durunca "→ ARAÇ GİRDİ",
+  kapıda kaybolunca "→ ARAÇ ÇIKTI" satırı ve gidecek plaka yazar;
+  otopark içinde hareket edince "→ otopark içinde hareket — sayılmaz".
+  Kapı alanından birkaç araç geçirip bu satırları görün; görünmüyorsa
+  kapı alanını yeniden çizin. Sonunda "İzleme: N giriş, M çıkış …"
+  yazar — bunu da iletin. "kesik" = plaka kutunun
   kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
   (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —
   geçen araçlarla karşılaştırın; yanlış olan varsa ekranın fotoğrafını

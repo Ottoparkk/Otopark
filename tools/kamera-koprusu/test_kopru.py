@@ -333,6 +333,142 @@ SENARYOLAR = {
     ),
 }
 
+# ---- 1.4.0: araç izleme. Araçlar düz yollarda yumuşak hareket eder (izleme
+# her kareyi izler); öğe: (başla, bitir, x0, y0, x1, y1, plaka no, gri değer).
+# Araç 160×110; çapası (alt orta) kapı alanında mı diye bakılır. Kapı sol
+# altta, karenin kenarına değer (sahadaki yeşil alan gibi).
+KAPI = "0,300;300,300;380,480;0,480"
+_IZ = dict(takip="1", nesne_ayri=True, model_gecikme=0.12, kapi=KAPI, pencereler=[])
+GIRIS_YOLU = [(1.0, 3.0, 10, 380, 400, 60, 0, 220), (3.0, 99, 400, 60, 400, 60, 0, 220)]
+CIKIS_YOLU = [(0.0, 3.0, 420, 60, 420, 60, 0, 220), (3.0, 5.0, 420, 60, 20, 400, 0, 220)]
+SENARYOLAR.update({
+    # Kapıdan girip otoparka geçen, duran araç: BİR plaka.
+    "takip_giris": dict(_IZ, araclar=GIRIS_YOLU, sure=10.0,
+                        plakalar=[(3, 10, 0)], gonderim_sayisi=1,
+                        kayitta_sirayla=["araç izleme açık (kapı alanı var)", "araç girdi"]),
+    # Park etmiş araç (köprü açılırken oradaydı) kapıya gidip kayboluyor: çıkış.
+    "takip_cikis": dict(_IZ, araclar=CIKIS_YOLU, sure=12.0, yon="ORTAK",
+                        plakalar=[(5, 12, 0)], gonderim_sayisi=1,
+                        kayitta_sirayla=["araç çıktı"]),
+    # Otopark içinde yer değiştiren araç: hiçbir şey gönderilmez (sahada 17 kart).
+    "takip_iceride": dict(_IZ, araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
+                                        (3, 4.5, 420, 60, 450, 200, 0, 220),
+                                        (4.5, 99, 450, 200, 450, 200, 0, 220)],
+                          sure=10.0, gonderim_sayisi=0, yon="ORTAK",
+                          kayitta_sirayla=["otopark içinde hareket"]),
+    # Girip durdu, sonra park yerine ilerledi: yine BİR gönderim.
+    "takip_dur_kalk": dict(_IZ, araclar=[(1, 3, 10, 380, 250, 170, 0, 220),
+                                         (3, 6, 250, 170, 250, 170, 0, 220),
+                                         (6, 7.5, 250, 170, 420, 60, 0, 220),
+                                         (7.5, 99, 420, 60, 420, 60, 0, 220)],
+                           sure=12.0, plakalar=[(3, 12, 0)], gonderim_sayisi=1),
+    # Kapıdan çıkıp geri dönen: sayılmaz.
+    "takip_geri_doner": dict(_IZ, araclar=[(1, 2.5, 10, 380, 330, 150, 0, 220),
+                                           (2.5, 4, 330, 150, 10, 380, 0, 220)],
+                             sure=10.0, gonderim_sayisi=0, yon="ORTAK",
+                             kayitta_sirayla=["kapıdan geri döndü"]),
+    # Kapıya giderken 1.2 sn bir şeyin arkasında kaldı: yine TEK çıkış.
+    "takip_ortulme": dict(_IZ, araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
+                                        (3, 4, 420, 60, 250, 200, 0, 220),
+                                        (5.2, 6, 150, 290, 20, 400, 0, 220)],
+                          sure=12.0, yon="ORTAK", plakalar=[(6, 12, 0)], gonderim_sayisi=1),
+    # Kapıda DURAN araç uzun süre görünmedi (önünde biri), sonra yine orada:
+    # çıkış sayılmaz.
+    "takip_kapida_park_titreme": dict(_IZ, araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
+                                                    (3, 5, 420, 60, 100, 330, 0, 220),
+                                                    (5, 8, 100, 330, 100, 330, 0, 220),
+                                                    (13, 99, 100, 330, 100, 330, 0, 220)],
+                                      sure=16.0, yon="ORTAK", gonderim_sayisi=0),
+    # Arka arkaya iki araç: iki plaka.
+    "takip_iki_arac": dict(_IZ, araclar=GIRIS_YOLU + [(5, 7, 10, 380, 180, 40, 1, 240),
+                                                      (7, 99, 180, 40, 180, 40, 1, 240)],
+                           sure=12.0, plakalar=[(3, 8, 0), (7, 12, 1)], gonderim_sayisi=2),
+    # Kapı alanı yok: girip duran araç bir kez; park etmiş araç hiç.
+    "takip_kapisiz": dict(_IZ, kapi=None, araclar=[(0, 99, 450, 300, 450, 300, 2, 230),
+                                                   (1, 3, 10, 380, 250, 100, 0, 220),
+                                                   (3, 99, 250, 100, 250, 100, 0, 220)],
+                          sure=10.0, plakalar=[(3, 10, 0)], gonderim_sayisi=1, hic_gitmez=[2],
+                          kayitta_sirayla=["araç izleme açık (kapı alanı yok)"]),
+    # Köprü açılırken kapıda duran araç otoparka geçti: dışarıdan mı geldi
+    # bilinmez — personele, plaka TAHMİN olarak.
+    "takip_baslangicta_kapida": dict(_IZ, araclar=[(0, 3, 50, 350, 50, 350, 0, 220),
+                                                   (3, 5, 50, 350, 400, 60, 0, 220),
+                                                   (5, 99, 400, 60, 400, 60, 0, 220)],
+                                     sure=11.0, personele=[(5, 11, 0)], gonderim_sayisi=1),
+    # Plakasız ama net araç girdi: personele (tahminsiz).
+    "takip_plakasiz_giris": dict(_IZ, araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                               (3, 99, 400, 60, 400, 60, None, 220)],
+                                 sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1),
+    # Kapıdan yürüyen yaya (koyu, araç değil): hiçbir şey.
+    "takip_yaya": dict(_IZ, araclar=[(1, 3, 10, 380, 400, 60, None, 0),
+                                     (3, 99, 400, 60, 400, 60, None, 0)],
+                       sure=9.0, gonderim_sayisi=0),
+    # Bulucu yok: 1.3.4 geçiş kuralı aynen (TAKIP=1 olsa da).
+    "takip_bulucu_yok": dict(takip="1", arac="yok",
+                             sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 7, DURDU, 0)],
+                             sure=7.0, pencereler=[(1.8, 7.0)], plakalar=[(1.8, 7.0, 0)],
+                             kayitta_sirayla=["araç izleme kapalı (araç bulucu yok)"]),
+    # Ayar dosyasında TAKIP yok: varsayılan AÇIK.
+    "takip_varsayilan": dict(_IZ, takip=None, araclar=GIRIS_YOLU, sure=10.0,
+                             plakalar=[(3, 10, 0)], gonderim_sayisi=1,
+                             kayitta_sirayla=["araç izleme açık"]),
+    # TAKIP=0: kapı alanı verilmiş olsa da 1.3.4 geçiş kuralı.
+    "takip_kapali": dict(takip="0", kapi=KAPI,
+                         sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 7, DURDU, 0)],
+                         sure=7.0, pencereler=[(1.8, 7.0)], plakalar=[(1.8, 7.0, 0)],
+                         kayitta_sirayla=["araç izleme kapalı (TAKIP=0)"]),
+    # Eski kırpma (kutu + hariç alan) izlemeyle çalışır; hariç alandaki park
+    # etmiş aracın plakası hiç gitmez; kanıt fotoğrafı gider (kutu var).
+    "takip_eski_kirpma": dict(_IZ, kapi="380,300;640,300;640,480;400,480",
+                              kirpma="0,0,640,480", haric="20,405,290,65", park_plakali=3,
+                              araclar=[(1, 3, 480, 380, 250, 60, 0, 220),
+                                       (3, 99, 250, 60, 250, 60, 0, 220)],
+                              sure=10.0, plakalar=[(3, 10, 0)], gonderim_sayisi=1,
+                              hic_gitmez=[3]),
+    # Kırpma ALANI (çokgen: sol üst üçgen): alanın dışında giden araç yok sayılır.
+    "takip_alan_gri": dict(_IZ, alan="0,0;640,0;0,480",
+                           araclar=[(1, 4, 470, 370, 470, 250, 0, 220),
+                                    (4, 99, 470, 250, 470, 250, 0, 220)],
+                           sure=9.0, gonderim_sayisi=0),
+    # Kırpma alanı içinde kapıdan giren araç (alan + kapı birlikte).
+    "takip_alan_giris": dict(_IZ, alan="0,0;640,0;640,480;0,480",
+                             araclar=GIRIS_YOLU, sure=10.0, plakalar=[(3, 10, 0)],
+                             gonderim_sayisi=1, kayitta_sirayla=["kırpma alanı (4 köşe)"]),
+    # Kapıdan çıkmış, karar beklerken kamera koptu: girdi sayılır (kaybolmaz).
+    "takip_kopma": dict(_IZ, araclar=[(1, 3, 10, 380, 400, 60, 0, 220),
+                                      (3, 99, 400, 60, 480, 80, 0, 220)],
+                        kopuk=(3.4, 3.7), sure=10.0, plakalar=[(3.3, 5, 0)], gonderim_sayisi=1,
+                        kayitta_sirayla=["kare alınamadı", "araç girdi", "kamera bağlandı"]),
+    # Giriş şeridi çıkışı göndermez; çıkış şeridi girişi göndermez.
+    "takip_giris_seridi": dict(_IZ, araclar=CIKIS_YOLU, sure=11.0, yon="GIRIS",
+                               gonderim_sayisi=0, kayitta_sirayla=["yönüne ters"]),
+    "takip_cikis_seridi": dict(_IZ, araclar=GIRIS_YOLU, sure=9.0, yon="CIKIS",
+                               gonderim_sayisi=0, kayitta_sirayla=["yönüne ters"]),
+    # Girip hemen çıkan araç: çıkış 60 sn kuralıyla gönderilmez (sunucu da yok sayar).
+    "takip_ayni_plaka_60sn": dict(_IZ, yon="ORTAK",
+                                  araclar=[(1, 3, 10, 380, 400, 60, 0, 220),
+                                           (3, 6, 400, 60, 400, 60, 0, 220),
+                                           (6, 8, 400, 60, 20, 400, 0, 220)],
+                                  sure=14.0, plakalar=[(3, 8, 0)], gonderim_sayisi=1,
+                                  kayitta_sirayla=["araç girdi", "araç çıktı"]),
+    # Bekçi izleme kipinde de takılan döngüyü kapatır.
+    "takip_takilma": dict(_IZ, araclar=[], sure=8.0, takilir=2.0, bekci="2",
+                          bekci_beklenir=(3.5, 7.5),
+                          kayitta_sirayla=["araç izleme açık", "köprü takıldı"]),
+    # Bulucunun görmediği (koyu) araç, plakası okunuyor: plaka izinden girdi.
+    "takip_sahipsiz_plaka": dict(_IZ, araclar=[(1, 3, 10, 380, 400, 60, 0, 150),
+                                               (3, 99, 400, 60, 400, 60, 0, 150)],
+                                 sure=10.0, plakalar=[(3, 10, 0)], gonderim_sayisi=1),
+    # Bulucu çalışırken bozuldu: kapıdan geçmiş araç girdi sayılır, sonraki
+    # araç 1.3.4 geçiş kuralıyla gelir.
+    "takip_bulucu_bozuldu": dict(_IZ, bulucu_bozulur=3.6,
+                                 araclar=GIRIS_YOLU + [(8, 9.5, 10, 380, 150, 250, 1, 240),
+                                                       (9.5, 99, 150, 250, 150, 250, 1, 240)],
+                                 sure=15.0, plakalar=[(3.5, 7, 0), (8, 15, 1)],
+                                 gonderim_sayisi=2,
+                                 kayitta_sirayla=["araç izleme açık", "araç izleme kapandı"]),
+})
+
 KESKIN_ARALIK = 130
 
 
@@ -370,6 +506,9 @@ class SahtePlakaci:
         self.guven = float(S.get("guven", 0.99))
         # 1.3.4: plaka bu kadar pikselden darsa okunamaz (küçük harfler gibi).
         self.min_en = float(S.get("min_plaka_en", 0))
+        # 1.4.0: sahadaki gibi yavaş model (kare başına ~0.15 sn → ~6 kare/sn).
+        self.gecikme = float(S.get("model_gecikme", 0))
+        self.ayri = bool(S.get("nesne_ayri"))
 
     @staticmethod
     def _maske(img: np.ndarray) -> np.ndarray:
@@ -377,9 +516,23 @@ class SahtePlakaci:
 
     def bul(self, kirpik: np.ndarray):
         import plaka as _p
+        if self.gecikme:
+            time.sleep(self.gecikme)
         m = self._maske(kirpik)
         if int(m.sum()) < 50:
             return []
+        if self.ayri:
+            # 1.4.0 izleme senaryoları: kadrajda birden çok plaka olur (gerçek
+            # bulucu gibi her plakaya ayrı kutu). Şeritler arası boşluk kapatılır.
+            import cv2 as _cv2
+            b = _cv2.dilate(m.astype(np.uint8), np.ones((1, 9), np.uint8))
+            n, _, st, _ = _cv2.connectedComponentsWithStats(b)
+            kutular = []
+            for i in range(1, n):
+                x, y, w, h, a = (int(q) for q in st[i])
+                if a >= 50:
+                    kutular.append(_p.Kutu(float(x), float(y), float(x + w), float(y + h), 0.9))
+            return kutular
         ys, xs = np.nonzero(m)
         return [_p.Kutu(float(xs.min()), float(ys.min()), float(xs.max() + 1),
                         float(ys.max() + 1), 0.9)]
@@ -407,9 +560,35 @@ class SahteArac:
 
     esik, gecis_esik = 0.35, 0.60
 
+    def __init__(self, S: dict | None = None):
+        S = S or {}
+        self.gecikme = float(S.get("model_gecikme", 0))
+        # 1.4.0 izleme senaryoları: her araç kendi gri değeriyle (210/220/230/240)
+        # AYRI nesne — yan yana iki araç tek kutu olmasın. Puan 0.3 + 8 × pay:
+        # tam görünen 160×110 araç ≈0.76, yarısı görünen ≈0.53.
+        self.ayri = bool(S.get("nesne_ayri"))
+        self.hata_sonra = S.get("bulucu_bozulur")
+
     def kutular(self, kirpik: np.ndarray, haric):
         import cv2 as _cv2
         import arac as _a
+        if self.gecikme:
+            time.sleep(self.gecikme)
+        if self.hata_sonra is not None and time.monotonic() - T0 >= self.hata_sonra:
+            raise RuntimeError("araç modeli çöktü (test)")
+        if self.ayri:
+            alan = float(kirpik.shape[0] * kirpik.shape[1])
+            kutular = []
+            for v in (210, 220, 230, 240):
+                m = ((kirpik[:, :, 0] == v) & (kirpik[:, :, 1] == v)
+                     & (kirpik[:, :, 2] == v)).astype(np.uint8)
+                n, _, st, _ = _cv2.connectedComponentsWithStats(m)
+                for i in range(1, n):
+                    x, y, w, h, a = (int(q) for q in st[i])
+                    if a / alan >= 0.01:
+                        kutular.append(_a.AracKutu(float(x), float(y), float(x + w), float(y + h),
+                                                   min(0.99, 0.3 + 8 * a / alan)))
+            return sorted(kutular, key=lambda k: -k.skor), 0.0
         maske = (kirpik.min(axis=2) >= 200).astype(np.uint8)
         n, _, st, _ = _cv2.connectedComponentsWithStats(maske)
         alan = float(kirpik.shape[0] * kirpik.shape[1])
@@ -503,11 +682,19 @@ def tek_kos(ad: str) -> int:
                           ("max_bekleme", "MAX_BEKLEME_SN"),
                           ("acilis_bekleme", "ACILIS_BEKLEME_SN"),
                           ("sifre_bekleme", "SIFRE_RED_BEKLEME_SN"),
-                          ("max_kenar", "MAX_KENAR"), ("plaka_tam", "PLAKA_TAM")):
+                          ("max_kenar", "MAX_KENAR"), ("plaka_tam", "PLAKA_TAM"),
+                          ("alan", "KIRPMA_ALAN"), ("kapi", "KAPI_ALANI")):
         if S.get(ad_s):
             os.environ[anahtar] = S[ad_s]
         else:
             os.environ.pop(anahtar, None)
+    # 1.4.0: eski senaryolar 1.3.4 geçiş kuralını sınar (TAKIP=0) — izleme
+    # kapalıyken davranışın BİREBİR aynı kaldığının kanıtı. İzleme senaryoları
+    # "takip": "1" verir; None = ortamda hiç yok (varsayılan açık).
+    if "takip" in S and S["takip"] is None:
+        os.environ.pop("TAKIP", None)
+    else:
+        os.environ["TAKIP"] = S.get("takip", "0")
     if S.get("yeniden_baglan"):
         os.environ["YENIDEN_BAGLAN_SN"], os.environ["YENIDEN_BAGLAN_MAX_SN"] = S["yeniden_baglan"]
     os.environ["BEKCI_SN"] = S.get("bekci", "3")
@@ -530,7 +717,7 @@ def tek_kos(ad: str) -> int:
             raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
         arac.yukle = _arac_yok
     else:
-        arac.yukle = lambda ayar, dizin=None: SahteArac()
+        arac.yukle = lambda ayar, dizin=None: SahteArac(S)
 
     import kopru
     import kesif
@@ -581,6 +768,8 @@ def tek_kos(ad: str) -> int:
 
     def _kare():
         t = time.monotonic() - T0
+        if S.get("araclar") is not None:
+            return izleme_karesi(t)
         e, a, b, no = evre(t)
         f = doku.copy() if doku is not None else np.full((480, 640, 3), 100, np.uint8)
         if e == SURUNUYOR:
@@ -617,6 +806,33 @@ def tek_kos(ad: str) -> int:
         f[90:390, x:x + 400] = 220
         if no is not None:
             plaka_ciz(f, x, no)
+        return f
+
+    def izleme_karesi(t: float) -> np.ndarray:
+        """
+        1.4.0: araçlar düz yollarda YUMUŞAK hareket eder (izleme her kareyi
+        izler). Öğe: (başla, bitir, x0, y0, x1, y1, plaka no | None, gri değer[, en, boy]).
+        Gri değer < 200 (koyu): araç bulucu görmez (yaya / gölge / görülmeyen
+        araç); plakası varsa yine çizilir. Kare dışına taşan kısım kırpılır.
+        """
+        f = np.full((480, 640, 3), 100, np.uint8)
+        for oge in S["araclar"]:
+            a, b, x0, y0, x1, y1, no, deger = oge[:8]
+            w, h = (oge[8], oge[9]) if len(oge) > 8 else (160, 110)
+            if not a <= t < b:
+                continue
+            r = 0.0 if b <= a else min(1.0, (t - a) / (b - a))
+            x, y = int(round(x0 + (x1 - x0) * r)), int(round(y0 + (y1 - y0) * r))
+            c0, c1, r0, r1 = max(0, x), min(640, x + w), max(0, y), min(480, y + h)
+            if c1 <= c0 or r1 <= r0:
+                continue
+            f[r0:r1, c0:c1] = deger
+            if no is not None:
+                for c in range(x + 30, x + 130, 8):
+                    p0, p1 = max(0, c), min(640, c + 4)
+                    q0, q1 = max(0, y + 80), min(480, y + 100)
+                    if p1 > p0 and q1 > q0:
+                        f[q0:q1, p0:p1] = isaret(no)
         return f
 
     acilis = S.get("acilis", 0.0)
@@ -786,7 +1002,8 @@ def tek_kos(ad: str) -> int:
         b = _b64.b64decode(s, validate=True)
         return b, _cv2.imdecode(np.frombuffer(b, np.uint8), _cv2.IMREAD_COLOR)
 
-    if S.get("kirpma"):
+    if S.get("kirpma") or S.get("alan"):
+        # 1.4.0: kırpma ALANI da bir kutudur (çevreleyen dikdörtgen) — fotoğraf gider.
         for g in gonderimler:
             if not g["kanit"]:
                 fail(f"t={g['t']:.2f}s gönderiminde kanıt fotoğrafı yok")

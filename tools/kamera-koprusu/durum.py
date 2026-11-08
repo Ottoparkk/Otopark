@@ -144,6 +144,11 @@ def sunucu_reddi(satirlar: list[str]) -> str | None:
     return None
 
 
+_IZLEME_OLAYLARI = (gunluk.GIRDI_ISARETI, gunluk.CIKTI_ISARETI, gunluk.ESKI_GIRDI_ISARETI,
+                    gunluk.KAPISIZ_ISARETI, gunluk.ICERIDE_ISARETI, gunluk.GERI_DONDU_ISARETI,
+                    gunluk.KAPIDA_BEKLIYOR_ISARETI)
+
+
 def _son_kamera_sozu(satirlar: list[str]) -> str | None:
     """
     Kamera hakkındaki SON söz: "sifre" (kamera şifreyi reddetti), "yok"
@@ -169,7 +174,9 @@ def _son_kamera_sozu(satirlar: list[str]) -> str | None:
                 or gunluk.OLAY_ATLANDI_ISARETI in satir
                 or gunluk.AYRILIS_ISARETI in satir
                 # 1.3.0: plakasız hareket de görüntüden doğar.
-                or gunluk.PLAKASIZ_ISARETI in satir):
+                or gunluk.PLAKASIZ_ISARETI in satir
+                # 1.4.0: araç izlemenin olayları da.
+                or any(f"[i] {i}" in satir for i in _IZLEME_OLAYLARI)):
             return "var"
         if "köprü başladı" in satir:
             return None
@@ -258,6 +265,42 @@ def arac_durumu(satirlar: list[str]) -> str | None:
     return None
 
 
+def takip_durumu(satirlar: list[str]) -> str | None:
+    """
+    1.4.0 araç izlemenin hâli — bu başlangıçtan beri SON söz. Kapalı / kapandı
+    hata değildir: köprü 1.3.4 geçiş kuralıyla sürer, sağlık kırmızı OLMAZ.
+    """
+    for satir in reversed(satirlar):
+        for isaret, ad in ((gunluk.TAKIP_KAPANDI_ISARETI, "kapandı"),
+                           (gunluk.TAKIP_KAPALI_ISARETI, "kapalı"),
+                           (gunluk.TAKIP_ACIK_ISARETI, "açık")):
+            if isaret in satir:
+                kalan = satir.split(isaret, 1)[1].strip()
+                return f"{ad} {kalan}".strip() if kalan else ad
+        if "köprü başladı" in satir:
+            return None
+    return None
+
+
+def izleme_ozet(satirlar: list[str]) -> tuple[int, int, int, int]:
+    """Bugün: (giriş, çıkış, otopark içi hareket, kapıda uzun bekleyen) — izleme olayları."""
+    bugun = time.strftime("%d.%m")
+    sayi = [0, 0, 0, 0]
+    for s in satirlar:
+        if not s.startswith(bugun):
+            continue
+        # "(iz" ile: şeridin yönüne ters olup gönderilmeyen olay sayılmaz.
+        if f"[i] {gunluk.GIRDI_ISARETI} (iz" in s:
+            sayi[0] += 1
+        elif f"[i] {gunluk.CIKTI_ISARETI} (iz" in s:
+            sayi[1] += 1
+        elif gunluk.ICERIDE_ISARETI in s:
+            sayi[2] += 1
+        elif gunluk.KAPIDA_BEKLIYOR_ISARETI in s:
+            sayi[3] += 1
+    return sayi[0], sayi[1], sayi[2], sayi[3]
+
+
 def arac_yok_sayisi(satirlar: list[str]) -> int:
     """Bugün: duran plakasız şeyde araç görülmedi, gönderilmedi (yaya)."""
     bugun = time.strftime("%d.%m")
@@ -328,9 +371,14 @@ def serit_durumu(ayar_yolu: str) -> bool:
     print(f"\n  ── {yon} şeridi " + "─" * (46 - len(yon)))
     print(f"     Ayar dosyası : {ayar_yolu}")
     print(f"     Kamera       : {rtsp_gizle(ayar.get('RTSP_URL', ''))}")
-    print(f"     Kırpma       : {ayar.get('KIRPMA') or '(yok — tüm kare)'}")
-    if ayar.get("KIRPMA_HARIC"):
-        print(f"     Hariç alan   : {ayar['KIRPMA_HARIC']} (kesilen köşe)")
+    if ayar.get("KIRPMA_ALAN"):
+        print(f"     Kırpma alanı : {len(str(ayar['KIRPMA_ALAN']).split(';'))} köşe")
+    else:
+        print(f"     Kırpma       : {ayar.get('KIRPMA') or '(yok — tüm kare)'}")
+        if ayar.get("KIRPMA_HARIC"):
+            print(f"     Hariç alan   : {ayar['KIRPMA_HARIC']} (kesilen köşe)")
+    print(f"     Kapı alanı   : "
+          f"{str(len(str(ayar['KAPI_ALANI']).split(';'))) + ' köşe' if ayar.get('KAPI_ALANI') else '(yok)'}")
 
     # Görev yoksa köprü BU AÇILIŞTA koşuyor olabilir ama bilgisayar yeniden
     # başlayınca bir daha dönmez — sağlıklı sayılamaz. Yalnızca Windows'ta
@@ -398,6 +446,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
     arac_hali = arac_durumu(satirlar)
     if arac_hali:
         print(f"     Araç bulucu  : {arac_hali}")
+    takip_hali = takip_durumu(satirlar)
+    if takip_hali:
+        print(f"     Araç izleme  : {takip_hali}")
     bekleyen = _bekleyen_metni(yon)
     if bekleyen:
         print(f"     Bekleyen     : {bekleyen}")
@@ -409,6 +460,11 @@ def serit_durumu(ayar_yolu: str) -> bool:
         arac_yok = arac_yok_sayisi(satirlar)
         if arac_yok:
             ek += f" (araç görülmedi: {arac_yok})"
+    giris, cikis, iceride, kapida = izleme_ozet(satirlar)
+    if giris or cikis or iceride or kapida:
+        ek += f"; {giris} giriş, {cikis} çıkış, {iceride} otopark içi hareket"
+        if kapida:
+            ek += f" (kapıda bekleyen: {kapida})"
     print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme{ek}")
     if son_hata:
         print(f"     Son uyarı    : {son_hata[:110]}")

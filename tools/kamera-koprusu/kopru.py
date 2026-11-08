@@ -61,6 +61,7 @@ import gunluk
 import kesif
 import okuma
 import plaka
+import takip
 
 # Read by FFMPEG when a VideoCapture is CONSTRUCTED, so it has to be set before
 # the first one exists. The default is UDP, which drops packets on a busy link
@@ -177,6 +178,18 @@ KIRPMA = os.environ.get("KIRPMA", "").strip()
 # hareket, plaka ve saklanan fotoğraf için yok. Boş = kesilen köşe yok.
 KIRPMA_HARIC = os.environ.get("KIRPMA_HARIC", "").strip()
 
+# 1.4.0: kırpma ALANI — kırpma sayfasında köşeleri tıklanan çokgen ("x,y;x,y;…",
+# tam kare pikseli, 3-8 köşe). KIRPMA + KIRPMA_HARIC'in yerine geçer: köprü
+# alanın çevreleyen dikdörtgenini kırpar, alanın DIŞINI griye boyar. Verilmişse
+# KIRPMA / KIRPMA_HARIC yok sayılır (uyarıyla). Boş = eski kırpma geçerli.
+KIRPMA_ALAN = os.environ.get("KIRPMA_ALAN", "").strip()
+
+# 1.4.0: KAPI alanı — kapının önü, araçların girip çıktığı yer (çokgen, aynı
+# biçim). Araç izleme bir aracı ancak buradan girip avluya geçtiyse "girdi",
+# avludan buraya gelip burada kaybolduysa "çıktı" sayar; avlu içindeki
+# hareket sayılmaz. Boş = kapı kuralı yok (araç durunca / kaybolunca karar).
+KAPI_ALANI = os.environ.get("KAPI_ALANI", "").strip()
+
 # The crop is downscaled to this long edge before anything looks at it. 1.3.0:
 # the plate finder sees the crop at 640 px (plaka.BULUCU_BOYUT), so this no
 # longer follows a cloud model's limit; 1568 keeps motion thresholds measured
@@ -286,6 +299,12 @@ GECIS_BEKLE_SN = float(os.environ.get("GECIS_BEKLE_SN", "2"))
 # görülmeyen araç ve bozuk okuyucuda personele gidecek geçişler bununla
 # ayrılır — yaya ve gölge personeli boğmaz.
 ARAC_KAPSAM_ESIGI = float(os.environ.get("ARAC_KAPSAM_ESIGI", "15"))
+
+# 1.4.0 araç izleme: son kıpırtıdan sonra bu kadar süre model karesi istenir
+# (aracın durduğu / kaybolduğu görülsün); hiçbir şey değişmese de en az bu
+# aralıkla bir model karesi (güvenlik ağı; ~0.25 sn işlem / 2 sn).
+KUYRUK_SN = 3.0
+YOKLAMA_SN = 2.0
 
 # 1.3.0: plaka okuyucunun TEK bir karesi bu kadar sürerse okuyucu takılmıştır
 # (model, sürücü) — bekçi gibi süreç kapatılır, Görev Zamanlayıcı yeniden açar.
@@ -414,12 +433,90 @@ def _haric_kirpintida(frame_sekli: tuple, kutu, haric) -> tuple:
     return tuple(sonuc)
 
 
-def kirp_maskeli(frame: np.ndarray, kutu, haric) -> np.ndarray:
+def alan_metni_coz(metin: str) -> tuple | None:
+    """KIRPMA_ALAN metni → ((x, y), …), boşsa None; bozuksa ValueError (Türkçe)."""
+    try:
+        return plaka.cokgen_metinden(metin)
+    except ValueError as e:
+        raise ValueError(f"KIRPMA_ALAN geçersiz: {e}") from None
+
+
+def alan_kutusu(alan) -> tuple[int, int, int, int]:
+    """Alanın çevreleyen dikdörtgeni (x, y, w, h) — köprü bunu kırpar."""
+    return plaka.cokgen_kutusu(alan)
+
+
+def kirpma_alani() -> tuple | None:
+    try:
+        return alan_metni_coz(KIRPMA_ALAN)
+    except ValueError as e:
+        sys.exit(str(e))
+
+
+def _kirpinti_koken(frame_sekli: tuple, kutu) -> tuple[int, int, int, int]:
+    """kirp()'in gerçekten kestiği parça: (x0, y0, en, boy) — kirp ile aynı sıkıştırma."""
+    yh, yw = frame_sekli[:2]
+    if kutu is None:
+        return 0, 0, yw, yh
+    x, y, w, h = kutu
+    x0, y0 = max(0, min(x, yw - 1)), max(0, min(y, yh - 1))
+    x1, y1 = max(x0 + 1, min(x + w, yw)), max(y0 + 1, min(y + h, yh))
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _alan_kirpintida(frame_sekli: tuple, kutu, noktalar, kirpik_sekli: tuple | None = None):
+    """Köşeler kırpıntının (kirpik_sekli verilirse ölçeklenmiş) pikselinde (N, 2)."""
+    x0, y0, cw, ch = _kirpinti_koken(frame_sekli, kutu)
+    sx = 1.0 if kirpik_sekli is None else kirpik_sekli[1] / cw
+    sy = 1.0 if kirpik_sekli is None else kirpik_sekli[0] / ch
+    p = np.asarray(noktalar, dtype=np.float64).reshape(-1, 2)
+    return np.stack([(p[:, 0] - x0) * sx, (p[:, 1] - y0) * sy], axis=1)
+
+
+# Tam çözünürlüklü dış maske her karede yeniden çizilmez: (şekil, köken, alan) başına bir kez.
+_ALAN_DIS_ONBELLEK: dict = {}
+
+
+def _alan_dis_maskesi(parca_sekli: tuple, frame_sekli: tuple, kutu, alan) -> np.ndarray:
+    anahtar = (parca_sekli[:2], frame_sekli[:2], kutu, alan)
+    m = _ALAN_DIS_ONBELLEK.get(anahtar)
+    if m is None:
+        # AlanMaskesi.cokgenden ile AYNI çizim (plaka.cokgen_dis_maskesi): griye
+        # boyanan yer ile kuralların "alanın dışı" dediği yer ayrışamaz.
+        # Saklanan: İÇ maske (255 = alanın içi) — cv2.copyTo'nun maskesi.
+        dis = plaka.cokgen_dis_maskesi(_alan_kirpintida(frame_sekli, kutu, alan),
+                                       parca_sekli[1], parca_sekli[0])
+        m = np.where(dis == 0, np.uint8(255), np.uint8(0))
+        _ALAN_DIS_ONBELLEK.clear()           # alan ya da kamera çözünürlüğü değişti
+        _ALAN_DIS_ONBELLEK[anahtar] = m
+    return m
+
+
+def alan_maskesi(frame_sekli: tuple, kutu, alan, kirpik_sekli: tuple) -> plaka.AlanMaskesi:
+    """Kırpma alanı, ölçeklenmiş kırpıntının (kirpik) pikselinde — okuyucu ve bulucu için."""
+    return plaka.AlanMaskesi.cokgenden(_alan_kirpintida(frame_sekli, kutu, alan, kirpik_sekli),
+                                       kirpik_sekli[1], kirpik_sekli[0])
+
+
+def kapi_kirpikta(frame_sekli: tuple, kutu, kapi, kirpik_sekli: tuple) -> np.ndarray:
+    """Kapı alanı, ölçeklenmiş kırpıntının pikselinde, KIRPILMADAN (dışa taşabilir)."""
+    return _alan_kirpintida(frame_sekli, kutu, kapi, kirpik_sekli).astype(np.float32)
+
+
+def kirp_maskeli(frame: np.ndarray, kutu, haric, alan=None) -> np.ndarray:
     """
     kirp() + her kesilen köşe düz griye (114) boyanır. Kesilen köşe varsa
     KOPYA döner (kirp bir görünüm verir; kameranın karesi değişmemeli), yoksa
-    kirp()'in kendisi — davranış 1.2.x ile birebir.
+    kirp()'in kendisi — davranış 1.2.x ile birebir. 1.4.0: `alan` (çokgen)
+    verilmişse alanın DIŞI boyanır ve `haric` kullanılmaz.
     """
+    if alan is not None:
+        # Gri tuvale yalnızca alanın içi kopyalanır (sahadaki 2124 px'lik
+        # kırpıntıda ~3 ms; boolean indeksleme ~12 ms idi — her karede).
+        kaynak = np.ascontiguousarray(kirp(frame, kutu))
+        parca = np.full(kaynak.shape, 114, np.uint8)
+        cv2.copyTo(kaynak, _alan_dis_maskesi(kaynak.shape, frame.shape, kutu, alan), parca)
+        return parca
     parca = kirp(frame, kutu)
     alanlar = _haric_kirpintida(frame.shape, kutu, haric)
     if not alanlar:
@@ -1054,10 +1151,20 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
         print(f"  ✗ Ayar dosyası bozuk ({ayar_yolu}).")
         return 1
     try:
-        kutu = kutu_metni_coz(str(ayar.get("KIRPMA") or ""))
-        haric, uyari = haric_metni_coz(str(ayar.get("KIRPMA_HARIC") or ""), kutu)
+        # 1.4.0: kırpma ALANI (çokgen) varsa o; yoksa eski kutu + hariç alanlar.
+        alan = alan_metni_coz(str(ayar.get("KIRPMA_ALAN") or ""))
+        if alan is not None:
+            kutu, haric, uyari = alan_kutusu(alan), None, None
+        else:
+            kutu = kutu_metni_coz(str(ayar.get("KIRPMA") or ""))
+            haric, uyari = haric_metni_coz(str(ayar.get("KIRPMA_HARIC") or ""), kutu)
     except ValueError as e:
         print(f"  ✗ Ayar dosyasında hatalı kırpma: {e}")
+        return 1
+    try:
+        kapi = plaka.cokgen_metinden(str(ayar.get("KAPI_ALANI") or ""))
+    except ValueError as e:
+        print(f"  ✗ Ayar dosyasında hatalı KAPI_ALANI: {e}")
         return 1
     if uyari:
         print(f"  ! {uyari}")
@@ -1100,7 +1207,26 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     print("  Araç geçirin. Her satır: saat · süre · kutu skoru → okuma (iki kırpıntı)"
           + (" · araç / insan puanı" if bulucu else "") + ".")
     print("  1.3.3: köprüde iki model AYNI ANDA çalışır; satırdaki ms ikisinden yavaş\n"
-          "  olanıdır (burada sırayla ölçülür — gerçekte işlemciyi paylaşırlar).\n")
+          "  olanıdır (burada sırayla ölçülür — gerçekte işlemciyi paylaşırlar).")
+    if bulucu is not None:
+        # 1.4.0: köprünün izleyicisi burada da çalışır — kapı alanının doğru
+        # çizildiğini görmek için: "ARAÇ GİRDİ / ÇIKTI" satırları.
+        print(f"  Araç izleme: kapı alanı {'var' if kapi else 'yok'} — araç girip "
+              "durunca / kapıda kaybolunca '→' satırı yazılır.")
+    print()
+    olay_adi = {"GIRDI": "ARAÇ GİRDİ", "CIKTI": "ARAÇ ÇIKTI",
+                "ESKI_GIRDI": "ARAÇ KAPIDAN GEÇTİ (açılışta kapıdaydı → personele)",
+                "KAPISIZ": "ARAÇ HAREKETİ BİTTİ (kapı alanı yok)",
+                "ICERIDE": "otopark içinde hareket — sayılmaz",
+                "GERI_DONDU": "kapıdan geri döndü — sayılmaz",
+                "KAPIDA_BEKLIYOR": "kapı alanında uzun bekleyen araç (alan park yerine mi çizildi?)"}
+    olay_sayisi = {k: 0 for k in olay_adi}
+    izci: takip.Takipci | None = None
+    durgun_esik = DURGUN_ESIGI
+    try:
+        durgun_esik = float(ayar.get("DURGUN_ESIGI") or DURGUN_ESIGI)
+    except (TypeError, ValueError):
+        pass
 
     cap = (kamera or kamera_baglan)(rtsp)
     kareler = kutulu = bos = 0
@@ -1128,7 +1254,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 continue
             bos = 0
             kareler += 1
-            maskeli = kirp_maskeli(frame, kutu, haric)
+            maskeli = kirp_maskeli(frame, kutu, haric, alan)
             kirpik = olcekle(maskeli)
             # 1.3.4: köprü gibi — kırpıntı küçültüldüyse plaka TAM çözünürlükten
             # okunur; karşılaştırma için küçükten de okunur (süreye sayılmaz).
@@ -1136,6 +1262,17 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
             if haric is not None and sekil != kirpik.shape:
                 sekil = kirpik.shape
                 haric_k = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
+            elif alan is not None and sekil != kirpik.shape:
+                sekil = kirpik.shape
+                haric_k = alan_maskesi(frame.shape, kutu, alan, kirpik.shape)
+            if bulucu is not None and (izci is None or (izci.en, izci.boy) != kirpik.shape[1::-1]):
+                izci = takip.Takipci(
+                    kirpik.shape[1], kirpik.shape[0],
+                    None if kapi is None else kapi_kirpikta(frame.shape, kutu, kapi, kirpik.shape),
+                    dogum_esik=p_ayar["arac_esik"], durgun_esik=durgun_esik,
+                    yeni_gecis=lambda: okuma.Gecis(0, datetime.now(timezone.utc),
+                                                   plaka.Oylama(tek_esik=p_ayar["tek_esik"])),
+                    yaz=okuma.plakalari_yaz)
             t0 = time.perf_counter()
             try:
                 parcalar = []
@@ -1176,16 +1313,19 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
             ms_a = 0.0
             puan = ""
             arac_var = False
+            araclar = None
             if bulucu is not None:
                 t1 = time.perf_counter()
                 try:
-                    a, i = bulucu.skor(kirpik, haric_k)
+                    araclar, i = bulucu.kutular(kirpik, haric_k)
                 except Exception as e:  # noqa: BLE001 — köprüde de plaka okumayı durdurmaz
                     print(f"  ! Araç bulucu hata verdi: {type(e).__name__}: {e}")
                     bulucu = None
+                    izci = None
                 else:
                     ms_a = (time.perf_counter() - t1) * 1000
                     sureler_a.append(ms_a)
+                    a = max((k.skor for k in araclar), default=0.0)
                     puan = f"araç {a:.2f} / insan {i:.2f}"
                     arac_enb = max(arac_enb, a)
                     if a >= bulucu.esik:
@@ -1194,6 +1334,25 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
             ms = max(ms_p, ms_a)
             sureler.append(ms)
             simdi = time.monotonic()
+            if izci is not None and araclar is not None:
+                o = takip.Olcum(kareler, simdi, datetime.now(timezone.utc), kirpik,
+                                gri_kucuk(kirpik), list(araclar), list(zip(kutular, okumalar)))
+                for olay in izci.guncelle(o) + izci.zaman_gecti(simdi):
+                    olay_sayisi[olay.tur] += 1
+                    ek = ""
+                    if olay.tur in ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ"):
+                        gon, _ = okuma.iz_karari(olay.iz.gecis, olay_zamani=olay.zaman,
+                                                 son_gonderilen=[], simdi=simdi,
+                                                 arac_gecis_esik=p_ayar["arac_gecis_esik"],
+                                                 personele=olay.tur == "ESKI_GIRDI")
+                        if not gon:
+                            ek = ": gönderilmezdi"
+                        elif gon[0].tur == "PLAKA":
+                            ek = f": {gon[0].plaka} gönderilirdi"
+                        else:
+                            ek = f": personele (tahmin {gon[0].tahmin or 'yok'})"
+                    print(f"  {time.strftime('%H:%M:%S')}  → {olay_adi[olay.tur]} "
+                          f"(iz {olay.iz.id}){ek}", flush=True)
             if parcalar or arac_var:
                 if parcalar:
                     kutulu += 1
@@ -1231,6 +1390,10 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     if bulucu is not None:
         print(f"  Araç bulucu: {arac_kare} karede araç (≥{bulucu.esik:.2f}), "
               f"en yüksek puan {arac_enb:.2f}.")
+        print(f"  İzleme: {olay_sayisi['GIRDI']} giriş, {olay_sayisi['CIKTI']} çıkış, "
+              f"{olay_sayisi['ICERIDE']} otopark içi hareket, {olay_sayisi['ESKI_GIRDI']} "
+              f"açılışta kapıdaki, {olay_sayisi['KAPISIZ']} kapısız, "
+              f"{olay_sayisi['GERI_DONDU']} geri dönen.")
     if karsilastirma:
         print(f"  Emin okuma: tam çözünürlükte {emin_tam_kare} kare, küçültülmüşte "
               f"{emin_kucuk_kare} kare. (Köprü tam çözünürlüğü kullanır; PLAKA_TAM=0 "
@@ -1264,8 +1427,18 @@ def main() -> None:
                  f"{gunluk.SERIT_SECENEKLERI} olmalı. "
                  "Şerit tahmin edilmez — yanlışı, çıkan araçlara bilet açar.")
 
-    kutu = kirpma_kutusu()
-    haric = kirpma_haric(kutu)
+    # 1.4.0: kırpma ALANI (çokgen) varsa o geçerli; eski kutu / hariç yok sayılır.
+    alan = kirpma_alani()
+    if alan is not None:
+        if KIRPMA or KIRPMA_HARIC:
+            print("[!] KIRPMA_ALAN verildi — KIRPMA / KIRPMA_HARIC yok sayılıyor", flush=True)
+        kutu = alan_kutusu(alan)
+        haric = None
+        print(f"[i] kırpma alanı ({len(alan)} köşe) — dışı griye boyanır, orada hareket "
+              "ve plaka yok sayılır", flush=True)
+    else:
+        kutu = kirpma_kutusu()
+        haric = kirpma_haric(kutu)
     if kutu is None:
         print("[!] KIRPMA verilmedi — tüm kare okunacak, plaka küçük kalır", flush=True)
         # `[i]`: not a fault, durum must not show it as the last error.
@@ -1274,6 +1447,13 @@ def main() -> None:
         print(f"[i] kesilen köşe {'; '.join(','.join(str(v) for v in h) for h in haric)} — "
               "orada hareket ve plaka "
               "yok sayılır", flush=True)
+    # 1.4.0: kapı alanı. Bozuksa köprü DÜŞMEZ: kapı kuralı olmadan izler.
+    try:
+        kapi = plaka.cokgen_metinden(KAPI_ALANI)
+    except ValueError as e:
+        kapi = None
+        print(f"[!] {gunluk.KAPI_ALANI_YOK_ISARETI}: KAPI_ALANI geçersiz ({e}) — araçlar "
+              "durunca / kaybolunca sayılacak", flush=True)
 
     # ---- 1.3.0: plaka okuyucu. Yüklenemezse köprü DÜŞMEZ: araçlar personele.
     p_ayar, p_uyarilar = plaka.calisma_ayarlari()
@@ -1308,6 +1488,22 @@ def main() -> None:
                   "kuralıyla personele gidecek", flush=True)
     else:
         print(f"[i] {gunluk.ARAC_KAPALI_ISARETI} (ARAC_BUL=0)", flush=True)
+    # ---- 1.4.0: araç izleme. Bulucu ve okuyucu ŞART; yoksa 1.3.4 geçiş kuralı.
+    if not p_ayar["takip"]:
+        takip_sebep = "TAKIP=0"
+    elif plakaci is None:
+        takip_sebep = "plaka okuyucu yok"
+    elif bulucu is None:
+        takip_sebep = "araç bulucu yok"
+    else:
+        takip_sebep = None
+    izleme = takip_sebep is None
+    if izleme:
+        print(f"[i] {gunluk.TAKIP_ACIK_ISARETI} (kapı alanı {'var' if kapi else 'yok'})",
+              flush=True)
+    else:
+        print(f"[i] {gunluk.TAKIP_KAPALI_ISARETI} ({takip_sebep}) — 1.3.4 geçiş kuralı",
+              flush=True)
     global _isci, _giden
     isci = okuma.Isci(plakaci, haric=None, oku_esik=p_ayar["oku_esik"], sebep=sebep,
                       arac=bulucu)
@@ -1367,6 +1563,68 @@ def main() -> None:
     son_gonderilen: list[tuple[str | None, float]] = []
     haric_sekli: tuple | None = None
 
+    # ---- 1.4.0: araç izleme durumu (izleme=False iken hiç kullanılmaz).
+    izci: takip.Takipci | None = None
+    izci_sekli: tuple | None = None
+    kare_no = 0                       # işçiye verilen son izleme karesi
+    son_biten = 0                     # izciye işlenen son kare (eskisi atlanır)
+    son_kare_t = float("-inf")        # son izleme karesinin verildiği an
+    son_kipirti = float("-inf")       # kırpıntıda son kıpırtı (d ≥ DURGUN_ESIGI)
+
+    def izci_kur(frame_sekli: tuple, kirpik_sekli: tuple) -> takip.Takipci:
+        en, boy = kirpik_sekli[1], kirpik_sekli[0]
+        k = None
+        if kapi is not None:
+            k = kapi_kirpikta(frame_sekli, kutu, kapi, kirpik_sekli)
+            ic = plaka.cokgen_dis_maskesi(k, en, boy) == 0
+            if alan is not None:
+                ic &= plaka.cokgen_dis_maskesi(
+                    _alan_kirpintida(frame_sekli, kutu, alan, kirpik_sekli), en, boy) == 0
+            if not ic.any():
+                print(f"[!] {gunluk.KAPI_ALANI_YOK_ISARETI}: kapı alanı kırpmayla kesişmiyor "
+                      "— araçlar durunca / kaybolunca sayılacak", flush=True)
+                k = None
+        return takip.Takipci(
+            en, boy, k, dogum_esik=p_ayar["arac_esik"], durgun_esik=DURGUN_ESIGI,
+            yeni_gecis=lambda: okuma.Gecis(0, datetime.now(timezone.utc),
+                                           plaka.Oylama(tek_esik=p_ayar["tek_esik"])),
+            yaz=okuma.plakalari_yaz)
+
+    olay_adlari = {"GIRDI": gunluk.GIRDI_ISARETI, "CIKTI": gunluk.CIKTI_ISARETI,
+                   "ESKI_GIRDI": gunluk.ESKI_GIRDI_ISARETI, "KAPISIZ": gunluk.KAPISIZ_ISARETI}
+    yalniz_kayit = {"ICERIDE": gunluk.ICERIDE_ISARETI, "GERI_DONDU": gunluk.GERI_DONDU_ISARETI,
+                    "KAPIDA_BEKLIYOR": gunluk.KAPIDA_BEKLIYOR_ISARETI}
+
+    def iz_gonder(olay: takip.Olay, simdi: float) -> None:
+        """1.4.0: izcinin bir olayı → karar (okuma.iz_karari) → gönderim kutusu."""
+        nonlocal son_gonderilen
+        if olay.tur in yalniz_kayit:
+            print(f"[i] {yalniz_kayit[olay.tur]} (iz {olay.iz.id})", flush=True)
+            return
+        adi = olay_adlari[olay.tur]
+        # Şeridin yönü: giriş şeridi çıkışı, çıkış şeridi girişi göndermez
+        # (tek kapıda ORTAK ikisini de gönderir; yönü sunucu bilet durumundan bilir).
+        if (YON == "GIRIS" and olay.tur == "CIKTI") or (
+                YON == "CIKIS" and olay.tur in ("GIRDI", "ESKI_GIRDI")):
+            print(f"[i] {adi} — {gunluk.YON_DISI_ISARETI} (iz {olay.iz.id})", flush=True)
+            return
+        gonderimler, satirlar = okuma.iz_karari(
+            olay.iz.gecis, olay_zamani=olay.zaman, son_gonderilen=son_gonderilen, simdi=simdi,
+            arac_gecis_esik=p_ayar["arac_gecis_esik"], personele=olay.tur == "ESKI_GIRDI")
+        plaka_sayisi = sum(1 for g in gonderimler if g.tur == "PLAKA")
+        personel = len(gonderimler) - plaka_sayisi
+        ozet = (f"{plaka_sayisi} plaka" if plaka_sayisi else "") + \
+            (", " if plaka_sayisi and personel else "") + \
+            (f"{personel} personele" if personel else "")
+        print(f"[i] {adi} (iz {olay.iz.id}, {olay.iz.gorunum_no} görünüm) — "
+              f"{ozet + ' gönderiliyor' if ozet else 'gönderim yok'}", flush=True)
+        for s in satirlar:
+            print(s, flush=True)
+        for g in gonderimler:
+            araci_gonder(g, kutu)
+            son_gonderilen.append((g.plaka or g.tahmin, simdi))
+        son_gonderilen = [(p, t) for p, t in son_gonderilen if simdi - t <= okuma.YAKIN_SN]
+
     kopuk = False
     bekleme = YENIDEN_BAGLAN_SN
 
@@ -1421,7 +1679,12 @@ def main() -> None:
             kopuk = True
             cap.release()
             # Süren geçiş uzun beklemeden ÖNCE karara bağlanır (atılmaz).
-            if gecis is not None:
+            if izleme and izci is not None:
+                # 1.4.0: kapıdan çıkmış, kararı bekleyen araç girdi sayılır;
+                # öteki izler bırakılır (dönüşte ısınma: kimse "girdi" sayılmaz).
+                for olay in izci.kopma(time.monotonic()):
+                    iz_gonder(olay, time.monotonic())
+            elif gecis is not None:
                 bitir(False, time.monotonic(), onceki, 0.0)
             uyu(bekleme)
             bekleme = min(bekleme * 2, YENIDEN_BAGLAN_MAX_SN)
@@ -1433,6 +1696,11 @@ def main() -> None:
             kopuk = False
             bekleme = YENIDEN_BAGLAN_SN
             print(f"[i] {gunluk.KAMERA_VAR_ISARETI} (yeniden)", flush=True)
+            if izleme and izci is not None:
+                # Kopmadan önceki kareler bayat: atlanır; ilk kareler ısınmadır.
+                izci.yeniden_baglandi()
+                isci.biten_kareler()
+                son_biten = kare_no
 
         simdi = time.monotonic()
         zaman = datetime.now(timezone.utc)
@@ -1445,7 +1713,7 @@ def main() -> None:
             print(f"[i] çalışıyor — {kare_sayaci} kare, "
                   f"{_gonderim_sayaci} gönderim", flush=True)
 
-        maskeli = kirp_maskeli(frame, kutu, haric)
+        maskeli = kirp_maskeli(frame, kutu, haric, alan)
         kirpik = olcekle(maskeli)
         # 1.3.4: kırpıntı küçültüldüyse plaka TAM çözünürlükten okunur (sahada
         # 2124 → 1568 px; kare plakanın küçük harfleri emin okunamıyordu).
@@ -1453,6 +1721,10 @@ def main() -> None:
         if haric is not None and haric_sekli != kirpik.shape:
             haric_sekli = kirpik.shape
             isci.haric = haric_olcekli(frame.shape, kutu, haric, kirpik.shape)
+        elif alan is not None and haric_sekli != kirpik.shape:
+            # 1.4.0: kırpma alanı — okuyucu ve bulucu "alanın dışı"na bakar.
+            haric_sekli = kirpik.shape
+            isci.haric = alan_maskesi(frame.shape, kutu, alan, kirpik.shape)
         if not uyarildi:
             yh, yw = kirpik.shape[:2]
             if max(yh, yw) < MIN_KENAR_UYARI:
@@ -1463,6 +1735,55 @@ def main() -> None:
         gri = gri_kucuk(kirpik)
         d = fark(onceki, gri)
         onceki = gri
+
+        # ---- 1.4.0: araç izleme. Bu kipte aşağıdaki geçiş kodu HİÇ çalışmaz.
+        if izleme and isci.arac_esikleri() is None:
+            # Bulucu ya da okuyucu çalışırken bozuldu: TEK YÖN, 1.3.4 kuralına dönülür.
+            if izci is not None:
+                for olay in izci.kopma(simdi):
+                    iz_gonder(olay, simdi)
+            izci = None
+            izleme = False
+            print(f"[!] {gunluk.TAKIP_KAPANDI_ISARETI} — 1.3.4 geçiş kuralı", flush=True)
+        if izleme:
+            if izci is None or izci_sekli != kirpik.shape:
+                if izci is not None:          # kamera çözünürlüğü değişti
+                    for olay in izci.kopma(simdi):
+                        iz_gonder(olay, simdi)
+                izci, izci_sekli = izci_kur(frame.shape, kirpik.shape), kirpik.shape
+            for o in isci.biten_kareler():
+                if o.no <= son_biten:
+                    continue                  # bayat (kopmadan önceki) kare
+                son_biten = o.no
+                for olay in izci.guncelle(o):
+                    iz_gonder(olay, simdi)
+            for olay in izci.zaman_gecti(simdi):
+                iz_gonder(olay, simdi)
+            if d >= DURGUN_ESIGI:
+                son_kipirti = simdi
+            # Model karesi: izci istiyorsa (hareketli / kaybolan / ısınma), bir
+            # aracın ya da kapı alanının pikselleri son model karesinden beri
+            # değiştiyse (yavaş kalkan araç: kareler arası kıpırtı küçük kalır —
+            # test_kopru takip_ortulme), son kıpırtıdan sonra KUYRUK_SN boyunca,
+            # ve her durumda en az YOKLAMA_SN'de bir (güvenlik ağı). İki model de
+            # boştayken: bir karenin iki sonucu birleşmeli.
+            istek = (izci.kare_istiyor() or izci.degisti(gri)
+                     or simdi - son_kipirti < KUYRUK_SN or simdi - son_kare_t >= YOKLAMA_SN)
+            if istek and isci.ikisi_bos():
+                kare_no += 1
+                isci.ver(okuma.Is(None, kirpik.copy(), zaman, 0,
+                                  tam=maskeli.copy() if tam_var else None,
+                                  kare=okuma.KareIsi(kare_no, simdi, gri)))
+                son_kare_t = simdi
+            if d < DURGUN_ESIGI:
+                # İzleme kapanırsa geçiş kuralı arka planı hemen bilsin.
+                son_durgun_gri, son_durgun_kirpik = gri, kirpik
+                son_durgun_tam = maskeli if tam_var else None
+            if isci.takildi(simdi, OKUYUCU_TAKILMA_SN):
+                print(f"[!] {gunluk.TAKILDI_ISARETI}: plaka okuyucu {OKUYUCU_TAKILMA_SN:.0f} sn'dir "
+                      "dönmüyor — köprü yeniden başlatılıyor", flush=True)
+                _bekci_cik()
+            continue
 
         if not silahli and simdi >= bekleme_bitis:
             ayrildi = gonderilen_gri is None or fark(gri, gonderilen_gri) > SAHNE_ESIGI

@@ -38,6 +38,11 @@ geçti: yavaş gelen araç geçişten önceki kareye kendisi girmişti):
   · Bulucu varken 1.3.0'ın "önceki karede plaka kutusu → gidiş" kuralı
     kullanılmaz. Gönderilmiş aracın gidişi `ayrilis`le kapalıdır.
   · Önceki kare ölçülmediyse 1.3.0 kuralı.
+1.4.0 — araç İZLEME (takip.py): kare işi (`Is.kare`) iki modele aynı anda
+verilir; ikisi bitince sonuç tek bir takip.Olcum olarak birleşir
+(`biten_kareler`) ve izci plakayı içinde durduğu araca yazar
+(`plakalari_yaz` — geçişin yazımıyla birebir). Karar iz başına `iz_karari`.
+Geçiş kodu (TAKIP=0, bulucu yok/bozuk) değişmedi.
 """
 from __future__ import annotations
 
@@ -50,6 +55,7 @@ import numpy as np
 import arac
 import gunluk
 import plaka
+import takip
 
 AYRILIS_ISARETI = gunluk.AYRILIS_ISARETI
 PLAKASIZ_ISARETI = gunluk.PLAKASIZ_ISARETI
@@ -79,6 +85,11 @@ YAKIN_SN = 60.0
 
 def _yakin(a: str | None, b: str | None) -> bool:
     return a is not None and b is not None and (a == b or plaka.bir_fark(a, b))
+
+
+def _yeni_gitti(p: str | None, son_gonderilen: list, simdi: float) -> bool:
+    """Bu plaka (ya da bir karakter farklısı) son 60 sn içinde gönderildi mi."""
+    return any(_yakin(p, g) and simdi - t <= YAKIN_SN for g, t in son_gonderilen)
 
 
 # ------------------------------------------------------------------ geçiş ----
@@ -224,7 +235,52 @@ def _plaka_isle(p, gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, haric,
                 gecis.oylama.tahmin(okumalar[0][0], okumalar[0][1])
 
 
+def plakalari_olc(p, kirpik: np.ndarray, haric, oku_esik: float,
+                  tam: np.ndarray | None = None) -> list:
+    """
+    1.4.0: bir karenin plaka ölçümleri [(kutu, kutuyu_oku sonucu | None)] —
+    kesik kutular da (None ile) listede: "plaka görüldü" bilgisi oylamaya
+    girer. Okuma kuralları geçişle AYNI yardımcılardan (kutulari_bul, kutuyu_oku).
+    """
+    return [(k, kutuyu_oku(p, kirpik, k, haric, oku_esik, tam=tam))
+            for k in kutulari_bul(p, kirpik, haric)]
+
+
+def plakalari_yaz(gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, olcumler: list) -> None:
+    """
+    Bir izin bu karedeki plaka ölçümlerini oylamasına yazar. `_plaka_isle`nin
+    (geçiş) yazımıyla birebir aynı sonuç (test_plakalari_yaz_plaka_isle_ile_ayni):
+    önce "plaka görüldü" (kutu oyu), sonra her emin okuma ya da tahmin.
+    """
+    if not olcumler:
+        return
+    en_net = max(k.skor for k, _ in olcumler)
+    with gecis.kilit:
+        gecis.oylama.kutu(zaman, gorunum)
+        if gecis.kutulu is None or en_net > gecis.kutulu[0]:
+            gecis.kutulu = (en_net, kirpik)
+    for _k, sonuc in olcumler:
+        if sonuc is None:
+            continue
+        okunan, emin = sonuc
+        with gecis.kilit:
+            if emin is None:
+                gecis.oylama.tahmin(okunan[0][0], okunan[0][1])
+                continue
+            gecis.oylama.okuma(emin[0], emin[1], zaman, gorunum)
+            eski = gecis.en_iyi.get(emin[0])
+            if eski is None or emin[1] > eski[0]:
+                gecis.en_iyi[emin[0]] = (emin[1], kirpik)
+
+
 # ------------------------------------------------------------------- işçi ---
+
+class KareIsi(NamedTuple):
+    """1.4.0: izleme için bir kare — İKİ modelin sonucu birleşir (takip.Olcum)."""
+    no: int
+    mono: float
+    gri: np.ndarray          # 160×120 gri (izcinin "yerel fark"ı)
+
 
 class Is(NamedTuple):
     gecis: Gecis
@@ -236,6 +292,9 @@ class Is(NamedTuple):
     # 1.3.4: aynı kırpıntının KÜÇÜLTÜLMEMİŞ hâli (plaka buradan okunur); None =
     # kırpıntı küçültülmedi ya da PLAKA_TAM=0. Sahibi işçi: döngü KOPYASINI verir.
     tam: np.ndarray | None = None
+    # 1.4.0: izleme karesi (gecis None). Verilmişse iki modelin sonucu
+    # birleşir ve biten_kareler() ile döngüye döner; geçişe hiçbir şey yazılmaz.
+    kare: KareIsi | None = None
 
 
 # Öncelikli işler sırayla tutulur: geçişten önceki kare ve durulan kare.
@@ -315,6 +374,9 @@ class Isci:
         self._ardisik = 0
         self._dur = False
         self.islenen = 0
+        # 1.4.0: yarım kalan izleme kareleri (no → parçalar) ve bitenler.
+        self._yarim: dict[int, dict] = {}
+        self._biten: list = []
         self._ip = threading.Thread(target=self._plaka_dongu, daemon=True, name="plaka")
         self._ip.start()
         if self._arac_k is not None:
@@ -334,10 +396,52 @@ class Isci:
         with self._kosul:
             if self.bozuk is not None or self._dur:
                 return
+            if is_.kare is not None:
+                # Ezilecek yarım izleme karesi bir daha birleşemez: bırakılır.
+                for k in self._kuyruklar():
+                    if not oncelik and k.slot is not None and k.slot.kare is not None:
+                        self._yarim.pop(k.slot.kare.no, None)
+                bulucu = self._arac_k is not None and self.arac_bozuk is None
+                self._yarim[is_.kare.no] = {"is": is_, "plaka": None, "arac": None,
+                                            "bekle": {"plaka", "arac"} if bulucu else {"plaka"}}
             self._plaka_k.koy(is_, oncelik)
             if self._arac_k is not None and self.arac_bozuk is None:
                 self._arac_k.koy(is_, oncelik)
             self._kosul.notify_all()
+
+    def ikisi_bos(self) -> bool:
+        """1.4.0: İKİ model de boşta mı? İzleme yeni kareyi ancak o zaman verir
+        (bir karenin iki sonucu birleşmeli; bos_mu yalnızca plakaya bakar)."""
+        with self._kosul:
+            kuyruklar = self._kuyruklar()
+            return all(k.bos() for k in kuyruklar)
+
+    def biten_kareler(self) -> list:
+        """İki modeli de biten izleme kareleri (takip.Olcum), kare sırasıyla."""
+        with self._kosul:
+            sonuc = sorted(self._biten, key=lambda o: o.no)
+            self._biten = []
+        return sonuc
+
+    def _parca_bitti(self, no: int, ad: str, sonuc) -> None:
+        """Bir modelin kare sonucu (kilit ALTINDA). İkisi de gelince kare biter."""
+        e = self._yarim.get(no)
+        if e is None or ad not in e["bekle"]:
+            return
+        e[ad] = sonuc
+        e["bekle"].discard(ad)
+        if e["bekle"]:
+            return
+        self._yarim.pop(no, None)
+        is_ = e["is"]
+        araclar = None if e["arac"] is None else list(e["arac"][0])
+        self._biten.append(takip.Olcum(is_.kare.no, is_.kare.mono, is_.zaman, is_.kirpik,
+                                       is_.kare.gri, araclar, e["plaka"]))
+
+    def _arac_parcasi_yok(self) -> None:
+        """Bulucu bozuldu (kilit ALTINDA): bekleyen kareler araçsız biter."""
+        for no in list(self._yarim):
+            self._parca_bitti(no, "arac", None)
 
     def _bekleyen(self, gecis: Gecis) -> bool:
         return any(k.bekleyen(gecis) for k in self._kuyruklar())
@@ -404,9 +508,13 @@ class Isci:
                 is_ = self._sonraki(self._plaka_k)
             if is_ is None:
                 return
+            olcum = None                   # 1.4.0 izleme karesinin plaka sonucu
             try:
-                _plaka_isle(self._p, is_.gecis, is_.kirpik, is_.zaman, is_.gorunum,
-                            self.haric, self.oku_esik, is_.arka, is_.tam)
+                if is_.kare is not None:
+                    olcum = plakalari_olc(self._p, is_.kirpik, self.haric, self.oku_esik, is_.tam)
+                else:
+                    _plaka_isle(self._p, is_.gecis, is_.kirpik, is_.zaman, is_.gorunum,
+                                self.haric, self.oku_esik, is_.arka, is_.tam)
                 self._ardisik = 0
             except Exception as e:  # noqa: BLE001 — bir kare okuyucuyu öldürmesin
                 self._ardisik += 1
@@ -416,12 +524,15 @@ class Isci:
                                 "personele gidecek")
             finally:
                 with self._kosul:
+                    if is_.kare is not None:
+                        self._parca_bitti(is_.kare.no, "plaka", olcum)
                     self._plaka_k.bitti()
                     self.islenen += 1
                     if self.bozuk is not None:
                         # Okuyucu bozuksa araç bulucu da durur (1.3.0 kuralı).
                         for k in self._kuyruklar():
                             k.temizle()
+                        self._yarim.clear()       # köprü izlemeyi bırakır (1.3.4'e döner)
                     self._kosul.notify_all()
 
     def _arac_dongu(self) -> None:
@@ -430,9 +541,13 @@ class Isci:
                 is_ = self._sonraki(self._arac_k)
             if is_ is None:
                 return
+            olcum = None                   # 1.4.0 izleme karesinin araç sonucu
             try:
-                araci_isle(is_.gecis, is_.kirpik, self.haric, self._arac_kutulari,
-                           arka=is_.arka, durgun=is_.durgun)
+                if is_.kare is not None:
+                    olcum = self._arac_kutulari(is_.kirpik, self.haric)
+                else:
+                    araci_isle(is_.gecis, is_.kirpik, self.haric, self._arac_kutulari,
+                               arka=is_.arka, durgun=is_.durgun)
                 self._arac_ardisik = 0
             except Exception as e:  # noqa: BLE001 — bulucu okuyucuyu öldürmesin
                 self._arac_ardisik += 1
@@ -442,9 +557,12 @@ class Isci:
                                 "araçlar 1.3.0 kuralıyla personele gidecek")
             finally:
                 with self._kosul:
+                    if is_.kare is not None:
+                        self._parca_bitti(is_.kare.no, "arac", olcum)
                     self._arac_k.bitti()
                     if self.arac_bozuk is not None or self.bozuk is not None:
                         self._arac_k.temizle()
+                        self._arac_parcasi_yok()
                     self._kosul.notify_all()
 
 
@@ -500,7 +618,7 @@ def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool
                                 and any(_yakin(son_durdu_plaka, a) for a in arka))
 
     def yeni_gitti(p: str | None) -> bool:
-        return any(_yakin(p, g) and simdi - t <= YAKIN_SN for g, t in son_gonderilen)
+        return _yeni_gitti(p, son_gonderilen, simdi)
 
     if bozuk and not k.eminler:
         if arac_boyu and not ayrilis:
@@ -574,3 +692,66 @@ def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool
 
     gonder.sort(key=lambda g: g.zaman)
     return gonder, satirlar
+
+
+IKI_PLAKA_SATIRI = "iki plaka tek izde — iki araç karışmış olabilir, personele"
+
+
+def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
+              arac_gecis_esik: float, personele: bool = False
+              ) -> tuple[list[Gonderim], list[str]]:
+    """
+    1.4.0: BİR izin (aracın) kararı — izci "girdi / çıktı / durdu" dediğinde.
+    Zaman OLAYIN anıdır (kapıdan çıktığı / son görüldüğü an), plakanın ilk
+    okunduğu an değil: saatlerce duran aracın çıkışı eski zamanla gitmesin.
+
+      · Tek emin plaka → PLAKA (60 sn kuralı geçişteki gibi).
+      · Bir izde iki FARKLI emin plaka → iki araç karışmış olabilir: personele,
+        plaka GÖNDERİLMEZ (yanlış araca bilet olmasın).
+      · Emin plaka yok, belirsiz okuma (ya da okunamayan plaka kutuları) →
+        tahminle personele.
+      · Plaka hiç görülmedi: araç puanı ≥ arac_gecis_esik ise personele (en
+        iyi göründüğü kareyle), değilse yalnızca kayıt.
+    `personele`: emin plaka da olsa personele (ısınmada kapıda olan araç —
+    dışarıdan mı geldi bilinmez); plaka tahmin olarak gider.
+    Kayıt satırlarına plaka YAZILMAZ.
+    """
+    satirlar: list[str] = []
+    with gecis.kilit:
+        k = gecis.oylama.karar()
+        en_iyi = dict(gecis.en_iyi)
+    arac_max = getattr(gecis, "arac_max", None)
+    arac_kirpik = getattr(gecis, "arac_kirpik", None)
+    foto = _foto(gecis)
+
+    if len(k.eminler) >= 2:
+        e = k.eminler[0]
+        satirlar.append(f"[i] {IKI_PLAKA_SATIRI}")
+        return [Gonderim("OKUNAMADI", None, e.metin, e.guven, olay_zamani,
+                         en_iyi.get(e.metin, (None, foto))[1])], satirlar
+    if k.eminler:
+        e = k.eminler[0]
+        if k.belirsiz is not None:
+            satirlar.append("[i] emin plakanın yanındaki belirsiz okuma yok sayıldı")
+        if personele:
+            return [Gonderim("OKUNAMADI", None, e.metin, e.guven, olay_zamani,
+                             en_iyi.get(e.metin, (None, foto))[1])], satirlar
+        if _yeni_gitti(e.metin, son_gonderilen, simdi):
+            satirlar.append(f"[i] {AYRILIS_ISARETI} (60 sn içinde aynı plaka)")
+            return [], satirlar
+        return [Gonderim("PLAKA", e.metin, None, None, olay_zamani,
+                         en_iyi.get(e.metin, (None, foto))[1])], satirlar
+    if k.belirsiz is not None:
+        if not personele and _yeni_gitti(k.belirsiz.tahmin, son_gonderilen, simdi):
+            satirlar.append(f"[i] {AYRILIS_ISARETI} (60 sn içinde aynı plaka)")
+            return [], satirlar
+        return [Gonderim("OKUNAMADI", None, k.belirsiz.tahmin, k.belirsiz.guven,
+                         olay_zamani, foto)], satirlar
+    puan = "?" if arac_max is None else f"{arac_max:.2f}"
+    if arac_max is not None and arac_max >= arac_gecis_esik:
+        satirlar.append(f"[i] {PLAKASIZ_ARAC_ISARETI} — personele (araç {puan})")
+        return [Gonderim("OKUNAMADI", None, None, None, olay_zamani,
+                         arac_kirpik if arac_kirpik is not None else foto)], satirlar
+    satirlar.append(f"[i] {PLAKASIZ_ISARETI} ({k.kutulu_kare} kutulu kare) — "
+                    f"{ARAC_YOK_ISARETI} (araç {puan})")
+    return [], satirlar

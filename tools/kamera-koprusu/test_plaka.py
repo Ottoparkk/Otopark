@@ -188,6 +188,154 @@ def test_tam_plaka_ikinci_ve_ucuncu_haric_alan():
     assert plaka.tam_mi(K(300, 300, 450, 340, 0.9), en, boy, haric)         # hepsinden uzak
 
 
+# ---- 1.4.0: kırpma ALANI = tıklanan çokgen (hariç dikdörtgenlerin yerine) ---
+
+def _l_alani(en: int, boy: int):
+    """(0, 0, 500, 200) kesilmiş dikdörtgen kırpıntının çokgen hâli (L şekli)."""
+    return [(500, 0), (en, 0), (en, boy), (0, boy), (0, 200), (500, 200)]
+
+
+def _izgara_kutular(en: int, boy: int):
+    K = plaka.Kutu
+    for x1 in (0, 2.5, 3, 3.5, 14, 15.68, 16, 480, 499, 499.5, 500, 514, 515.68, 516, 520, 1500):
+        for y1 in (0, 2, 6.68, 7, 150, 190, 199, 199.5, 200, 205, 206.68, 207, 300, 640):
+            for w, h in ((40, 20), (200, 40), (60.5, 13.3)):
+                x2, y2 = x1 + w, y1 + h
+                if x2 <= en + 30 and y2 <= boy + 30:
+                    yield K(x1, y1, x2, y2, 0.9)
+
+
+def test_alan_maskesi_dikdortgen_eski_kuralla_ayni():
+    # Kırpıntının tamamı alan → eski kenar kuralıyla (hariçsiz) BİREBİR aynı.
+    en, boy = 1568, 668
+    m = plaka.AlanMaskesi.cokgenden([(0, 0), (en, 0), (en, boy), (0, boy)], en, boy)
+    for k in _izgara_kutular(en, boy):
+        assert plaka.tam_mi(k, en, boy, m) == plaka.tam_mi(k, en, boy, None), k
+
+
+def test_alan_maskesi_l_sekli_eski_haric_kuraliyla_ayni():
+    # Kesilmiş köşenin çokgen hâli: tam kuralı eski hariç kuralıyla BİREBİR aynı
+    # (kesirli koordinatlar dahil) — sahada çizilmiş eski kırpmalar aynı okunur.
+    en, boy = 1568, 668
+    m = plaka.AlanMaskesi.cokgenden(_l_alani(en, boy), en, boy)
+    n = 0
+    for k in _izgara_kutular(en, boy):
+        assert plaka.tam_mi(k, en, boy, m) == plaka.tam_mi(k, en, boy, (0, 0, 500, 200)), k
+        n += 1
+    assert n > 500, n
+    # Dışarıda kalan oran: tamsayı kutularda eski hesapla aynı.
+    K = plaka.Kutu
+    for k in (K(400, 100, 600, 300, 0.9), K(0, 0, 500, 200, 0.9), K(600, 300, 700, 400, 0.9),
+              K(450, 150, 550, 250, 0.9)):
+        assert abs(plaka.haric_orani(k, m) - plaka.haric_orani(k, (0, 0, 500, 200))) < 1e-9, k
+
+
+def test_alan_maskesi_egik_kenar():
+    # Eğik kenar (üçgen): kenara değen plaka kesik sayılır, içeridekiler tam.
+    en, boy = 1000, 600
+    # İçi: y ≤ 600 − 0.6·x. Pay: x 10 px, y 6 px.
+    m = plaka.AlanMaskesi.cokgenden([(0, 0), (1000, 0), (0, 600)], en, boy)
+    K = plaka.Kutu
+    assert plaka.tam_mi(K(50, 50, 150, 80, 0.9), en, boy, m)
+    assert plaka.tam_mi(K(400, 250, 480, 280, 0.9), en, boy, m)          # köşegenin 30 px içinde
+    assert not plaka.tam_mi(K(800, 400, 900, 440, 0.9), en, boy, m)     # tamamen dışarıda
+    assert not plaka.tam_mi(K(400, 300, 480, 315, 0.9), en, boy, m)     # köşegeni kesiyor
+    assert not plaka.tam_mi(K(400, 290, 480, 305, 0.9), en, boy, m)     # içeride ama payın içinde
+    assert plaka.haric_orani(K(800, 400, 900, 440, 0.9), m) == 1.0
+    assert plaka.haric_orani(K(50, 50, 150, 80, 0.9), m) == 0.0
+    # Köşegen kutunun içinden: içerisi ∫500→666.7 (400 − 0.6x) dx = 8333 px²
+    # / 40000 → dışarısı 0.7917 (piksel ızgarası ± %1).
+    o = plaka.haric_orani(K(500, 200, 700, 400, 0.9), m)
+    assert abs(o - 0.7917) < 0.01, o
+
+
+def test_alan_maskesi_kare_disi_disarida_sayilir():
+    # Kırpıntının dışına taşan kutu TAM değildir (eski kenar kuralı gibi).
+    en, boy = 400, 300
+    m = plaka.AlanMaskesi.cokgenden([(0, 0), (en, 0), (en, boy), (0, boy)], en, boy)
+    K = plaka.Kutu
+    assert not plaka.tam_mi(K(-5, 50, 60, 70, 0.9), en, boy, m)
+    assert not plaka.tam_mi(K(350, 50, 410, 70, 0.9), en, boy, m)
+
+
+def test_alan_maskesi_oranlar_vektor_tekiyle_ayni():
+    en, boy = 1000, 600
+    m = plaka.AlanMaskesi.cokgenden([(100, 0), (1000, 0), (1000, 600), (0, 600), (0, 300)], en, boy)
+    kutular = np.array([[0, 0, 200, 200], [500, 100, 700, 300], [0, 200, 100, 400],
+                        [10.5, 10.5, 90.2, 250.7], [990, 590, 1000, 600]], dtype=np.float64)
+    tekler = [plaka.haric_orani(plaka.Kutu(*k, 0.9), m) for k in kutular]
+    assert np.allclose(m.oranlar(kutular), tekler), (m.oranlar(kutular), tekler)
+
+
+def test_haric_listesi_alan_maskesini_kabul_etmez():
+    # Çokgen yolunu unutan bir yer sessizce "kesilen köşe yok" saymasın: yüksek sesle düşsün.
+    m = plaka.AlanMaskesi.cokgenden([(0, 0), (10, 0), (10, 10)], 10, 10)
+    try:
+        plaka.haric_listesi(m)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("haric_listesi AlanMaskesi'ni kabul etmemeli")
+
+
+def test_cokgen_coz():
+    ok = plaka.cokgen_coz([(0, 0), (100, 0), (100, 50), (0, 50)])
+    assert ok == ((0, 0), (100, 0), (100, 50), (0, 50)), ok
+    assert plaka.cokgen_coz([[5, 5], [60, 5], [30, 40]]) == ((5, 5), (60, 5), (30, 40))
+    hatalar = (
+        [(0, 0), (10, 0)],                                              # 2 köşe
+        [(i * 10, (i % 2) * 10) for i in range(9)],                     # 9 köşe
+        [(0, 0), (100, 0), (0, 100), (100, 100)],                       # kendini kesiyor (papyon)
+        # Kendini kesiyor ama alanı SIFIR değil (yalnızca alan kuralına takılmasın).
+        [(0, 200), (300, 200), (300, 400), (0, 400), (150, 100)],
+        [(0, 0), (5, 0), (5, 5)],                                       # çok küçük (12.5 px²)
+        [(0, 0), (100, 0), (-1, 50)],                                   # eksi
+        [(0, 0), (100.5, 0), (50, 50)],                                 # tamsayı değil
+        [(0, 0), (True, 0), (50, 50)],                                  # bool
+        [(0, 0), (100, 0), (50, 50, 1)],                                # 3 sayı
+        [(0, 0), (100, 0), (100, 0), (50, 50)],                         # aynı köşe iki kez
+        [(0, 0), (50, 0), (100, 0)],                                    # düz çizgi (alan 0)
+    )
+    for h in hatalar:
+        try:
+            plaka.cokgen_coz(h)
+        except ValueError as e:
+            assert str(e), h
+        else:
+            raise AssertionError(f"kabul edilmemeliydi: {h}")
+
+
+def test_cokgen_metni():
+    assert plaka.cokgen_metni(((1, 2), (30, 4), (5, 60))) == "1,2;30,4;5,60"
+    assert plaka.cokgen_metinden("1,2;30,4;5,60") == ((1, 2), (30, 4), (5, 60))
+    assert plaka.cokgen_metinden("") is None and plaka.cokgen_metinden("  ") is None
+    for bozuk in ("1,2;3", "a,b;1,2;3,4", "1,2,3;4,5;6,7"):
+        try:
+            plaka.cokgen_metinden(bozuk)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(bozuk)
+
+
+def test_ayar_takip():
+    # 1.4.0: TAKIP=1 (varsayılan) her aracı izler; 0 = 1.3.4 geçiş kuralı.
+    eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
+    try:
+        assert "TAKIP" in plaka.AYAR_ADLARI
+        a, u = plaka.calisma_ayarlari()
+        assert a["takip"] is True and u == []
+        a, u = plaka.calisma_ayarlari({"TAKIP": "0"})
+        assert a["takip"] is False and u == []
+        a, u = plaka.calisma_ayarlari({"TAKIP": "acik"})
+        assert a["takip"] is True and len(u) == 1 and "TAKIP" in u[0], u
+    finally:
+        for k, v in eski.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
 def test_ayar_plaka_tam():
     # 1.3.4: PLAKA_TAM=1 (varsayılan) plakayı tam çözünürlükten okur; 0 = 1.3.3.
     eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}

@@ -38,6 +38,76 @@ The crop still carries the accuracy: the plate must be big enough in it. Since
 1.3.0 the box can be drawn taller, with a **cut-out** over parked cars (see
 *Kırpma sayfası*).
 
+### Every car followed, gate area, crop as a clicked shape (1.4.0)
+
+Up to 1.3.4 a decision was made per **pass**: any motion in the crop opened
+one. On site (2026-11-08, noon) 13 plates were sent in 75 minutes but 17 staff
+cards were opened, 4 of them in 13 s — every stop-and-go or parking move
+inside the yard was a new pass. Worse, staff moving a parked plated car could
+close its ticket as an exit (the single-gate server ignores repeats only for
+3 min after entry).
+
+Since 1.4.0 the bridge **follows each car** (`takip.py`): the vehicle finder's
+boxes are matched frame to frame into a track; a plate box is written to the
+car it sits in (lower part preferred, smallest box; two equal candidates → the
+plate counts for nobody); every track has its own vote (`okuma.Gecis`), so the
+plate safety rules are unchanged, only per car instead of per pass. One
+decision per car (`okuma.iz_karari`); its time is the event's moment, never an
+hours-old first read.
+
+With a **gate area** (`KAPI_ALANI`, drawn on the crop page over the gate
+approach, touching the picture edge):
+
+- **In** — the car appeared in the gate area (came from outside) and drove out
+  of it into the yard by more than a margin for 2 frames; decided when it stops
+  (2 s), is lost, or at the latest 30 s later. Back into the gate first = U-turn,
+  nothing sent.
+- **Out** — the car came from the yard into the gate area and was lost THERE,
+  while moving, heading to (or touching) the picture edge. A car that stood in
+  the gate area and vanished behind a person is not "out" (park memory: it is
+  the same car when it reappears).
+- **Moves inside the yard are not counted** (`otopark içinde hareket — sayılmadı`).
+- A car already in the gate area when the bridge starts (or the camera comes
+  back) that then drives in: we cannot know it came from outside → staff card.
+- Lane: `GIRIS` sends only "in", `CIKIS` only "out", `ORTAK` both.
+
+Without a gate area: a car that moved far enough is decided once when it stops
+and once when it is lost while moving (each movement once); staff moves can
+count, as before.
+
+Measured on the 180 site photos before writing it: a parked car's box wobbles
+on noise (IoU down to 0.845, anchor ~3 % of the diagonal), so "stopped" and
+"new view" look at the car's **pixels** (the installer's `DURGUN_ESIGI`), the
+box only cross-checks — a wobbling box must not count as a second view. A car
+entering from the picture edge is found once about half of it is visible:
+draw the gate area at least one car length deep. Plates with no car box
+around them (2 of 18 on the photos) are followed on their own track, like
+commercial plate cameras do.
+
+Frames for the models: whenever a followed car or the gate area changed since
+the models last looked, while any car moves or is missing, for 3 s after any
+motion, and at least every 2 s. (The first version only watched whole-frame
+motion; a parked car pulling away slowly changed too little per camera frame,
+was never seen leaving, and its exit was lost — `test_kopru takip_ortulme`.)
+
+A car hidden for a moment (a person walking past) keeps its track: a new box
+continues an unmatched track within one car diagonal of its last position OR
+of its speed-predicted position (up to 2 s ahead), within 4 s. That also keeps
+one track on a busy laptop: checked with the scenarios at 0.25 / 0.4 / 0.5 s
+model time per frame (site ≈ 0.15–0.25 s); before this fix, at 2 frames/s a
+car jumped ~0.7 of its size per frame and every frame became a "new" car.
+
+The **crop area** is now a clicked shape (≤ 8 corners, `KIRPMA_ALAN`): the
+bridge crops its bounding rectangle and paints everything outside grey —
+cut-outs are no longer needed. The plate edge rule becomes "the box plus its
+margin is entirely inside the shape" (`plaka.AlanMaskesi`, integral image);
+on rectangle and L-shaped areas it gives exactly the old answer
+(`test_alan_maskesi_*`). Old `KIRPMA` + `KIRPMA_HARIC` keep working until the
+crop is redrawn.
+
+Fallback: `TAKIP=0`, a missing / broken vehicle finder or plate reader →
+exactly 1.3.4 (all 39 old scenarios run with `TAKIP=0` and are unchanged).
+
 ### Plates read from the full-resolution crop (1.3.4)
 
 `kopru.olcekle` shrinks the crop to `MAX_KENAR` (1568 px) before anything
@@ -606,6 +676,9 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 |---|---|---|
 | `KIRPMA` | *(none)* | `x,y,w,h` in pixels. Unset = the whole frame, which works but reads worse, and no photo is stored. |
 | `KIRPMA_HARIC` | *(none)* | Cut-outs inside the box, `x,y,w,h` full-frame pixels, up to 3 separated by `;` (1.3.3): painted grey, no motion, no plate, not in the photo. A single rectangle is the same text as 1.3.0. |
+| `KIRPMA_ALAN` | *(none)* | 1.4.0: the crop as a shape, `x,y;x,y;…` full-frame pixels, 3–8 corners, edges must not cross. Outside is painted grey. When set, `KIRPMA` / `KIRPMA_HARIC` are ignored (with a `[!]` line); a bad value stops the bridge like a bad `KIRPMA`. |
+| `KAPI_ALANI` | *(none)* | 1.4.0: the gate area, same format. In / out are counted only through it; unset = no gate rule. A bad value or one not overlapping the crop → `[!]` and tracking without a gate rule (never stops). |
+| `TAKIP` | `1` | 1.4.0: follow each car. `0` = 1.3.4 pass rules exactly. The installer never writes it, so a hand-set `0` survives a reinstall. |
 | `MAX_KENAR` | `1568` | Long-edge cap of the crop before anything looks at it. Thresholds measured by the installer assume this. |
 | `HAREKET_ESIGI` | `6.0` | Above this, something is moving. |
 | `DURGUN_ESIGI` | `2.0` | Below this, the scene is still. |
@@ -635,14 +708,15 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 39 senaryo
+python test_kopru.py            # yakalama döngüsü, 64 senaryo (39'u TAKIP=0, 25'i izleme)
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı, 142 birim testi
-python test_okuma.py            # geçiş kararları + iki iş parçacığı (okuma.py), 60 test
-python test_plaka.py            # bulucu + okuyucu + oylama (plaka.py), 39 test
-python test_arac.py             # araç bulucu (arac.py), 15 test
+python test_kurulum.py          # kurulum tarafı, 149 birim testi
+python test_okuma.py            # kararlar + iki iş parçacığı + izleme karesi (okuma.py), 65 test
+python test_plaka.py            # bulucu + okuyucu + oylama + çokgen alan (plaka.py), 48 test
+python test_arac.py             # araç bulucu (arac.py), 16 test
+python test_takip.py            # araç izleme, kapı kuralları (takip.py), 36 test
 python test_giden.py            # gönderim kutusu (giden.py), 13 test
-python test_mutasyon.py         # 42 kural tek tek bozulur; her biri yakalanmalı
+python test_mutasyon.py         # 82 kural tek tek bozulur; her biri yakalanmalı
 ```
 
 `test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,
@@ -815,6 +889,24 @@ araç geçerken onun plakası da okunup gönderiliyordu (en çok dakikada bir) �
 tek kapıda park etmiş araca bilet açar ya da kapatırdı (`test_kopru
 ikinci_haric_park_plakali`). Sihirbaz `KIRPMA_HARIC`'i HER ZAMAN yazar (yoksa
 `""`): yeniden kurulumda eski hariç alan yeni kutuya geri dönmesin.
+
+**Kırpma alanı ve kapı alanı (1.4.0).** Sayfa artık dikdörtgen değil
+**köşe köşe tıklanan** alan çizer (en çok 8; ilk köşeye yeniden tıklamak
+alanı kapatır; **Son köşeyi sil**, **Alanı sil**). İki mod: **Kırpma alanı**
+(izlenecek yer; park etmiş araçları DIŞARIDA bırakın — dışı karartılır, köprü
+orayı griye boyar) ve **Kapı alanı** (kapının önü, araçların girip çıktığı
+yer; resmin kenarına kadar, en az bir araç boyu derin, araçların park
+etmediği bir yer). Karenin kenarına %3'ten yakın kırpma köşesi kenara, kapı
+köşesi kırpmanın çevreleyen dikdörtgenine yapışır: kenardan giren aracın
+alttan kesik kutusu alanın içinde kalsın. Kapı alanı kırpmanın dışına
+taşabilir ama onunla hiç kesişmiyorsa kaydedilmez. Kurallar sunucuda
+(`_alan_coz` → `plaka.cokgen_coz`, köprüyle aynı) esastır; sayfanın
+yapıştırması ve denetimi aynı hesabın görüntüsüdür. Gövde: `{"alan":
+[[x,y],…]|null, "kapi": [[x,y],…]|null}`; eski `{x,y,w,h,haric}` gövdesi
+hâlâ kabul edilir. Sihirbaz `KIRPMA_ALAN` ve `KAPI_ALANI`'nı HER ZAMAN yazar
+(yoksa `""`), alan çizildiyse `KIRPMA` / `KIRPMA_HARIC`'i boşaltır; `TAKIP`'e
+dokunmaz. Sayfa gerçek tarayıcıda sahadaki görüntüyle denendi (köşe tıklama,
+yapışma, son köşeyi sil, kaydet → sunucu iki alanı da sakladı).
 
 Eşikler **seçilen kutunun içinde** ölçülür (hariç alan griye boyanmış olarak): köprü hareketi kırpılmış görüntüde
 ölçtüğü için tüm kareden çıkarılan eşik başka bir sinyalden çıkarılmış olurdu.
