@@ -27,13 +27,15 @@ const TERCIH_TURLERI: BildirimTur[] = [
   'ISTISNA',
   'KAMERA',
   'KAMERA_HAREKET',
+  'ODEME_BEKLIYOR',
+  'KAMERA_GERI_ACILDI',
   'PUAN_KULLANIM',
 ]
 
-// 045: the only type sent to Personel (unread plates, after the bridge's
-// retries). Every other type above is Yönetici-only — a Personel switch for
-// those would be a dead control.
-const PERSONEL_TERCIH_TURLERI: BildirimTur[] = ['ISTISNA']
+// Types sent to Personel: unread plates after the bridge's retries (045) and
+// a camera exit waiting to be collected (054). Every other type above is
+// Yönetici-only — a Personel switch for those would be a dead control.
+const PERSONEL_TERCIH_TURLERI: BildirimTur[] = ['ISTISNA', 'ODEME_BEKLIYOR']
 
 export default function Ayarlar() {
   const { profile, refreshProfile, signOut } = useAuth()

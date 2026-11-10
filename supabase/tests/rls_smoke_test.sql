@@ -1804,10 +1804,13 @@ if exists (select 1 from unnest(v_beklenen) x where x <> all(v_liste)) then
     (select string_agg(x, ', ') from unnest(v_beklenen) x where x <> all(v_liste));
 end if;
 
--- (b) service_role: kamera webhook'u ve send-push. Kameranın kasaya tek
---     kapısı bilet AÇMAKTIR — kapatamaz, para toplayamaz, tarifeye
---     dokunamaz. Bu listenin uzaması, kameranın yapabileceklerinin
---     sessizce artması demektir.
+-- (b) service_role: kamera webhook'u ve send-push. Kamera bilet AÇAR ve
+--     054'ten beri plakası TAM tutan açık bileti olayın saatinde ÖDEMESİZ
+--     kapatır — para toplayamaz, tahsilat yazamaz, tarifeye dokunamaz.
+--     Bu yüzden kamera anahtarı, saati seçilmiş bir çıkışla ücreti düşürebilir
+--     (gecikme sınırı kamera_gecikme_limiti_dk içinde): anahtar gizli kalmalı.
+--     Bu listenin uzaması, kameranın yapabileceklerinin sessizce artması
+--     demektir.
 --
 --     `kamera_okuma_bagla` (029) bu listeye BİLEREK eklendi ve sınırı
 --     genişletmiyor: açık bir bilette yalnızca `plaka_okuma_id` ve
@@ -1841,7 +1844,9 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
 --     kendi başına hiçbir şey yazmaz, yalnızca bu listede ZATEN bulunan iki
 --     kapıdan birini seçer — bilet_ac ya da kamera_cikis_bildir — ya da
 --     hiçbirini (yok sayar / çözülmemiş kayıt yazar). Kameranın yapabildiği
---     şeyler aynı kalır: bilet açmak ve "kapıda" damgası vurmak.
+--     şeyler aynı kalır: bilet açmak ve çıkışı bildirmek. (054: çıkış, plakası
+--     TAM tutan bileti ÖDEMESİZ kapatır — tahsil 0, tahsilat satırı yok; parayı
+--     yine bir insan toplar, Onay onaylar. PASS 75.)
 --
 --     `kamera_okunamadi` ve `kamera_okuma_hatasi` (039) de BİLEREK eklendi:
 --     ikisi de yalnızca "OKUNAMADI" türünde çözülmemiş kayıt ve Yönetici
@@ -1857,7 +1862,9 @@ select coalesce(array_agg(distinct p.proname order by p.proname), '{}'::text[])
 --     YOLU yazar, o da yalnızca bu olayın kendi yoluysa (`kamera/<islem_id>
 --     .jpg`), yalnızca boşsa ve yalnızca bu olayın açtığı/vurduğu/yazdığı
 --     yere (kamera bileti, "kapıda" damgası, kamera kaydı). Kapanmış bilete
---     dokunmaz, para görmez, hiçbir şeyi silmez ya da ezmez (PASS 64).
+--     dokunmaz — tek istisna (054): kameranın TAM bu olayın saatinde kapattığı
+--     bilet, çıkış fotoğrafı boşsa. Para görmez, hiçbir şeyi silmez ya da
+--     ezmez (PASS 64, 75).
 --
 --     `foto_temizlik_listesi` ve `foto_temizlik_hata` (043) de BİLEREK
 --     eklendi; çağıran kamera değil, gece fotoğraf temizliği (Edge Function
@@ -3912,8 +3919,9 @@ if v_json ->> 'karar' <> 'ISTISNA'
   raise exception 'FAIL 58h: tekrar oynatılan belirsiz okuma ikinci kayıt üretti';
 end if;
 
--- (i) Açık bileti olan plaka ÇIKIYORDUR: yalnızca "kapıda" damgası. Bilet
---     AÇIK kalır, tek kuruş hareket etmez — tahsilatı insan yapar.
+-- (i) Açık bileti olan plaka ÇIKIYORDUR. 054'ten beri (sahip, 2026-11-10)
+--     kamera bileti KAPATIR — olayın saatinde, ÖDEMESİZ: tek kuruş hareket
+--     etmez, tahsilatı yine insan yapar ("Ödeme topla", PASS 75).
 perform pg_temp.kamera();
 select public.kamera_tek_kapi('ZZ58TK001', gen_random_uuid(), now()) into v_json;
 perform pg_temp.logout();
@@ -3921,9 +3929,10 @@ if v_json ->> 'karar' <> 'CIKIS' or (v_json ->> 'bilet_id')::uuid is distinct fr
   raise exception 'FAIL 58i: içerideki araç için karar CIKIS değil (%)', v_json;
 end if;
 if not exists (select 1 from public.biletler
-                where id = v_bilet and durum = 'ACIK' and cikis_at is null
-                  and cikis_bekliyor_at is not null and tahsil_kurus = 0) then
-  raise exception 'FAIL 58i: çıkış olayı bileti kapattı ya da damgalamadı';
+                where id = v_bilet and durum = 'KAPALI' and cikis_at = now()
+                  and cikis_kaynak = 'KAMERA' and cikis_bekliyor_at = now()
+                  and tahsil_kurus = 0 and odeme_yontemi is null) then
+  raise exception 'FAIL 58i: çıkış olayı bileti olayın saatinde ödemesiz kapatmadı';
 end if;
 if (select count(*) from public.biletler where plaka = 'ZZ58TK001') <> 1 then
   raise exception 'FAIL 58i: çıkış olayı ikinci bilet açtı';
@@ -4076,14 +4085,15 @@ if not exists (select 1 from public.profiles
   raise exception 'FAIL 59: fixture — u_personel aktif bir Personel değil';
 end if;
 
--- Açık bilet, damgayı GERÇEK yoldan alır: kameranın çıkış kapısı.
+-- Açık bilet, damgalı. 054'ten beri kameranın çıkışı bileti KAPATIR (PASS
+-- 75), yani açık bir bilette damga artık yalnızca eski kayıtlarda bulunur:
+-- fixture onu doğrudan basar. Damgayı kaldıran 038 fonksiyonu veritabanında
+-- duruyor ve sınanmaya devam ediyor.
 insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
 select gen_random_uuid(), 'ZZ59KPD01', now() - interval '1 hour', t.id, 'ACIK'
   from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
 returning id into v_bilet;
-perform pg_temp.kamera();
-perform public.kamera_cikis_bildir('ZZ59KPD01', gen_random_uuid(), now(), null, null);
-perform pg_temp.logout();
+update public.biletler set cikis_bekliyor_at = now() where id = v_bilet;
 select cikis_bekliyor_at into v_ts from public.biletler where id = v_bilet;
 if v_ts is null then
   raise exception 'FAIL 59: fixture — kamera çıkış olayı bileti damgalamadı';
@@ -4137,9 +4147,7 @@ if (select count(*) from public.audit_log
 end if;
 
 -- (d) Kapanmış bilet: damga dursa bile dokunulmaz.
-perform pg_temp.kamera();
-perform public.kamera_cikis_bildir('ZZ59KPD01', gen_random_uuid(), now(), null, null);
-perform pg_temp.logout();
+update public.biletler set cikis_bekliyor_at = now() where id = v_bilet;
 perform pg_temp.login(u_yonetici);
 perform public.bilet_iptal(v_bilet, 'Test — kapıda işareti');
 perform pg_temp.logout();
@@ -4845,8 +4853,8 @@ if exists (select 1 from public.biletler where plaka = 'ZZ63BN308')
 end if;
 
 -- (e) Yeniden deneme içerideki eski aracın (CK404) plakasını okudu: araç
---     çıkıyor. Bilet "kapıda" damgalanır (AÇIK kalır, para insanda), önceki
---     kayıt sistemce kapanır.
+--     çıkıyor. 054'ten beri bilet kamerayla ÖDEMESİZ kapanır (para yine
+--     insanda, PASS 75), önceki kayıt sistemce kapanır.
 v_islem := gen_random_uuid();
 perform pg_temp.kamera();
 select public.kamera_okunamadi('ORTAK', v_islem, now(), null, null, null) into v_id;
@@ -4858,9 +4866,9 @@ if v_json ->> 'karar' is distinct from 'CIKIS'
   raise exception 'FAIL 63e: okuyan yeniden deneme çıkışı işlemedi (%)', v_json;
 end if;
 if not exists (select 1 from public.biletler
-                where id = v_bilet2 and durum = 'ACIK' and cikis_at is null
-                  and cikis_bekliyor_at is not null) then
-  raise exception 'FAIL 63e: çıkan araç "kapıda" damgalanmadı ya da bileti kapandı';
+                where id = v_bilet2 and durum = 'KAPALI' and cikis_kaynak = 'KAMERA'
+                  and cikis_at is not null and tahsil_kurus = 0) then
+  raise exception 'FAIL 63e: çıkan aracın bileti kamerayla ödemesiz kapanmadı';
 end if;
 if not exists (
      select 1 from public.istisnalar
@@ -5046,12 +5054,15 @@ if v_bilet is null or v_n <> 1 or v_n2 <> 0
   raise exception 'FAIL 64c: kamera bileti fotoğrafını almadı ya da ikinci çağrı değiştirdi (% / %)', v_n, v_n2;
 end if;
 
--- (d) Çıkış kapısı: "kapıda" damgası fotoğrafını alır — ama yalnızca bu
---     olayın vurduğu damga (aynı zaman). Başka zamanla çağrı 0 döner; giriş
---     fotoğrafına dokunulmaz (biletin islem_id'si girişin kimliğidir).
+-- (d) Çıkış kapısı: kameranın bu olayda kapattığı bilet (054) çıkış
+--     fotoğrafını alır — ama yalnızca bu olayın kapanışı (aynı zaman). Başka
+--     zamanla çağrı 0 döner; giriş fotoğrafına dokunulmaz (biletin islem_id'si
+--     girişin kimliğidir).
 v_islem := gen_random_uuid();
 perform pg_temp.kamera();
-select public.bilet_ac('ZZ64CX222', v_islem, 'KAMERA', now()) into v_bilet2;
+-- Giriş bir saat önce: çıkış (aşağıda now() − 10 sn) girişten SONRA olmalı,
+-- yoksa kamera bileti kapatamaz (biletler_cikis_ck; PASS 75 sınar).
+select public.bilet_ac('ZZ64CX222', v_islem, 'KAMERA', now() - interval '1 hour') into v_bilet2;
 v_islem := gen_random_uuid();
 v_txt2 := 'kamera/' || v_islem::text || '.jpg';
 v_ts := now() - interval '10 seconds';
@@ -5061,9 +5072,10 @@ select public.kamera_foto_bagla(v_islem, v_bilet2, v_ts, v_txt2) into v_n2;
 perform pg_temp.logout();
 if v_id is distinct from v_bilet2 or v_n <> 0 or v_n2 <> 1
    or not exists (select 1 from public.biletler
-                   where id = v_bilet2 and durum = 'ACIK' and cikis_foto = v_txt2
-                     and giris_foto is null and cikis_bekliyor_at = v_ts) then
-  raise exception 'FAIL 64d: çıkış damgasının fotoğrafı yanlış bağlandı (% / %)', v_n, v_n2;
+                   where id = v_bilet2 and durum = 'KAPALI' and cikis_kaynak = 'KAMERA'
+                     and cikis_foto = v_txt2 and giris_foto is null
+                     and cikis_at = v_ts and cikis_bekliyor_at = v_ts) then
+  raise exception 'FAIL 64d: kameranın kapattığı biletin çıkış fotoğrafı yanlış bağlandı (% / %)', v_n, v_n2;
 end if;
 perform pg_temp.kamera();
 select public.kamera_foto_bagla(v_islem, v_bilet2, v_ts, v_txt2) into v_n;
@@ -6130,6 +6142,14 @@ if (select cikis_bekliyor_at from public.biletler where id = v_bilet)
    is distinct from v_ts + interval '30 minutes' then
   raise exception 'FAIL 70a: "kapıda" damgası olayın saatini taşımıyor';
 end if;
+-- 054: geç gelen çıkış bileti OLAYIN saatinde kapatır — ücret de o ana kadar.
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI' and cikis_kaynak = 'KAMERA'
+                  and cikis_at = v_ts + interval '30 minutes' and tahsil_kurus = 0
+                  and ucret_kurus = public.ucret_hesapla(giris_at, v_ts + interval '30 minutes',
+                                                         tarife_id)) then
+  raise exception 'FAIL 70a: geç gelen çıkış bileti olayın saatinde, o ana kadarki ücretle kapatmadı';
+end if;
 
 -- (b) Kesintide personel aracı elle girdi (T0+1) ve kapattı (T0+30). Kamera
 --     olayları (giriş T0, çıkış T0+30, bir kare daha T0+34) sonradan gelir:
@@ -6768,6 +6788,519 @@ foreach v_txt in array array['public.ucret_kademeli(bigint, integer, jsonb)',
 end loop;
 
 raise notice 'PASS 73: kademeli tarife sahibin listesini doğru fiyatlar (sınır alt kademede, 24 saat sonrası gün + kademe), geçersiz liste reddedilir, süreli/sabit ve içerideki araç etkilenmez';
+
+-- =====================================================================
+-- 74  "Kapıda" işareti uygulamadan kalktı (052)
+--     Sahip (2026-11-10): Gişe'deki "Kapıda" rozeti, "N araç çıkış
+--     kapısında bekliyor" şeridi ve "Araç çıkmadı" düğmesi kaldırıldı. Damga
+--     görünmediği için açık bilet listesi onu sıralamada KULLANMAZ (görünmez
+--     bir sebeple en üstte duran araç olmasın). 052'nin "her yeni çıkış anı
+--     bildirim" kuralı 054 ile yerini kameranın bileti kapatmasına bıraktı:
+--     bildirim artık kapanışın kendisinden gelir (PASS 75).
+-- =====================================================================
+perform pg_temp.logout();
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ74KPA01', now() - interval '2 hours', t.id, 'ACIK'
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id into v_bilet;
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+select gen_random_uuid(), 'ZZ74KPA02', now() - interval '1 hour', t.id, 'ACIK'
+  from public.tarifeler t where t.gecerli_bitis is null order by t.id limit 1
+returning id into v_bilet2;
+-- Damga doğrudan: 054'ten beri kameranın çıkışı bileti kapatır (PASS 75).
+update public.biletler set cikis_bekliyor_at = now() - interval '2 minutes' where id = v_bilet;
+
+-- (a) Liste: damgalı eski giriş, damgasız yeni girişin önüne GEÇMEZ.
+perform pg_temp.login(u_personel);
+select a.id into v_id from public.acik_bilet_ara('ZZ74KPA') a limit 1;
+perform pg_temp.logout();
+if v_id is distinct from v_bilet2 then
+  raise exception 'FAIL 74a: açık bilet listesi hâlâ görünmeyen kapıda damgasıyla sıralıyor';
+end if;
+
+raise notice 'PASS 74: görünmeyen kapıda damgası açık bilet listesini sıralamaz';
+
+-- =====================================================================
+-- 75  Kamera bileti kapatır; ödeme "Ödeme topla" ile toplanır (053, 054)
+--     Sahip (2026-11-10): çıkan araç "Çıktı" görünmeli. Kameranın çıkışı
+--     bileti OLAYIN saatinde, o ana kadarki ücretle, ÖDEMESİZ kapatır (para
+--     hareket etmez); borç, kapandığı kasa vardiyasında toplanır (bilet_tahsil,
+--     yalnızca o vardiya — sahibin seçimi) ve tahsilat Onay'da Yöneticiyi
+--     bekler. Herkes "Ödeme bekliyor" bildirimi alır. Kamera yanlış kapattıysa
+--     "Araç çıkmadı" bileti geri açar — yalnızca kameranın kapattığı, parası
+--     alınmamış bilette. Benzer plaka (son dört karakter) asla kapatmaz.
+-- =====================================================================
+perform pg_temp.logout();
+
+-- Bilinen tarife: ilk 15 dakika ücretsiz, sonra sabit 50 ₺ (73g'nin aynısı).
+perform pg_temp.login(u_yonetici);
+select public.tarife_guncelle(15, 0, 0, 0, 40000, 'SABIT', 5000) into v_tarife_yeni;
+perform pg_temp.logout();
+
+-- Bilinen kasa vardiyası (PASS 52 deseni): açık olanlar kapanır, personel açar.
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
+select public.vardiya_ac(0) into v_vardiya;
+perform pg_temp.logout();
+
+v_liste := array['ZZ75KMR01', 'ZZ75KMR02', 'ZZ75KMR04', 'ZZ75KMR05', 'ZZ75KMR06',
+                 'ZZ75KMR07', 'ZZ75KMR08', 'ZZ75KMR09', 'ZZ75KMR10', 'ZZ75KMR11',
+                 'ZZ75KMR12', 'ZZ75KMR13', 'ZZ75MOB03', 'ZZ75Q9T1'];
+if exists (select 1 from public.park_yerleri where kod in ('ZZ75-P', 'ZZ75-R')) then
+  raise exception 'FAIL 75: fixture — ZZ75-P / ZZ75-R park yeri zaten var';
+end if;
+if exists (select 1 from public.biletler b, unnest(v_liste) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 75: fixture — ZZ75 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+-- (i) son dört karakterle eşleşir: içeride aynı sonlu başka bilet olmamalı.
+if exists (select 1 from public.biletler where durum = 'ACIK' and right(plaka, 4) = 'Q9T1') then
+  raise exception 'FAIL 75: fixture — içeride sonu Q9T1 olan bilet var';
+end if;
+
+-- (a) İki saatlik park, kameranın çıkışı: olayın saatinde, 50 ₺, ödemesiz,
+--     kaynak KAMERA, kapatan = açık kasa vardiyası; para hareket etmez.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR01', now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+returning id into v_bilet;
+select count(*) into v_bigint from public.tahsilatlar;
+v_ts := now() - interval '1 minute';
+perform pg_temp.kamera();
+select public.kamera_cikis_bildir('ZZ75KMR01', gen_random_uuid(), v_ts, null, null) into v_id;
+perform pg_temp.logout();
+if v_id is distinct from v_bilet then
+  raise exception 'FAIL 75a: kameranın çıkışı bileti döndürmedi';
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI' and cikis_at = v_ts
+                  and cikis_bekliyor_at = v_ts and cikis_kaynak = 'KAMERA'
+                  and cikis_by is null and ucret_kurus = 5000 and indirim_kurus = 0
+                  and tahsil_kurus = 0 and odeme_yontemi is null
+                  and kapatan_vardiya_id = v_vardiya) then
+  raise exception 'FAIL 75a: kamera bileti olayın saatinde, doğru ücretle, ödemesiz, açık vardiyaya kapatmadı';
+end if;
+select count(*) into v_bigint2 from public.tahsilatlar;
+if v_bigint2 <> v_bigint then
+  raise exception 'FAIL 75a: kameranın kapatması tahsilat yazdı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_kamera_kapatti' and row_id = v_bilet) then
+  raise exception 'FAIL 75a: kameranın kapatması denetime yazılmadı';
+end if;
+
+-- (b) Borç var: Personel de Yönetici de "Ödeme bekliyor" bildirimi alır.
+if not exists (select 1 from public.notifications
+                where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_personel
+                  and link = '/gise/bilet/' || v_bilet)
+   or not exists (select 1 from public.notifications
+                   where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_yonetici
+                     and link = '/gise/bilet/' || v_bilet) then
+  raise exception 'FAIL 75b: ödeme bekliyor bildirimi Personel''e ve Yönetici''ye gitmedi';
+end if;
+select count(*) into v_n from public.notifications
+ where tur::text = 'ODEME_BEKLIYOR' and link = '/gise/bilet/' || v_bilet;
+
+-- (c) Aynı çıkışın tekrarı (tek kapıdan, yeni kimlikle): yok sayılır — ikinci
+--     kapanış, ikinci bildirim, yeni bilet yok.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ75KMR01', gen_random_uuid(), v_ts) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY'
+   or (select count(*) from public.biletler where plaka = 'ZZ75KMR01') <> 1
+   or (select count(*) from public.notifications
+        where tur::text = 'ODEME_BEKLIYOR' and link = '/gise/bilet/' || v_bilet) <> v_n
+   or (select cikis_at from public.biletler where id = v_bilet) is distinct from v_ts then
+  raise exception 'FAIL 75c: aynı çıkışın tekrarı yok sayılmadı (%)', v_json;
+end if;
+-- İki şeritli CIKIS kapısından aynı çıkış yeniden (cevap kayboldu ve köprü
+-- tekrar gönderdi, ya da aynı aracın ikinci karesi): bilet zaten kameranın
+-- kapattığı — "açık bilet yok" kaydı da ikinci bildirim de yazılmaz.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_cikis_bildir('ZZ75KMR01', v_islem, v_ts + interval '30 seconds', null, null)
+  into v_id;
+perform pg_temp.logout();
+if v_id is distinct from v_bilet
+   or exists (select 1 from public.istisnalar where islem_id = v_islem)
+   or (select count(*) from public.notifications
+        where tur::text = 'ODEME_BEKLIYOR' and link = '/gise/bilet/' || v_bilet) <> v_n
+   or (select cikis_at from public.biletler where id = v_bilet) is distinct from v_ts then
+  raise exception 'FAIL 75c: iki şeritli kapıdan tekrar gelen çıkış kayıt ya da bildirim yazdı';
+end if;
+
+-- (d) O vardiyadaki Personel "Ödeme topla": tahsilat ONAY BEKLER, Yönetici
+--     onaylar. Para kasaya, toplandığı vardiyaya yazılır.
+perform pg_temp.login(u_personel);
+select public.bilet_tahsil(v_bilet, 'NAKIT') into v_ucret;
+perform pg_temp.logout();
+select id into v_id2 from public.tahsilatlar
+ where bilet_id = v_bilet and iptal_of is null and tutar_kurus = 5000
+   and yontem = 'NAKIT' and vardiya_id = v_vardiya and durum::text = 'BEKLIYOR';
+if v_ucret <> 5000 or v_id2 is null
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and tahsil_kurus = 5000 and odeme_yontemi = 'NAKIT') then
+  raise exception 'FAIL 75d: Personel kameranın kapattığı borcu toplayamadı ya da tahsilat onay beklemiyor';
+end if;
+perform pg_temp.login(u_yonetici);
+perform public.tahsilat_onayla(array[v_id2]);
+perform pg_temp.logout();
+if (select durum::text from public.tahsilatlar where id = v_id2) <> 'ONAYLANDI' then
+  raise exception 'FAIL 75d: Yönetici toplanan ödemeyi onaylayamadı';
+end if;
+
+-- (e) Parası alınmış bilet geri açılamaz ("Araç çıkmadı" para yokken).
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_kamera_geri_ac(v_bilet);
+  raise exception 'FAIL 75e: parası alınmış bilet geri açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%ödemesi alınmış%' then
+    raise exception 'FAIL 75e: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (f) "Araç çıkmadı": o vardiyadaki Personel, kameranın kapattığı parasız
+--     bileti geri açar — bilet içeride, çıkış izleri temiz; iz ve Yönetici
+--     bildirimi kalır; para hareket etmez.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR02', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_bilet2;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR02', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_personel);
+select public.bilet_kamera_geri_ac(v_bilet2) into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from true
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet2 and durum = 'ACIK' and cikis_at is null
+                     and cikis_by is null and cikis_kaynak is null
+                     and kapatan_vardiya_id is null and cikis_foto is null
+                     and cikis_bekliyor_at is null and ucret_kurus = 0
+                     and tahsil_kurus = 0 and odeme_yontemi is null) then
+  raise exception 'FAIL 75f: kameranın kapattığı bilet temiz biçimde geri açılmadı';
+end if;
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 75f: geri açma tahsilat yazdı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_kamera_geri_acildi' and row_id = v_bilet2
+                  and actor = u_personel)
+   or not exists (select 1 from public.notifications
+                   where tur::text = 'KAMERA_GERI_ACILDI' and profile_id = u_yonetici
+                     and link = '/gise/bilet/' || v_bilet2) then
+  raise exception 'FAIL 75f: geri açma denetime ya da Yönetici bildirimine yazılmadı';
+end if;
+-- Açık bilet yeniden geri açılamaz.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_kamera_geri_ac(v_bilet2);
+  raise exception 'FAIL 75f: açık bilet "geri açıldı"';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%kameranın kapattığı%' then
+    raise exception 'FAIL 75f: beklenmeyen hata (açık): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+-- Araç hâlâ kameranın önünde: hemen sonraki görülme bileti yeniden
+-- KAPATMAZ — yalnızca damga ve Yönetici uyarısı, kararı insan verir.
+select count(*) into v_n from public.notifications
+ where tur::text = 'KAMERA_HAREKET' and profile_id = u_yonetici
+   and link = '/gise/bilet/' || v_bilet2;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR02', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'ACIK' and cikis_bekliyor_at = now())
+   or (select count(*) from public.notifications
+        where tur::text = 'KAMERA_HAREKET' and profile_id = u_yonetici
+          and link = '/gise/bilet/' || v_bilet2) <> v_n + 1 then
+  raise exception 'FAIL 75f: geri açılan bilet hemen yeniden kapandı ya da Yönetici uyarılmadı';
+end if;
+-- Çıkış süresinden (tek_kapi_cikis_yoksay_dk) eski bir geri açma artık engel
+-- değil: kamera yine kapatır. (Denetim satırının saati yalnızca bu geri
+-- alınan testte geriye çekilir.)
+update public.audit_log
+   set created_at = now() - make_interval(mins => 1 + coalesce(
+         (select o.tek_kapi_cikis_yoksay_dk from public.otopark_ayarlari o where o.id = 1), 5))
+ where action = 'bilet_kamera_geri_acildi' and row_id = v_bilet2;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR02', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'KAPALI' and cikis_kaynak = 'KAMERA') then
+  raise exception 'FAIL 75f: çıkış süresi geçince kamera geri açılan bileti kapatmadı';
+end if;
+
+-- (g) Elle (MOBIL) ödemesiz kapatılan bilet kameranın değildir: geri açılmaz.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75MOB03', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_id, null, null, null, null, 'MOBIL', false);
+begin
+  perform public.bilet_kamera_geri_ac(v_id);
+  raise exception 'FAIL 75g: elle kapatılan bilet kamera yoluyla geri açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%kameranın kapattığı%' then
+    raise exception 'FAIL 75g: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (h) Kamera yanlış kapattı, araç sonra yeniden görülüp YENİ bilet açıldı:
+--     geri açma, içeride aynı plakalı bilet varken reddedilir (önce o iptal).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR04', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR04', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR04', now(), v_tarife_yeni, 'ACIK');
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.bilet_kamera_geri_ac(v_id);
+  raise exception 'FAIL 75h: içeride aynı plakalı bilet varken geri açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%önce onu iptal%' then
+    raise exception 'FAIL 75h: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+-- Park yeri: boş kaldıysa geri açılan bilet yerini korur; yanlış kapanıştan
+-- sonra yere başka araç girdiyse geri açma yine çalışır, bilet yersiz açılır
+-- (yer yeni araçta kalır — tekil "açık bilet başına yer" indeksi).
+insert into public.park_yerleri (kod, tip, rezerve) values ('ZZ75-R', 'NORMAL', false)
+returning id into v_yer;
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, park_yeri_id)
+values (gen_random_uuid(), 'ZZ75KMR13', now() - interval '1 hour', v_tarife_yeni, 'ACIK', v_yer)
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR13', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.bilet_kamera_geri_ac(v_id);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'ACIK' and park_yeri_id = v_yer) then
+  raise exception 'FAIL 75h: boş kalan park yeri geri açmada korunmadı';
+end if;
+insert into public.park_yerleri (kod, tip, rezerve) values ('ZZ75-P', 'NORMAL', false)
+returning id into v_yer;
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, park_yeri_id)
+values (gen_random_uuid(), 'ZZ75KMR11', now() - interval '1 hour', v_tarife_yeni, 'ACIK', v_yer)
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR11', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, park_yeri_id)
+values (gen_random_uuid(), 'ZZ75KMR12', now(), v_tarife_yeni, 'ACIK', v_yer)
+returning id into v_id2;
+perform pg_temp.login(u_personel);
+begin
+  select public.bilet_kamera_geri_ac(v_id) into v_bool;
+exception when others then
+  raise exception 'FAIL 75h: yeri dolmuş bilet geri açılamadı: %', sqlerrm;
+end;
+perform pg_temp.logout();
+if v_bool is distinct from true
+   or not exists (select 1 from public.biletler
+                   where id = v_id and durum = 'ACIK' and park_yeri_id is null)
+   or not exists (select 1 from public.biletler
+                   where id = v_id2 and durum = 'ACIK' and park_yeri_id = v_yer) then
+  raise exception 'FAIL 75h: yeri dolmuş bilet yanlış geri açıldı (yer yeni araçta kalmalı)';
+end if;
+
+-- (i) Benzer plaka (son dört karakter) kapatmaz: insana gider, bilet açık
+--     kalır, damgalanmaz (eskiden "kapıda" yapardı; artık kapatacaktı).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75Q9T1', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_cikis_bildir('YY99Q9T1', v_islem, now(), null, null) into v_id2;
+perform pg_temp.logout();
+if v_id2 is not null
+   or not exists (select 1 from public.biletler
+                   where id = v_id and durum = 'ACIK' and cikis_bekliyor_at is null)
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'COKLU_ESLESME' and yon = 'CIKIS'
+                     and aday_bilet_ids = array[v_id]) then
+  raise exception 'FAIL 75i: benzer plakalı çıkış bileti kapattı ya da insana gitmedi';
+end if;
+
+-- (j) Kapatılamayan çıkış (kullanılan puan ücretten fazla; olay girişten
+--     önce): bilet AÇIK kalır, damgalanır, Yönetici uyarılır — tahmin yok.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, indirim_kurus)
+values (gen_random_uuid(), 'ZZ75KMR05', now() - interval '1 hour', v_tarife_yeni, 'ACIK', 9000)
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR05', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'ACIK' and cikis_bekliyor_at = now())
+   or not exists (select 1 from public.notifications
+                   where tur::text = 'KAMERA_HAREKET' and profile_id = u_yonetici
+                     and link = '/gise/bilet/' || v_id) then
+  raise exception 'FAIL 75j: puanı ücretten fazla bilet kapandı ya da Yönetici uyarılmadı';
+end if;
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR06', now(), v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR06', gen_random_uuid(), now() - interval '5 minutes',
+                                   null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'ACIK'
+                  and cikis_bekliyor_at = now() - interval '5 minutes') then
+  raise exception 'FAIL 75j: girişten önceki çıkış olayı bileti kapattı';
+end if;
+
+-- (k) Ücretsiz süre (5 dakika): kapanır, borç yok — kimseye bildirim yok.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR07', now() - interval '5 minutes', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR07', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI' and ucret_kurus = 0 and tahsil_kurus = 0)
+   or exists (select 1 from public.notifications
+               where tur::text = 'ODEME_BEKLIYOR' and link = '/gise/bilet/' || v_id) then
+  raise exception 'FAIL 75k: ücretsiz çıkış kapanmadı ya da gereksiz bildirim yazdı';
+end if;
+
+-- (l) Kameranın kapattığı biletin çıkış fotoğrafı bağlanır (yalnızca bu
+--     olayınki); başka kapanmış bilete fotoğraf yazmak hâlâ yasak.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR08', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+v_islem := gen_random_uuid();
+v_txt2 := 'kamera/' || v_islem::text || '.jpg';
+v_ts := now() - interval '20 seconds';
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR08', v_islem, v_ts, null, null);
+select public.kamera_foto_bagla(v_islem, v_id, v_ts, v_txt2) into v_n;
+select public.kamera_foto_bagla(v_islem, v_id, v_ts, v_txt2) into v_n2;
+perform pg_temp.logout();
+if v_n <> 1 or v_n2 <> 0
+   or not exists (select 1 from public.biletler
+                   where id = v_id and durum = 'KAPALI' and cikis_foto = v_txt2) then
+  raise exception 'FAIL 75l: kameranın kapattığı biletin fotoğrafı bağlanmadı (% / %)', v_n, v_n2;
+end if;
+begin
+  update public.biletler set cikis_foto = 'kamera/baska.jpg' where id = v_bilet;
+  raise exception 'FAIL 75l: kapanmış bilete fotoğraf yazılabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kapanmış bilet değiştirilemez%' then
+    raise exception 'FAIL 75l: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+
+-- (m) Başka vardiyanın borcu: kasa vardiyası değişti — Personel ne toplar
+--     ne geri açar (sahibin seçimi); Yönetici ikisini de yapabilir.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR09', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR09', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
+perform public.vardiya_ac(0);
+begin
+  perform public.bilet_tahsil(v_id, 'NAKIT');
+  raise exception 'FAIL 75m: Personel başka vardiyanın kamera borcunu topladı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 75m: beklenmeyen hata (tahsil): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_kamera_geri_ac(v_id);
+  raise exception 'FAIL 75m: Personel başka vardiyanın kamera biletini geri açtı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 75m: beklenmeyen hata (geri aç): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+select public.bilet_kamera_geri_ac(v_id) into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from true then
+  raise exception 'FAIL 75m: Yönetici başka vardiyanın kamera biletini geri açamadı';
+end if;
+
+-- (n) Açık vardiya yokken: kapanır (vardiyasız), bildirim yalnızca
+--     Yönetici'ye — Personel o bileti göremez, toplayamaz.
+-- Yeni bilet: (m)'nin bileti az önce geri açıldı (yeniden kapanmaz, 75f).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ75KMR10', now() - interval '1 hour', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+select count(*) into v_n from public.notifications
+ where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_personel and link = '/gise/bilet/' || v_id;
+select count(*) into v_n2 from public.notifications
+ where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_yonetici and link = '/gise/bilet/' || v_id;
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ75KMR10', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI' and kapatan_vardiya_id is null)
+   or (select count(*) from public.notifications
+        where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_yonetici
+          and link = '/gise/bilet/' || v_id) <> v_n2 + 1
+   or (select count(*) from public.notifications
+        where tur::text = 'ODEME_BEKLIYOR' and profile_id = u_personel
+          and link = '/gise/bilet/' || v_id) <> v_n then
+  raise exception 'FAIL 75n: vardiyasız kapanış ya da bildirimi yanlış';
+end if;
+
+-- (o) Yetkiler: geri açma yalnızca giriş yapmış kullanıcıya (rolü gövde
+--     denetler); kamera fonksiyonu yalnızca kameraya; bir insan kamera
+--     fonksiyonunu çağıramaz (geçmiş saatle ucuz çıkış yazamasın).
+v_txt := 'public.bilet_kamera_geri_ac(uuid)';
+if not has_function_privilege('authenticated', v_txt, 'execute')
+   or has_function_privilege('anon', v_txt, 'execute')
+   or has_function_privilege('service_role', v_txt, 'execute') then
+  raise exception 'FAIL 75o: bilet_kamera_geri_ac yetkileri yanlış';
+end if;
+v_txt := 'public.kamera_cikis_bildir(text, uuid, timestamptz, text, jsonb)';
+if not has_function_privilege('service_role', v_txt, 'execute')
+   or has_function_privilege('anon', v_txt, 'execute')
+   or has_function_privilege('authenticated', v_txt, 'execute') then
+  raise exception 'FAIL 75o: kamera_cikis_bildir yetkileri yanlış';
+end if;
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.kamera_cikis_bildir('ZZ75KMR02', gen_random_uuid(), now() - interval '50 minutes',
+                                     null, null);
+  raise exception 'FAIL 75o: bir insan kamera çıkışı yazabildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from pg_trigger where tgname = 'kamera_cikis_bildirim_tg'
+                                       and tgrelid = 'public.biletler'::regclass) then
+  raise exception 'FAIL 75o: eski çıkış bildirim tetiği duruyor — iki bildirim gider';
+end if;
+
+raise notice 'PASS 75: kamera bileti olayın saatinde ödemesiz kapatır, herkes bildirim alır, borç kendi vardiyasında toplanıp Onay''a düşer, "Araç çıkmadı" yalnızca kameranın parasız kapattığını geri açar, benzer plaka kapatmaz';
 
 perform pg_temp.logout();
 raise notice '';

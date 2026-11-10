@@ -8,7 +8,7 @@
 // hesabından (ucret_hesapla) gelir.
 //
 // Gerçek dosyayı içe aktarır; lib/bilet.ts yalnızca `import type` kullanır.
-import { gosterilenUcret, sureBitisi } from '../src/lib/bilet.ts'
+import { gosterilenUcret, sureBitisi, zatenKapandi } from '../src/lib/bilet.ts'
 
 let gecen = 0
 let kalan = 0
@@ -50,6 +50,16 @@ esit('açık: şimdiye kadar', sureBitisi({ durum: 'ACIK', cikis_at: null, iptal
 esit('kapalı: çıkışta', sureBitisi({ durum: 'KAPALI', cikis_at: T1, iptal_at: null }), T1)
 esit('içerideyken iptal: iptal anında', sureBitisi({ durum: 'IPTAL', cikis_at: null, iptal_at: T2 }), T2)
 esit('çıktıktan sonra iptal: yine çıkışta', sureBitisi({ durum: 'IPTAL', cikis_at: T1, iptal_at: T2 }), T1)
+
+// ---- Tahsilat sırasında bilet kapandı -----------------------------------
+// 054 (inceleme): kamera çıkışı görüp bileti ÖDEMESİZ kapatırsa, Tahsilat
+// ekranındaki kasiyerin bilet_kapat'ı "zaten kapatılmış" ile düşer. Ekran
+// bunu tanıyıp biletin sayfasına ("Ödeme topla") götürmeli; başka hatalar
+// eskisi gibi yalnızca gösterilir.
+esit('kapandı: sunucunun mesajı', zatenKapandi('Bu bilet zaten kapatılmış veya iptal edilmiş.'), true)
+esit('kapandı: başka hata değil', zatenKapandi('Ödeme yöntemi seçin.'), false)
+esit('kapandı: ağ hatası değil', zatenKapandi('Tahsilat kaydedilemedi. Tekrar deneyin — tahsilat otomatik tekrarlanmaz.'), false)
+esit('kapandı: boş', zatenKapandi(''), false)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

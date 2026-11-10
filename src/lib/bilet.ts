@@ -73,3 +73,15 @@ export function sureBitisi(
 export function odemeAlindi(b: Bilet): boolean {
   return b.tahsil_kurus > 0
 }
+
+/**
+ * Whether a failed exit failed because the ticket is no longer open — the
+ * server's `bilet_kapat` message (030). Since 054 the camera closes a ticket
+ * UNPAID the moment it sees the car leave, which can land while the cashier
+ * is still on the collect screen; the money is then taken on the ticket's own
+ * page ("Ödeme topla"), so the screen sends them there instead of showing a
+ * dead end.
+ */
+export function zatenKapandi(mesaj: string): boolean {
+  return mesaj.includes('zaten kapatılmış')
+}

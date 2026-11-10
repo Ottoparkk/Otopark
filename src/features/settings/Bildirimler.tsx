@@ -36,6 +36,9 @@ const TON: Record<BildirimTur, string> = {
   BILET_IPTAL_TALEBI: 'bg-warn-soft text-warn',
   // Sent to the operator either way; the body says which.
   BILET_IPTAL_KARAR: 'bg-accent-soft text-accent',
+  // 054: money to collect — the same amber as the "Ödeme topla" row it opens.
+  ODEME_BEKLIYOR: 'bg-warn-soft text-warn',
+  KAMERA_GERI_ACILDI: 'bg-warn-soft text-warn',
 }
 
 export default function Bildirimler() {

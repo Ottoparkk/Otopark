@@ -45,6 +45,7 @@ import {
   IconIleri,
   IconKalem,
   IconKamera,
+  IconKasa,
   IconNot,
   IconUyari,
 } from '../../components/ui/icons'
@@ -80,9 +81,9 @@ export function BiletKart({
   onClick: () => void
 }) {
   // The tile colour carries the row's state, so a scanning eye sorts the list
-  // before reading a single word. "Kapıda" wins over "Abonman": a car waiting
-  // at the barrier is the one that needs attention right now.
-  const tone = bilet.cikis_bekliyor_at ? 'accent' : bilet.abonman_id ? 'success' : 'neutral'
+  // before reading a single word. (052: the camera's "Kapıda" stamp is no
+  // longer shown — the owner keeps only its push notification.)
+  const tone = bilet.abonman_id ? 'success' : 'neutral'
   // Points already redeemed come off here as well, the same subtraction the
   // collect screen makes, so the row never quotes more than will be asked for.
   const netKurus = Math.max(0, bilet.ucret_kurus - bilet.indirim_kurus)
@@ -139,10 +140,8 @@ export function BiletKart({
             shrink-0, so what gives way on a full row is the relative time —
             the one part a glance can do without. */}
         <div className="mt-1 flex items-center gap-1.5">
-          {/* One state chip, not two: a car at the barrier is also inside, and
-              "Kapıda" is the half that needs doing something about. */}
-          <Chip size="sm" tone={bilet.cikis_bekliyor_at ? 'accent' : 'neutral'} className="shrink-0">
-            {bilet.cikis_bekliyor_at ? 'Kapıda' : 'İçeride'}
+          <Chip size="sm" tone="neutral" className="shrink-0">
+            İçeride
           </Chip>
           {/* 050: a Personel asked to cancel; the ticket stays open until a
               Yönetici decides, so the list must say why it is still here. */}
@@ -282,6 +281,11 @@ export function CikanKart({
   const borc = biletBorcu(bilet)
   const alindi = odemeAlindi(bilet)
   const bedava = borc === 0
+  // 054 (owner, 2026-11-10): the camera now closes the ticket at exit and the
+  // money is collected afterwards, so an owed exit is a to-do. The tile says
+  // so before a word is read: the till icon in amber, and the chip names the
+  // action ("Ödeme topla") rather than the state.
+  const toplanacak = !bedava && !alindi
 
   return (
     <button
@@ -289,8 +293,8 @@ export function CikanKart({
       onClick={onClick}
       className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 active:scale-[0.99] active:brightness-[0.97]"
     >
-      <IconTile tone="neutral">
-        <IconCikis size={21} />
+      <IconTile tone={toplanacak ? 'warn' : 'neutral'}>
+        {toplanacak ? <IconKasa size={21} /> : <IconCikis size={21} />}
       </IconTile>
 
       <div className="min-w-0 flex-1">
@@ -317,7 +321,7 @@ export function CikanKart({
             tone={alindi ? 'success' : bedava ? 'neutral' : 'warn'}
             className="shrink-0"
           >
-            {ODEME_DURUM_ETIKET[alindi ? 'ALINDI' : 'ALINMADI']}
+            {toplanacak ? 'Ödeme topla' : ODEME_DURUM_ETIKET[alindi ? 'ALINDI' : 'ALINMADI']}
           </Chip>
           {bilet.abonman_id && (
             <Chip size="sm" tone="success" className="shrink-0">
@@ -561,17 +565,10 @@ export function BiletFoto({ bilet }: { bilet: Pick<Bilet, 'giris_foto' | 'cikis_
 }
 
 /** The ticket's state as one chip — same words as the vehicle list. */
-export function DurumChip({
-  durum,
-  kapida = false,
-}: {
-  durum: Bilet['durum']
-  /** Camera saw it at the exit (038): the half of "inside" that needs action. */
-  kapida?: boolean
-}) {
+export function DurumChip({ durum }: { durum: Bilet['durum'] }) {
   if (durum === 'IPTAL') return <Chip tone="danger">İptal</Chip>
   if (durum === 'KAPALI') return <Chip tone="success">Çıktı</Chip>
-  return <Chip tone="accent">{kapida ? 'Kapıda' : 'İçeride'}</Chip>
+  return <Chip tone="accent">İçeride</Chip>
 }
 
 /**
@@ -585,18 +582,16 @@ export function DurumChip({
 export function PlakaBasligi({
   plaka,
   durum,
-  kapida = false,
 }: {
   plaka: string
   durum: Bilet['durum']
-  kapida?: boolean
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <p className="min-w-0 text-[28px] leading-tight font-semibold tracking-[0.06em] break-all text-ink tnum">
         {formatPlaka(plaka)}
       </p>
-      <DurumChip durum={durum} kapida={kapida} />
+      <DurumChip durum={durum} />
     </div>
   )
 }

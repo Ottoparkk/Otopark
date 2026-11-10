@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   Button,
   Card,
@@ -309,52 +309,62 @@ export default function Tarifeler() {
           value={ucretsiz}
           onChange={(e) => setUcretsiz(digitsOnly(e.target.value, 4))}
           inputMode="numeric"
-          hint={
-            tur === 'SURELI'
-              ? 'Bu süreyi aşan araç ilk saat ücretini öder.'
-              : 'Bu süre içinde çıkan araç ücret ödemez.'
-          }
+          // Only where it is not obvious: an hourly tariff does NOT subtract
+          // the free minutes once they are exceeded.
+          hint={tur === 'SURELI' ? 'Aşan araç ilk saatten ücret öder.' : undefined}
         />
         {tur === 'SABIT' ? (
           <Input
-            label="Sabit ücret (₺)"
+            label="Giriş başına ücret (₺)"
             value={sabit}
             onChange={(e) => setSabit(e.target.value)}
             inputMode="decimal"
-            hint="Süreden bağımsız, giriş başına alınır."
           />
         ) : tur === 'KADEMELI' ? (
-          <div className="space-y-3">
-            <p className="text-label text-faint">
-              Her satır: o saate kadar kalan aracın ödediği ücret. Sınırdaki süre alttaki
-              kademededir (tam 2 saat = 2 saatin ücreti). 24 saatten sonra her tam gün son
-              kademenin ücretidir, kalan süre yine kademelerle hesaplanır.
-            </p>
+          // Owner (2026-11-10): "easy to use, not overblown with texts". The
+          // rows read as "2 sa → 60 ₺" on their own; the examples below show
+          // what a stay costs, including past 24 h, instead of a paragraph.
+          <div className="space-y-2">
+            <div className="flex gap-2 text-label font-medium tracking-wide text-faint uppercase">
+              <span className="min-w-0 flex-1">Saate kadar</span>
+              <span className="min-w-0 flex-1">Ücret</span>
+              <span aria-hidden className="w-11 shrink-0" />
+            </div>
             {kademeler.map((s, i) => {
               const sonSatir = i === kademeler.length - 1
               return (
-                <div key={i} className="flex items-end gap-2">
+                <div key={i} className="flex items-center gap-2">
                   <div className="min-w-0 flex-1">
-                    <Input
-                      label={i === 0 ? 'Saate kadar' : undefined}
-                      aria-label={`${i + 1}. kademe: saate kadar`}
-                      value={s.saat}
-                      onChange={(e) => kademeDegistir(i, { saat: digitsOnly(e.target.value, 2) })}
-                      inputMode="numeric"
-                      // The last band is the day: always 24 h, so it is fixed.
-                      disabled={sonSatir}
-                      className="tnum"
-                    />
+                    {sonSatir ? (
+                      // The last band is the day: always 24 h, so it is text,
+                      // not a greyed-out field that looks broken.
+                      <p className="flex min-h-[52px] items-center px-4 text-body text-soft tnum">
+                        24 sa
+                      </p>
+                    ) : (
+                      <Birimli birim="sa">
+                        <Input
+                          aria-label={`${i + 1}. kademe: saate kadar`}
+                          value={s.saat}
+                          onChange={(e) =>
+                            kademeDegistir(i, { saat: digitsOnly(e.target.value, 2) })
+                          }
+                          inputMode="numeric"
+                          className="pr-10 tnum"
+                        />
+                      </Birimli>
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <Input
-                      label={i === 0 ? 'Ücret (₺)' : undefined}
-                      aria-label={`${i + 1}. kademe: ücret`}
-                      value={s.tutar}
-                      onChange={(e) => kademeDegistir(i, { tutar: e.target.value })}
-                      inputMode="decimal"
-                      className="tnum"
-                    />
+                    <Birimli birim="₺">
+                      <Input
+                        aria-label={`${i + 1}. kademe: ücret`}
+                        value={s.tutar}
+                        onChange={(e) => kademeDegistir(i, { tutar: e.target.value })}
+                        inputMode="decimal"
+                        className="pr-10 tnum"
+                      />
+                    </Birimli>
                   </div>
                   {sonSatir ? (
                     // Same width as the remove button, so the columns line up.
@@ -391,7 +401,7 @@ export default function Tarifeler() {
             )}
             {kademeOrnekleri && (
               <div className="rounded-field bg-field px-4 py-3">
-                <p className="mb-1.5 text-label font-medium text-faint">Örnek ücretler</p>
+                <p className="mb-1.5 text-label font-medium text-faint">Örnek</p>
                 <dl className="space-y-1">
                   {kademeOrnekleri.map((o) => (
                     <Satir key={o.etiket} k={o.etiket} v={formatTL(o.kurus)} />
@@ -428,9 +438,24 @@ export default function Tarifeler() {
           value={kayip}
           onChange={(e) => setKayip(e.target.value)}
           inputMode="decimal"
-          hint="Girişi kaydedilmemiş araçtan alınır. 0 = kapalı"
+          hint="0 = kapalı"
         />
       </FormModal>
+    </div>
+  )
+}
+
+/** A field with its unit inside, on the right ("sa", "₺"). */
+function Birimli({ birim, children }: { birim: string; children: ReactNode }) {
+  return (
+    <div className="relative">
+      {children}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-body text-faint"
+      >
+        {birim}
+      </span>
     </div>
   )
 }

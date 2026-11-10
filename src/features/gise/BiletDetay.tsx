@@ -3,8 +3,10 @@ import { useNavigate, useParams } from 'react-router'
 import { Button, Card, DataPoint, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { YontemSecici } from '../../components/ui/YontemSecici'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import {
   useBilet,
+  useBiletGeriAc,
   useBiletPlakaDogrula,
   useBiletPlakaDuzelt,
   useBiletTahsil,
@@ -23,13 +25,13 @@ import {
   PlakaBasligi,
   useBiletAksiyonlari,
 } from './components'
-import { plakaGecerli } from '../../lib/plaka'
+import { formatPlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
 import { biletBorcu, gosterilenUcret, odemeAlindi, sureBitisi } from '../../lib/bilet'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop, IconKalem } from '../../components/ui/icons'
-import { ODEME_DURUM_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
+import { type Bilet, type OdemeYontemi } from '../../lib/types'
 
 /**
  * Full history of one ticket. Reached from the vehicles list, Finans and
@@ -51,6 +53,9 @@ export default function BiletDetay() {
   const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
   const [degistirAcik, setDegistirAcik] = useState(false)
+  const geriAc = useBiletGeriAc()
+  const [geriAcOnay, setGeriAcOnay] = useState(false)
+  const [geriAcHata, setGeriAcHata] = useState<string | null>(null)
   // An open ticket's stored fee is 0 until exit; the live price is the
   // server's, the same one Tahsilat shows. Not fetched for a closed ticket.
   const { data: canliUcret } = useUcretOnizleme(bilet?.durum === 'ACIK' ? bilet : null)
@@ -75,6 +80,8 @@ export default function BiletDetay() {
   const ucret = gosterilenUcret(bilet, canliUcret)
   const borc = biletBorcu(bilet)
   const odenmedi = bilet.durum === 'KAPALI' && borc > 0 && !odemeAlindi(bilet)
+  const kameraKapatti = bilet.durum === 'KAPALI' && bilet.cikis_kaynak === 'KAMERA'
+  const geriAcilabilir = kameraKapatti && !odemeAlindi(bilet)
 
   return (
     <div>
@@ -106,11 +113,7 @@ export default function BiletDetay() {
       <div className="space-y-4 px-5 pb-6">
         <BiletFoto bilet={bilet} />
 
-        <PlakaBasligi
-          plaka={bilet.plaka}
-          durum={bilet.durum}
-          kapida={Boolean(bilet.cikis_bekliyor_at)}
-        />
+        <PlakaBasligi plaka={bilet.plaka} durum={bilet.durum} />
 
         {acik && bilet.iptal_talebi_at && <IptalTalebiNotu sebep={bilet.iptal_talebi_sebep} />}
 
@@ -145,11 +148,12 @@ export default function BiletDetay() {
           <Card className="space-y-4">
             <div>
               <p className="text-label font-medium tracking-wide text-warn uppercase">
-                {ODEME_DURUM_ETIKET.ALINMADI}
+                Ödeme topla
               </p>
               <p className="mt-1 text-body text-soft">
-                Araç <strong className="font-semibold text-ink">{formatTL(borc)}</strong>{' '}
-                borçlu çıktı. Parayı şimdi tahsil edebilirsiniz.
+                {kameraKapatti ? 'Kamera aracın çıkışını gördü. ' : 'Araç borçlu çıktı. '}
+                <strong className="font-semibold text-ink">{formatTL(borc)}</strong> ödeme
+                bekliyor. Toplanan ödeme Yönetici onayına gider.
               </p>
             </div>
 
@@ -180,9 +184,27 @@ export default function BiletDetay() {
                   )
               }}
             >
-              {formatTL(borc)} Tahsil Et
+              {formatTL(borc)} Ödeme topla
             </Button>
           </Card>
+        )}
+
+        {/* 054: the camera closed this ticket and no money was taken — if the
+            car never actually left (it waited at the gate), put it back
+            inside. Also on a free stay, which a wrong exit closes just the
+            same. The server checks everything again (own shift, unpaid, no
+            second open ticket for this plate). */}
+        {geriAcilabilir && (
+          <Button
+            variant="soft"
+            block
+            onClick={() => {
+              setGeriAcHata(null)
+              setGeriAcOnay(true)
+            }}
+          >
+            Araç çıkmadı
+          </Button>
         )}
 
         <BiletDetayKarti
@@ -228,6 +250,26 @@ export default function BiletDetay() {
       )}
 
       {aksiyon.dialoglar}
+
+      {/* Stays open on a refusal, so the server's Turkish reason (another
+          open ticket for this plate, another shift, already paid) is read
+          beside the button that failed. */}
+      <ConfirmDialog
+        open={geriAcOnay}
+        onOpenChange={setGeriAcOnay}
+        title="Araç çıkmadı mı?"
+        description={`${formatPlaka(bilet.plaka)} yeniden içeride görünecek. Bilet açılır; ücret çıkışta hesaplanır. Yönetici bilgilendirilir.`}
+        confirmLabel="Bileti geri aç"
+        loading={geriAc.isPending}
+        error={geriAcHata}
+        onConfirm={() => {
+          setGeriAcHata(null)
+          geriAc.mutate(bilet.id, {
+            onSuccess: () => setGeriAcOnay(false),
+            onError: (e) => setGeriAcHata(rpcErrorText(e, 'Bilet geri açılamadı.')),
+          })
+        }}
+      />
     </div>
   )
 }

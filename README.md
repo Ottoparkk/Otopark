@@ -75,9 +75,11 @@ and an `islem_id` idempotency key since day one.
 Two rules were written before any hardware exists, because retrofitting them is
 expensive:
 
-- **A camera cannot collect money.** An exit event only marks the ticket as
-  waiting at the gate; `bilet_kapat` has no service-role path. Letting a webhook
-  mark a ticket closed would book revenue nobody handed over.
+- **A camera cannot collect money.** Since 054 an exit event closes the ticket
+  **unpaid** (`tahsil_kurus = 0`, no `tahsilatlar` row) and the list says
+  **Ödeme topla**; a person collects, and the collection waits in Onay like any
+  other. `bilet_kapat` / `bilet_tahsil` still have no service-role path, so the
+  camera never books revenue nobody handed over.
 - **The clock is read per source.** A camera **must** supply its own timestamp
   (it may have sat in a buffer for hours); a phone **must not** (a skewed client
   clock would silently mis-bill).

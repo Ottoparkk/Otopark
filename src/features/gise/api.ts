@@ -509,6 +509,32 @@ export function useBiletTahsil() {
     onSuccess: (_d, girdi) => {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      // 054: the row's "Ödeme topla" mark goes as soon as the money is in.
+      void qc.invalidateQueries({ queryKey: ['cikan_biletler'] })
+    },
+  })
+}
+
+/**
+ * "Araç çıkmadı" (054): reopens a ticket the camera closed by mistake. Only a
+ * camera-closed ticket whose money was never taken; a Personel only within the
+ * shift it closed in — all checked server-side (`bilet_kamera_geri_ac`).
+ * Never retried: a second tap must surface the server's reason, not repeat.
+ */
+export function useBiletGeriAc() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (bilet_id: string) => {
+      const { error } = await supabase.rpc('bilet_kamera_geri_ac', { p_bilet_id: bilet_id })
+      if (error) throw error
+    },
+    onSuccess: (_d, bilet_id) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', bilet_id] })
+      // The car is inside again: it leaves the "Çıktı" list.
+      void qc.invalidateQueries({ queryKey: ['cikan_biletler'] })
     },
   })
 }
@@ -719,23 +745,3 @@ export function useBiletGirisDuzelt() {
   })
 }
 
-/**
- * "Araç çıkmadı" — clears a camera's false "Kapıda" stamp (038). Any active
- * staff member, open tickets only, audited server-side. Resolves to `false`
- * when there was no stamp left to clear (a second tap, or a colleague first).
- */
-export function useKapidaTemizle() {
-  const qc = useQueryClient()
-  return useMutation({
-    retry: false,
-    mutationFn: async (bilet_id: string): Promise<boolean> => {
-      const { data, error } = await supabase.rpc('bilet_kapida_temizle', { p_bilet_id: bilet_id })
-      if (error) throw error
-      return data === true
-    },
-    onSuccess: (_d, bilet_id) => {
-      void qc.invalidateQueries({ queryKey: ['acik_biletler'] })
-      void qc.invalidateQueries({ queryKey: ['bilet', bilet_id] })
-    },
-  })
-}

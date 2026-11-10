@@ -50,6 +50,8 @@ export type BildirimTur =
   | 'VARDIYA_KARAR'
   | 'BILET_IPTAL_TALEBI'
   | 'BILET_IPTAL_KARAR'
+  | 'ODEME_BEKLIYOR'
+  | 'KAMERA_GERI_ACILDI'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
@@ -166,6 +168,11 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   // Like VARDIYA_KARAR: reaches the PERSONEL who asked, so 050 leaves it out
   // of `bildirim_yonetici_turu`.
   BILET_IPTAL_KARAR: 'Bilet iptali kararı',
+  // 054: the camera closed a ticket unpaid. Sent to EVERYONE (Personel and
+  // Yönetici), so it is not in `bildirim_yonetici_turu`.
+  ODEME_BEKLIYOR: 'Ödeme bekliyor',
+  // 054: "Araç çıkmadı" reopened a camera-closed ticket. Yönetici-only.
+  KAMERA_GERI_ACILDI: 'Kamera çıkışı geri alındı',
 }
 
 /* ------------------------------------------------------------------- rows */

@@ -13,7 +13,7 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
   ACIK_BILET_YOK:
     'Çıkışta bu plakaya ait açık bilet bulunamadı. Plaka yanlış okunmuş ya da giriş kaydedilmemiş olabilir.',
   COKLU_ESLESME:
-    'Aramaya birden fazla açık bilet uydu. Doğru aracı Çıkış ekranından seçin.',
+    'Çıkan aracın plakası içerideki bir ya da birkaç aracınkine benziyor (son dört karakter). Kamera bileti kendiliğinden kapatmadı; doğru aracı Çıkış ekranından seçin.',
   YON_BELIRSIZ:
     'Bu plaka, içerideki bir aracın plakasına bir karakter uzak. O araç çıkıyorsa Çıkış ekranından tahsil edin; yeni gelen başka bir araçsa girişini elle açın.',
   // Entrance lane. The single gate gets its own text below: there the car may
@@ -55,7 +55,7 @@ const KISA: Record<IstisnaTur, string> = {
   GELECEK: 'Kamera saati ileri — kabul edilmedi',
   BAYAT: 'Olay çok geç ulaştı',
   ACIK_BILET_YOK: 'Çıkışta açık bilet bulunamadı',
-  COKLU_ESLESME: 'Birden fazla açık bilet uydu',
+  COKLU_ESLESME: 'İçeride benzer plakalı bilet var',
   YON_BELIRSIZ: 'İçerideki bir plakaya çok benziyor',
   OKUNAMADI: 'Plaka tam olarak okunamadı',
 }

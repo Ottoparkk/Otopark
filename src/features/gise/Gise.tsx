@@ -89,8 +89,6 @@ export default function Gise() {
   const { data: aralikOzet } = useRaporOzet(bas, bit, gecmis && hazir)
   const { data: acikIstisna = 0 } = useAcikIstisnaSayisi()
 
-  const kapidakiler = biletler.filter((b) => b.cikis_bekliyor_at).length
-
   useEffect(() => {
     const s = state as { girisBasari?: { plaka: string; yerKod: string | null } } | null
     if (!s?.girisBasari) return
@@ -236,12 +234,6 @@ export default function Gise() {
             {girisBasari.yerKod && (
               <strong className="font-semibold"> · {girisBasari.yerKod}</strong>
             )}
-          </p>
-        )}
-
-        {kapidakiler > 0 && (
-          <p className="rounded-card bg-accent-soft px-4 py-3 text-body text-accent">
-            {kapidakiler} araç çıkış kapısında bekliyor.
           </p>
         )}
 

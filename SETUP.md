@@ -101,8 +101,11 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/049_vardiya_sil.sql` | Yönetici deletes an old, closed shift into the Çöp Kutusu (soft delete — money and ticket links untouched) |
 | `supabase/migrations/050_bilet_iptal_onayi.sql` | Personel's cancel of an open ticket becomes a request in Onay; Yönetici approves or rejects |
 | `supabase/migrations/051_kademeli_tarife.sql` | "Kademeli" tariff: price bands (e.g. 0–2 h, 2–4 h, 4–8 h, 8–24 h), full days past 24 h |
+| `supabase/migrations/052_kapida_gorunmez.sql` | "Kapıda" no longer shown in the app; the camera's exit notification stays and now fires for every new exit moment; the open-ticket list no longer sorts by the hidden stamp |
+| `supabase/migrations/053_odeme_bekliyor_turu.sql` | Two notification types for 054 (`ODEME_BEKLIYOR`, `KAMERA_GERI_ACILDI`) — its own file, because a new enum value must be committed before it is used |
+| `supabase/migrations/054_kamera_bileti_kapatir.sql` | A camera exit closes the ticket **unpaid** at the camera's time; "Ödeme topla" in the Çıktı list; everyone notified; **Araç çıkmadı** reopens a wrong camera exit |
 
-**Run all of them, 001 through 051, in this order.** Stopping early leaves the
+**Run all of them, 001 through 054, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -173,7 +176,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 73** (as of migration 051). It stops
+The last block before that line is **PASS 75** (as of migration 054). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.
@@ -648,14 +651,15 @@ and an exit. Live events behave exactly as before.
 | The plate… | Result |
 |---|---|
 | has an open ticket opened under `tek_kapi_giris_yoksay_dk` (3) minutes ago | ignored — still in view after arriving |
-| has an older open ticket | flagged "Kapıda" (`cikis_bekliyor_at`), nothing else |
+| has an older open ticket | **closed unpaid** at the event's time (054) — "Ödeme topla" in the Çıktı list, everyone notified if money is owed |
 | was closed/cancelled under `tek_kapi_cikis_yoksay_dk` (5) minutes ago | ignored — driving out after paying |
 | is one character off an open ticket from the last 3 minutes | ignored — same car, second read differs |
 | is one character off an older open ticket | **Çözülmemiş kayıtlar** as `YON_BELIRSIZ` — never guessed |
 | is one character off a ticket closed in the last 5 minutes | ignored — paid car, misread on the way out |
 | none of these | a ticket is opened |
 
-As with two lanes, the camera never closes a ticket and never takes money.
+As with two lanes, the camera closes a ticket only **unpaid** (054) and never
+takes money: collection is always a person, and every collection waits in Onay.
 
 **Limits of deciding from the ticket state** — the phone flow covers all of
 them, and none of them moves money:
@@ -667,7 +671,7 @@ them, and none of them moves money:
   leaving whose entry was never recorded (camera or internet was down);
 - a stay shorter than 3 minutes is not flagged at exit;
 - a just-arrived car that waits in front of the camera longer than 3 minutes
-  can be flagged "Kapıda" by mistake: past 60 s the bridge may send the same
+  can be closed as an exit by mistake (staff tap **Araç çıkmadı**, 054): past 60 s the bridge may send the same
   plate again when something moves in view and it is read again. Aim the camera
   where cars pass, and draw the installer's **cut-out** over any place where
   cars queue or park.
@@ -677,13 +681,62 @@ Kamera → Tek kapı** (shown while the camera is on; Yönetici only, saved with
 Kaydet). The screen checks the same ranges as the database: **Girişten sonra**
 3–60, **Çıkıştan sonra** 1–60.
 
-**A false "Kapıda" mark (038).** When the camera wrongly flags a car as leaving,
-the staff member at the gate opens that car (the Tahsilat screen shows "Kamera
-çıkışta gördü") and taps **Araç çıkmadı**. That clears `cikis_bekliyor_at`
-only — the ticket stays open, the fee and the exit photo are untouched — and
-writes `bilet_kapida_temizlendi` to `audit_log`. RPC `bilet_kapida_temizle`:
-any active staff, open tickets only, not callable by the camera. Deploy order:
-`038` → smoke test through **PASS 59** → frontend.
+**"Kapıda" removed from the app (052, owner 2026-11-10).** The Gişe list chip,
+the "N araç çıkış kapısında bekliyor" banner and the **Araç çıkmadı** button
+are gone. The server still stamps `cikis_bekliyor_at` on a camera exit, and that
+stamp is what sends the "Araç çıkış yaptı — ödeme tahsil edilebilir"
+notification — now for every NEW exit moment (a false moment can no longer
+swallow the real exit's notification), never twice for a retry of the same
+event. The open-ticket list no longer sorts by the hidden stamp. RPC
+`bilet_kapida_temizle` (038) stays in the database, unused by the app (PASS 59
+still covers it). Deploy order: `052` → smoke test through **PASS 74** →
+frontend.
+
+**The camera closes the ticket; the money is collected after (053 + 054,
+owner 2026-11-10).** An exit the camera reads with the EXACT plate of an open
+ticket (exit lane, or the single gate's "older open ticket" row) now closes it
+**unpaid**: `KAPALI`, `cikis_kaynak = 'KAMERA'`, `cikis_at` = the camera's own
+time, fee from `ucret_hesapla` at that time (0 for abonman), `tahsil_kurus = 0`,
+and `kapatan_vardiya_id` = the till shift open at that moment (none → empty).
+No `tahsilatlar` row is written: no money is booked until a person collects.
+
+- **Gişe → Çıkanlar:** an owed exit shows an amber till icon and the chip
+  **Ödeme topla**. The ticket's own screen collects it (`bilet_tahsil`,
+  unchanged): the Yönetici always; a Personel only for a ticket closed in
+  **their own open shift**. The collection lands in **Onay** as `BEKLIYOR`,
+  exactly like any other.
+- **Notification** "Araç çıktı — ödeme bekliyor" (`ODEME_BEKLIYOR`) to
+  **every** active staff member when money is owed; to the Yönetici only when no
+  shift was open (no Personel could collect it). Nothing for a free stay. The
+  052 re-notify trigger is dropped — the close sends the notification, once.
+- **Araç çıkmadı** (`bilet_kamera_geri_ac`): the camera was wrong, the car is
+  still inside. Reopens a ticket only if the CAMERA closed it and nothing was
+  collected; Personel of that shift or the Yönetici; refused if another open
+  ticket with the same plate exists ("önce onu iptal edin"). Audit row + the
+  Yönetici is told (`KAMERA_GERI_ACILDI`). This is the one narrow exception to
+  "closed tickets are immutable" (CLAUDE.md, Money). If another car took the
+  parking bay meanwhile, the ticket reopens without a bay (the bay stays with
+  the other car).
+- **Not closed, only stamped + Yönetici told:** the camera's time is before the
+  entry; points already used exceed the fee; or the ticket was reopened with
+  **Araç çıkmadı** less than `tek_kapi_cikis_yoksay_dk` (5) minutes before —
+  the car may still be in view. A person closes it by hand.
+- **The same exit again** (two-lane exit camera: lost reply and the bridge
+  resends, or a second frame) finds the ticket the camera just closed, within
+  the same 5 minutes, and writes nothing — no "açık bilet yok" record.
+- **Cashier mid-collection:** if the camera (or a colleague, or a cancel)
+  closes the ticket while Tahsilat is open, the screen says so and offers
+  **Bileti aç** (the ticket's page, where any debt is collected) instead of a
+  dead "zaten kapatılmış" error.
+- A **similar** plate (two-lane fallback on the last 4 characters) never
+  closes anything: it becomes **Çözülmemiş kayıtlar** `COKLU_ESLESME` with the
+  candidate ticket(s).
+- `kamera_cikis_bildir` is now **service_role only** (a person can no longer
+  call it, so nobody can back-date a cheap exit). The exit photo still attaches
+  to the closed ticket (`kamera_foto_bagla`).
+
+Deploy order: `052` (if not run yet) → `053` → `054` → smoke test through
+**PASS 75** → frontend. `kamera-webhook` and the bridge need no change.
 
 **Local plate reading (installer 1.3.0, owner decision 2026-11-06).** The
 bridge finds and reads the plate on the site PC (YOLOv9 + fast-plate-ocr, ONNX)

@@ -68,7 +68,8 @@ esit('başka türde tahmin okunmaz',
 esit('okunamadı', kisaDurum(kayit()), 'Plaka tam olarak okunamadı')
 esit('okunamadı, servis yok', kisaDurum(kayit({ ham_yanit: { hata: 'x' } })), 'Plaka okuma servisi çalışmıyordu')
 esit('açık bilet yok', kisaDurum(kayit({ tur: 'ACIK_BILET_YOK', yon: 'CIKIS' })), 'Çıkışta açık bilet bulunamadı')
-esit('çoklu eşleşme', kisaDurum(kayit({ tur: 'COKLU_ESLESME', yon: 'CIKIS' })), 'Birden fazla açık bilet uydu')
+// 054: son dört karakter tek araca da uysa kamera kapatmaz; kart bunu söyler.
+esit('çoklu eşleşme', kisaDurum(kayit({ tur: 'COKLU_ESLESME', yon: 'CIKIS' })), 'İçeride benzer plakalı bilet var')
 esit('yön belirsiz', kisaDurum(kayit({ tur: 'YON_BELIRSIZ', yon: 'ORTAK' })), 'İçerideki bir plakaya çok benziyor')
 esit('gelecek', kisaDurum(kayit({ tur: 'GELECEK' })), 'Kamera saati ileri — kabul edilmedi')
 esit('bayat', kisaDurum(kayit({ tur: 'BAYAT' })), 'Olay çok geç ulaştı')

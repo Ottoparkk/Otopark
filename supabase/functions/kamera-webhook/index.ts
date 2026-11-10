@@ -19,14 +19,17 @@
  *   kamera_okuma_bagla, kamera_kalp, kamera_kalp_cihaz, kamera_okunamadi,
  *   kamera_okuma_hatasi, kamera_okuma_siniri and kamera_foto_bagla. There is
  *   no path to tariffs, users, the kasa or subscriptions. And it can never
- *   close a ticket or take money: a camera reports, a human collects.
+ *   take money: since 054 an exact-plate exit closes the ticket UNPAID (no
+ *   tahsilat row, "Ödeme topla" on Gişe); a human collects, Onay approves.
  *
  *   Its only Storage write (042) is the event's compressed photo, as
  *   `plaka-foto/kamera/<islem_id>.jpg`, never overwriting an existing object;
  *   kamera_foto_bagla attaches only that exact path, only where empty.
  *
  *   kamera_tek_kapi (037, the single-gate lane) adds no new power: it only
- *   CHOOSES between the first two, or declines to choose. The two 039 RPCs
+ *   CHOOSES between the first two, or declines to choose. (Since 054 the
+ *   second one closes the ticket unpaid at the event's time — so whoever
+ *   holds a camera secret can choose that time: keep the secrets secret.) The two 039 RPCs
  *   only write an exception row and an alert, so that a car whose plate could
  *   not be read — or that arrived while plate reading was down — is not lost
  *   without a trace.
@@ -875,7 +878,7 @@ Deno.serve(async (req: Request) => {
       }
 
       // The photo goes where the decision wrote: the new ticket (GIRIS), the
-      // stamped one (CIKIS: bilet + this event's time) or the exception row.
+      // one this exit closed (CIKIS: bilet + this event's time, 054) or the exception row.
       // YOKSAY wrote nothing, so nothing is uploaded (042).
       if (tekKapiFotoGerekli(sonuc.karar)) {
         await kanitFotosunuBagla(admin, olay.kanit, islemId, biletId, olay.zaman)
@@ -937,7 +940,7 @@ Deno.serve(async (req: Request) => {
       p_ham: olay.ham,
     })
     if (error) return rpcHatasi('kamera_cikis_bildir', error)
-    // On the stamp this event wrote (bilet + time), or on the exception (042).
+    // On the ticket this exit closed (bilet + time, 054), or on the exception (042).
     await kanitFotosunuBagla(admin, olay.kanit, islemId, data ?? null, olay.zaman)
     return json({ ok: true, bilet_id: data, islem_id: islemId, istisna: data === null }, 200)
   } catch (err) {
