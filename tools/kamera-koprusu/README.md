@@ -66,6 +66,58 @@ approach, touching the picture edge):
   while moving, heading to (or touching) the picture edge. A car that stood in
   the gate area and vanished behind a person is not "out" (park memory: it is
   the same car when it reappears).
+- **Not seen in the gate (1.4.1)** — at ~3–4 frames/s a fast car can cross the
+  gate area between two frames, and at night or in blur the finder may not see
+  it there. A car first seen in the yard, moving away from the gate by at least
+  the margin, whose position one frame earlier (its speed × the gap since the
+  previous frame) was in the gate area (within the margin) counts as **in**; a
+  car last seen in the yard, moving toward the gate, whose position one frame
+  later was in the gate area counts as **out**. It looks back / ahead at most
+  1.5 measured steps (after an idle spell the bridge measures only every 2 s).
+  The log line says `(iz N, …, kapıda görülmedi)`.
+- **Seen in only one frame (1.4.1)** — no speed, direction unknown. If it was
+  in the gate area or within one car-box diagonal of it AND its pixels changed
+  against the previous frame (it really moved), it becomes a staff card
+  (`araç tek karede görüldü — personele`): any plate read goes as the guess; no
+  plate → only if the vehicle score is ≥ `ARAC_GECIS_ESIK` (0.60), as for a
+  plateless car rolling through. A one-frame box deep in the yard (the finder
+  "blinking" on a parked car) is not sent; neither is one that overlaps
+  another car's box in that frame (a car passing in front changes a parked
+  car's pixels), nor the first frame after the camera comes back (compared
+  with no stale picture). Car tracks only: a plate seen once is usually the
+  front plate of a car whose body is found one frame later.
+- **Plateless car through the gate (1.4.1)** — a tracked car that came in or
+  went out through the gate area and whose plate was never read goes to staff
+  from vehicle score **0.35** (the tracker's own birth threshold), not 0.60.
+  Site log 2026-11-10: real cars at 0.46 / 0.54 were dropped silently; people
+  scored at most 0.27 on the site photos. Other events (one-frame car, no gate
+  area, car at the gate on start) keep 0.60. In practice every tracked car
+  (tracks start at ≥ 0.35) that crosses the gate with no plate read becomes a
+  staff card — more cards, never a ticket.
+- **Plate read in several frames (1.4.1, `PLAKA_BIRLESIK`, default 1)** — the
+  sure rule stays (two crops ≥ 95 % in two views, or 99 % once). In addition,
+  a frame whose two crops read the SAME text with each ≥ 0.50 is a half vote;
+  the text is sure when half + full votes come from ≥ 3 different views (a
+  stopped car's frames are one view), one crop reached ≥ 0.90, no other text
+  within one character was read anywhere in that car's track, and no OTHER
+  plate has a vote, half vote or ≥ 0.50 guess in it (two cars mixed in one
+  track must never bill the wrong one). Car tracks only — plate-only tracks
+  (dark cars) keep the plain rule: their small box jitters into false views. Logged as
+  `plaka birden çok karede aynı okundu (birleşik)`. Industry: Rekor plate
+  groups, Axis update events; a frame-voting study: exact reads 66.7 → 81.8 %.
+  On the 2026-11-10 staff-card photos the agreeing crops were always the right
+  plate, and the one wrong read (55DAT642 beside 35DAT642) would block it.
+  Tracking path only; `TAKIP=0` is unchanged.
+- **Dark car, readable plate (1.4.1)** — a plate with no car box around it is
+  followed on its own (as in 1.4.0). When the car's body becomes visible (a
+  lamp in the yard), a NEWLY seen, undecided car track whose box holds that
+  plate track takes it over — where it came from, whether it is already out of
+  the gate, its reads. When the body goes dark again, the plate inside its
+  expected box keeps the car track moving (box rebuilt from the plate). A car
+  that was **stopped** when its body was last seen is never moved by a plate,
+  so a dark car passing in front (even slowly) cannot drag a parked car's
+  track to the gate. Known limit: a dark car that stops in the gate and then
+  leaves still dark is not counted as out.
 - **Moves inside the yard are not counted** (`otopark içinde hareket — sayılmadı`).
 - A car already in the gate area when the bridge starts (or the camera comes
   back) that then drives in: we cannot know it came from outside → staff card.
@@ -694,6 +746,7 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
 | `PLAKA_IPLIK` | `2` | Threads for the plate reader and the vehicle finder. 1.3.2: on the site laptop (8 logical processors) a frame took 410 ms with 1, 268 ms with 2, 241 ms with 4 — 2 takes most of the gain and leaves cores for the camera stream. |
 | `PLAKA_TAM` | `1` | 1.3.4: read the plate from the full-resolution crop (found on the shrunk one). `0` = 1.3.3. |
+| `PLAKA_BIRLESIK` | `1` | 1.4.1: a plate read the same in ≥ 3 different views (both crops agree, each ≥ 0.50, one ≥ 0.90, no near-text in the track) is sure. `0` = only the single-frame 95 % rule. Tracking only. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
 | `ARAC_BUL` | `1` | `0` switches the vehicle finder (1.3.1) off: every decision is 1.3.0's. |
 | `ARAC_BUL_ESIK` | `0.35` | A stopped plateless thing counts as a vehicle at this score. Bake-off: cars 0.40–0.94, people ≤ 0.27. |

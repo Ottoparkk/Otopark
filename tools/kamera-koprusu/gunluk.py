@@ -162,6 +162,15 @@ KAPISIZ_ISARETI = "araç hareketi bitti (kapı alanı yok)"
 ICERIDE_ISARETI = "otopark içinde hareket — sayılmadı"
 GERI_DONDU_ISARETI = "kapıdan geri döndü — sayılmadı"
 KAPIDA_BEKLIYOR_ISARETI = "kapı alanında uzun bekleyen araç (kapı alanı park yerine mi çizildi?)"
+# 1.4.1: giriş / çıkış kapıda görülmeden, aracın hızından anlaşıldı (hızlı ya
+# da kapıda bulucunun göremediği araç). Girdi / çıktı satırının parantezinde.
+KAPIDA_GORULMEDI_ISARETI = "kapıda görülmedi"
+# 1.4.1: kapıda yalnızca BİR karede görülen hareketli araç — yönü bilinmez,
+# plakası okunsa bile personele (Çözülmemiş kayıt) gider.
+TEK_KARE_ISARETI = "araç tek karede görüldü — personele"
+# 1.4.1: plaka tek karede %95'e ulaşmadı ama en az üç farklı görünümde AYNI
+# okundu (çok karede birleştirme, PLAKA_BIRLESIK) — denetim için kayda yazılır.
+BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"
 YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
 KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).

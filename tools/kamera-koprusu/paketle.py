@@ -41,7 +41,9 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.0"   # 1.4.0: her araç İZLENİR (takip.py), karar araç başına bir kez; kapı
+SURUM = "1.4.1"   # 1.4.1: kapıda görülmeyen araç (hızlı / karanlık) hızıyla girdi-çıktı;
+                  #        karanlıkta plaka izi ↔ araç izi devri (giriş/çıkış kaybolmaz)
+                  # 1.4.0: her araç İZLENİR (takip.py), karar araç başına bir kez; kapı
                   #        alanı (girdi / çıktı, otopark içi sayılmaz); kırpma alanı
                   #        tıklanan çokgen (hariç dikdörtgenler yerine); TAKIP=0 eskisi
                   # 1.3.4: plaka küçültülmüş kırpıntıda bulunur, TAM çözünürlükten okunur

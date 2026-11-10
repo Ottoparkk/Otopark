@@ -1219,7 +1219,8 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 "KAPISIZ": "ARAÇ HAREKETİ BİTTİ (kapı alanı yok)",
                 "ICERIDE": "otopark içinde hareket — sayılmaz",
                 "GERI_DONDU": "kapıdan geri döndü — sayılmaz",
-                "KAPIDA_BEKLIYOR": "kapı alanında uzun bekleyen araç (alan park yerine mi çizildi?)"}
+                "KAPIDA_BEKLIYOR": "kapı alanında uzun bekleyen araç (alan park yerine mi çizildi?)",
+                "TEK_KARE": "ARAÇ TEK KAREDE GÖRÜLDÜ (yönü bilinmez → personele)"}
     olay_sayisi = {k: 0 for k in olay_adi}
     izci: takip.Takipci | None = None
     durgun_esik = DURGUN_ESIGI
@@ -1238,6 +1239,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     sureler_a: list[float] = []      # araç bulucu
     karsilastirma = False            # 1.3.4: kırpıntı küçültüldü, iki yoldan okundu
     emin_tam_kare = emin_kucuk_kare = 0
+    genislikler: list[float] = []    # 1.4.1: plakaların tam çözünürlükteki genişliği (px)
     haric_k = None
     sekil: tuple | None = None
     son_satir = time.monotonic()
@@ -1271,7 +1273,8 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                     None if kapi is None else kapi_kirpikta(frame.shape, kutu, kapi, kirpik.shape),
                     dogum_esik=p_ayar["arac_esik"], durgun_esik=durgun_esik,
                     yeni_gecis=lambda: okuma.Gecis(0, datetime.now(timezone.utc),
-                                                   plaka.Oylama(tek_esik=p_ayar["tek_esik"])),
+                                                   plaka.Oylama(tek_esik=p_ayar["tek_esik"],
+                                                                birlesik=p_ayar["birlesik"])),
                     yaz=okuma.plakalari_yaz)
             t0 = time.perf_counter()
             try:
@@ -1283,8 +1286,10 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 kucukler = ([okuma.kutuyu_oku(p, kirpik, k, haric_k, p_ayar["oku_esik"])
                              for k in kutular] if tam is not None else [None] * len(kutular))
                 for k, s, sk in zip(kutular, okumalar, kucukler):
+                    gen = okuma.plaka_genisligi_tam(k, kirpik.shape[1], maskeli.shape[1])
+                    genislikler.append(gen)
                     if s is None:
-                        parcalar.append(f"{k.skor:.2f} kesik (kenara değiyor, okunmaz)")
+                        parcalar.append(f"{k.skor:.2f} kesik (kenara değiyor, okunmaz) · {gen:.0f} px")
                         continue
                     (m1, e1), (m2, e2) = s[0]
                     if s[1] is not None:
@@ -1299,7 +1304,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                             metin += f" · küçük: {sk[1][0]} EMİN"
                         else:
                             metin += f" · küçük: belirsiz {sk[0][0][0]} ({sk[0][0][1]:.3f})"
-                    parcalar.append(metin)
+                    parcalar.append(metin + f" · {gen:.0f} px")
                 if tam is not None:
                     karsilastirma = True
                     if any(s is not None and s[1] is not None for s in okumalar):
@@ -1340,19 +1345,23 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 for olay in izci.guncelle(o) + izci.zaman_gecti(simdi):
                     olay_sayisi[olay.tur] += 1
                     ek = ""
-                    if olay.tur in ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ"):
+                    if olay.tur in ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ", "TEK_KARE"):
                         gon, _ = okuma.iz_karari(olay.iz.gecis, olay_zamani=olay.zaman,
                                                  son_gonderilen=[], simdi=simdi,
-                                                 arac_gecis_esik=p_ayar["arac_gecis_esik"],
-                                                 personele=olay.tur == "ESKI_GIRDI")
+                                                 arac_gecis_esik=okuma.iz_arac_esigi(
+                                                     olay.tur, p_ayar["arac_esik"],
+                                                     p_ayar["arac_gecis_esik"]),
+                                                 personele=okuma.iz_personele(olay.tur))
                         if not gon:
                             ek = ": gönderilmezdi"
                         elif gon[0].tur == "PLAKA":
                             ek = f": {gon[0].plaka} gönderilirdi"
                         else:
                             ek = f": personele (tahmin {gon[0].tahmin or 'yok'})"
+                    kapida = (f", {gunluk.KAPIDA_GORULMEDI_ISARETI}"
+                              if olay.iz.kapida_gorulmedi else "")
                     print(f"  {time.strftime('%H:%M:%S')}  → {olay_adi[olay.tur]} "
-                          f"(iz {olay.iz.id}){ek}", flush=True)
+                          f"(iz {olay.iz.id}{kapida}){ek}", flush=True)
             if parcalar or arac_var:
                 if parcalar:
                     kutulu += 1
@@ -1393,11 +1402,14 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
         print(f"  İzleme: {olay_sayisi['GIRDI']} giriş, {olay_sayisi['CIKTI']} çıkış, "
               f"{olay_sayisi['ICERIDE']} otopark içi hareket, {olay_sayisi['ESKI_GIRDI']} "
               f"açılışta kapıdaki, {olay_sayisi['KAPISIZ']} kapısız, "
-              f"{olay_sayisi['GERI_DONDU']} geri dönen.")
+              f"{olay_sayisi['GERI_DONDU']} geri dönen, {olay_sayisi['TEK_KARE']} tek karede.")
     if karsilastirma:
         print(f"  Emin okuma: tam çözünürlükte {emin_tam_kare} kare, küçültülmüşte "
               f"{emin_kucuk_kare} kare. (Köprü tam çözünürlüğü kullanır; PLAKA_TAM=0 "
               "küçültülmüşe döner.)")
+    boy_ozeti = okuma.plaka_boyu_ozeti(genislikler)
+    if boy_ozeti:
+        print(f"  {boy_ozeti}")
     if emin:
         print("  ✓ Emin okunan plakalar: "
               + ", ".join(f"{m} ×{n}" for m, n in sorted(emin.items(), key=lambda x: -x[1])))
@@ -1587,11 +1599,13 @@ def main() -> None:
         return takip.Takipci(
             en, boy, k, dogum_esik=p_ayar["arac_esik"], durgun_esik=DURGUN_ESIGI,
             yeni_gecis=lambda: okuma.Gecis(0, datetime.now(timezone.utc),
-                                           plaka.Oylama(tek_esik=p_ayar["tek_esik"])),
+                                           plaka.Oylama(tek_esik=p_ayar["tek_esik"],
+                                                        birlesik=p_ayar["birlesik"])),
             yaz=okuma.plakalari_yaz)
 
     olay_adlari = {"GIRDI": gunluk.GIRDI_ISARETI, "CIKTI": gunluk.CIKTI_ISARETI,
-                   "ESKI_GIRDI": gunluk.ESKI_GIRDI_ISARETI, "KAPISIZ": gunluk.KAPISIZ_ISARETI}
+                   "ESKI_GIRDI": gunluk.ESKI_GIRDI_ISARETI, "KAPISIZ": gunluk.KAPISIZ_ISARETI,
+                   "TEK_KARE": gunluk.TEK_KARE_ISARETI}
     yalniz_kayit = {"ICERIDE": gunluk.ICERIDE_ISARETI, "GERI_DONDU": gunluk.GERI_DONDU_ISARETI,
                     "KAPIDA_BEKLIYOR": gunluk.KAPIDA_BEKLIYOR_ISARETI}
 
@@ -1610,13 +1624,16 @@ def main() -> None:
             return
         gonderimler, satirlar = okuma.iz_karari(
             olay.iz.gecis, olay_zamani=olay.zaman, son_gonderilen=son_gonderilen, simdi=simdi,
-            arac_gecis_esik=p_ayar["arac_gecis_esik"], personele=olay.tur == "ESKI_GIRDI")
+            arac_gecis_esik=okuma.iz_arac_esigi(olay.tur, p_ayar["arac_esik"],
+                                                p_ayar["arac_gecis_esik"]),
+            personele=okuma.iz_personele(olay.tur))
         plaka_sayisi = sum(1 for g in gonderimler if g.tur == "PLAKA")
         personel = len(gonderimler) - plaka_sayisi
         ozet = (f"{plaka_sayisi} plaka" if plaka_sayisi else "") + \
             (", " if plaka_sayisi and personel else "") + \
             (f"{personel} personele" if personel else "")
-        print(f"[i] {adi} (iz {olay.iz.id}, {olay.iz.gorunum_no} görünüm) — "
+        kapida = f", {gunluk.KAPIDA_GORULMEDI_ISARETI}" if olay.iz.kapida_gorulmedi else ""
+        print(f"[i] {adi} (iz {olay.iz.id}, {olay.iz.gorunum_no} görünüm{kapida}) — "
               f"{ozet + ' gönderiliyor' if ozet else 'gönderim yok'}", flush=True)
         for s in satirlar:
             print(s, flush=True)

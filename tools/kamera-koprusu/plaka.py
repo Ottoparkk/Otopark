@@ -114,7 +114,8 @@ class PlakaHatasi(Exception):
 
 AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK",
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
-               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP")
+               "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP",
+               "PLAKA_BIRLESIK")
 
 
 def _oran(alt_dahil: bool):
@@ -145,6 +146,10 @@ _KURALLAR = (
     # 1.4.0: her aracı izle (takip.py), karar araç başına bir kez. 0 = 1.3.4
     # geçiş kuralı birebir. Araç bulucu yok/bozuksa zaten 1.3.4'e döner.
     ("TAKIP", "takip", True, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
+    # 1.4.1: çok karede birleştirme (Oylama.birlesik; yalnızca izleme kipinde).
+    # 0 = yalnızca tek karede %95 iki görünüm kuralı.
+    ("PLAKA_BIRLESIK", "birlesik", True, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
 )
 
 
@@ -564,6 +569,14 @@ class Emin(NamedTuple):
     metin: str
     zaman: object          # ilk okunduğu karenin yakalanma anı (datetime)
     guven: float
+    birlesik: bool = False  # 1.4.1: çok karede birleştirmeyle emin (kayda yazılır)
+
+
+# 1.4.1 çok karede birleştirme (Oylama.birlesik). Sektör: Rekor "plate groups",
+# Axis "Update" olayları; kare oylaması makalesi %66.7 → %81.8 tam doğru.
+YARIM_ESIK = 0.50          # iki kırpıntı AYNI metin, her biri en az bu: yarım oy
+BIRLESIK_GORUNUM = 3       # yarım + tam oylar en az bu kadar FARKLI görünümden
+BIRLESIK_TEPE = 0.90       # metnin en az bir kırpıntısı bu kadar net olmalı
 
 
 class Belirsiz(NamedTuple):
@@ -587,13 +600,16 @@ class Oylama:
     """
 
     def __init__(self, k_oy: int = K_OY, oran: float = ORAN, tek_esik: float = 0.99,
-                 m_kutu: int = M_KUTU):
+                 m_kutu: int = M_KUTU, birlesik: bool = False):
         self.k_oy, self.oran, self.tek_esik, self.m_kutu = k_oy, oran, tek_esik, m_kutu
+        self.birlesik = bool(birlesik)
         self._kutulu = 0
         self._ilk_kutu = None
         self._okumalar: dict[str, dict] = {}
         self._tahminler: dict[str, float] = {}
         self._tahmin_sayi: dict[str, int] = {}
+        self._yarim: dict[str, dict] = {}      # 1.4.1: metin → {gorunum, tepe, zaman, sira}
+        self._gorulen: set[str] = set()        # 1.4.1: izde okunan HER metin (iki kırpıntı)
         self._sira = 0
 
     def kutu(self, zaman, gorunum) -> None:
@@ -616,6 +632,54 @@ class Oylama:
         self._tahminler[metin] = max(self._tahminler.get(metin, 0.0), enk)
         self._tahmin_sayi[metin] = self._tahmin_sayi.get(metin, 0) + 1
 
+    def gorulen(self, metinler) -> None:
+        """1.4.1: bu karede okunan metinler (iki kırpıntı da) — birleşik kararda rakip."""
+        self._gorulen.update(m for m in metinler if m)
+
+    def yarim_oy(self, metin: str, enk: float, tepe: float, zaman, gorunum) -> None:
+        """
+        1.4.1: iki kırpıntının AYNI metni verdiği ama eşiğin altında kalan kare
+        (`enk` iki kırpıntının düşüğü, `tepe` yükseği). Tek başına hiçbir şey
+        değildir; `birlesik` açıksa karar() bunları görünümlerle birleştirir.
+        """
+        y = self._yarim.get(metin)
+        if y is None:
+            self._sira += 1
+            y = self._yarim[metin] = {"gorunum": set(), "tepe": 0.0, "zaman": zaman,
+                                      "sira": self._sira}
+        y["gorunum"].add(gorunum)
+        y["tepe"] = max(y["tepe"], tepe)
+
+    def _sira_al(self, metin: str) -> int:
+        kayit = self._okumalar.get(metin) or self._yarim.get(metin)
+        return kayit["sira"] if kayit else 0
+
+    def _birlesik_eminler(self, emin_metinler: set[str]) -> list[Emin]:
+        """KATI birleşik kural (bkz. YARIM_ESIK / BIRLESIK_*)."""
+        rakipler = (self._gorulen | set(self._okumalar) | set(self._yarim)
+                    | set(self._tahminler) | emin_metinler)
+        cikti: list[Emin] = []
+        for m in sorted(self._yarim, key=self._sira_al):
+            if m in emin_metinler:
+                continue
+            tam = self._okumalar.get(m)
+            gorunum = self._yarim[m]["gorunum"] | (tam["gorunum"] if tam else set())
+            tepe = max(self._yarim[m]["tepe"], tam["enk"] if tam else 0.0)
+            if len(gorunum) < BIRLESIK_GORUNUM or tepe < BIRLESIK_TEPE:
+                continue
+            if any(r != m and bir_fark(r, m) for r in rakipler):
+                continue
+            # Bağımsız inceleme (2026-11-09): izde BAŞKA bir plakanın oyu, yarım
+            # oyu ya da ≥ YARIM_ESIK tahmini varsa iki araç karışmış olabilir
+            # (sürüklenen iz, arkadaki aracın ön plakası) — birleştirme yok.
+            if any(r != m for r in set(self._okumalar) | set(self._yarim)) or any(
+                    r != m and g >= YARIM_ESIK for r, g in self._tahminler.items()):
+                continue
+            zaman = tam["zaman"] if tam and tam["sira"] < self._yarim[m]["sira"] \
+                else self._yarim[m]["zaman"]
+            cikti.append(Emin(m, zaman, tepe, True))
+        return cikti
+
     def _kumeler(self) -> list[list[str]]:
         metinler = sorted(self._okumalar, key=lambda m: self._okumalar[m]["sira"])
         ata = {m: m for m in metinler}
@@ -637,7 +701,7 @@ class Oylama:
 
     def karar(self) -> Karar:
         eminler: list[Emin] = []
-        belirsiz_kume: tuple | None = None       # (toplam görünüm, sıra, üst metin)
+        adaylar: list[tuple] = []                # emin olmayan kümeler: ((toplam, sıra, üst), küme)
         for kume in self._kumeler():
             ok = self._okumalar
             ust = max(kume, key=lambda m: (len(ok[m]["gorunum"]), -ok[m]["sira"]))
@@ -648,10 +712,16 @@ class Oylama:
             if emin:
                 eminler.append(Emin(ust, ok[ust]["zaman"], ok[ust]["enk"]))
             else:
-                aday = (toplam, -ok[ust]["sira"], ust)
-                if belirsiz_kume is None or aday > belirsiz_kume:
-                    belirsiz_kume = aday
-        eminler.sort(key=lambda e: self._okumalar[e.metin]["sira"])
+                adaylar.append(((toplam, -ok[ust]["sira"], ust), set(kume)))
+        if self.birlesik:
+            # 1.4.1: olağan kuralla emin olmayan metin çok karede birleşerek
+            # emin olabilir; o metnin kümesi artık "belirsiz" adayı değildir.
+            birlesik = self._birlesik_eminler({e.metin for e in eminler})
+            eminler += birlesik
+            yeni = {e.metin for e in birlesik}
+            adaylar = [a for a in adaylar if not (a[1] & yeni)]
+        belirsiz_kume: tuple | None = max((a[0] for a in adaylar), default=None)
+        eminler.sort(key=lambda e: self._sira_al(e.metin))
 
         belirsiz: Belirsiz | None = None
         if eminler:

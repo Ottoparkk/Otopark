@@ -218,6 +218,9 @@ def test_ortulmede_hizla_tahmin_edilen_yerde_dikilir():
     s.bekle(6.0, [])
     assert [o.iz for o in s.olaylar if o.tur == "CIKTI"] == [iz], s.turler()
     assert len({id(o.iz) for o in s.olaylar}) == 1, s.olaylar
+    # 1.4.1: dikilmeseydi çıkışı hız kuralı yine verebilirdi — dikişin
+    # kendisi sınanır: araç hiç yeni iz açmadı.
+    assert s.t._no == 1, s.t._no
 
 
 def test_yavas_dizustunde_buyuk_adimlar_tek_iz():
@@ -471,6 +474,419 @@ def test_kopma_kapidan_cikmis_karar_bekleyen_girdi_sayilir():
     assert s.t.kare_istiyor()                                # ısınma kareleri istenir
 
 
+# ------------------------------------- 1.4.1: kapıda görülmeyen araç (hızlı) --
+# Sahada ~3-4 kare/sn: hızlı araç kapı alanını iki kare ARASINDA geçebilir,
+# ya da bulucu onu kapıda (yarısı görünür, bulanık) görmez. 1.4.0 böyle bir
+# aracı ilk / son kez otoparkta görür ve "otopark içi hareket" sayardı —
+# giriş ya da çıkış SESSİZCE kaybolurdu. 1.4.1: aracın yolu bir kare önce /
+# sonra kapı alanından geçiyorsa (hızıyla) kapıdan geldi / kapıdan gitti.
+
+def test_hizli_giris_kapida_hic_gorulmeden():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])                                               # kapıdaydı, bulucu göremedi
+    # İlk görüldüğü yer otoparkın içi: çapa (650, 400), kapının ~136 px dışı.
+    # Kare başına (+330, -120) (~1 araç boyu, 0.3 sn'de): bir kare önce çapa
+    # (320, 520) — kapının içi.
+    s.kare([_arac(500, 200)]).kare([_arac(830, 80)])
+    son = _arac(1100, 20)
+    s.kare([son]).bekle(2.5, [son])
+    assert s.turler().count("GIRDI") == 1, s.turler()
+    assert "ICERIDE" not in s.turler(), s.turler()
+    o = [o for o in s.olaylar if o.tur == "GIRDI"][0]
+    assert o.iz.kapida_gorulmedi, "kayıtta 'kapıda görülmedi' yazmalı"
+
+
+def test_hizli_giris_iki_kez_gorulup_kaybolan():
+    # Kapının 20 px dışında (pay içinde) ilk görülen, bir sonraki karede
+    # otoparkın içinde olan ve sonra bir şeyin arkasında kaybolan araç: iki
+    # görülme yeter — kapıdan çıkışı doğduğu andır.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    s.kare([_arac(150, 230)])                                # çapa (300, 430)
+    s.kare([_arac(450, 130)])                                # çapa (600, 330)
+    s.bekle(6.0, [])
+    assert s.turler().count("GIRDI") == 1, s.turler()
+
+
+def test_hizli_giris_frenleyen_arac():
+    # Kapıdan hızlı geçip hemen fren yapan araç: ikinci görülmedeki hız
+    # kapıdaki hızdan düşük, geri tahmin kapının biraz dışında kalır — kapı
+    # payı (aynı "kapıdan çıktı" payı) içinde olduğu için yine giriş.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    s.kare([_arac(500, 200)])                                # çapa (650, 400)
+    s.kare([_arac(760, 100)])                                # (+260, -100): yavaşladı
+    son = _arac(900, 60)
+    s.kare([son]).bekle(2.5, [son])
+    assert s.turler().count("GIRDI") == 1, s.turler()
+
+
+def test_hizli_cikis_kapida_hic_gorulmeden():
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)]).bekle(3.0, [_arac(900, 150)])   # park etmiş
+    s.kare([_arac(750, 200)])                                # çapa (900, 400)
+    s.kare([_arac(500, 250)])                                # çapa (650, 450): kapının ~107 px dışı
+    son_gorulme = s.mono
+    s.bekle(6.0, [])                                         # bir kare sonra kapıdaydı: gitti
+    assert s.turler().count("CIKTI") == 1, s.turler()
+    assert "ICERIDE" not in s.turler(), s.turler()
+    o = [o for o in s.olaylar if o.tur == "CIKTI"][0]
+    assert o.iz.kapida_gorulmedi
+    assert abs((o.zaman - T0).total_seconds() - (son_gorulme - 100.0)) < 1e-6, o.zaman
+
+
+def test_hizli_otopark_ici_sayilmaz():
+    # Kapıdan uzakta doğup hızla kapıdan UZAKLAŞAN, kapıdan uzakta hızla
+    # giderken kaybolan araç: ne giriş ne çıkış.
+    s = _isin(Sahne(_takipci()))
+    _yol(s, (800, 100), (1300, 100), adim=2)
+    s.bekle(6.0, [])
+    s.kare([_arac(900, 100)]).bekle(2.5, [_arac(900, 100)])
+    _yol(s, (900, 100), (1300, 100), adim=2)
+    s.bekle(6.0, [])
+    assert not ({"GIRDI", "CIKTI"} & set(s.turler())), s.turler()
+
+
+def test_kapi_yaninda_agir_kalkan_giris_sayilmaz():
+    # Kapının hemen dışında (41 px) ilk görülen, kare başına 22 px ağır ağır
+    # uzaklaşan araç: yolu kapıya ancak "payla" değer — hızlı geçiş değil
+    # (kapının dibinde park etmiş, bulucunun o ana dek görmediği araç olabilir).
+    s = _isin(Sahne(_takipci()))
+    for i in range(6):
+        s.kare([_arac(420 + 20 * i, 250 - 10 * i)])
+    son = _arac(520, 200)
+    s.kare([son]).bekle(2.5, [son])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_kapida_kalkan_park_arac_girdi_sayilmaz():
+    # Kapı dışında DURARAK doğan araç (ilk iki görülmesi yerinde), sonra hızla
+    # otoparka gider: hız kuralı yalnızca ilk iki görülmeye bakar.
+    s = _isin(Sahne(_takipci()))
+    a = _arac(500, 200)                                      # çapa (650, 400)
+    s.kare([a]).kare([a])
+    s.kare([_arac(780, 100)])                                # kare başına ~300 px: aynı iz
+    son = _arac(1060, 20)
+    s.kare([son]).bekle(2.5, [son])
+    assert s.t._no == 1, s.t._no
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_kapiya_giderken_otoparkta_kaybolan_cikis_sayilmaz():
+    # Kapıya doğru hızla giderken otoparkın ortasında (kapıya bir kare yol
+    # kala değil) bir şeyin arkasında kalan araç: çıkmış sayılmaz.
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(1200, 100)]).bekle(3.0, [_arac(1200, 100)])
+    s.kare([_arac(1000, 100)]).kare([_arac(800, 100)])       # çapa (950, 300)
+    s.bekle(6.0, [])
+    assert "CIKTI" not in s.turler(), s.turler()
+
+
+def test_hizli_kapiya_gidip_otoparkta_duran_cikis_sayilmaz():
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)]).bekle(1.0, [_arac(900, 150)])
+    s.kare([_arac(750, 200)])
+    son = _arac(500, 250)                                    # kapının ~107 px dışında durdu
+    s.kare([son]).bekle(3.0, [son])
+    s.bekle(8.0, [])                                         # önünden biri geçti, uzun süre
+    assert "CIKTI" not in s.turler(), s.turler()
+
+
+# --------------------------------- 1.4.1: yalnızca TEK karede görülen araç ---
+# Sahip (2026-11-09): "kırpmada görüldüyse yine gönderilmeli". Tek karede
+# görülen aracın hızı yok, nereden geldiği bilinmez — 1.4.1'in ilk hâli onu
+# sessizce düşürüyordu. Kapı alanında ya da bir kare yol yakınında ve GERÇEKTEN
+# hareketli (pikselleri değişmiş) ise personele (Çözülmemiş kayıt). Otoparkın
+# derinindeki tek kare (bulucunun bir an gördüğü park etmiş araç) gönderilmez.
+
+def test_tek_karede_kapida_gorulen_hareketli_arac_personele():
+    for kutu in ((500, 200), (100, 520)):                    # kapının 136 px dışı / içi
+        s = _isin(Sahne(_takipci()))
+        s.kare([])
+        s.kare([_arac(*kutu)])
+        s.bekle(6.0, [])
+        assert s.turler() == ["TEK_KARE"], (kutu, s.turler())
+
+
+def test_tek_karede_otoparkta_gorulen_sayilmaz():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    s.kare([_arac(1200, 100)])                               # kapıdan uzak
+    s.bekle(6.0, [])
+    assert "TEK_KARE" not in s.turler(), s.turler()
+
+
+def test_tek_karede_kipirdamayan_park_araci_sayilmaz():
+    # Kapının yanında park etmiş araç: bulucu onu yalnızca bir kare gördü,
+    # pikselleri hiç değişmedi — gelen giden araç değil.
+    s = _isin(Sahne(_takipci()))
+    a = _arac(500, 200)
+    for _ in range(4):
+        s.kare([], cizim=[a])
+    s.kare([a], cizim=[a])
+    for _ in range(20):
+        s.kare([], cizim=[a])
+    assert "TEK_KARE" not in s.turler(), s.turler()
+
+
+def _olaylar(s):
+    return [(o.tur, o.iz.kaynak) for o in s.olaylar]
+
+
+def test_tek_kare_plaka_izinde_yok_giren_araca_ikinci_kart_olmaz():
+    # İnceleme (2026-11-09, ikinci tur): araç kapıdan girerken ilk karede
+    # yalnızca ön plakası görüldü (gövde henüz yarısı görünmedi), sonra gövde
+    # izlendi, plaka bir daha o yakında okunmadı. Plaka izcisinin tek karelik
+    # izi TEK_KARE verip aracın GİRDİ'sinin yanına ikinci (personel) kart
+    # açıyordu. Tek kare kuralı yalnızca ARAÇ izinde.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    yol = [(0, 600), (120, 520), (240, 440), (360, 360), (480, 300), (600, 260), (700, 240),
+           (760, 230)]
+    a0 = _arac(*yol[0])
+    s.kare([], [plaka.Kutu(a0.x1 + 105, a0.y1 + 140, a0.x1 + 195, a0.y1 + 164, 0.9)], cizim=[a0])
+    for x, y in yol[1:]:
+        a = _arac(x, y)
+        s.kare([a], [], cizim=[a])
+    s.bekle(10.0, [a])
+    assert _olaylar(s) == [("GIRDI", "arac")], _olaylar(s)
+
+
+def test_tek_kare_devralinan_karari_tekrarlamaz():
+    # İnceleme: koyu araç plakasıyla girdi, plaka izi GİRDİ verdi; lambanın
+    # altında gövdesi BİR kez görüldü (araç izi devraldı), sonra yine karanlık
+    # ve plaka okunmadı. Devralınan karar varken tek kare ikinci kart açmamalı.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    yol = [(0, 600), (120, 520), (240, 440), (360, 360), (480, 300), (600, 260), (700, 240)]
+    for x, y in yol:
+        s.kare([], [_pk(x, y)], cizim=[_arac(x, y)])
+    x, y = yol[-1]
+    for _ in range(10):
+        s.kare([], [_pk(x, y)], cizim=[_arac(x, y)])
+    a = _arac(x, y)
+    s.kare([a], [_pk(x, y)], cizim=[a], doku={0: 120})
+    for _ in range(25):
+        s.kare([], [], cizim=[a], doku={0: 120})
+    assert _olaylar(s) == [("GIRDI", "plaka")], _olaylar(s)
+
+
+def test_tek_kare_onunden_gecilen_park_araci_sayilmaz():
+    # İnceleme: kapının yanında park etmiş (izlenmeyen) araç; önünden geçen
+    # aracın karesinde bulucu onu bir an gördü — pikselleri GEÇEN araç yüzünden
+    # değişti. Aynı karede başka bir aracın kutusuyla örtüşen doğum "hareketli"
+    # sayılmaz.
+    s = _isin(Sahne(_takipci()))
+    park = _arac(560, 250)
+    for _ in range(4):
+        s.kare([], cizim=[park], doku={0: 40})
+    for i, x in enumerate([900, 800, 700, 620, 540, 460]):
+        p = _arac(x, 300)
+        s.kare([p] + ([park] if i == 3 else []), cizim=[park, p], doku={0: 40, 1: 120})
+    for _ in range(25):
+        s.kare([], cizim=[park], doku={0: 40})
+    assert "TEK_KARE" not in s.turler(), _olaylar(s)
+
+
+def test_tek_kare_yeniden_baglanmada_eski_goruntuyle_karsilastirmaz():
+    # İnceleme: kamera koptu, 5 dk sonra geri geldi; ilk kare kopmadan önceki
+    # (eski, belki başka ışıktaki) gri görüntüyle karşılaştırılıyordu — orada
+    # duran her araç "hareketli" sayılıyordu.
+    s = _isin(Sahne(_takipci()))
+    for _ in range(3):
+        s.kare([])
+    s.t.kopma(s.mono)
+    s.t.yeniden_baglandi()
+    s.mono += 300
+    park = _arac(560, 250)
+    s.kare([park], cizim=[park], doku={0: 40})
+    for _ in range(25):
+        s.kare([], cizim=[park], doku={0: 40})
+    assert "TEK_KARE" not in s.turler(), _olaylar(s)
+
+
+def test_tek_karede_kapisiz_kipte_degismez():
+    s = _isin(Sahne(_takipci(kapi=None)))
+    s.kare([])
+    s.kare([_arac(500, 200)])
+    s.bekle(6.0, [])
+    assert s.turler() == [], s.turler()
+
+
+# -------------------------- 1.4.1: karanlıkta gövde görünmez, plaka görünür --
+# Gece koyu araç: bulucu gövdeyi görmez, plaka okunur (plaka izi). Gövde bir
+# lambanın altında görünür olunca iz araca GEÇMELİ (1.4.0: plaka izi silinir,
+# araç izi otoparkta yeni doğar → giriş kaybolurdu); gövde kapıya yaklaşırken
+# karanlığa girerse plaka aracı yaşatmalı (1.4.0: araç otoparkta kaybolur →
+# çıkış kaybolurdu).
+
+def _pk(x, y):
+    """`_arac(x, y)` aracının plakası (kutunun alt orta kısmı)."""
+    return plaka.Kutu(x + 105, y + 140, x + 195, y + 164, 0.9)
+
+
+def test_karanlik_arac_plakayla_girip_isikta_gorunur():
+    s = _isin(Sahne(_takipci()))
+    for i in range(11):
+        x, y = 50 + 85 * i, 600 - 45 * i
+        s.kare([_arac(x, y)] if i >= 6 else [], [_pk(x, y)])   # gövde i=6'dan sonra görünür
+    for _ in range(10):
+        s.kare([_arac(900, 150)], [_pk(900, 150)])
+    s.bekle(6.0, [_arac(900, 150)])
+    assert s.turler().count("GIRDI") == 1, s.turler()
+    assert "ICERIDE" not in s.turler(), s.turler()
+    o = [o for o in s.olaylar if o.tur == "GIRDI"][0]
+    assert o.iz.kaynak == "arac", o.iz
+    # Plaka izinin kapıdaki 6 okuması da aracın oylamasında (araç kendisi 15).
+    assert len(o.iz.gecis.yazilan) == 21, len(o.iz.gecis.yazilan)
+
+
+def test_isikta_gorunen_arac_karanlikta_plakayla_cikar():
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)], [_pk(900, 150)]).bekle(1.0, [_arac(900, 150)])
+    iz = s.t.izler[0]
+    # Gövde kapıdan UZAKTA (i=3'ten sonra) karanlığa girer: hız kuralı bir
+    # adım ileriye bakar, kapıya yetişmez — çıkışı yalnızca plaka verebilir.
+    for i in range(11):
+        x, y = 900 - 84 * i, 150 + 45 * i
+        s.kare([_arac(x, y)] if i < 3 else [], [_pk(x, y)])
+    s.bekle(6.0, [])
+    assert s.turler().count("CIKTI") == 1, s.turler()
+    assert [o.iz for o in s.olaylar if o.tur == "CIKTI"] == [iz], s.olaylar
+    assert not iz.kapida_gorulmedi, "çıkış plakayla izlenerek, kapıda verilmeli"
+    assert "ICERIDE" not in s.turler(), s.turler()
+
+
+def test_karanlikta_park_aracin_izini_gecen_plaka_alamaz():
+    # Park etmiş (duran) A bir an görünmez (önünden koyu B geçiyor); B'nin
+    # plakası A'nın kutusundan geçip kapıya gider. A'nın izi plakayla
+    # SÜRÜKLENMEMELİ: yoksa A kapıdan "çıktı" sayılır, biletini kapatırdı.
+    s = _isin(Sahne(_takipci()))
+    a = _arac(900, 150)
+    for _ in range(12):
+        s.kare([a], [_pk(900, 150)])
+    iz_a = s.t.izler[0]
+    assert iz_a.duruyor
+    for i in range(1, 11):
+        x, y = 900 - 84 * i, 150 + 45 * i
+        s.kare([] if i <= 3 else [a], [_pk(x, y)])
+    s.bekle(6.0, [a])
+    assert iz_a not in [o.iz for o in s.olaylar if o.tur == "CIKTI"], s.olaylar
+    assert iz_a.kutu[:2] == (900, 150), iz_a.kutu
+
+
+def test_karanlikta_yavas_gecen_plaka_park_araci_suruklemez():
+    # Bağımsız inceleme (2026-11-09) buldu: koyu B park etmiş A'nın önünden
+    # AĞIR geçerken (kare başına 50 px) ilk adım "yerinde" sayılıyor, A artık
+    # "durmuyor", sonra B'nin plakası A'nın izini kapıya kadar sürüklüyordu →
+    # A'nın biletini kapatan çıkış. Son GÖVDE görülmesinde duran araç plakayla
+    # hiç ilerlemez.
+    for adim in (50, 30):
+        s = _isin(Sahne(_takipci()))
+        a = _arac(900, 150)
+        for _ in range(12):
+            s.kare([a], [_pk(900, 150)])
+        iz_a = s.t.izler[0]
+        assert iz_a.duruyor
+        for i in range(1, int(900 / adim) + 1):
+            s.kare([], [_pk(900 - adim * i, 150 + adim * 0.54 * i)])   # A hep B'nin arkasında
+        s.bekle(6.0, [a])
+        assert iz_a not in [o.iz for o in s.olaylar if o.tur == "CIKTI"], (adim, s.olaylar)
+        assert iz_a.kutu[:2] == (900, 150), (adim, iz_a.kutu)
+
+
+def test_cikan_arac_giren_karanlik_aracin_plaka_izini_devralmaz():
+    # İnceleme: çıkan A (gövdesi görünür, plakası ilk kez kapıya yakın okundu)
+    # yakındaki giren koyu B'nin plaka izini devralıyor, "kapıdan doğmuş"
+    # oluyor, kapıda kaybolunca U dönüşü sayılıyordu — A'nın çıkışı kayboluyordu.
+    s = _isin(Sahne(_takipci()))
+    for i in range(4):
+        s.kare([], [_pk(60 + 10 * i, 560 - 5 * i)])
+    for i in range(10):
+        ax, ay = 700 - 80 * i, 250 + 40 * i
+        pl = [_pk(100 + 10 * i, 540 - 5 * i)] + ([_pk(ax, ay)] if i >= 4 else [])
+        s.kare([_arac(ax, ay)], pl)
+    s.bekle(6.0, [])
+    cikan = [o.iz for o in s.olaylar if o.tur == "CIKTI"]
+    assert len(cikan) == 1 and cikan[0].kaynak == "arac", s.olaylar
+
+
+def test_yeni_gorunen_arac_kutusu_disindaki_plaka_izini_devralmaz():
+    # Giren koyu B kapıda (plaka izi kapıda doğdu); çıkan A'nın gövdesi
+    # kapının yakınında İLK KEZ görünür, plakası okunur. B'nin plaka izi
+    # yakın (~270 px) ama A'nın kutusunda değil: A onu DEVRALMAMALI — yoksa
+    # "kapıdan doğmuş" olur, kapıda kaybolunca çıkışı kaybolurdu.
+    s = _isin(Sahne(_takipci()))
+    for i in range(4):
+        s.kare([], [_pk(410 + 3 * i, 488 - 2 * i)])
+    yol = [(480, 230), (480, 230), (330, 280), (180, 330), (30, 380), (-120, 430)]
+    for j, (ax, ay) in enumerate(yol, start=4):
+        s.kare([_arac(ax, ay)], [_pk(ax, ay), _pk(410 + 3 * j, 488 - 2 * j)])
+    s.bekle(6.0, [])
+    cikan = [o.iz for o in s.olaylar if o.tur == "CIKTI"]
+    assert len(cikan) == 1 and cikan[0].kaynak == "arac", s.olaylar
+
+
+def test_bosta_bekleme_sonrasi_hiz_kurali_fazla_geriye_bakmaz():
+    # İnceleme: sahne boşken köprü 2 sn'de bir ölçer; ondan sonra doğan aracın
+    # adımı 0.3 sn'de ölçüldüğü hâlde 1 sn geriye (3 adım) bakılıyordu —
+    # kapının 128 px dışında park etmiş, bulucunun görmediği, ağır kalkan araç
+    # "girdi" sayılıyordu. Geriye en çok 1.5 adım bakılır.
+    s = _isin(Sahne(_takipci()))
+    s.kare([], dt_sn=2.0)
+    for i in range(8):
+        s.kare([_arac(560 + 30 * i, 300 - 30 * i)], dt_sn=2.0 if i == 0 else 0.3)
+    s.bekle(3.0, [_arac(770, 90)])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_otoparkta_plakasi_izlenen_arac_isikta_kalkinca_girdi_sayilmaz():
+    # Koyu, park etmiş aracın plakası otoparkta (kapının 136 px dışında)
+    # izleniyor; araç kalkınca gövdesi görünür oldu ve hızla kapıdan uzaklaştı.
+    # Devraldığı plaka izi otoparkta doğmuştu: zaten içerideydi — hız kuralı
+    # onu kapıdan gelmiş saymamalı.
+    s = _isin(Sahne(_takipci()))
+    for _ in range(5):
+        s.kare([], [_pk(500, 200)])
+    for x, y in ((500, 200), (830, 80), (1100, 20)):
+        s.kare([_arac(x, y)], [_pk(x, y)])
+    s.bekle(3.0, [_arac(1100, 20)])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_plaka_izinde_birlestirme_kapali():
+    # Bağımsız inceleme (2026-11-09, B2): plaka izinin kutusu küçük — gürültüyle
+    # 4 px oynayan DURAN bir plaka "yeni görünüm" sayılabilir; çok karede
+    # birleştirme bağımsız bakış ister. Plaka izinde birleştirme kapalı; araç
+    # izinde açık (araç izi plaka izini devralırsa onun kapalı oylamasını alır).
+    class _Oy:
+        birlesik = True
+
+    def yeni():
+        g = _Gecis()
+        g.oylama = _Oy()
+        return g
+
+    t = takip.Takipci(EN, BOY, KAPI, yeni_gecis=yeni, yaz=_yaz)
+    s = _isin(Sahne(t))
+    s.kare([], [_pk(900, 150)])
+    s.kare([_arac(300, 100)], [])
+    assert t._plakaci.izler[0].gecis.oylama.birlesik is False
+    assert t.izler[0].gecis.oylama.birlesik is True
+
+
+def test_kapida_bekleyen_karanlik_arac_isiga_girince_girdi_sayilmaz():
+    # Plaka izi kapıdan hiç çıkmadı (koyu araç kapıda bekledi), sonra gövdesi
+    # kapıda görünür oldu ve geri gitti: giriş yok.
+    s = _isin(Sahne(_takipci()))
+    for _ in range(4):
+        s.kare([], [_pk(100, 520)])
+    for i in range(4):
+        s.kare([_arac(100 - 20 * i, 520 + 20 * i)], [_pk(100 - 20 * i, 520 + 20 * i)])
+    s.bekle(6.0, [])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
 # -------------------------------------------------------------- kapı yoksa ---
 
 def test_kapisiz_durunca_bir_kez_sonra_giderken_bir_kez():
@@ -548,6 +964,8 @@ def test_araca_ait_plaka_izi_duser():
         s.kare([A(x - 100, y - 160, x + 190, y + 40, 0.8)], [plaka.Kutu(x, y, x + 90, y + 25, 0.9)])
     s.bekle(6.0, [])
     assert not [o for o in s.olaylar if o.iz.kaynak == "plaka"], s.olaylar
+    # 1.4.1: plaka izinin "kapıdan çıktı" bilgisi araca geçer — giriş kaybolmaz.
+    assert s.turler().count("GIRDI") == 1, s.turler()
 
 
 # --------------------------------------------------------- kare isteği ------

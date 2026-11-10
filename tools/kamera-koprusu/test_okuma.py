@@ -1065,6 +1065,96 @@ def test_iz_karari():
     assert gonder == [] and any(gunluk.ARAC_YOK_ISARETI in s for s in satir), satir
 
 
+def _birlesik_gecis() -> okuma.Gecis:
+    return okuma.Gecis(1, _z(0), plaka.Oylama(k_oy=2, oran=0.6, tek_esik=0.99, m_kutu=2,
+                                              birlesik=True))
+
+
+def test_plakalari_yaz_yarim_oy_ve_birlesik_karar():
+    # 1.4.1: iki kırpıntı AYNI metni (her biri ≥ 0.50) verdiyse yarım oy; üç
+    # farklı görünüm → birleşik emin plaka (sahada 35CKM57 0.94 / 0.53 gibi).
+    g = _birlesik_gecis()
+    for no in (1, 2, 3):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35CKM57", 0.94), ("35CKM57", 0.53)], None))])
+    # Daha net ama OKUNAMAYAN (kesik) bir kutunun karesi: kanıt fotoğrafı o
+    # olmamalı — plakanın okunduğu kare gitmeli (bağımsız inceleme, 2026-11-09).
+    okuma.plakalari_yaz(g, _kare(4), _z(4), 4,
+                        [(K(ORTA.x1, ORTA.y1, ORTA.x2, ORTA.y2, 0.99), None)])
+    k = g.oylama.karar()
+    assert [(e.metin, e.birlesik) for e in k.eminler] == [("35CKM57", True)], k
+    gonder, satir = _iz_karari(g)
+    assert [(x.tur, x.plaka) for x in gonder] == [("PLAKA", "35CKM57")], gonder
+    assert int(gonder[0].kirpik[0, 0, 0]) == 1, int(gonder[0].kirpik[0, 0, 0])
+    assert any(gunluk.BIRLESIK_ISARETI in s for s in satir), satir
+    assert all("35CKM57" not in s for s in satir), satir          # kayda plaka yazılmaz
+    # Bir karede kırpıntılar anlaşmadı (35CKM51): rakip görüldü — emin değil.
+    g = _birlesik_gecis()
+    for no in (1, 2, 3):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35CKM57", 0.94), ("35CKM57", 0.53)], None))])
+    okuma.plakalari_yaz(g, _kare(4), _z(4), 4,
+                        [(ORTA, ([("35CKM57", 0.94), ("35CKM51", 0.93)], None))])
+    assert g.oylama.karar().eminler == []
+    # Kırpıntıların anlaşmadığı kare (öteki metin bambaşka) yarım oy DEĞİL:
+    # iki anlaşan görünüm + bir anlaşmayan = yalnızca iki görünüm.
+    g = _birlesik_gecis()
+    for no in (1, 2):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35CKM57", 0.94), ("35CKM57", 0.53)], None))])
+    okuma.plakalari_yaz(g, _kare(3), _z(3), 3,
+                        [(ORTA, ([("35CKM57", 0.94), ("06KZ4581", 0.60)], None))])
+    assert g.oylama.karar().eminler == []
+    # Kırpıntılardan biri 0.50'nin altında: yarım oy değil.
+    g = _birlesik_gecis()
+    for no in (1, 2, 3):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35CKM57", 0.94), ("35CKM57", 0.45)], None))])
+    assert g.oylama.karar().eminler == []
+
+
+def test_plaka_genisligi_ve_ozet():
+    # 1.4.1 kurulum yardımı (Axis'in piksel sayacı gibi): `--plaka` plakanın
+    # TAM çözünürlükteki genişliğini yazar; sektör tek sıra plakada en az 130,
+    # en iyi 140–160 px ister. Sahadaki kart fotoğraflarında 83–156 px.
+    k = K(100, 100, 177, 120, 0.8)                       # küçültülmüş kırpıntıda 77 px
+    assert abs(okuma.plaka_genisligi_tam(k, 1568, 2124) - 77 * 2124 / 1568) < 1e-6
+    assert okuma.plaka_genisligi_tam(k, 1568, None) == 77.0   # küçültülmemiş
+    az = okuma.plaka_boyu_ozeti([83, 92, 104, 130, 156])
+    assert "104 px" in az and "yakınlaştırın" in az, az
+    iyi = okuma.plaka_boyu_ozeti([140, 150, 160])
+    assert "150 px" in iyi and "yakınlaştırın" not in iyi and "yeterli" in iyi, iyi
+    assert okuma.plaka_boyu_ozeti([]) is None
+
+
+def test_iz_arac_esigi_kapidan_gecen_plakasiz_arac():
+    # Sahada 2026-11-10 (1.3.4 kaydı): plakası görülmeyen gerçek araçlar 0.46 /
+    # 0.54 puanla "araç görülmedi" diye düştü — personele bile gitmedi.
+    # İzleyicinin KAPIDAN geçtiğini gördüğü araç (GİRDİ / ÇIKTI) personele
+    # izin doğum eşiğinden (0.35) gider; sahadaki fotoğraflarda insanlar en
+    # çok 0.27 aldı. Kapı kanıtı olmayan olaylar 0.60'ta kalır.
+    for tur in ("GIRDI", "CIKTI"):
+        assert okuma.iz_arac_esigi(tur, 0.35, 0.60) == 0.35, tur
+    for tur in ("TEK_KARE", "KAPISIZ", "ESKI_GIRDI"):
+        assert okuma.iz_arac_esigi(tur, 0.35, 0.60) == 0.60, tur
+    g = _gecis()
+    g.arac_max, g.arac_kirpik = 0.46, _kare(8)
+    gonder, _ = _iz_karari(g, arac_gecis_esik=okuma.iz_arac_esigi("GIRDI", 0.35, 0.60))
+    assert [x.tur for x in gonder] == ["OKUNAMADI"], gonder
+    gonder, _ = _iz_karari(g, arac_gecis_esik=okuma.iz_arac_esigi("KAPISIZ", 0.35, 0.60))
+    assert gonder == [], gonder
+
+
+def test_iz_personele_olaylari():
+    # Plakası emin okunsa da personele giden izleme olayları: açılışta kapıda
+    # olan (dışarıdan mı geldi bilinmez) ve 1.4.1'den beri yalnızca TEK karede
+    # görülen (hangi yöne gitti bilinmez). Köprünün iki yeri (canlı döngü ve
+    # --plaka) aynı listeyi buradan alır.
+    assert okuma.iz_personele("ESKI_GIRDI") and okuma.iz_personele("TEK_KARE")
+    for tur in ("GIRDI", "CIKTI", "KAPISIZ", "ICERIDE", "GERI_DONDU", "KAPIDA_BEKLIYOR"):
+        assert not okuma.iz_personele(tur), tur
+
+
 if __name__ == "__main__":
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     basarisiz: list[str] = []

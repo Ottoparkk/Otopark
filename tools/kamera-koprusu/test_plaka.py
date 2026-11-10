@@ -537,6 +537,128 @@ def test_oylama_tahmin_kaydi():
     assert k.eminler == [] and k.belirsiz.tahmin == "35AEU362" and abs(k.belirsiz.guven - 0.80) < 1e-9
 
 
+# ------------------------------------------- 1.4.1: çok karede birleştirme --
+# Sahada 2026-11-10: kart fotoğraflarının 3'ünde doğru plaka okundu ama iki
+# kırpıntıdan biri %95'in altındaydı (ör. 35CKM57 0.94 / 0.53) → personele.
+# Sektör (Rekor "plate groups", Axis "Update" olayları, kare oylaması
+# makalesi): aynı aracın karelerindeki okumalar birleştirilir. KATI kural:
+# iki kırpıntı AYNI metni (her biri ≥ 0.50) veren kare "yarım oy"; metin
+# ≥ 3 FARKLI görünümden (duran aracın kareleri tek görünüm) yarım/tam oy
+# alırsa, bir kırpıntısı ≥ 0.90 ise ve izde ona bir karakter yakın BAŞKA hiçbir
+# metin görülmediyse emin (birleşik). Anahtar: PLAKA_BIRLESIK.
+
+def _birlesik() -> plaka.Oylama:
+    return plaka.Oylama(k_oy=2, oran=0.6, tek_esik=0.99, m_kutu=2, birlesik=True)
+
+
+def _yarim(o, metin, gorunumler, enk=0.53, tepe=0.94):
+    for g in gorunumler:
+        o.kutu(_z(g), g)
+        o.gorulen([metin])
+        o.yarim_oy(metin, enk, tepe, _z(g), g)
+
+
+def test_birlesik_uc_gorunum_emin():
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3])
+    k = o.karar()
+    assert [(e.metin, e.birlesik, e.zaman) for e in k.eminler] == [("35CKM57", True, _z(1))], k
+    assert k.belirsiz is None, k
+
+
+def test_birlesik_iki_gorunum_yetmez():
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2])
+    assert o.karar().eminler == []
+
+
+def test_birlesik_tek_gorunumun_kareleri_yetmez():
+    # Duran araç: aynı görünümün kareleri bağımsız oy değil.
+    o = _birlesik()
+    _yarim(o, "35CKM57", [4, 4, 4, 4, 4])
+    assert o.karar().eminler == []
+
+
+def test_birlesik_yakin_baska_metin_varsa_olmaz():
+    # Bir karede ikinci kırpıntı "35CKM51" okudu (ya da tahmin): hangisi doğru
+    # bilinmez — personele.
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3])
+    o.gorulen(["35CKM51"])
+    assert o.karar().eminler == []
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3])
+    o.tahmin("35CKM51", 0.40)
+    assert o.karar().eminler == []
+
+
+def test_birlesik_hic_net_kirpinti_yoksa_olmaz():
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3, 4], tepe=0.85)
+    assert o.karar().eminler == []
+
+
+def test_birlesik_kapaliyken_bugunku_kural():
+    o = plaka.Oylama(k_oy=2, oran=0.6, tek_esik=0.99, m_kutu=2)
+    _yarim(o, "35CKM57", [1, 2, 3, 4])
+    k = o.karar()
+    assert k.eminler == [] and k.belirsiz is not None, k
+
+
+def test_birlesik_tam_oy_yarim_oyla_sayilir():
+    o = _birlesik()
+    o.kutu(_z(1), 1); o.gorulen(["35CKM57"]); o.okuma("35CKM57", 0.97, _z(1), 1)
+    _yarim(o, "35CKM57", [2, 3])
+    k = o.karar()
+    assert [(e.metin, e.birlesik) for e in k.eminler] == [("35CKM57", True)], k
+
+
+def test_birlesik_izde_baska_plaka_varsa_olmaz():
+    # Bağımsız inceleme (2026-11-09, B2): izde BAMBAŞKA bir plaka da okunduysa
+    # (önünden geçen koyu aracın plakası izi sürükledi; arkadaki aracın ön
+    # plakası kutunun payına düştü) iki araç karışmış olabilir — birleştirme
+    # YANLIŞ araca bilet keserdi. Başka metnin oyu / yarım oyu / ≥ 0.50
+    # tahmini varsa birleştirme yok; olağan kural aynen.
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3])
+    for g in (4, 5):
+        o.kutu(_z(g), g); o.gorulen(["06KZ4581"]); o.okuma("06KZ4581", 0.98, _z(g), g)
+    assert [(e.metin, e.birlesik) for e in o.karar().eminler] == [("06KZ4581", False)]
+    o = _birlesik()                                          # öteki yalnızca tahmin
+    o.kutu(_z(1), 1); o.tahmin("34ABC123", 0.60)
+    _yarim(o, "06XY4567", [3, 4, 5], tepe=0.91)
+    assert o.karar().eminler == []
+    o = _birlesik()                                          # öteki yarım oy
+    _yarim(o, "34ABC123", [1])
+    _yarim(o, "06XY4567", [3, 4, 5], tepe=0.91)
+    assert o.karar().eminler == []
+    o = _birlesik()                                          # öteki zayıf tahmin: engel değil
+    o.kutu(_z(1), 1); o.tahmin("34ABC123", 0.30)
+    _yarim(o, "06XY4567", [3, 4, 5], tepe=0.91)
+    assert [e.metin for e in o.karar().eminler] == ["06XY4567"]
+
+
+def test_birlesik_ayari_varsayilan_acik():
+    eski = os.environ.pop("PLAKA_BIRLESIK", None)
+    try:
+        a, u = plaka.calisma_ayarlari()
+        assert a["birlesik"] is True and u == [], (a, u)
+        a, _ = plaka.calisma_ayarlari({"PLAKA_BIRLESIK": "0"})
+        assert a["birlesik"] is False, a
+        assert "PLAKA_BIRLESIK" in plaka.AYAR_ADLARI
+    finally:
+        if eski is not None:
+            os.environ["PLAKA_BIRLESIK"] = eski
+
+
+def test_birlesik_normal_kural_degismez():
+    o = _birlesik()
+    o.kutu(_z(1), 1); o.okuma("34ABC123", 0.97, _z(1), 1)
+    o.kutu(_z(2), 2); o.okuma("34ABC123", 0.98, _z(2), 2)
+    k = o.karar()
+    assert [(e.metin, e.birlesik) for e in k.eminler] == [("34ABC123", False)], k
+
+
 # ------------------------------------------------------------ ayarlar -------
 
 def test_ayarlar_varsayilan_ve_ortam():

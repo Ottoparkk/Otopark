@@ -4060,7 +4060,10 @@ def test_durum_arac_izleme_satiri() -> None:
     for iyi in (f"{bugun} 09:10:00  [i] {gunluk.GIRDI_ISARETI} (iz 3, 4 görünüm) — gönderim yok",
                 f"{bugun} 09:10:00  [i] {gunluk.ICERIDE_ISARETI} (iz 7)",
                 f"{bugun} 09:10:00  [i] {gunluk.GERI_DONDU_ISARETI} (iz 7)",
-                f"{bugun} 09:10:00  [i] {gunluk.KAPISIZ_ISARETI} (iz 7, 2 görünüm) — gönderim yok"):
+                f"{bugun} 09:10:00  [i] {gunluk.KAPISIZ_ISARETI} (iz 7, 2 görünüm) — gönderim yok",
+                # 1.4.1: tek karede görülen araç da görüntüden doğar.
+                f"{bugun} 09:10:00  [i] {gunluk.TEK_KARE_ISARETI} (iz 7, 1 görünüm) — "
+                "1 personele gönderiliyor"):
         assert durum.kamera_kopuk([kopuk, iyi]) is False, iyi
 
     calisiyor = f"{bugun} 09:50:00  [i] çalışıyor — 900 kare, 0 gönderim"
@@ -4512,6 +4515,10 @@ def test_plaka_kipi_emin_okuma() -> None:
     # 1.3.4: kırpıntı (1600 px) küçültülüyor → her kutu İKİ yoldan okunur ve
     # sonunda hangisinin kaç emin okuma verdiği yazar (sahada ölçmek için).
     assert "küçük:" in c and "Emin okuma: tam çözünürlükte 3 kare, küçültülmüşte 3 kare" in c, c
+    # 1.4.1: her okumada plakanın TAM çözünürlükteki genişliği ve sonunda
+    # ortanca + öneri (sektör: en az 130, en iyi 140–160 px).
+    assert any(" px" in s and "EMİN" in s for s in c.splitlines()), c
+    assert "Plaka genişliği: ortanca" in c, c
 
 
 def test_plaka_kipi_izleme_ve_kirpma_alani() -> None:

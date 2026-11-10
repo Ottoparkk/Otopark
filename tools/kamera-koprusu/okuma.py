@@ -64,6 +64,7 @@ ARAC_BOZUK_ISARETI = gunluk.ARAC_BOZUK_ISARETI
 ARAC_YOK_ISARETI = gunluk.ARAC_YOK_ISARETI
 ARAC_YETISMEDI_ISARETI = gunluk.ARAC_YETISMEDI_ISARETI
 PLAKASIZ_ARAC_ISARETI = gunluk.PLAKASIZ_ARAC_ISARETI
+BIRLESIK_ISARETI = gunluk.BIRLESIK_ISARETI
 
 # 1.3.1: karar, durulan karenin sonucunu işçinin ölçülen kare süresinin bu
 # katı kadar bekler (bir süren iş + durulan kare ≈ 2 kare), en az
@@ -264,8 +265,20 @@ def plakalari_yaz(gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, olcumler: li
             continue
         okunan, emin = sonuc
         with gecis.kilit:
+            # 1.4.1: iki kırpıntının da okuduğu her metin (birleşik kararda rakip).
+            gecis.oylama.gorulen([m for m, _ in okunan])
             if emin is None:
                 gecis.oylama.tahmin(okunan[0][0], okunan[0][1])
+                # 1.4.1: iki kırpıntı AYNI metni, ikisi de ≥ YARIM_ESIK: yarım oy.
+                if (len(okunan) == 2 and okunan[0][0] == okunan[1][0]
+                        and min(okunan[0][1], okunan[1][1]) >= plaka.YARIM_ESIK):
+                    dusuk = min(okunan[0][1], okunan[1][1])
+                    gecis.oylama.yarim_oy(okunan[0][0], dusuk,
+                                          max(okunan[0][1], okunan[1][1]), zaman, gorunum)
+                    # Birleşik emin olursa kanıt fotoğrafı plakanın okunduğu kare.
+                    eski = gecis.en_iyi.get(okunan[0][0])
+                    if eski is None or dusuk > eski[0]:
+                        gecis.en_iyi[okunan[0][0]] = (dusuk, kirpik)
                 continue
             gecis.oylama.okuma(emin[0], emin[1], zaman, gorunum)
             eski = gecis.en_iyi.get(emin[0])
@@ -697,6 +710,51 @@ def karar_ver(gecis: Gecis, *, durdu: bool, arac_boyu: bool, ayrilis_sahne: bool
 IKI_PLAKA_SATIRI = "iki plaka tek izde — iki araç karışmış olabilir, personele"
 
 
+def iz_personele(tur: str) -> bool:
+    """
+    Plakası emin okunsa da personele giden izleme olayı mı: açılışta kapıda
+    olan araç (ESKI_GIRDI — dışarıdan mı geldi bilinmez) ve 1.4.1'den beri
+    yalnızca TEK karede görülen araç (TEK_KARE — hangi yöne gitti bilinmez).
+    """
+    return tur in ("ESKI_GIRDI", "TEK_KARE")
+
+
+# 1.4.1 kurulum yardımı: sektörün tek sıra plaka genişliği (Axis en az 130 px;
+# Dahua 130–170, en iyi 140–160). `--plaka` ölçer, kamera yakınlaştırması buna göre.
+PLAKA_EN_AZ_PX = 130
+PLAKA_EN_IYI_PX = (140, 160)
+
+
+def plaka_genisligi_tam(k, kirpik_en: int, tam_en: int | None) -> float:
+    """Plaka kutusunun TAM çözünürlükteki genişliği (kutu küçültülmüş kırpıntıda bulunur)."""
+    en = float(k.x2 - k.x1)
+    return en * tam_en / kirpik_en if tam_en else en
+
+
+def plaka_boyu_ozeti(genislikler: list[float]) -> str | None:
+    """`--plaka` sonundaki plaka genişliği satırı (ortanca); ölçüm yoksa None."""
+    if not genislikler:
+        return None
+    s = sorted(genislikler)
+    orta = s[len(s) // 2] if len(s) % 2 else (s[len(s) // 2 - 1] + s[len(s) // 2]) / 2
+    alt, ust = PLAKA_EN_IYI_PX
+    if orta < PLAKA_EN_AZ_PX:
+        return (f"Plaka genişliği: ortanca {orta:.0f} px — AZ (en az {PLAKA_EN_AZ_PX}, en iyi "
+                f"{alt}–{ust} px). Kamerayı aracın durduğu yere yakınlaştırın.")
+    return f"Plaka genişliği: ortanca {orta:.0f} px — yeterli ({alt}–{ust} px önerilir)."
+
+
+def iz_arac_esigi(tur: str, arac_esik: float, arac_gecis_esik: float) -> float:
+    """
+    1.4.1: plakası hiç okunamayan aracın personele gitmesi için gereken araç
+    puanı. İzleyicinin KAPIDAN geçtiğini gördüğü araç (GIRDI / CIKTI) izin
+    doğum eşiğinden (ARAC_BUL_ESIK, 0.35) gider — sahada 2026-11-10 gerçek
+    araçlar 0.46 / 0.54 ile düşüyordu; insanlar sahadaki fotoğraflarda en çok
+    0.27 aldı. Kapı kanıtı olmayan olaylar ARAC_GECIS_ESIK'te (0.60) kalır.
+    """
+    return arac_esik if tur in ("GIRDI", "CIKTI") else arac_gecis_esik
+
+
 def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
               arac_gecis_esik: float, personele: bool = False
               ) -> tuple[list[Gonderim], list[str]]:
@@ -731,6 +789,8 @@ def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
                          en_iyi.get(e.metin, (None, foto))[1])], satirlar
     if k.eminler:
         e = k.eminler[0]
+        if e.birlesik:
+            satirlar.append(f"[i] {BIRLESIK_ISARETI}")
         if k.belirsiz is not None:
             satirlar.append("[i] emin plakanın yanındaki belirsiz okuma yok sayıldı")
         if personele:

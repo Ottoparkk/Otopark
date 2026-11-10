@@ -123,6 +123,11 @@ ELİNİZDE HAZIR OLSUN
        buradan girip otoparka geçtiyse "girdi", otoparktan gelip burada
        kaybolduysa "çıktı" sayar; otopark içindeki hareket (park etme,
        personelin aracı kaydırması) SAYILMAZ.
+       1.4.1: kapıdan HIZLI geçen (iki kare arasında) ya da kapıda
+       görülemeyen (karanlık) araç da hızından anlaşılıp sayılır; kayıtta
+       "kapıda görülmedi" yazar. Gece gövdesi görünmeyen aracı plakası
+       izler. Kapıda yalnızca BİR karede görülen araç yönü bilinmediği
+       için fotoğrafıyla "Çözülmemiş kayıtlar"a düşer.
   Kenara çok yakın tıkladığınız köşe kenara yapışır. Kamerayı yeniden
   yönlendirdiyseniz alanları yeniden çizin ("Yeniden kur").
 
@@ -184,7 +189,12 @@ ELİNİZDE HAZIR OLSUN
   kapıda kaybolunca "→ ARAÇ ÇIKTI" satırı ve gidecek plaka yazar;
   otopark içinde hareket edince "→ otopark içinde hareket — sayılmaz".
   Kapı alanından birkaç araç geçirip bu satırları görün; görünmüyorsa
-  kapı alanını yeniden çizin. Sonunda "İzleme: N giriş, M çıkış …"
+  kapı alanını yeniden çizin. 1.4.1: en az bir kez HIZLI girip çıkın;
+  satır "(… kapıda görülmedi)" diyebilir — bu normaldir.
+  1.4.1: her okumanın sonunda plakanın genişliği yazar (ör. "· 96 px");
+  sonunda "Plaka genişliği: ortanca …" satırı çıkar. 130 px'in altındaysa
+  kamerayı aracın durduğu yere YAKINLAŞTIRIN (en iyi 140–160 px). Kayıtta
+  "birleşik" yazan plaka birkaç karede aynı okunarak emin sayılmıştır. Sonunda "İzleme: N giriş, M çıkış …"
   yazar — bunu da iletin. "kesik" = plaka kutunun
   kenarına değiyor (kutuyu büyütün); "belirsiz" = iki okuma uyuşmadı
   (araç personele düşerdi). Sonunda okunan plakaların listesi çıkar —

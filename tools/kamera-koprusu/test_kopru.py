@@ -467,6 +467,58 @@ SENARYOLAR.update({
                                  sure=15.0, plakalar=[(3.5, 7, 0), (8, 15, 1)],
                                  gonderim_sayisi=2,
                                  kayitta_sirayla=["araç izleme açık", "araç izleme kapandı"]),
+    # 1.4.1: kapıda GÖRÜLMEYEN araç. Yavaş dizüstü (model 0.25 sn). Araç tek
+    # doğru üzerinde sabit hızla (300, -150) px/sn gider; kapıdayken bulucu
+    # görmez (koyu, plakasız: bulanık / yarısı görünür), kapının kenarını 6 px
+    # geçince görünür. 1.4.0: otopark içi hareket, gönderim yok.
+    "takip_hizli_giris": dict(_IZ, model_gecikme=0.25,
+                              araclar=[(1.0, 2.042, -80, 360, 233, 204, None, 150),
+                                       (2.042, 2.842, 233, 204, 473, 84, 0, 220),
+                                       (2.842, 99, 473, 84, 473, 84, 0, 220)],
+                              sure=10.0, plakalar=[(2, 10, 0)], gonderim_sayisi=1,
+                              kayitta_sirayla=["araç girdi", "kapıda görülmedi"]),
+    # Tersi: park etmiş araç kapıya gider, kapıya 6 px kala bulucu görmez olur.
+    "takip_hizli_cikis": dict(_IZ, model_gecikme=0.25, yon="ORTAK",
+                              araclar=[(0.0, 3.0, 473, 84, 473, 84, 0, 220),
+                                       (3.0, 3.8, 473, 84, 233, 204, 0, 220),
+                                       (3.8, 4.842, 233, 204, -80, 360, None, 150)],
+                              sure=12.0, plakalar=[(3.8, 12, 0)], gonderim_sayisi=1,
+                              kayitta_sirayla=["araç çıktı", "kapıda görülmedi"]),
+    # Gece: gövde kapıda karanlıkta (bulucu görmez), plakası okunur; otoparkta
+    # lambanın altında görünür olur. 1.4.0: plaka izi silinir, araç izi
+    # otoparkta doğar — gönderim yok.
+    # Bulucunun yalnızca BİR karede gördüğü, kapının yanından geçen plakasız
+    # araç (açık, net): yönü bilinmez — personele (tahminsiz). 1.4.1'in ilk
+    # hâli: hiçbir şey. Otoparkın derinindeki tek kare gönderilmez.
+    "takip_tek_kare": dict(_IZ, arac_bir_kez=True, sure=11.0,
+                           araclar=[(1.0, 2.0, 330, 200, 150, 260, None, 220)],
+                           personele=[(1, 11, None)], gonderim_sayisi=1,
+                           kayitta_sirayla=["araç tek karede görüldü"]),
+    # Plakası hiç görülmeyen, bulucunun 0.45 verdiği araç kapıdan girip durdu
+    # (sahada 2026-11-10: 0.46 / 0.54 araçlar sessizce düştü). Kapıdan geçtiği
+    # izlendi: personele (tahminsiz). 1.4.1'in önceki hâli (0.60): hiçbir şey.
+    "takip_plakasiz_zayif": dict(_IZ, arac_puan=0.45,
+                                 araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                          (3, 99, 400, 60, 400, 60, None, 220)],
+                                 sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1),
+    # Her karede plaka doğru ama iki kırpıntıdan biri %95'in altında (0.94 /
+    # 0.60): araç kapıdan girerken farklı görünümlerde aynı okundu → birleşik
+    # emin, PLAKA gider (1.4.1 öncesi: tahminle personele).
+    "takip_birlesik": dict(_IZ, guven=0.94, guven_iki=0.60, araclar=GIRIS_YOLU, sure=10.0,
+                           plakalar=[(3, 10, 0)], gonderim_sayisi=1,
+                           kayitta_sirayla=["araç girdi", "birleşik"]),
+    # Aynı sahne, PLAKA_BIRLESIK=0: bugünkü kural — personele, tahminle.
+    "takip_birlesik_kapali": dict(_IZ, guven=0.94, guven_iki=0.60, araclar=GIRIS_YOLU,
+                                  sure=10.0, birlesik="0", personele=[(3, 10, 0)],
+                                  gonderim_sayisi=1),
+    "takip_tek_kare_otoparkta": dict(_IZ, arac_bir_kez=True,
+                                     araclar=[(1.0, 2.0, 470, 20, 470, 60, None, 220)],
+                                     sure=9.0, gonderim_sayisi=0),
+    "takip_karanlik_giris": dict(_IZ, araclar=[(1.0, 2.0, 10, 380, 300, 150, 0, 150),
+                                               (2.0, 3.0, 300, 150, 400, 60, 0, 220),
+                                               (3.0, 99, 400, 60, 400, 60, 0, 220)],
+                                 sure=10.0, plakalar=[(2, 10, 0)], gonderim_sayisi=1,
+                                 kayitta_sirayla=["araç girdi"]),
 })
 
 KESKIN_ARALIK = 130
@@ -504,6 +556,9 @@ class SahtePlakaci:
     def __init__(self, S: dict):
         self.anlasmazlik = bool(S.get("anlasmazlik"))
         self.guven = float(S.get("guven", 0.99))
+        # 1.4.1: ikinci (geniş) kırpıntının güveni ayrı — sahadaki 35CKM57
+        # 0.94 / 0.53 gibi okumalar (çok karede birleştirme senaryosu).
+        self.guven_iki = float(S.get("guven_iki", self.guven))
         # 1.3.4: plaka bu kadar pikselden darsa okunamaz (küçük harfler gibi).
         self.min_en = float(S.get("min_plaka_en", 0))
         # 1.4.0: sahadaki gibi yavaş model (kare başına ~0.15 sn → ~6 kare/sn).
@@ -547,7 +602,7 @@ class SahtePlakaci:
         no = int(round((float(np.median(bolge[:, :, 1][m])) - 5) / 10))
         metin = PLAKALAR[no % len(PLAKALAR)]
         ikinci = metin[:-1] + ("8" if metin[-1] != "8" else "9") if self.anlasmazlik else metin
-        return [(metin, self.guven), (ikinci, self.guven)]
+        return [(metin, self.guven), (ikinci, self.guven_iki)]
 
 
 class SahteArac:
@@ -568,8 +623,25 @@ class SahteArac:
         # tam görünen 160×110 araç ≈0.76, yarısı görünen ≈0.53.
         self.ayri = bool(S.get("nesne_ayri"))
         self.hata_sonra = S.get("bulucu_bozulur")
+        # 1.4.1: bulucu aracı yalnızca İLK karede görür (hızlı / bulanık araç)
+        # — gerçek zamanlı testte "tek kare" ancak böyle kesinleşir.
+        self.bir_kez = bool(S.get("arac_bir_kez"))
+        self._goruldu = False
+        # 1.4.1: her araç kutusunun puanı sabit (sahada plakasız düşen araçlar
+        # 0.46 / 0.54 aldı) — eşik kuralını gerçek zamanlı sınamak için.
+        self.puan = S.get("arac_puan")
 
     def kutular(self, kirpik: np.ndarray, haric):
+        kutular, insan = self._kutular(kirpik, haric)
+        if self.puan is not None:
+            kutular = [k._replace(skor=float(self.puan)) for k in kutular]
+        if self.bir_kez:
+            if self._goruldu:
+                return [], insan
+            self._goruldu = bool(kutular)
+        return kutular, insan
+
+    def _kutular(self, kirpik: np.ndarray, haric):
         import cv2 as _cv2
         import arac as _a
         if self.gecikme:
@@ -683,7 +755,8 @@ def tek_kos(ad: str) -> int:
                           ("acilis_bekleme", "ACILIS_BEKLEME_SN"),
                           ("sifre_bekleme", "SIFRE_RED_BEKLEME_SN"),
                           ("max_kenar", "MAX_KENAR"), ("plaka_tam", "PLAKA_TAM"),
-                          ("alan", "KIRPMA_ALAN"), ("kapi", "KAPI_ALANI")):
+                          ("alan", "KIRPMA_ALAN"), ("kapi", "KAPI_ALANI"),
+                          ("birlesik", "PLAKA_BIRLESIK")):
         if S.get(ad_s):
             os.environ[anahtar] = S[ad_s]
         else:

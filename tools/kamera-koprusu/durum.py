@@ -146,7 +146,7 @@ def sunucu_reddi(satirlar: list[str]) -> str | None:
 
 _IZLEME_OLAYLARI = (gunluk.GIRDI_ISARETI, gunluk.CIKTI_ISARETI, gunluk.ESKI_GIRDI_ISARETI,
                     gunluk.KAPISIZ_ISARETI, gunluk.ICERIDE_ISARETI, gunluk.GERI_DONDU_ISARETI,
-                    gunluk.KAPIDA_BEKLIYOR_ISARETI)
+                    gunluk.KAPIDA_BEKLIYOR_ISARETI, gunluk.TEK_KARE_ISARETI)
 
 
 def _son_kamera_sozu(satirlar: list[str]) -> str | None:
