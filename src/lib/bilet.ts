@@ -1,4 +1,4 @@
-import type { Bilet, OnayDurum } from './types'
+import type { AcikBilet, Bilet, OnayDurum } from './types'
 
 /**
  * The approval state of the money a ticket took, or null when it took none.
@@ -63,6 +63,26 @@ export function sureBitisi(
   if (b.cikis_at) return b.cikis_at
   if (b.durum === 'IPTAL') return b.iptal_at
   return null
+}
+
+/**
+ * F14 (1.4.2): flag a car on the İçeride list that has been inside longer
+ * than the "Terk edilmiş olabilir" threshold (`terk_esik_saat`, the SAME
+ * setting the nightly notification uses — one number for both). Its exit may
+ * have been missed. An abonman car may stay that long, so it is never
+ * flagged. A missing / non-positive threshold or an unreadable entry time
+ * flags nothing: a wrong warning is worse than none.
+ */
+export function uzunKalan(
+  b: Pick<AcikBilet, 'giris_at' | 'abonman_id'>,
+  esikSaat: number | null | undefined,
+  simdi: Date = new Date(),
+): boolean {
+  if (b.abonman_id) return false
+  if (typeof esikSaat !== 'number' || !Number.isFinite(esikSaat) || esikSaat <= 0) return false
+  const giris = Date.parse(b.giris_at)
+  if (Number.isNaN(giris)) return false
+  return simdi.getTime() - giris >= esikSaat * 3_600_000
 }
 
 /**

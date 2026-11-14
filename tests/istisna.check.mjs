@@ -120,5 +120,32 @@ for (const tur of TURLER) {
   esit(`açıklama var ${tur}`, aciklama(kayit({ tur, yon: tur === 'OKUNAMADI' ? 'GIRIS' : 'CIKIS' })).length > 20, true)
 }
 
+// --- 056: tek kapıda köprünün yön ipucu iki yeni kayıt türü doğurur ---------------
+// GIRISTE_ACIK_BILET: araç GİRERKEN görüldü ama eski açık bileti var — eski
+// bilet Çıkış ekranından kapatılabilir, giriş açılmaz (plaka zaten içeride).
+// ICERIDE_BILETSIZ: içeride gezen aracın bileti yok — "Giriş aç" (056 kabul eder).
+// İkisinde de bir insan karar vermeli: "elle girmeyin" uyarısı çıkmaz.
+const GIRISTE = kayit({ tur: 'GIRISTE_ACIK_BILET', yon: 'ORTAK', plaka: '34ABC123' })
+const ICERIDE = kayit({ tur: 'ICERIDE_BILETSIZ', yon: 'ORTAK', plaka: '34ABC123' })
+esit('girişte eski bilet: düğmeler', eylemler(GIRISTE), { girisAc: false, cikis: true, kapat: true })
+esit('içeride biletsiz: düğmeler', eylemler(ICERIDE), { girisAc: true, cikis: false, kapat: true })
+esit('girişte eski bilet: uyarı yok', elleGirmeUyarisi(GIRISTE), false)
+esit('içeride biletsiz: uyarı yok', elleGirmeUyarisi(ICERIDE), false)
+esit('girişte eski bilet: kısa durum', kisaDurum(GIRISTE), 'Girerken görüldü — eski açık bileti var')
+esit('içeride biletsiz: kısa durum', kisaDurum(ICERIDE), 'İçeride, bileti yok')
+esit('girişte eski bilet: açıklama', aciklama(GIRISTE).startsWith('Kamera bu aracı tek kapıdan GİRERKEN gördü'), true)
+esit('içeride biletsiz: açıklama', aciklama(ICERIDE).startsWith('Otoparkın içinde hareket eden bu aracın'), true)
+esit('içeride biletsiz: giriş saati açıklanır', aciklama(ICERIDE).includes('içeride görüldüğü an'), true)
+// Kamera aracı yanlışlıkla "çıktı" diye kapattıysa (054) doğru eylem eski
+// bilette "Araç çıkmadı"dır, yeni giriş değil — metin bunu söylemeli.
+esit('içeride biletsiz: yanlış çıkışta "Araç çıkmadı" söylenir', aciklama(ICERIDE).includes('Araç çıkmadı'), true)
+esit('içeride biletsiz: plaka alanı okunan plakayla başlar', baslangicPlakasi(ICERIDE), '34ABC123')
+esit('çözülmüş içeride biletsiz: düğme yok', eylemler(kayit({ tur: 'ICERIDE_BILETSIZ', yon: 'ORTAK', ...COZULDU })),
+  { girisAc: false, cikis: false, kapat: false })
+// Tek kapıda "çıkan araç, bileti yok" mevcut ACIK_BILET_YOK türüdür: kapatılacak
+// bilet yok — yalnızca "kapat"; davranışı değişmez.
+esit('tek kapı açık bilet yok: düğmeler', eylemler(kayit({ tur: 'ACIK_BILET_YOK', yon: 'ORTAK', plaka: '34ABC123' })),
+  { girisAc: false, cikis: false, kapat: true })
+
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

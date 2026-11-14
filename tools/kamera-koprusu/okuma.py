@@ -477,6 +477,15 @@ class Isci:
         sure = taban if not sureler else max(taban, BEKLE_KAT * max(sureler))
         return min(sure, BEKLE_TAVAN_SN)
 
+    def sure_ozeti(self) -> str:
+        """1.4.2: kalp satırı için " · plaka 35 ms, araç 40 ms" (ölçülmediyse "")."""
+        with self._kosul:
+            sureler = [(ad, k.ort_sure) for ad, k in (("plaka", self._plaka_k), ("araç", self._arac_k))
+                       if k is not None and k.ort_sure is not None]
+        if not sureler:
+            return ""
+        return " · " + ", ".join(f"{ad} {s * 1000:.0f} ms" for ad, s in sureler)
+
     def takildi(self, simdi: float, sinir: float) -> bool:
         with self._kosul:
             return any(k.basladi is not None and simdi - k.basladi > sinir
@@ -588,6 +597,9 @@ class Gonderim(NamedTuple):
     guven: float | None
     zaman: object
     kirpik: np.ndarray | None
+    # 1.4.2 (B5): izcinin gördüğü yön — "GIRDI" | "CIKTI" | "ICERIDE" | None.
+    # Köprü olayın türünden ekler (iz_karari koymaz); yalnızca PLAKA ile gider.
+    hareket: str | None = None
 
 
 def _foto(gecis: Gecis) -> np.ndarray | None:
@@ -714,9 +726,11 @@ def iz_personele(tur: str) -> bool:
     """
     Plakası emin okunsa da personele giden izleme olayı mı: açılışta kapıda
     olan araç (ESKI_GIRDI — dışarıdan mı geldi bilinmez) ve 1.4.1'den beri
-    yalnızca TEK karede görülen araç (TEK_KARE — hangi yöne gitti bilinmez).
+    yalnızca TEK karede görülen araç (TEK_KARE — hangi yöne gitti bilinmez);
+    1.4.2'den beri kapı alanında kararsız kaybolan araç (KAPIDA_KAYBOLDU —
+    kapıda doğdu, otoparkta hiç görülmedi: girdi mi çıktı mı bilinmez).
     """
-    return tur in ("ESKI_GIRDI", "TEK_KARE")
+    return tur in ("ESKI_GIRDI", "TEK_KARE", "KAPIDA_KAYBOLDU")
 
 
 # 1.4.1 kurulum yardımı: sektörün tek sıra plaka genişliği (Axis en az 130 px;
@@ -744,15 +758,23 @@ def plaka_boyu_ozeti(genislikler: list[float]) -> str | None:
     return f"Plaka genişliği: ortanca {orta:.0f} px — yeterli ({alt}–{ust} px önerilir)."
 
 
-def iz_arac_esigi(tur: str, arac_esik: float, arac_gecis_esik: float) -> float:
+def iz_arac_esigi(tur: str, arac_esik: float, arac_gecis_esik: float,
+                  komsu: bool = False) -> float:
     """
     1.4.1: plakası hiç okunamayan aracın personele gitmesi için gereken araç
     puanı. İzleyicinin KAPIDAN geçtiğini gördüğü araç (GIRDI / CIKTI) izin
     doğum eşiğinden (ARAC_BUL_ESIK, 0.35) gider — sahada 2026-11-10 gerçek
     araçlar 0.46 / 0.54 ile düşüyordu; insanlar sahadaki fotoğraflarda en çok
-    0.27 aldı. Kapı kanıtı olmayan olaylar ARAC_GECIS_ESIK'te (0.60) kalır.
+    0.27 aldı. 1.4.2: kapı alanında kaybolan araç (KAPIDA_KAYBOLDU) da kapıda
+    görüldü — aynı eşik; tek karede kapıda / yakınında görülen hareketli araç
+    (TEK_KARE) da — sahada 11.11 13:52 araç 0.49 ile hiçbir şey gönderilmedi.
+    Ama `komsu` (iz doğarken yanında başka araç izi vardı: alt kenardan çıkan
+    aracın kuyruğu ayrı tek kare olabilir) TEK_KARE 1.4.1 gibi 0.60'ta kalır.
+    Kapı kanıtı olmayan olaylar ARAC_GECIS_ESIK'te (0.60) kalır.
     """
-    return arac_esik if tur in ("GIRDI", "CIKTI") else arac_gecis_esik
+    if tur == "TEK_KARE" and komsu:
+        return arac_gecis_esik
+    return arac_esik if tur in ("GIRDI", "CIKTI", "KAPIDA_KAYBOLDU", "TEK_KARE") else arac_gecis_esik
 
 
 def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,

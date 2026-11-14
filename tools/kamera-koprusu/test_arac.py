@@ -36,6 +36,7 @@ import plaka  # noqa: E402
 ATLANAN: list[str] = []
 N = arac.GIRDI                       # 416
 ADAY = sum((N // s) ** 2 for s in arac.ADIMLAR)   # 3549
+N11 = 640                            # 1.4.2: YOLO11s 640'ta (gece fotoğrafları, 2026-11-13)
 
 
 def _ort_var() -> bool:
@@ -185,6 +186,198 @@ def test_kirpma_alani_cokgen():
     assert [round(k.skor, 3) for k in kutular] == [0.9, 0.5], kutular
 
 
+# ------------------------------------------------- YOLO11s profili (1.4.2) ---
+#
+# 1.4.2: araç bulucu YOLO11s (Ultralytics, AGPL — sahibin kararı 2026-11-12:
+# yalnızca kendi otoparkımız). Çıktısı YOLOX'tan BAŞKA: [1, 84, N], nesne
+# puanı yok, kutu girdi pikselinde merkez/boyut; girdi ORTALANMIŞ letterbox,
+# RGB, /255. YOLOX ön işlemiyle beslenirse hata vermeden zayıf puan verir
+# (hız aracı 0.59 gördü) — bu testler o ayrımı kilitler.
+
+def _ham11(*adaylar) -> np.ndarray:
+    """
+    YOLO11 ham çıktısı [1, 84, 3549]: her aday (indeks, sınıf, olasılık,
+    kutu=(cx, cy, w, h) GİRDİ pikselinde) — geri kalanı sıfır.
+    """
+    h = np.zeros((1, 84, ADAY), np.float32)
+    for i, sinif, olas, kutu in adaylar:
+        h[0, :4, i] = kutu
+        h[0, 4 + sinif, i] = olas
+    return h
+
+
+def test_profiller():
+    t, y = arac.YOLOX_TINY, arac.YOLO11S
+    # tiny 1.4.1 ile birebir: aynı dosya, altın değer, eşik anahtarları.
+    assert t.model == arac.MODEL and t.altin == arac.ALTIN_ARAC, t
+    assert (t.esik, t.gecis_esik) == (0.35, 0.60), t
+    assert (t.esik_anahtari, t.gecis_anahtari) == ("arac_esik", "arac_gecis_esik"), t
+    assert t.yer_tutucu is False
+    # 2026-11-13: 25 gerçek gece aracında 416 uzaktaki / kırpmayla kesilen 4
+    # aracı kaçırdı, 640 hepsini gördü (en düşük 0.34) → 640. Eşikler 0.30 /
+    # 0.60; yanlış alarm da ölçüldü (boş şerit, insan, el arabası: 0) →
+    # ölçülmüş, varsayılan (sahibin kararı).
+    assert y.model.dosya == "yolo11s_640.onnx", y.model
+    assert y.model.sha256 == "5c56db2f3bc7baaf650ad3e55e4ec4ecda1d245f83d8968e731ad806bebc3161"
+    assert y.girdi == N11
+    assert (y.esik, y.gecis_esik) == (0.30, 0.60), y
+    assert y.yer_tutucu is False
+    assert (y.esik_anahtari, y.gecis_anahtari) == ("arac11_esik", "arac11_gecis_esik"), y
+
+
+def test_yolo11s_profili_640_besler():
+    # Profilin ön işlemi 640 × 640, ortalanmış letterbox — 416'lık
+    # on_isle11 varsayılanı değil (dosya 640'lık; 416 girdi hata verirdi).
+    img = np.zeros((300, 400, 3), np.uint8)
+    x, (r, dw, dh) = arac.YOLO11S.hazirla(img)
+    assert x.shape == (1, 3, N11, N11), x.shape
+    p, pr, pdw, pdh = plaka.letterbox(img, N11)
+    assert np.array_equal(x, p) and (pr, pdw, pdh) == (r, dw, dh)
+
+
+def test_on_isle11_ortali_rgb01():
+    img = np.zeros((100, 200, 3), np.uint8)
+    img[:] = (10, 20, 30)                                   # B, G, R
+    x, (r, dw, dh) = arac.on_isle11(img)
+    assert x.shape == (1, 3, N, N) and x.dtype == np.float32, (x.shape, x.dtype)
+    assert r == N / 200 and dw == 0 and dh == 104, (r, dw, dh)
+    # Ortalanmış: üstte 104 satır 114 dolgu, içerik 104..311, altı yine dolgu.
+    assert np.allclose(x[0, :, 0, 0], 114 / 255), x[0, :, 0, 0]
+    assert np.allclose(x[0, :, 104, 0], (30 / 255, 20 / 255, 10 / 255)), x[0, :, 104, 0]   # RGB
+    assert np.allclose(x[0, :, 311, N - 1], (30 / 255, 20 / 255, 10 / 255))
+    assert np.allclose(x[0, :, 312, 0], 114 / 255)
+    # Plaka bulucunun Ultralytics-uyumlu letterbox'ı ile birebir (tek kod yolu).
+    p, pr, pdw, pdh = plaka.letterbox(img, N)
+    assert np.array_equal(x, p) and (pr, pdw, pdh) == (r, dw, dh)
+
+
+def test_coz11_kutu_ters_letterbox():
+    # Girdi pikselinde (cx, cy, w, h) = (108, 120, 80, 40) → (68, 100, 148, 140);
+    # dolgu (8, 20) çıkar → (60, 80, 140, 120); r=0.5 → (120, 160, 280, 240).
+    h = _ham11((7, 2, 0.9, (108, 120, 80, 40)),
+               (9, 2, 0.8, (10, 10, 40, 40)))               # sol üstten taşan
+    kutular, a, i = arac.coz11(h, (0.5, 8.0, 20.0), 400, 300)
+    assert kutular.shape == (ADAY, 4), kutular.shape
+    assert np.allclose(kutular[7], (120, 160, 280, 240)), kutular[7]
+    # (-10, -10, 30, 30) − dolgu → (-18, -30, 22, 10) / 0.5 → kırpıntıya kırpılır.
+    assert np.allclose(kutular[9], (0, 0, 44, 20)), kutular[9]
+    assert abs(a[7] - 0.9) < 1e-6 and i[7] == 0.0
+    # Yanlış biçim (ör. YOLOX çıktısı) sessizce çözülmez.
+    try:
+        arac.coz11(_ham(), (1.0, 0.0, 0.0), 400, 300)
+        raise AssertionError("YOLOX çıktısı YOLO11 diye çözüldü")
+    except ValueError:
+        pass
+
+
+def test_coz11_siniflar_nesne_puani_yok():
+    # Araç puanı = 2/3/5/7 sınıf olasılıklarının en yükseği (nesne çarpanı YOK);
+    # insan (0) ayrı; köpek (16) hiçbir şey.
+    kutu = (50.0, 50.0, 20.0, 20.0)
+    for sinif in arac.ARAC_SINIFLARI:
+        a, i = arac.skorla(_ham11((10, sinif, 0.72, kutu)), (1.0, 0.0, 0.0), 640, 480,
+                           None, profil=arac.YOLO11S)
+        assert abs(a - 0.72) < 1e-6 and i == 0.0, (sinif, a, i)
+    a, i = arac.skorla(_ham11((10, 0, 0.855, kutu), (20, 16, 0.99, kutu)),
+                       (1.0, 0.0, 0.0), 640, 480, None, profil=arac.YOLO11S)
+    assert a == 0.0 and abs(i - 0.855) < 1e-6, (a, i)
+    assert arac.skorla(_ham11(), (1.0, 0.0, 0.0), 640, 480, None,
+                       profil=arac.YOLO11S) == (0.0, 0.0)
+
+
+def test_kutulari_coz11_nms_esik_ve_kesilen_kose():
+    # Aynı araç iki aday → tek kutu (NMS); eşik altı ve araç olmayan sınıf
+    # kutu vermez; insan ayrıca döner; kesilen köşedeki kutu düşer.
+    d = (0.5, 0.0, 0.0)
+    h = _ham11((10, 2, 0.9, (34, 44, 68, 32)),              # → (0, 56, 136, 120)
+               (11, 2, 0.8, (36, 44, 68, 32)),              # aynı araç, 4 px kaymış
+               (300, 7, 0.6, (330, 330, 20, 20)),           # başka yerde kamyon
+               (400, 2, 0.05, (200, 200, 20, 20)),          # eşik altı
+               (500, 0, 0.7, (100, 300, 20, 40)))           # insan
+    kutular, insan = arac.kutulari_coz(h, d, 800, 600, None, profil=arac.YOLO11S)
+    assert [round(k.skor, 3) for k in kutular] == [0.9, 0.6], kutular
+    assert np.allclose(kutular[0][:4], (0, 56, 136, 120)), kutular[0]
+    assert abs(insan - 0.7) < 1e-6
+    kutular, _ = arac.kutulari_coz(h, d, 800, 600, (0, 50, 200, 100), profil=arac.YOLO11S)
+    assert [round(k.skor, 3) for k in kutular] == [0.6], kutular
+
+
+def test_bulucu11_kendi_on_islemini_ve_esik_anahtarini_kullanir():
+    # Bulucu profilin ön işlemini kullanmalı (RGB /255, ≤ 1) — YOLOX'unkiyle
+    # (0-255) beslenen YOLO11 hata vermez, yalnızca zayıf görür.
+    gelen = {}
+
+    class O(_SahteOturum):
+        def run(self, adlar, girdiler):
+            gelen["x"] = girdiler["images"]
+            return super().run(adlar, girdiler)
+
+    b = arac.AracBulucu(O(_ham11((10, 2, 0.9, (100, 100, 40, 40))), n=N11), _ayar(),
+                        plaka.MODEL_DIZINI, profil=arac.YOLO11S)
+    a, _ = b.skor(np.full((300, 400, 3), 250, np.uint8), None)
+    assert abs(a - 0.9) < 1e-6, a
+    assert float(gelen["x"].max()) <= 1.0, gelen["x"].max()
+    # Eşikler profilin anahtarından; anahtar yoksa profilin varsayılanı.
+    assert (b.esik, b.gecis_esik) == (arac.YOLO11S.esik, arac.YOLO11S.gecis_esik)
+    ayar = dict(_ayar(), arac11_esik=0.21, arac11_gecis_esik=0.44)
+    b = arac.AracBulucu(O(_ham11(), n=N11), ayar, plaka.MODEL_DIZINI, profil=arac.YOLO11S)
+    assert (b.esik, b.gecis_esik) == (0.21, 0.44)
+    # tiny eskisi gibi ARAC_BUL_ESIK / ARAC_GECIS_ESIK'ten.
+    ayar = dict(_ayar(), arac_esik=0.4, arac_gecis_esik=0.7)
+    b = arac.AracBulucu(_SahteOturum(_ham()), ayar, plaka.MODEL_DIZINI)
+    assert (b.esik, b.gecis_esik) == (0.4, 0.7)
+
+
+def test_oz_sinama11_sacma_ciktiyi_yakalar():
+    for ham in (_ham11(),
+                _ham11(*[(i, 2, 0.99, (208, 208, 50, 50)) for i in range(0, ADAY, 7)])):
+        b = arac.AracBulucu(_SahteOturum(ham, n=N11), _ayar(), plaka.MODEL_DIZINI,
+                            profil=arac.YOLO11S)
+        try:
+            b.oz_sinama()
+            raise AssertionError("saçma çıktılı YOLO11 öz sınamayı geçti")
+        except plaka.PlakaHatasi as e:
+            assert "öz sınama" in str(e), e
+
+
+def test_oz_sinama11_kendi_altin_degeriyle():
+    # Öz sınama profilin KENDİ altın değeriyle karşılaştırır (tiny 0.808,
+    # YOLO11s 640 0.491): kendi altınının payı içindeki puan geçer.
+    puan = arac.YOLO11S.altin - 0.04          # kendi altınına 0.04, tiny'ninkine çok uzak
+
+    class O(_SahteOturum):
+        def run(self, adlar, girdiler):
+            x = girdiler["images"]
+            bos = float(x.std()) < 0.01                    # düz gri sahne
+            self._ham = _ham11() if bos else _ham11((10, 2, puan, (300, 60, 120, 50)))
+            return super().run(adlar, girdiler)
+
+    arac.AracBulucu(O(None, n=N11), _ayar(), plaka.MODEL_DIZINI,
+                    profil=arac.YOLO11S).oz_sinama()
+
+
+def test_gercek_yolo11s_bos_sahne_ve_altin_deger():
+    if not _ort_var():
+        ATLANAN.append("gerçek YOLO11s modeli (onnxruntime kurulu değil)")
+        return
+    b = arac.yukle(_ayar(), profil=arac.YOLO11S)         # öz sınama da koşar
+    assert b.profil is arac.YOLO11S
+    a, i = b.skor(np.full((668, 1568, 3), 110, np.uint8), None)
+    assert a < 0.05 and i < 0.05, (a, i)
+    import cv2
+    img = cv2.imread(os.path.join(plaka.MODEL_DIZINI, arac.SINAMA.dosya))
+    a, _ = b.skor(img, None)
+    assert abs(a - arac.YOLO11S.altin) < 2e-3, a
+    h, w = img.shape[:2]
+    a2, _ = b.skor(img, (w // 2, 0, w - w // 2, h // 2))
+    assert a2 < 0.10, (a2, a)
+    kutular, _ = b.kutular(img, None)
+    assert kutular and abs(kutular[0].skor - a) < 1e-6, kutular
+    k = kutular[0]
+    assert (k.x1 + k.x2) / 2 > w / 2 and (k.y1 + k.y2) / 2 < h / 2, k
+    assert b.kutular(np.full((668, 1568, 3), 110, np.uint8), None)[0] == []
+
+
 # ------------------------------------------------------------------ ayarlar ---
 
 def _ortamsiz(f):
@@ -217,7 +410,7 @@ def test_ayarlar_varsayilan_ortam_ve_bozuk():
 # ------------------------------------------------------------------ modeller ---
 
 def test_model_ve_sinama_dosyalari_yerinde():
-    for m in (arac.MODEL, arac.SINAMA):
+    for m in (arac.MODEL, arac.SINAMA, arac.YOLO11S.model):
         yol = os.path.join(plaka.MODEL_DIZINI, m.dosya)
         assert os.path.isfile(yol), yol
         assert plaka.sha256_dosya(yol) == m.sha256, m.dosya
@@ -225,7 +418,7 @@ def test_model_ve_sinama_dosyalari_yerinde():
 
 def _dizin(*bozuk_dosyalar: str, eksik: str | None = None) -> str:
     d = tempfile.mkdtemp(prefix="otopark-test-arac-")
-    for m in (arac.MODEL, arac.SINAMA):
+    for m in (arac.MODEL, arac.SINAMA, arac.YOLO11S.model):
         if m.dosya == eksik:
             continue
         hedef = os.path.join(d, m.dosya)
@@ -245,22 +438,28 @@ def _ayar() -> dict:
     return plaka.calisma_ayarlari()[0]
 
 
+# 1.4.2: her profil KENDİ model dosyasını doğrular (YOLO11s yüklenirken
+# YOLOX dosyasına bakılmaz, tersi de).
+_PROFIL_DOSYA = ((arac.YOLOX_TINY, arac.MODEL), (arac.YOLOX_TINY, arac.SINAMA),
+                 (arac.YOLO11S, arac.YOLO11S.model), (arac.YOLO11S, arac.SINAMA))
+
+
 def test_yukle_eksik_dosya():
-    for m in (arac.MODEL, arac.SINAMA):
+    for p, m in _PROFIL_DOSYA:
         try:
-            arac.yukle(_ayar(), dizin=_dizin(eksik=m.dosya))
-            raise AssertionError("eksik dosyayla yüklendi")
+            arac.yukle(_ayar(), dizin=_dizin(eksik=m.dosya), profil=p)
+            raise AssertionError(f"{p.ad}: eksik dosyayla yüklendi")
         except plaka.PlakaHatasi as e:
-            assert "bulunamadı" in str(e) and m.dosya in str(e), e
+            assert "bulunamadı" in str(e) and m.dosya in str(e), (p.ad, e)
 
 
 def test_yukle_bozuk_dosya():
-    for m in (arac.MODEL, arac.SINAMA):
+    for p, m in _PROFIL_DOSYA:
         try:
-            arac.yukle(_ayar(), dizin=_dizin(m.dosya))
-            raise AssertionError("bozuk dosyayla yüklendi")
+            arac.yukle(_ayar(), dizin=_dizin(m.dosya), profil=p)
+            raise AssertionError(f"{p.ad}: bozuk dosyayla yüklendi")
         except plaka.PlakaHatasi as e:
-            assert "doğrulanamadı" in str(e) and m.dosya in str(e), e
+            assert "doğrulanamadı" in str(e) and m.dosya in str(e), (p.ad, e)
 
 
 def test_yukle_onnxruntime_yoksa():
@@ -282,8 +481,9 @@ def test_yukle_onnxruntime_yoksa():
 class _SahteOturum:
     """Model yerine: hep aynı ham çıktıyı verir."""
 
-    def __init__(self, ham):
+    def __init__(self, ham, n: int = N):
         self._ham = ham
+        self._n = n                       # beklenen girdi kenarı: tiny 416, YOLO11s 640
 
     def get_inputs(self):
         class G:
@@ -291,7 +491,9 @@ class _SahteOturum:
         return [G()]
 
     def run(self, _adlar, girdiler):
-        assert list(girdiler) == ["images"] and girdiler["images"].shape == (1, 3, N, N)
+        n = self._n
+        assert list(girdiler) == ["images"] and girdiler["images"].shape == (1, 3, n, n), \
+            girdiler["images"].shape
         return [self._ham]
 
 
@@ -311,6 +513,109 @@ def test_oz_sinama_sacma_ciktiyi_yakalar():
         raise AssertionError("her yerde araç gören model öz sınamayı geçti")
     except plaka.PlakaHatasi as e:
         assert "öz sınama" in str(e), e
+
+
+class _GpuHatali(_SahteOturum):
+    """Grafik işlemcisi oturumu yerine: her çağrıda HizlandiriciHatasi."""
+
+    def __init__(self):
+        super().__init__(None)
+        self.cagri = 0
+
+    def run(self, _adlar, _girdiler):
+        self.cagri += 1
+        raise plaka.HizlandiriciHatasi("CL_DEVICE_NOT_AVAILABLE")
+
+
+def test_gpu_hatasinda_islemcideki_tiny_ye_gecer():
+    # 1.4.2: YOLO11s grafik işlemcisinde çalışırken bozulursa bulucu
+    # işlemcideki YOLOX-tiny'ye geçer (yavaş YOLO11s-CPU değil: 123 ms) —
+    # eşikleri de tiny'ninki olur; AYNI kare tiny ile ölçülür, kaybolmaz.
+    import contextlib
+    import io
+    gpu = _GpuHatali()
+    tiny = _SahteOturum(_ham((10, 2, 1.0, 0.9, (0.5, 0.5, 0.0, 0.0))))
+    acilan = []
+
+    def yedek():
+        acilan.append(1)
+        return tiny, arac.YOLOX_TINY
+
+    ayar = dict(_ayar(), arac_esik=0.4, arac_gecis_esik=0.7, arac11_esik=0.2)
+    b = arac.AracBulucu(gpu, ayar, plaka.MODEL_DIZINI, profil=arac.YOLO11S, yedek=yedek)
+    assert (b.esik, b.profil) == (0.2, arac.YOLO11S)
+    kayit = io.StringIO()
+    with contextlib.redirect_stdout(kayit):
+        a, _ = b.skor(np.full((300, 400, 3), 120, np.uint8), None)
+    assert abs(a - 0.9) < 1e-6, a
+    assert b.profil is arac.YOLOX_TINY and (b.esik, b.gecis_esik) == (0.4, 0.7), b.profil
+    import gunluk
+    assert gunluk.GPU_BIRAKILDI_ISARETI in kayit.getvalue(), kayit.getvalue()
+    assert "YOLOX-tiny" in kayit.getvalue() and "CL_DEVICE_NOT_AVAILABLE" in kayit.getvalue()
+    b.kutular(np.full((300, 400, 3), 120, np.uint8), None)
+    # 1.4.2: tek hatada bırakılmaz — 3 deneme, sonra işlemci; sonraki kare
+    # doğrudan işlemcide (grafik işlemcisi her karede yeniden denenmez —
+    # geri dönüşü GpuGeriDonus yapar).
+    assert gpu.cagri == 3 and len(acilan) == 1, (gpu.cagri, acilan)
+    # Kalp satırı bunu söyler (hizlandirici.kalp_etiketi).
+    assert "araç bulucu" in plaka.GPU_BIRAKILANLAR, plaka.GPU_BIRAKILANLAR
+    plaka.GPU_BIRAKILANLAR.clear()
+
+
+def test_gpu_iki_hatadan_sonra_gpu_da_kalir():
+    # Geçici aksama (2 hata, 3. deneme başarılı): YOLO11s'te kalınır, işlemci
+    # yedeği hiç açılmaz, eşikler değişmez.
+    ham = _ham11((10, 2, 0.9, (100, 100, 40, 40)))
+
+    class Aksak(_SahteOturum):
+        def __init__(self):
+            super().__init__(ham, n=N11)
+            self.cagri = 0
+
+        def run(self, adlar, girdiler):
+            self.cagri += 1
+            if self.cagri <= 2:
+                raise plaka.HizlandiriciHatasi("CL_INVALID_COMMAND_QUEUE")
+            return super().run(adlar, girdiler)
+
+    gpu = Aksak()
+    acilan = []
+    b = arac.AracBulucu(gpu, _ayar(), plaka.MODEL_DIZINI, profil=arac.YOLO11S,
+                        yedek=lambda: acilan.append(1) or (None, arac.YOLOX_TINY))
+    a, _ = b.skor(np.full((300, 400, 3), 120, np.uint8), None)
+    assert abs(a - 0.9) < 1e-6 and gpu.cagri == 3 and not acilan, (a, gpu.cagri, acilan)
+    assert b.profil is arac.YOLO11S and "araç bulucu" not in plaka.GPU_BIRAKILANLAR
+
+
+def test_gpu_hatasi_yedeksiz_isciye_gider():
+    # İşlemci kümesinde (yedek yok) hata yutulmaz: işçi sayar (1.3.1 kuralı).
+    b = arac.AracBulucu(_GpuHatali(), _ayar(), plaka.MODEL_DIZINI)
+    try:
+        b.skor(np.full((300, 400, 3), 120, np.uint8), None)
+        raise AssertionError("hata yutuldu")
+    except plaka.HizlandiriciHatasi:
+        pass
+
+
+def test_turkce_harfli_klasorde_oz_sinama():
+    # 1.4.1'de öz sınama resmi cv2.imread ile okunuyordu: Windows'ta Türkçe
+    # harfli klasörde okunamaz → bulucu kapanır (hız aracı 1.0 sahada tam
+    # bunu yaşadı). Resim np.fromfile + cv2.imdecode ile okunmalı.
+    d = tempfile.mkdtemp(prefix="hız-ölçüm-ğüşç-")
+    shutil.copyfile(os.path.join(plaka.MODEL_DIZINI, arac.SINAMA.dosya),
+                    os.path.join(d, arac.SINAMA.dosya))
+    tutan = {"a": 0.0}
+
+    class O(_SahteOturum):
+        def run(self, adlar, girdiler):
+            x = girdiler["images"]
+            bos = float(x.max() - x.min()) < 10          # gri 110 + dolgu 114
+            self._ham = _ham() if bos else _ham((10, 2, 1.0, arac.ALTIN_ARAC, (0.5, 0.5, 0.0, 0.0)))
+            tutan["a"] += 0 if bos else 1
+            return super().run(adlar, girdiler)
+
+    arac.AracBulucu(O(None), _ayar(), d).oz_sinama()
+    assert tutan["a"] == 1
 
 
 def test_gercek_model_bos_sahne_ve_altin_deger():
@@ -340,8 +645,8 @@ def test_gercek_model_bos_sahne_ve_altin_deger():
 
 
 if __name__ == "__main__":
-    kok = tempfile.mkdtemp(prefix="otopark-test-arac-")
-    tempfile.tempdir = kok
+    import kalinti
+    kok = kalinti.klasor("otopark-test-arac-")        # tek klasörde (kalinti.py)
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     basarisiz: list[str] = []
     for t in testler:

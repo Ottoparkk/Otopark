@@ -26,6 +26,12 @@ tools/kamera-koprusu/*.jpg
 # Dağıtılan .zip GitHub Releases'e yüklenir, repoya değil.
 tools/kamera-koprusu/yapi/
 tools/kamera-koprusu/dagitim/
+# Hız testi paketi (aynı sebep: yüzlerce MB; modeller depoya girmez).
+tools/hiz-testi/build/
+tools/hiz-testi/dist/
+tools/hiz-testi/dagitim/
+tools/hiz-testi/ov-onbellek/
+tools/hiz-testi/hiz-sonuc.txt
 
 # Supabase CLI'nin yerel durumu: hangi projeye bağlı olduğunu (proje kimliği,
 # organizasyon, havuz adresi) tutar. Repoda kalırsa, projenin başka birinin

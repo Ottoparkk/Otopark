@@ -28,7 +28,7 @@ import {
   type DegistirTaslak,
 } from './degistir'
 import { sureMetni } from '../../lib/sure'
-import { biletBorcu, odemeAlindi } from '../../lib/bilet'
+import { biletBorcu, odemeAlindi, uzunKalan } from '../../lib/bilet'
 import {
   ODEME_CHIP,
   ODEME_DURUM_ETIKET,
@@ -70,6 +70,7 @@ export function BiletKart({
   bilet,
   yerKod,
   adlar,
+  uzunKalanSaat,
   onClick,
 }: {
   bilet: AcikBilet
@@ -78,6 +79,9 @@ export function BiletKart({
    *  exactly the same reason. */
   yerKod?: string | null
   adlar: Map<string, string>
+  /** F14 (1.4.2): `terk_esik_saat` — past it the row says "Uzun süredir
+   *  içeride" (its exit may have been missed). From the list, like yerKod. */
+  uzunKalanSaat?: number | null
   onClick: () => void
 }) {
   // The tile colour carries the row's state, so a scanning eye sorts the list
@@ -143,6 +147,15 @@ export function BiletKart({
           <Chip size="sm" tone="neutral" className="shrink-0">
             İçeride
           </Chip>
+          {/* F14 (1.4.2): inside longer than the "Terk edilmiş" threshold —
+              the exit may have been missed. Never for abonman (uzunKalan).
+              Two words: with "İptal bekliyor" and the note icon a longer
+              label pushed the row past 360 px (checked in the browser). */}
+          {uzunKalan(bilet, uzunKalanSaat) && (
+            <Chip size="sm" tone="warn" className="shrink-0">
+              Uzun kalış
+            </Chip>
+          )}
           {/* 050: a Personel asked to cancel; the ticket stays open until a
               Yönetici decides, so the list must say why it is still here. */}
           {bilet.iptal_talebi && (

@@ -576,6 +576,34 @@ def test_isci_bekleme_suresi_yavas_modele_gore():
         isci.durdur()
 
 
+def test_isci_sure_ozeti():
+    # 1.4.2: kalp satırı modellerin kare başına süresini yazar (grafik
+    # işlemcisinde ~35 ms, işlemcide ~120 ms) — sahadaki dizüstünün ısınıp
+    # yavaşladığı kayıttan görülsün.
+    isci = okuma.Isci(SahtePlakaci(bekle=0.05), haric=None, oku_esik=0.95, kayit=lambda s: None,
+                      arac=SahteArac(bekle=0.15))
+    try:
+        assert isci.sure_ozeti() == "", isci.sure_ozeti()      # henüz ölçülmedi
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))
+        assert isci.bekle(g, 2.0)
+        ozet = isci.sure_ozeti()
+        import re as _re
+        m = _re.fullmatch(r" · plaka (\d+) ms, araç (\d+) ms", ozet)
+        assert m, ozet
+        assert 40 <= int(m.group(1)) <= 120 and 140 <= int(m.group(2)) <= 260, ozet
+    finally:
+        isci.durdur()
+    isci = okuma.Isci(SahtePlakaci(bekle=0.05), haric=None, oku_esik=0.95, kayit=lambda s: None)
+    try:
+        g = _gecis()
+        isci.ver(okuma.Is(g, _kare(1), _z(1), 1))
+        assert isci.bekle(g, 2.0)
+        assert _re.fullmatch(r" · plaka \d+ ms", isci.sure_ozeti()), isci.sure_ozeti()
+    finally:
+        isci.durdur()
+
+
 def test_isci_takildi_arac_bulucuyu_da_gorur():
     isci = okuma.Isci(SahtePlakaci(), haric=None, oku_esik=0.95, kayit=lambda s: None,
                       arac=SahteArac(bekle=0.4))
@@ -1133,9 +1161,11 @@ def test_iz_arac_esigi_kapidan_gecen_plakasiz_arac():
     # İzleyicinin KAPIDAN geçtiğini gördüğü araç (GİRDİ / ÇIKTI) personele
     # izin doğum eşiğinden (0.35) gider; sahadaki fotoğraflarda insanlar en
     # çok 0.27 aldı. Kapı kanıtı olmayan olaylar 0.60'ta kalır.
-    for tur in ("GIRDI", "CIKTI"):
+    # 1.4.2 (A3): tek karede kapıda görülen hareketli araç (TEK_KARE) da
+    # doğum eşiğinden gider — test_tek_kare_plakasiz_arac_dogum_esiginden.
+    for tur in ("GIRDI", "CIKTI", "TEK_KARE"):
         assert okuma.iz_arac_esigi(tur, 0.35, 0.60) == 0.35, tur
-    for tur in ("TEK_KARE", "KAPISIZ", "ESKI_GIRDI"):
+    for tur in ("KAPISIZ", "ESKI_GIRDI"):
         assert okuma.iz_arac_esigi(tur, 0.35, 0.60) == 0.60, tur
     g = _gecis()
     g.arac_max, g.arac_kirpik = 0.46, _kare(8)
@@ -1153,6 +1183,61 @@ def test_iz_personele_olaylari():
     assert okuma.iz_personele("ESKI_GIRDI") and okuma.iz_personele("TEK_KARE")
     for tur in ("GIRDI", "CIKTI", "KAPISIZ", "ICERIDE", "GERI_DONDU", "KAPIDA_BEKLIYOR"):
         assert not okuma.iz_personele(tur), tur
+
+
+def test_tek_kare_plakasiz_arac_dogum_esiginden():
+    # 1.4.2 (A3): sahada 11.11 13:52 hızlı giren araç yalnızca bir karede
+    # görüldü (araç 0.49, plaka yok): "tek karede görüldü — gönderim yok" —
+    # 0.60'ın altında kaldı, ne kart ne bilet. Tek kare kuralı zaten yalnızca
+    # kapıda / kapının bir araç boyu yakınında, gerçekten hareketli araçta
+    # olay verir; plakasızın eşiği GİRDİ / ÇIKTI gibi doğum eşiği.
+    assert okuma.iz_arac_esigi("TEK_KARE", 0.35, 0.60) == 0.35
+    g = _gecis()
+    g.arac_max, g.arac_kirpik = 0.49, _kare(8)
+    gonder, _ = _iz_karari(g, arac_gecis_esik=okuma.iz_arac_esigi("TEK_KARE", 0.35, 0.60),
+                           personele=okuma.iz_personele("TEK_KARE"))
+    assert [x.tur for x in gonder] == ["OKUNAMADI"], gonder
+    assert gonder[0].tahmin is None, gonder
+
+
+def test_gonderim_hareket_ipucu_varsayilan_bos():
+    # 1.4.2 (B5): yön ipucu Gonderim'in SON alanı, varsayılanı None — bütün
+    # mevcut kurulumlar (konumsal, 6 alan) değişmeden çalışır; iz_karari ipucu
+    # koymaz (köprü olayın türünden ekler).
+    g = okuma.Gonderim("PLAKA", "34ABC123", None, None, _z(1), None)
+    assert g.hareket is None
+    assert g._replace(hareket="GIRDI").hareket == "GIRDI"
+    gecis = _gecis()
+    gecis.oylama.okuma("34ABC123", 0.99, _z(1), 1)
+    gecis.oylama.okuma("34ABC123", 0.99, _z(2), 2)
+    gonder, _ = _iz_karari(gecis)
+    assert [x.tur for x in gonder] == ["PLAKA"] and gonder[0].hareket is None, gonder
+
+
+def test_tek_kare_komsulu_kuyruk_eski_esikte():
+    # 1.4.2 (A3 koruması): alt kenardan çıkan aracın kuyruğu tek karelik ayrı
+    # iz olarak görülebilir (test_kopru takip_gece_hizli_cikis: 0.39 ile
+    # personele kart). Yanında bir saniye içinde görülmüş başka araç izi olan
+    # ("komşulu") tek kare 1.4.1 gibi ARAC_GECIS_ESIK'te kalır. Komşu bilgisi
+    # yalnızca TEK_KARE'yi etkiler.
+    assert okuma.iz_arac_esigi("TEK_KARE", 0.35, 0.60, komsu=True) == 0.60
+    assert okuma.iz_arac_esigi("TEK_KARE", 0.35, 0.60, komsu=False) == 0.35
+    for tur in ("GIRDI", "CIKTI", "KAPIDA_KAYBOLDU"):
+        assert okuma.iz_arac_esigi(tur, 0.35, 0.60, komsu=True) == 0.35, tur
+    for tur in ("KAPISIZ", "ESKI_GIRDI"):
+        assert okuma.iz_arac_esigi(tur, 0.35, 0.60, komsu=False) == 0.60, tur
+
+
+def test_kapida_kaybolan_arac_personele_ve_kapi_esigi():
+    # 1.4.2 (A2): kapı alanında kaybolan, kararsız araç — yönü bilinmez, emin
+    # plakası olsa da personele (tahmin olarak). Kapıda görüldüğü için plakasız
+    # araç da GİRDİ / ÇIKTI gibi doğum eşiğinden (0.35) gider.
+    assert okuma.iz_personele("KAPIDA_KAYBOLDU")
+    assert okuma.iz_arac_esigi("KAPIDA_KAYBOLDU", 0.35, 0.60) == 0.35
+    g = _gecis()
+    g.arac_max, g.arac_kirpik = 0.46, _kare(8)
+    gonder, _ = _iz_karari(g, arac_gecis_esik=okuma.iz_arac_esigi("KAPIDA_KAYBOLDU", 0.35, 0.60))
+    assert [x.tur for x in gonder] == ["OKUNAMADI"], gonder
 
 
 if __name__ == "__main__":

@@ -253,6 +253,8 @@ export function AracListesi({
   // Once for the whole list, then handed to every row — same rule as the spot
   // codes above, and the reason both are props rather than hooks in the card.
   const adlar = useAdlar()
+  // F14 (1.4.2): the "Terk edilmiş" threshold also marks long stays here.
+  const { data: ayarlar } = useAyarlar()
   const [filtre, setFiltre] = useState<Filtre>('TUMU')
   const [onay, setOnay] = useState<OnayFiltre>('TUMU')
   const [odeme, setOdeme] = useState<OdemeFiltre>('TUMU')
@@ -398,6 +400,7 @@ export function AracListesi({
                     bilet={b}
                     adlar={adlar}
                     yerKod={b.park_yeri_id ? (yerKodlari[b.park_yeri_id] ?? null) : null}
+                    uzunKalanSaat={ayarlar?.terk_esik_saat}
                     onClick={() => onSec(b)}
                   />
                 ))}

@@ -8,7 +8,7 @@
 // hesabından (ucret_hesapla) gelir.
 //
 // Gerçek dosyayı içe aktarır; lib/bilet.ts yalnızca `import type` kullanır.
-import { gosterilenUcret, sureBitisi, zatenKapandi } from '../src/lib/bilet.ts'
+import { gosterilenUcret, sureBitisi, uzunKalan, zatenKapandi } from '../src/lib/bilet.ts'
 
 let gecen = 0
 let kalan = 0
@@ -60,6 +60,24 @@ esit('kapandı: sunucunun mesajı', zatenKapandi('Bu bilet zaten kapatılmış v
 esit('kapandı: başka hata değil', zatenKapandi('Ödeme yöntemi seçin.'), false)
 esit('kapandı: ağ hatası değil', zatenKapandi('Tahsilat kaydedilemedi. Tekrar deneyin — tahsilat otomatik tekrarlanmaz.'), false)
 esit('kapandı: boş', zatenKapandi(''), false)
+
+// --- uzunKalan (F14, 1.4.2): İçeride'de "Uzun süredir içeride" işareti ------------
+// Eşik gece işinin "Terk edilmiş olabilir" bildirimiyle AYNI ayar
+// (terk_esik_saat). Abonmanlı araç uzun kalabilir — işaretlenmez.
+const SIMDI = new Date('2026-11-14T12:00:00Z')
+const saatOnce = (sa) => new Date(SIMDI.getTime() - sa * 3600_000).toISOString()
+const ab = (sa, abonman_id = null) => ({ giris_at: saatOnce(sa), abonman_id })
+esit('uzun: eşiğin altında', uzunKalan(ab(47.99), 48, SIMDI), false)
+esit('uzun: tam eşikte', uzunKalan(ab(48), 48, SIMDI), true)
+esit('uzun: eşiğin üstünde', uzunKalan(ab(72), 48, SIMDI), true)
+esit('uzun: 24 saat eşiği', uzunKalan(ab(30), 24, SIMDI), true)
+esit('uzun: 48 saat eşiğinde 30 saat değil', uzunKalan(ab(30), 48, SIMDI), false)
+esit('uzun: abonman işaretlenmez', uzunKalan(ab(200, 'abn-1'), 48, SIMDI), false)
+esit('uzun: geçersiz giriş saati', uzunKalan({ giris_at: 'bozuk', abonman_id: null }, 48, SIMDI), false)
+esit('uzun: eşik yok', uzunKalan(ab(200), undefined, SIMDI), false)
+esit('uzun: eşik sıfır', uzunKalan(ab(200), 0, SIMDI), false)
+esit('uzun: eşik sayı değil', uzunKalan(ab(200), Number.NaN, SIMDI), false)
+esit('uzun: gelecekteki giriş', uzunKalan(ab(-5), 48, SIMDI), false)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

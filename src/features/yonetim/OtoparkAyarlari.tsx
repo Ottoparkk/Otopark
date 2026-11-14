@@ -352,6 +352,7 @@ export default function OtoparkAyarlari() {
             value={terk}
             onChange={(e) => setTerk(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
+            hint="İçeride listesinde de işaretlenir."
           />
         </Card>
 
@@ -515,7 +516,7 @@ export default function OtoparkAyarlari() {
             checked={kameraAktif}
             onChange={setKameraAktif}
             label="Kamera girişi açık"
-            hint="Kapalıyken webhook hiçbir olayı kabul etmez."
+            hint="Kapalıyken kamera olayı kabul edilmez."
           />
           {kameraAktif && (
             <>
@@ -524,7 +525,7 @@ export default function OtoparkAyarlari() {
                 value={gecikme}
                 onChange={(e) => setGecikme(digitsOnly(e.target.value, 5))}
                 inputMode="numeric"
-                hint="Bundan eski kamera olayı bilete dönüşmez, istisna olarak işaretlenir."
+                hint="Daha eski olay bilet açmaz; çözülmemiş kayda düşer."
               />
               {/* Only matter for a "Tek kapı" camera (one gate for entry and
                   exit). Kept here rather than on the camera screen because
@@ -535,8 +536,7 @@ export default function OtoparkAyarlari() {
                 <div>
                   <p className="text-body font-medium text-ink">Tek kapı</p>
                   <p className="mt-0.5 text-label text-faint">
-                    Giriş ve çıkış aynı kapıdansa, kameranın aynı aracı bu süreler içinde
-                    yeniden görmesi yok sayılır.
+                    Aynı aracın bu süreler içinde yeniden görülmesi yok sayılır.
                   </p>
                 </div>
                 <Input
@@ -544,19 +544,23 @@ export default function OtoparkAyarlari() {
                   value={tkGiris}
                   onChange={(e) => setTkGiris(digitsOnly(e.target.value, 2))}
                   inputMode="numeric"
-                  hint="Yeni giren araç kapıda görünmeye devam etse de çıkış sayılmaz. 3-60."
+                  hint="3-60"
                 />
                 <Input
                   label="Çıkıştan sonra (dakika)"
                   value={tkCikis}
                   onChange={(e) => setTkCikis(digitsOnly(e.target.value, 2))}
                   inputMode="numeric"
-                  hint="Çıkışı yapılan araç kapıda yeniden görünse de yeni giriş açılmaz. 1-60."
+                  hint="1-60"
                 />
               </div>
+              {/* Aracı damgalayan saat: köprüyle (1.3.0'dan beri, sahadaki
+                  kurulum) köprü bilgisayarının saati — kameranınki değil;
+                  webhook'a doğrudan gönderen kamerada kameranın kendi saati. */}
               <p className="rounded-field bg-warn-soft px-3 py-2.5 text-label text-warn">
-                Kameranın saatini NTP'ye bağlayın. Bir saat kaymış kamera her aracı
-                sessizce yanlış ücretlendirir.
+                Aracı damgalayan saat doğru olmalı: köprüde bilgisayarın saati otomatik
+                ayarlı, doğrudan bağlı kamerada NTP açık. Kaymış saat her aracı sessizce
+                yanlış ücretlendirir.
               </p>
             </>
           )}

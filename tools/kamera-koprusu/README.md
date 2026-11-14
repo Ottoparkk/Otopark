@@ -79,8 +79,13 @@ approach, touching the picture edge):
   in the gate area or within one car-box diagonal of it AND its pixels changed
   against the previous frame (it really moved), it becomes a staff card
   (`araç tek karede görüldü — personele`): any plate read goes as the guess; no
-  plate → only if the vehicle score is ≥ `ARAC_GECIS_ESIK` (0.60), as for a
-  plateless car rolling through. A one-frame box deep in the yard (the finder
+  plate → from the finder's birth threshold (0.35 tiny / 0.30 YOLO11s) since
+  1.4.2 (was 0.60: on site 2026-11-11 13:52 a fast car at 0.49 sent nothing)
+  — unless another car track was seen within one car diagonal in the last
+  second (`dogumda_komsu`): a car leaving over the bottom edge can show only
+  its tail, a box too small to join its own track, seen once as a separate
+  "car" (0.39 in the tests). That one stays at 0.60, as in 1.4.1.
+  A one-frame box deep in the yard (the finder
   "blinking" on a parked car) is not sent; neither is one that overlaps
   another car's box in that frame (a car passing in front changes a parked
   car's pixels), nor the first frame after the camera comes back (compared
@@ -90,10 +95,66 @@ approach, touching the picture edge):
   went out through the gate area and whose plate was never read goes to staff
   from vehicle score **0.35** (the tracker's own birth threshold), not 0.60.
   Site log 2026-11-10: real cars at 0.46 / 0.54 were dropped silently; people
-  scored at most 0.27 on the site photos. Other events (one-frame car, no gate
-  area, car at the gate on start) keep 0.60. In practice every tracked car
+  scored at most 0.27 on the site photos. A car lost in the gate area and,
+  since 1.4.2, a one-frame car at the gate use the same threshold. Other
+  events (no gate area, car at the gate on start) keep 0.60. In practice every tracked car
   (tracks start at ≥ 0.35) that crosses the gate with no plate read becomes a
   staff card — more cards, never a ticket.
+- **Lost in the gate area, never seen in the yard (1.4.2)** — site 2026-11-11:
+  five exiting cars (07:38, 19:15, 19:39, 12:10, 12:38) left no ticket and no
+  log line. A fast or dark car was first found AT the gate (or inside the
+  margin just outside it) and left over the edge; it was never clearly in the
+  yard, so it is not an "out", and the tracker dropped it silently. Now a car
+  track lost in the gate area while moving, seen in ≥ 2 frames, with no
+  decision, becomes a staff card (`araç kapı alanında kayboldu — yönü
+  bilinmiyor — personele`): any plate read goes as the guess; no plate → from
+  vehicle score 0.35 (it was seen in the gate, like in/out). A U-turn keeps
+  `kapıdan geri döndü`; a car that WAS in the yard and is lost in the gate
+  while not heading to the edge stays log-only. Plate-only tracks: no card.
+- **No silent end (1.4.2)** — every other car track that ends with no event
+  (and was moving: a stopped car goes to park memory) writes one line:
+  `iz kararsız bitti (iz N, yer kapı|otopark, M görünüm, araç 0.xx, plaka
+  görüldü|görülmedi)` — never the plate itself. Also for moving tracks
+  dropped when the camera link breaks. `--durum` counts both lines for today.
+- **Direction hint (1.4.2, B5; server 055/056)** — a plate sent for a tracked
+  **in** / **out** carries `"hareket": "GIRDI" | "CIKTI"` in the JSON (`yon`
+  stays the LANE). The single-gate server (`kamera_tek_kapi`) uses it ONLY to
+  refuse a wrong guess, never to open or close on its own: a car seen leaving
+  with no open ticket → Çözülmemiş kayıt (no ghost entry — site 11.11 11:35 /
+  13:46); a car seen entering whose OLD ticket is open → Çözülmemiş kayıt
+  `GIRISTE_ACIK_BILET` (the ticket is not closed). No hint (old queued files,
+  the 1.3.4 pass rule, one-frame / lost-at-gate / gateless / start-up events,
+  unknown value) → exactly the old decision. Staff cards never carry it.
+- **Car moving inside the yard (1.4.2, B6, single gate only)** — `otopark
+  içinde hareket` stays a log line; on `YON=ORTAK`, if that car's plate was
+  read SURE it is also sent with `"hareket": "ICERIDE"` (`içeride görülen araç
+  sunucuya soruldu`). The server never closes anything for it: open ticket →
+  nothing; no ticket → Çözülmemiş kayıt `ICERIDE_BILETSIZ` with a "Giriş aç"
+  button (entry time = when it was seen inside). Never a staff card for an
+  unsure / missing plate, never on a GIRIS / CIKIS lane (there the server
+  would open / close a ticket); the 60 s same-plate rule applies.
+- **Entered unseen, found standing at the gate (1.4.2, A4)** — site 11.11
+  19:08: the finder missed an entering car in the gate area and first found
+  it STANDING just past it; a standing birth is not an entry (a car parked by
+  the gate looks the same), so nothing was sent. Now, at its second sighting,
+  a freshly born car that stands, was born outside the gate within one box
+  diagonal, has no other track next to it and whose pixels just changed is an
+  **in** (`kapıda görülmedi`) IF the gate area changed in the last 3 s
+  (`KAPI_GECIS_SN`) while no tracked car or plate was in it — something passed
+  the gate unseen. No such gate motion → the old protection unchanged. Only
+  with B5: if it is ever wrong for a ticketed car parked by the gate, the
+  GIRDI hint makes the server open a card instead of closing that ticket.
+- **Local-motion frame trigger (1.4.2)** — a car with no track yet used to get
+  a model frame only every 2 s, when the gate area's pixels changed, or within
+  3 s of whole-crop motion `d ≥ DURGUN_ESIGI` (≥ 2.0). At night a moving car
+  measured d = 0.27 (still: 0.04): one car is a small share of the whole crop,
+  so that trigger never fired and a fast car was first found at the gate.
+  The trigger now also fires on LOCAL motion: the largest mean difference of
+  the 16×15 px patches of the 160×120 grey picture (`yerel_kipirti`), same
+  threshold. `DURGUN_ESIGI`'s other uses (stopped, view, the GPU restart's
+  quiet moment) are unchanged. The `çalışıyor` line ends with `· K model
+  karesi` (frames given to the models since the last such line): if night
+  noise fires the trigger all the time, it shows there.
 - **Plate read in several frames (1.4.1, `PLAKA_BIRLESIK`, default 1)** — the
   sure rule stays (two crops ≥ 95 % in two views, or 99 % once). In addition,
   a frame whose two crops read the SAME text with each ≥ 0.50 is a half vote;
@@ -203,6 +264,28 @@ no skipping: the plate finder once boxed something that was not a car).
 - **Model:** YOLOX-tiny (Megvii, **Apache-2.0**), the official 0.1.1rc0 ONNX
   file, unchanged. COCO classes car / motorcycle / bus / truck count as a
   vehicle; person is logged only.
+- **1.4.2: YOLO11s (Ultralytics, AGPL-3.0)** is the second vehicle model
+  (`yolo11s_640.onnx`, official `yolo11s.pt` exported at **640**). Owner decision
+  (2026-11-12): the bridge is used only at our own car park, so AGPL is
+  accepted; if it is ever sold or given to another site, switch to YOLOX-s
+  (Apache-2.0) or buy an Ultralytics licence. Full licence text, source and
+  export command: `modeller/LISANS.txt` section 5. Its input is different —
+  **centred** letterbox, RGB, /255 — and it has no objectness score; fed the
+  wrong way it scores low with no error, so `test_arac` locks the centred input.
+- **Why 640 (2026-11-13):** 25 real night evidence photos from the app (after
+  the 11 Nov 20:00 camera settings, all checked by the owner to be cars) were
+  scored with seven models. At 416 every model misses cars that are far away
+  or cut by the crop edge (YOLO11s 416: 21/25, YOLOX-tiny: 20/25 at ≥ 0.30);
+  YOLO11s 640 saw all 25 (lowest 0.34, the big dark car right under the
+  camera). Cost: ~85 ms on the site GPU instead of 37 → about 6–7 frames/s.
+  Limits 0.30 / 0.60. **False alarms**, measured the same day: the 25 night
+  photos with every car painted over in the bridge's mask grey (114) — what
+  is left is empty lane with headlight reflections, tyre marks and shadows —
+  scored 0.00; in 48 photos with people every YOLO11s vehicle score came from
+  a real car; 3 hand trucks with kegs / crates scored 0.00–0.01 on YOLO11s
+  but **0.53 / 0.78 / 0.66 on tiny**. So YOLO11s 640 is the default
+  (`ARAC_MODEL=otomatik`); `ARAC_MODEL=tiny` is only an emergency switch.
+  Tool: `tools/hiz-testi/kalibrasyon.py`.
 - **Bake-off on 180 real camera photos from this site:** real cars 0.40–0.94,
   people ≤ 0.27. YOLOX-nano was rejected — it missed close cars seen from
   above (0.01–0.12). ~55 ms per frame here on top of the plate finder (~84 ms);
@@ -616,6 +699,24 @@ move the camera closer or zoom in; no reader recovers pixels that were never
 captured. Then check real cars with `OtoparkKamera.exe --plaka` (as
 administrator): it shows, live, every plate box, both reads, `EMİN` /
 `belirsiz` / `kesik` and the milliseconds — and sends and saves nothing.
+It runs 2 minutes per lane; `--plaka 10` runs 10 (1–60, 1.4.2 — a car once
+fell exactly on a 2-minute boundary). Ctrl+C still prints the summary.
+
+**Replay a recording (1.4.2): `OtoparkKamera.exe --video <file> [GIRIS|CIKIS|ORTAK]`.**
+Runs the file through the REAL bridge loop (`video.py` → `kopru.main`), at the
+file's own speed (the tracker measures seconds — stopping, losing a car, the
+60 s rule — so a faster replay would decide differently), and sends nothing:
+- the network is a recorder (no request leaves the PC);
+- log and outbox go to a new temp folder, never the real `kayit`;
+- the camera password check and the watchdog / GPU restarts are disabled;
+- the GPU model cache is the real one, so models are not recompiled.
+
+After the file ends, the last frame is held for a few seconds (lost cars can
+end), then it prints what WOULD have been sent (plate + direction hint, or
+staff card with guess) and the log counts. The summary is written to the
+console only, never to the log (it contains plates). One lane installed → that
+lane; several → name it. Use it to find out why a car was missed: export the
+minute from the camera's recorder and replay it here.
 
 ## Run
 
@@ -744,7 +845,10 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `PLAKA_BUL_ESIK` | `0.30` | Plate finder score floor. |
 | `PLAKA_OKU_ESIK` | `0.95` | Both crops' lowest character probability must reach this. |
 | `PLAKA_TEK_ESIK` | `0.99` | A plate seen in only one view counts as sure only at this. |
-| `PLAKA_IPLIK` | `2` | Threads for the plate reader and the vehicle finder. 1.3.2: on the site laptop (8 logical processors) a frame took 410 ms with 1, 268 ms with 2, 241 ms with 4 — 2 takes most of the gain and leaves cores for the camera stream. |
+| `PLAKA_IPLIK` | `2` | Threads for the plate reader and the vehicle finder **on the CPU** (since 1.4.2 only the CPU set uses it). 1.3.2: on the site laptop (8 logical processors) a frame took 410 ms with 1, 268 ms with 2, 241 ms with 4 — 2 takes most of the gain and leaves cores for the camera stream. |
+| `HIZLANDIRICI` | `GPU` | 1.4.2: run the three models on the Intel GPU (OpenVINO). The GPU self-test runs **without** a CPU fallback, so a broken GPU can't pass it on the CPU and be reported as "GPU". If the GPU is missing or fails its self-test the bridge starts on the CPU set (1.4.1: onnxruntime + YOLOX-tiny). While running, a GPU error is retried **3 times**; only then that model moves to the CPU and the same frame is measured there. **Every 30 s** while anything is on the CPU, a short background job opens a fresh GPU connection, self-tests all three models and hands them back (log: `grafik işlemcisi geri geldi`). If the GPU stays lost for **10 min**, the bridge restarts itself at a quiet moment (no car being tracked) — at most once an hour (`grafik işlemcisi için köprü yeniden başlatılıyor`). `--durum` warns after 1 h on the CPU. `CPU` = always 1.4.1's set, no retries. |
+| `ARAC_MODEL` | `otomatik` | 1.4.2: the vehicle model on the GPU — `yolo11s`, `tiny`, or `otomatik` (= YOLO11s 640 since 2026-11-13; a profile still marked as a placeholder would fall back to tiny). The CPU set is always tiny. |
+| `ARAC11_BUL_ESIK` / `ARAC11_GECIS_ESIK` | empty | 1.4.2: YOLO11s's own limits. Empty = the values in `arac.YOLO11S` (0.30 / 0.60, measured on night photos 2026-11-13). `ARAC_BUL_ESIK` / `ARAC_GECIS_ESIK` stay tiny's. |
 | `PLAKA_TAM` | `1` | 1.3.4: read the plate from the full-resolution crop (found on the shrunk one). `0` = 1.3.3. |
 | `PLAKA_BIRLESIK` | `1` | 1.4.1: a plate read the same in ≥ 3 different views (both crops agree, each ≥ 0.50, one ≥ 0.90, no near-text in the track) is sure. `0` = only the single-frame 95 % rule. Tracking only. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
@@ -761,15 +865,23 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 64 senaryo (39'u TAKIP=0, 25'i izleme)
+python test_kopru.py            # yakalama döngüsü, 86 senaryo
 python test_kopru.py iki_arac   # tek senaryo
-python test_kurulum.py          # kurulum tarafı, 149 birim testi
-python test_okuma.py            # kararlar + iki iş parçacığı + izleme karesi (okuma.py), 65 test
-python test_plaka.py            # bulucu + okuyucu + oylama + çokgen alan (plaka.py), 48 test
-python test_arac.py             # araç bulucu (arac.py), 16 test
-python test_takip.py            # araç izleme, kapı kuralları (takip.py), 36 test
-python test_giden.py            # gönderim kutusu (giden.py), 13 test
-python test_mutasyon.py         # 82 kural tek tek bozulur; her biri yakalanmalı
+python test_kurulum.py          # kurulum tarafı, 164 birim testi
+python test_okuma.py            # kararlar + iki iş parçacığı + izleme karesi (okuma.py), 74 test
+python test_plaka.py            # bulucu + okuyucu + oylama + çokgen alan (plaka.py), 60 test
+python test_arac.py             # araç bulucu (arac.py), 30 test
+python test_hizlandirici.py     # grafik işlemcisi + işlemciye geri dönüş (1.4.2), 25 test
+python test_takip.py            # araç izleme, kapı kuralları (takip.py), 80 test
+python test_giden.py            # gönderim kutusu (giden.py), 14 test
+python test_mutasyon.py         # 192 kural tek tek bozulur; her biri yakalanmalı
+```
+
+Testler hiçbir şey silmez; bıraktıkları her şey tek klasörde toplanır
+(`kalinti.py`): `%TEMP%\otopark-test-kalintilari`. Ara sıra elle silin:
+
+```powershell
+Remove-Item "$env:TEMP\otopark-test-kalintilari" -Recurse -Force
 ```
 
 `test_mutasyon.py` her kuralı (iki kırpıntı, kenar payı, oylama, 60 sn,

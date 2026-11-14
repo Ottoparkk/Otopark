@@ -104,8 +104,12 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/052_kapida_gorunmez.sql` | "Kapıda" no longer shown in the app; the camera's exit notification stays and now fires for every new exit moment; the open-ticket list no longer sorts by the hidden stamp |
 | `supabase/migrations/053_odeme_bekliyor_turu.sql` | Two notification types for 054 (`ODEME_BEKLIYOR`, `KAMERA_GERI_ACILDI`) — its own file, because a new enum value must be committed before it is used |
 | `supabase/migrations/054_kamera_bileti_kapatir.sql` | A camera exit closes the ticket **unpaid** at the camera's time; "Ödeme topla" in the Çıktı list; everyone notified; **Araç çıkmadı** reopens a wrong camera exit |
+| `supabase/migrations/055_istisna_yon_turleri.sql` | Two Çözülmemiş kayıt kinds for 056 (`GIRISTE_ACIK_BILET`, `ICERIDE_BILETSIZ`) — its own file, because a new enum value must be committed before it is used |
+| `supabase/migrations/056_tek_kapi_hareket.sql` | Single gate: the bridge's direction hint (seen entering / leaving / inside) only stops a wrong guess — no ghost entry for a car leaving without a ticket, no wrong close for a car entering with an old ticket, a car inside is never closed; "Giriş aç" on the new in-yard card |
+| `supabase/migrations/057_kamera_gunluk_turu.sql` | Notification type for 058 (`KAMERA_GUNLUK`) — its own file, for the same enum reason |
+| `supabase/migrations/058_kamera_gunluk_rapor.sql` | The nightly job (00:05) sends the Yönetici yesterday's camera summary: entries, exits, staff cards (and how many are still open); a day with no cars at all is reported too |
 
-**Run all of them, 001 through 054, in this order.** Stopping early leaves the
+**Run all of them, 001 through 058, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -176,7 +180,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 75** (as of migration 054). It stops
+The last block before that line is **PASS 77** (as of migration 058). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.
@@ -738,6 +742,43 @@ No `tahsilatlar` row is written: no money is booked until a person collects.
 Deploy order: `052` (if not run yet) → `053` → `054` → smoke test through
 **PASS 75** → frontend. `kamera-webhook` and the bridge need no change.
 
+**Direction hint on the single gate (055 + 056, bridge 1.4.2, owner
+2026-11-14).** The bridge follows each car and now sends the direction it saw
+with the plate (`"hareket": "GIRDI" | "CIKTI" | "ICERIDE"`; `yon` stays the
+lane). `kamera_tek_kapi` uses it ONLY to refuse a wrong guess — it never opens
+or closes a ticket on the hint alone:
+
+| The bridge saw the car… | and the plate… | Result |
+|---|---|---|
+| leaving (`CIKTI`) | has no open ticket (and none of the "ignored" rows above) | **Çözülmemiş kayıtlar** `ACIK_BILET_YOK` — no ghost entry (site 11.11 11:35 / 13:46) |
+| entering (`GIRDI`) | has an open ticket older than 3 minutes | **Çözülmemiş kayıtlar** `GIRISTE_ACIK_BILET` with that ticket — it is NOT closed |
+| inside the yard (`ICERIDE`) | has an open ticket, one one character off, was closed in the last 5 minutes (or one character off such), or already has an open in-yard card | ignored — never closed |
+| inside the yard (`ICERIDE`) | none of these | **Çözülmemiş kayıtlar** `ICERIDE_BILETSIZ` — **Giriş aç** opens it from the moment it was seen inside |
+
+With no hint (an old bridge, an event queued before the update, the 1.3.4 pass
+rule, a one-frame or lost-at-gate car) every row of the table above applies
+unchanged. The bridge sends `ICERIDE` only on the single gate and only with a
+sure plate.
+
+Deploy order — this order, because the new webhook passes `p_hareket` and an
+old database has no such parameter (the old webhook keeps working against the
+new database):
+1. `055` → `056` → smoke test through **PASS 76** (`ALL TESTS PASSED`);
+2. deploy `kamera-webhook`;
+3. frontend (the two new card kinds);
+4. bridge 1.4.2 (sends the hint).
+
+**Camera daily summary (057 + 058, owner 2026-11-14).** While the camera is
+on, the nightly job (00:05 Istanbul) sends the Yönetici ONE notification
+about yesterday: "14.11: 34 giriş, 30 çıkış, 3 personele (1 çözülmedi)" —
+tickets the camera opened, tickets it closed, and its Çözülmemiş kayıtlar.
+A day with no camera activity at all is reported too ("kamera hiç araç
+kaydetmedi"): that usually means the camera or the bridge stopped. Each
+Yönetici can switch it off in Ayarlar like any other notification. What only
+the bridge's own log knows (tracks that ended undecided, in-yard moves) is
+not in it — `--durum` shows those. Deploy order: `057` → `058` → smoke test
+through **PASS 77** → frontend.
+
 **Local plate reading (installer 1.3.0, owner decision 2026-11-06).** The
 bridge finds and reads the plate on the site PC (YOLOv9 + fast-plate-ocr, ONNX)
 and sends the **plate text**; it never sends a photo for the server to read, so
@@ -850,12 +891,14 @@ option for hardware that posts directly, with no bridge:
 3. Direction is **required** and never guessed: `giris`/`cikis`/`ortak` at the
    end of the path, or `?yon=GIRIS`. There is no default, so a misconfigured
    exit camera cannot silently open tickets. `ortak` is the single gate above.
-4. **Put the camera's clock on NTP.** This is not housekeeping, it is money: a
-   camera an hour off mis-bills every vehicle, silently. The server takes the
-   timestamp from the camera because a buffered event can arrive hours late.
-   (With the **bridge** the timestamp comes from the bridge PC's clock instead,
-   not the camera's: keep Windows time on automatic. Installer 1.2.1 checks it
-   and the bridge logs a warning when it drifts more than a minute.)
+4. **Keep the clock that stamps each car right.** This is not housekeeping, it
+   is money: a clock an hour off mis-bills every vehicle, silently. The server
+   takes the timestamp from the event because a buffered event can arrive
+   hours late. With the **bridge** (the setup on site, since 1.3.0) that clock
+   is the bridge PC's — keep Windows time on automatic; installer 1.2.1 checks
+   it and the bridge logs a warning when it drifts more than a minute. A
+   camera that posts to the webhook **directly** stamps with its own clock:
+   put that camera on NTP.
 5. The URL-path method is the weakest (addresses end up in proxy and server
    logs) — if you use it, rotate the secret more often.
 

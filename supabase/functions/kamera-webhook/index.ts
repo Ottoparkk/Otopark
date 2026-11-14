@@ -60,6 +60,7 @@ import {
   cihazKimligi,
   fotoYuklemeTamam,
   hamFotosuz,
+  hareketIpucu,
   kameraFotoYolu,
   kameraGirisiKarari,
   kameraOkumaLogu,
@@ -247,6 +248,9 @@ interface Olay {
   koprudenTahmin: string | null
   koprudenGuven: number | null
   kopruHata: string | null
+  // Bridge 1.4.2 (056): the direction its tracker saw — GIRDI / CIKTI /
+  // ICERIDE, else null. Used only on the single gate, to refuse a wrong guess.
+  hareket: string | null
 }
 
 /** Pulls the fields we need out of whatever the vendor decided to send. */
@@ -289,6 +293,7 @@ function fromJson(body: Record<string, unknown>): Omit<Olay, 'image' | 'kanit'> 
     koprudenTahmin: kopru.ok && kopru.okunamadi ? kopru.tahmin : null,
     koprudenGuven: kopru.ok && kopru.okunamadi ? kopru.guven : null,
     kopruHata: kopru.ok ? null : kopru.hata,
+    hareket: hareketIpucu(body),
   }
 }
 
@@ -298,6 +303,7 @@ const KOPRU_YOK = {
   koprudenTahmin: null,
   koprudenGuven: null,
   kopruHata: null,
+  hareket: null,
 } as const
 
 /**
@@ -854,6 +860,8 @@ Deno.serve(async (req: Request) => {
         p_zaman: olay.zaman,
         p_foto: null,
         p_ham: olay.ham,
+        // 056: the bridge's direction hint; null = today's decision.
+        p_hareket: olay.hareket,
       })
       if (error) return rpcHatasi('kamera_tek_kapi', error)
       // An answer that is not one of the four decisions is OUR fault, not a

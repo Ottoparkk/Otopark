@@ -39,6 +39,9 @@ const TON: Record<BildirimTur, string> = {
   // 054: money to collect — the same amber as the "Ödeme topla" row it opens.
   ODEME_BEKLIYOR: 'bg-warn-soft text-warn',
   KAMERA_GERI_ACILDI: 'bg-warn-soft text-warn',
+  // 058: a routine daily summary, like KAMERA_HAREKET — neutral. A day with
+  // no cars says so in its body; the tone does not pre-announce it.
+  KAMERA_GUNLUK: 'bg-field text-soft',
 }
 
 export default function Bildirimler() {

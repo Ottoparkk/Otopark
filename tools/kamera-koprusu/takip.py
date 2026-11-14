@@ -68,6 +68,10 @@ ISINMA_KARE = 2           # açılış / yeniden bağlanma: bu karelerde görül
 GIRIS_KARE = 2            # kapının dışında art arda bu kadar kare: kapıdan çıktı
 GIRIS_TAVAN_SN = 30.0     # kapıdan çıkıp hiç durmayan araç için en geç karar
 KAPIDA_BEKLEME_SN = 60.0  # kapı alanında bu kadar duran araç: uyarı (alan yanlış çizilmiş olabilir)
+# 1.4.2 (A4): kapı alanı en çok bu kadar önce, izlenen hiçbir aracın
+# açıklamadığı biçimde kıpırdadıysa kapının dibinde DURURKEN doğan araç
+# kapıdan gelmiştir (sahada 11.11 19:08).
+KAPI_GECIS_SN = 3.0
 EN_AZ_YOL = 0.30          # kapısız kipte bir hareket bölümü: çapa ≥ köşegen × bu
 KENAR_PX = 2.0            # kutu kırpıntının kenarına bu kadar yakınsa kenara değiyor
 KENAR_KARE = 3            # son bu kadar ölçülen karede kenara değdiyse "kenardan çıkıyordu"
@@ -95,9 +99,23 @@ class Olcum(NamedTuple):
 class Olay(NamedTuple):
     # GIRDI | CIKTI | ESKI_GIRDI | KAPISIZ | ICERIDE | GERI_DONDU | KAPIDA_BEKLIYOR
     # | TEK_KARE (1.4.1: kapıda yalnızca bir karede görülen hareketli araç → personele)
+    # | KAPIDA_KAYBOLDU (1.4.2: kapıda kaybolan, kararsız, hareketli araç → personele)
     tur: str
     iz: "Iz"
     zaman: object
+
+
+# İzcinin verebileceği bütün olay türleri: köprünün iki yeri (canlı döngü ve
+# --plaka) her birinin adını bilmeli (test_kurulum denetler).
+OLAY_TURLERI = ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ", "ICERIDE", "GERI_DONDU",
+                "KAPIDA_BEKLIYOR", "TEK_KARE", "KAPIDA_KAYBOLDU")
+
+
+def _sayildi(olaylar: list[Olay]) -> list[Olay]:
+    """Her olayın izine işler (kararsız biten iz = hiç olayı olmayan iz)."""
+    for o in olaylar:
+        o.iz.olay_sayisi += 1
+    return olaylar
 
 
 def _merkez(k) -> tuple[float, float]:
@@ -173,6 +191,8 @@ class Iz:
         self.son_adim: tuple | None = None   # (önceki çapa, çapa, sn): son iki görülme
         self.ilk_kacirma_mono: float | None = None  # son görülmeden sonraki ilk ölçülen kare
         self.kapida_gorulmedi = False        # karar hız kuralıyla verildi (kayda yazılır)
+        # 1.4.2 (A4): doğduğu kareden ÖNCEKİ son "açıklanmamış kapı kıpırtısı"nın anı.
+        self.kapi_kipirti_once: float | None = None
         self.plaka_ofset: tuple | None = None    # araç kutusu − plaka kutusu (x1, y1, x2, y2)
         self.sentetik = False                # son kutu plakadan kuruldu (gövde görünmedi)
         self.plaka_yazildi = False           # bu izin oylamasına plaka yazıldı
@@ -180,6 +200,10 @@ class Iz:
         self.taze = False                    # yeni doğdu (dikiş / park belleği değil)
         self.dogum_hareketli = False         # doğduğu karede pikselleri bir öncekinden farklı
         self.plaka_kilit = False             # durdu: gövde yeniden görülene dek plaka sürükleyemez
+        self.olay_sayisi = 0                 # 1.4.2: bu izin verdiği olaylar (kararsız mı?)
+        # 1.4.2 (A3): doğduğunda yanında (bir araç köşegeni, TAHMIN_SN içinde
+        # görülmüş) başka bir araç izi vardı — kenardan çıkan aracın kuyruğu olabilir.
+        self.dogumda_komsu = False
 
     def tahmin(self, mono: float):
         dt = mono - self.son_mono
@@ -210,6 +234,7 @@ class Iz:
                    "giris_karari", "cikis_karari", "kapida_gorulmedi"):
             setattr(self, ad, getattr(p, ad))
         self.disarida_bulundu = self.disarida_bulundu or p.disarida_bulundu
+        self.olay_sayisi += p.olay_sayisi
         # Görünüm numarası geri gitmesin: aynı numara iki ayrı görünüm sayılmaz
         # (ihtiyatlı — en kötü bir görünüm eksik sayılır, fazla değil).
         self.gorunum_no = max(self.gorunum_no, p.gorunum_no)
@@ -243,6 +268,12 @@ class Takipci:
         self._isinma = ISINMA_KARE
         self.belirsiz_plaka = 0
         self.tasan_iz = 0
+        # 1.4.2 (A2): kararsız biten araç izleri [(iz, "kapı" | "otopark")] —
+        # köprü her birine bir kayıt satırı yazar (kararsiz_al).
+        self._kararsizlar: list[tuple[Iz, str]] = []
+        # 1.4.2 (A4): kapı alanının pikselleri son ölçülen kareye göre değişti ve
+        # o karede kapıda izlenen hiçbir iz (araç ya da plaka) yoktu — son anı.
+        self._kapi_kipirti_mono: float | None = None
         self.son_gri: np.ndarray | None = None    # son ÖLÇÜLEN karenin grisi
         self._son_olcum_mono: float | None = None  # son ölçülen karenin anı
         self._onceki_gri: np.ndarray | None = None  # bu kareden bir önceki ölçülenin grisi
@@ -465,6 +496,7 @@ class Takipci:
         if self._son_olcum_mono is not None:
             z.onceki_bosluk = o.mono - self._son_olcum_mono
         z.taze = True
+        z.kapi_kipirti_once = self._kapi_kipirti_mono       # 1.4.2 (A4): bu kareden önce
         # Pikselleri bir önceki ölçülen kareden farklı — ama aynı karedeki başka
         # bir aracın kutusuyla örtüşmüyorsa: önünden geçen araç park etmiş
         # aracın piksellerini değiştirir, o araç gelmiş gitmiş değildir
@@ -474,8 +506,25 @@ class Takipci:
             and yerel_fark(o.gri, self._onceki_gri, a, self.en, self.boy) >= self.durgun_esik
             and not any(b is not a and _kesisim(a, b) > TEK_KARE_ORTUSME * _alan(a)
                         for b in o.araclar))
+        z.dogumda_komsu = self._komsu_var(a, o.mono)
         self.izler.append(z)
         return z
+
+    def _komsu_var(self, a, mono: float) -> bool:
+        """
+        1.4.2 (A3): yeni doğan kutunun yanında — merkezler arası en çok bir araç
+        köşegeni, son TAHMIN_SN içinde görülmüş — başka bir iz var mı. Alt
+        kenardan çıkan aracın kuyruğu: kutusu çok küçüldüğü için kendi izine
+        dikilmez, tek karelik yeni iz doğar; o iz personele tek kare eşiğinin
+        düşüğüyle (doğum eşiği) gitmemeli (okuma.iz_arac_esigi).
+        """
+        for y in self.izler:
+            if y.durum == "bitti" or mono - y.son_mono > TAHMIN_SN:
+                continue
+            k = y.tahmin(mono)
+            if math.dist(_merkez(k), _merkez(a)) <= max(_kosegen(k), _kosegen(a)):
+                return True
+        return False
 
     # ---------------------------------------------------------------- kare ---
 
@@ -483,6 +532,12 @@ class Takipci:
         """Bir ölçülen kare. Araç sonucu yoksa (None) hiçbir iz ilerlemez."""
         if o.araclar is None:
             return []
+        # 1.4.2 (A4): kapı alanı bir önceki ölçülen kareye göre kıpırdadı mı
+        # (kim açıkladı, karenin sonunda bakılır).
+        kapi_kipirdadi = (self.kaynak == "arac" and self._kapi_kutu is not None
+                          and self.son_gri is not None
+                          and yerel_fark(o.gri, self.son_gri, self._kapi_kutu, self.en, self.boy)
+                          >= self.durgun_esik)
         self._onceki_gri, self.son_gri = self.son_gri, o.gri
         olaylar: list[Olay] = []
         eslesen, kalan = self._esles(o, list(o.araclar))
@@ -512,8 +567,15 @@ class Takipci:
             self._isinma -= 1
         if o.plakalar is not None:
             olaylar += self._plakalari_ata(o, guncellenen)
+        if kapi_kipirdadi and not self._kapida_iz_var():
+            self._kapi_kipirti_mono = o.mono          # 1.4.2 (A4): kimse açıklamıyor
         self._son_olcum_mono = o.mono
-        return olaylar
+        return _sayildi(olaylar)
+
+    def _kapida_iz_var(self) -> bool:
+        """1.4.2 (A4): kapı alanında yaşayan bir araç ya da plaka izi var mı."""
+        izciler = [self] + ([self._plakaci] if self._plakaci is not None else [])
+        return any(z.kapida for t in izciler for z in t.izler if z.durum != "bitti")
 
     def _ilerle(self, z: Iz, a, o: Olcum, olaylar: list[Olay], sentetik: bool = False) -> None:
         """
@@ -588,6 +650,9 @@ class Takipci:
                 if self._kapi_mesafe(capa) <= -self._payi(a):
                     z.disarida_bulundu = True
                     z.gecti_mono, z.gecti_zaman = z.dogum_mono, z.dogum_zaman
+            elif z.gorulme == 2 and self._durarak_kapidan_geldi_mi(z):
+                # 1.4.2 (A4): kapıdan görülmeden geçip hemen dibinde durdu.
+                self._kapidan_gorulmeden_geldi(z, a, capa)
             self._kapi_kurali(z, a, capa, o, olaylar)
 
     def _bolum_bitti(self, z: Iz, capa) -> None:
@@ -766,12 +831,32 @@ class Takipci:
             if z.durum == "kayip" and mono - z.son_mono >= DIKIS_SN:
                 z.durum = "bitti"
                 self.izler.remove(z)
+                n = len(olaylar)
                 self._son_karar(z, olaylar)
+                if len(olaylar) == n:
+                    self._kararsiz(z)
         if len(self.park) > PARK_EN_COK or (self.park and mono - self.park[0][6] > PARK_SN):
             self.park = [p for p in self.park if mono - p[6] <= PARK_SN][-PARK_EN_COK:]
         if self._plakaci is not None:
             olaylar += self._plakaci.zaman_gecti(mono)
-        return olaylar
+        return _sayildi(olaylar)
+
+    def _kararsiz(self, z: Iz) -> None:
+        """
+        1.4.2 (A2): hiçbir olay vermeden, hareket hâlinde biten ARAÇ izi kayda
+        geçer (sahada 11.11 beş araç iz bırakmadan kayboldu). Duran araç park
+        belleğine gider (bitmedi); plaka izinin tek başına anlamı yok.
+        """
+        if (self.kaynak != "arac" or z.duruyor or z.olay_sayisi
+                or z.giris_karari or z.cikis_karari):
+            return
+        ic = self.kapi is not None and self._kapida(self._capa(z.kutu))
+        self._kararsizlar.append((z, "kapı" if ic else "otopark"))
+
+    def kararsiz_al(self) -> list[tuple[Iz, str]]:
+        """Kararsız biten araç izleri [(iz, "kapı" | "otopark")]; alınan bir daha verilmez."""
+        k, self._kararsizlar = self._kararsizlar, []
+        return k
 
     def _son_karar(self, z: Iz, olaylar: list[Olay]) -> None:
         capa = self._capa(z.kutu)
@@ -804,6 +889,8 @@ class Takipci:
         if ic and not z.duruyor and u_donusu:
             if z.geri_dondu:
                 olaylar.append(Olay("GERI_DONDU", z, z.son_zaman))
+            elif self._kapida_kayboldu_mu(z):
+                olaylar.append(Olay("KAPIDA_KAYBOLDU", z, z.son_zaman))
             return
         if (ic and not z.duruyor and z.disarida_bulundu and not z.cikis_karari
                 and self._kenara_gidiyor(z)):
@@ -817,10 +904,66 @@ class Takipci:
             z.cikis_karari, z.kapida_gorulmedi = True, True
             olaylar.append(Olay("CIKTI", z, z.son_zaman))
             return
+        # 1.4.2 (A2): kapının "pay"ı içinde doğmuş, hiç otoparkta (payın
+        # dışında) görülmemiş araç kapıda kayboldu — ÇIKTI değil (nereden
+        # geldiği bilinmez) ama sessizce de düşmez: personele.
+        if (ic and not z.duruyor and not z.disarida_bulundu
+                and self._kapida_kayboldu_mu(z)):
+            olaylar.append(Olay("KAPIDA_KAYBOLDU", z, z.son_zaman))
+            return
         if z.duruyor:
             self._parka(z)
         elif not ic and z.bolum_hareketli and not u_donusu:
             olaylar.append(Olay("ICERIDE", z, z.son_zaman))
+
+    def _kapidan_gorulmeden_geldi(self, z: Iz, a, capa) -> None:
+        """
+        1.4.2 (A4): yukarıdaki hız kuralının işaretlerinin aynısı — kapıda
+        doğmuş gibi (kayıtta "kapıda görülmedi"); şu an kapının payı dışındaysa
+        kapıdan çıkışı doğduğu andır (duruyorsa _kapi_kurali GİRDİ der).
+        """
+        z.koken, z.kapidan_dogdu, z.kapida_gorulmedi = "kapi", True, True
+        if self._kapi_mesafe(capa) <= -self._payi(a):
+            z.disarida_bulundu = True
+            z.gecti_mono, z.gecti_zaman = z.dogum_mono, z.dogum_zaman
+
+    def _durarak_kapidan_geldi_mi(self, z: Iz) -> bool:
+        """
+        1.4.2 (A4), ikinci görülmede: otoparkta DURURKEN doğan araç kapıdan mı
+        geldi (sahada 11.11 19:08 — bulucu onu kapıdan geçerken görmedi,
+        hemen dibinde dururken buldu). Hepsi gerekir:
+          · yeni doğmuş araç izi (park belleği / dikiş / plaka devri değil),
+            otoparkta, yanında başka iz yok, doğduğu karede pikselleri değişmiş;
+          · duruyor (ilk adımı paydan küçük — yürüyen _kapidan_geldi_mi'nin);
+          · doğduğu yer kapının DIŞINDA ama bir araç köşegeni içinde;
+          · doğmadan en çok KAPI_GECIS_SN önce kapı alanı, orada izlenen hiçbir
+            iz olmadan kıpırdadı — bir şey kapıdan geçti.
+        Kapı kıpırdamadıysa 1.4.1'in koruması aynen: kapının dibinde park
+        etmiş, bulucunun o ana dek görmediği araç girdi sayılmaz. Yanılırsa
+        (B5) sunucu GIRDI ipucunu görür ve eski bileti kapatmaz (056).
+        """
+        if (self.kaynak != "arac" or z.koken != "yard" or not z.taze or z.kapidan_dogdu
+                or z.giris_karari or z.devraldi or z.dogumda_komsu or not z.dogum_hareketli
+                or z.son_adim is None or z.kapi_kipirti_once is None):
+            return False
+        a, b, _dt = z.son_adim
+        if math.dist(a, b) >= self._payi(z.kutu):
+            return False
+        mesafe = self._kapi_mesafe(a)
+        if mesafe >= -self.kapi_tolerans or -mesafe > _kosegen(z.dogum_kutu):
+            return False
+        return z.dogum_mono - z.kapi_kipirti_once <= KAPI_GECIS_SN
+
+    def _kapida_kayboldu_mu(self, z: Iz) -> bool:
+        """
+        1.4.2 (A2): kapı alanında hareketliyken kaybolan, en az iki karede
+        görülmüş, hiçbir kararı olmayan ARAÇ izi (sahada 07:38 / 19:15 / 19:39 /
+        12:10 / 12:38 — hızlı ya da koyu araç ilk kez kapıda bulundu ve kenardan
+        çıktı). Yönü bilinmez: personele (iz_personele).
+        """
+        return (self.kaynak == "arac" and z.gorulme >= 2
+                and not (z.giris_karari or z.cikis_karari or z.devraldi
+                         or z.gecti_mono is not None))
 
     def _parka(self, z: Iz) -> None:
         self.park.append((z.kutu, z.koken, z.kapidan_dogdu, z.giris_karari, z.cikis_karari,
@@ -864,13 +1007,16 @@ class Takipci:
         for z in self.izler:
             if z.gecti_mono is not None and not z.giris_karari:
                 self._giris(z, olaylar)
+            elif z.durum != "bitti" and not z.duruyor:
+                # 1.4.2 (A2): hareket hâlindeyken kopan iz de kayda geçer.
+                self._kararsiz(z)
         self.izler = []
         # Kopmadan önceki görüntü (dakikalar önce, belki başka ışıkta) ile
         # karşılaştırılmasın: her duran araç "hareketli" sayılırdı.
         self.son_gri = self._onceki_gri = None
         if self._plakaci is not None:
             olaylar += self._plakaci.kopma(mono)
-        return olaylar
+        return _sayildi(olaylar)
 
     def yeniden_baglandi(self) -> None:
         self._isinma = ISINMA_KARE

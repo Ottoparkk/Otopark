@@ -41,7 +41,13 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.1"   # 1.4.1: kapıda görülmeyen araç (hızlı / karanlık) hızıyla girdi-çıktı;
+SURUM = "1.4.2"   # 1.4.2: araç bulucu YOLO11s 640, grafik işlemcisinde (OpenVINO; olmazsa
+                  #        işlemci); yerel kıpırtı model karesi ister; sessiz son yok
+                  #        (KAPIDA_KAYBOLDU personele, KARARSIZ kayıtta); tek karede araç
+                  #        doğum eşiğiyle (komşu korumalı); yön ipucu + otopark içi soru
+                  #        (sunucu 055/056 ŞART); kapıda görülmeden girip duran araç;
+                  #        --plaka [dakika]; --video (kayıttan deneme, hiçbir şey gitmez)
+                  # 1.4.1: kapıda görülmeyen araç (hızlı / karanlık) hızıyla girdi-çıktı;
                   #        karanlıkta plaka izi ↔ araç izi devri (giriş/çıkış kaybolmaz)
                   # 1.4.0: her araç İZLENİR (takip.py), karar araç başına bir kez; kapı
                   #        alanı (girdi / çıktı, otopark içi sayılmaz); kırpma alanı
@@ -79,11 +85,49 @@ SURUM = "1.4.1"   # 1.4.1: kapıda görülmeyen araç (hızlı / karanlık) hız
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "plaka", "okuma", "giden", "arac", "takip"]
+            "plaka", "okuma", "giden", "arac", "takip", "hizlandirici", "video"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
+# 1.4.2: openvino_telemetry de — OpenVINO onsuz çalışır, köprü bir şey göndermez.
 HARIC = ["tkinter", "matplotlib", "scipy", "pandas", "PyQt5", "PyQt6",
-         "PySide2", "PySide6", "IPython", "pytest", "setuptools", "pip"]
+         "PySide2", "PySide6", "IPython", "pytest", "setuptools", "pip",
+         "openvino_telemetry"]
+# Pakete GİRMEYEN bağımlılıklar: lisans listesinde de görünmez.
+PAKETE_GIRMEZ = {"openvino-telemetry"}
+
+# 1.4.2: OpenVINO'nun PyInstaller kancası YOK — eklentileri (GPU) çalışırken
+# kendisi yükler, PyInstaller göremez. Açıkça toplanır; hız aracının sahada
+# çalışan seçimiyle (tools/hiz-testi/OtoparkHizTesti.spec) gerekmeyenler
+# girmez: NPU (sahadaki dizüstünde yok, ~103 MB), ONNX / IR dışındaki model
+# okuyucuları, bağlama (.lib) ve debug dosyaları, OpenCV'nin video kitaplığı.
+OV_DISLA = ("openvino_intel_npu", "_frontend.lib", "openvino_gguf_frontend",
+            "openvino_jax_frontend", "openvino_paddle_frontend", "openvino_pytorch_frontend",
+            "openvino_tensorflow_frontend", "openvino_tensorflow_lite_frontend",
+            "opencv_videoio_ffmpeg")
+
+
+def ov_gerekli(ad: str) -> bool:
+    """Bu dosya pakete girsin mi (OpenVINO seçimi)?"""
+    k = ad.replace("\\", "/").lower()
+    if k.endswith(".lib") or "_debug" in k:
+        return False
+    return not any(d in k for d in OV_DISLA)
+
+
+def ov_toplanacaklar(collect=None) -> tuple[list, list, list]:
+    """
+    (veriler, ikililer, gizli içe aktarmalar) — collect_all("openvino"), süzülmüş.
+    PyInstaller'ın kancası (pyi_kancalari/hook-openvino.py) bunu çağırır:
+    ~950 dosyayı komut satırına yazmak Windows'un sınırını aşıyordu (WinError 206).
+    """
+    if collect is None:
+        from PyInstaller.utils.hooks import collect_all as collect
+    veriler, ikililer, gizli = collect("openvino")
+    return ([v for v in veriler if ov_gerekli(v[0])], [b for b in ikililer if ov_gerekli(b[0])],
+            [g for g in gizli if "telemetry" not in g])
+
+
+KANCA_DIZINI = os.path.join(BURASI, "pyi_kancalari")
 
 GEREKSINIM = os.path.join(BURASI, "requirements.txt")
 MODEL_KLASORU = os.path.join(BURASI, "modeller")
@@ -92,7 +136,9 @@ MODEL_KLASORU = os.path.join(BURASI, "modeller")
 MODEL_DOSYALARI = ["yolo-v9-t-640-license-plates-end2end.onnx", "cct_s_v2_global.onnx",
                    "cct_s_v2_global_plate_config.yaml", "LISANS.txt",
                    # 1.3.1: araç bulucu ve öz sınama resmi
-                   "yolox_tiny.onnx", "arac_sinama.jpg"]
+                   "yolox_tiny.onnx", "arac_sinama.jpg",
+                   # 1.4.2: araç bulucu YOLO11s (AGPL-3.0, modeller/LISANS.txt 5)
+                   "yolo11s_640.onnx"]
 
 # Lisans dosyası sayılan adlar (dist-info içinde).
 _LISANS_ADI = re.compile(r"(LICEN[CS]E|COPYING|NOTICE)", re.I)
@@ -151,7 +197,7 @@ def model_sorunlari(dizin: str = MODEL_KLASORU) -> list[str]:
     import arac
     import plaka
     sorunlar = []
-    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA):
+    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA, arac.YOLO11S.model):
         yol = os.path.join(dizin, m.dosya)
         if not os.path.isfile(yol):
             sorunlar.append(f"model yok: {m.dosya}")
@@ -175,7 +221,7 @@ def calisma_paketleri(kokler) -> list:
     yigin = list(kokler)
     while yigin:
         ad = yigin.pop()
-        if _normal(ad) in bulunan:
+        if _normal(ad) in bulunan or _normal(ad) in PAKETE_GIRMEZ:
             continue
         try:
             dist = md.distribution(ad)
@@ -186,6 +232,8 @@ def calisma_paketleri(kokler) -> list:
             if re.search(r"extra\s*==", gereken):
                 continue
             alt = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", gereken).group(1)
+            if _normal(alt) in PAKETE_GIRMEZ:
+                continue
             if ";" in gereken:
                 try:
                     md.distribution(alt)
@@ -266,6 +314,7 @@ def lisanslari_topla(hedef: str, kokler) -> str:
     _kopyala(os.path.join(MODEL_KLASORU, "LISANS.txt"), os.path.join(klasor, "modeller-LISANS.txt"))
     satirlar.append("Plaka modelleri (open-image-models, fast-plate-ocr)  —  MIT")
     satirlar.append("Araç bulucu (YOLOX-tiny, Megvii) ve öz sınama resmi  —  Apache-2.0")
+    satirlar.append("Araç bulucu (YOLO11s, Ultralytics)  —  AGPL-3.0 (yalnızca kendi otoparkımız)")
     satirlar.append("    modeller-LISANS.txt")
     with open(os.path.join(klasor, "LISANSLAR.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(satirlar) + "\n")
@@ -317,6 +366,16 @@ def simge() -> str | None:
 
 def derle() -> str:
     os.makedirs(YAPI, exist_ok=True)
+    komut = derleme_komutu(surum=surum_dosyasi(), ikon=simge())
+    yaz("  PyInstaller çalışıyor (birkaç dakika sürebilir)…")
+    r = subprocess.run(komut)
+    if r.returncode:
+        sys.exit("  ✗ Derleme başarısız.")
+    return os.path.join(YAPI, "dist", AD)
+
+
+def derleme_komutu(surum: str | None = None, ikon: str | None = None) -> list[str]:
+    """PyInstaller komutu (saf: test onu okur)."""
     komut = [
         sys.executable, "-m", "PyInstaller",
         os.path.join(BURASI, "giris.py"),
@@ -326,8 +385,9 @@ def derle() -> str:
         "--workpath", os.path.join(YAPI, "work"),
         "--specpath", YAPI,
         "--paths", BURASI,
-        "--version-file", surum_dosyasi(),
     ]
+    if surum:
+        komut += ["--version-file", surum]
     if os.name == "nt":
         # Kurulum görev oluşturuyor, uyku ayarlarını değiştiriyor ve
         # ProgramData'ya yazıyor — hepsi yönetici gerektiriyor. Manifest ile
@@ -344,15 +404,13 @@ def derle() -> str:
         komut += ["--add-data", f"{os.path.join(MODEL_KLASORU, ad)}{os.pathsep}modeller"]
     # onnxruntime'ın paket bilgisi de girsin (sürümünü okuyan kod çökmesin).
     komut += ["--copy-metadata", "onnxruntime"]
-    ikon = simge()
+    # 1.4.2: OpenVINO (grafik işlemcisi) — kendi kancamız süzülmüş seçimi
+    # toplar (pyi_kancalari/hook-openvino.py → ov_toplanacaklar), paket bilgisiyle.
+    komut += ["--additional-hooks-dir", KANCA_DIZINI, "--hidden-import", "openvino",
+              "--copy-metadata", "openvino"]
     if ikon:
         komut += ["--icon", ikon]
-
-    yaz("  PyInstaller çalışıyor (birkaç dakika sürebilir)…")
-    r = subprocess.run(komut)
-    if r.returncode:
-        sys.exit("  ✗ Derleme başarısız.")
-    return os.path.join(YAPI, "dist", AD)
+    return komut
 
 
 def derleme_sinamasi(klasor: str) -> None:
@@ -376,10 +434,35 @@ def derleme_sinamasi(klasor: str) -> None:
                            env={**os.environ, "__COMPAT_LAYER": "RunAsInvoker"})
     except (OSError, subprocess.TimeoutExpired) as e:
         sys.exit(f"  ✗ Derlenen .exe çalıştırılamadı: {e}")
-    if r.returncode != 0 or "hazır" not in r.stdout:
-        sys.exit(f"  ✗ Derlenen .exe'de plaka okuyucu çalışmıyor (çıkış {r.returncode}):\n"
-                 f"{(r.stdout + r.stderr)[-1500:]}")
+    hata = sinama_hatasi(r.returncode, r.stdout, gpu_var=_derleyende_gpu_var())
+    if hata:
+        sys.exit(f"  ✗ {hata}:\n{(r.stdout + r.stderr)[-1500:]}")
     yaz("  ✓ Derlenen .exe'de plaka okuyucu hazır.")
+    for satir in r.stdout.splitlines():
+        if "Grafik işlemcisi" in satir:
+            yaz(f"  {satir.strip()}")
+
+
+def _derleyende_gpu_var() -> bool:
+    try:
+        import openvino as ov
+        return "GPU" in ov.Core().available_devices
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def sinama_hatasi(kod: int, cikti: str, gpu_var: bool) -> str | None:
+    """
+    `--plaka-sina` sonucu → hata metni ya da None. 1.4.2: derleyen bilgisayarda
+    grafik işlemcisi varsa .exe de onu kullanabilmeli — eksik bir OpenVINO
+    eklentisi sahada sessizce işlemciye düşmesin.
+    """
+    if kod != 0 or "hazır" not in cikti:
+        return f"Derlenen .exe'de plaka okuyucu çalışmıyor (çıkış {kod})"
+    if gpu_var and "Grafik işlemcisi hazır" not in cikti:
+        return ("Bu bilgisayarda grafik işlemcisi var ama derlenen .exe onu kullanamıyor "
+                "(pakette OpenVINO eklentisi eksik olabilir)")
+    return None
 
 
 def oku_beni(klasor: str) -> None:

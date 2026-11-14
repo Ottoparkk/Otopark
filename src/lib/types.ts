@@ -25,6 +25,12 @@ export type IstisnaTur =
   // 039: a camera saw a car but its plate could not be read, or plate
   // reading itself was down. Entrance and single-gate lanes only.
   | 'OKUNAMADI'
+  // 055/056: single gate, the bridge saw the car ENTER but an old ticket is
+  // still open — today's rule would have closed it as an exit.
+  | 'GIRISTE_ACIK_BILET'
+  // 055/056: single gate, a car moving INSIDE the yard (plate sure) has no
+  // open ticket. "Giriş aç" opens it (istisna_bilet_ac accepts it).
+  | 'ICERIDE_BILETSIZ'
 export type HesapDurum = 'AKTIF' | 'PASIF'
 export type PuanHareketTur = 'KAZANIM' | 'KULLANIM' | 'IPTAL' | 'DUZELTME'
 export type KasaTur = 'GELIR' | 'GIDER'
@@ -52,6 +58,9 @@ export type BildirimTur =
   | 'BILET_IPTAL_KARAR'
   | 'ODEME_BEKLIYOR'
   | 'KAMERA_GERI_ACILDI'
+  // 057/058: the nightly camera summary (yesterday's entries / exits / staff
+  // cards). Yönetici-only.
+  | 'KAMERA_GUNLUK'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
@@ -128,6 +137,8 @@ export const ISTISNA_ETIKET: Record<IstisnaTur, string> = {
   COKLU_ESLESME: 'Birden fazla eşleşme',
   YON_BELIRSIZ: 'Giriş mi çıkış mı belirsiz',
   OKUNAMADI: 'Plaka okunamadı',
+  GIRISTE_ACIK_BILET: 'Girişte eski açık bilet',
+  ICERIDE_BILETSIZ: 'İçeride bileti olmayan araç',
 }
 
 /**
@@ -173,6 +184,8 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   ODEME_BEKLIYOR: 'Ödeme bekliyor',
   // 054: "Araç çıkmadı" reopened a camera-closed ticket. Yönetici-only.
   KAMERA_GERI_ACILDI: 'Kamera çıkışı geri alındı',
+  // 058: nightly summary of yesterday's camera work. Yönetici-only.
+  KAMERA_GUNLUK: 'Kamera günlük özeti',
 }
 
 /* ------------------------------------------------------------------- rows */

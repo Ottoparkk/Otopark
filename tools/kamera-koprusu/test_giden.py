@@ -220,11 +220,25 @@ def test_dosya_icerigi_json():
         assert json.load(f) == _olay(3)
 
 
+def test_yon_ipucu_kutuda_korunur():
+    # 1.4.2 (B5): köprünün yön ipucu (hareket) kutuya yazılır ve AYNEN gider;
+    # ipucusuz eski dosya da ipucusuz gider (sunucu bugünkü kararı verir).
+    d = _klasor()
+    k = giden.Giden(d, kayit=_Kayit())
+    ipuclu = dict(_olay(4), hareket="GIRDI")
+    k.yaz(ipuclu)
+    k.yaz(_olay(5))
+    giden_ler: list[dict] = []
+    giden.calistir(k, lambda o: (giden_ler.append(o), giden.TAMAM)[1],
+                   uyu=lambda s: None, ara=lambda s: None, dur=lambda: len(giden_ler) >= 2)
+    assert giden_ler == [ipuclu, _olay(5)], giden_ler
+
+
 if __name__ == "__main__":
     # Bu çalıştırmanın geçici dosyaları tek klasörde toplanır ve SİLİNMEZ
     # (sahibin kuralı: hiçbir betik bir şey silmez); yolu sonunda yazılır.
-    kok = tempfile.mkdtemp(prefix="otopark-test-giden-")
-    tempfile.tempdir = kok
+    import kalinti
+    kok = kalinti.klasor("otopark-test-giden-")       # tek klasörde (kalinti.py)
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     basarisiz: list[str] = []
     for t in testler:

@@ -9,8 +9,9 @@ kırılgan MERGE'ü demekti. Kip ilk argümandan seçiliyor.
     OtoparkKamera.exe --kopru --ayar X → köprünün kendisi (Görev Zamanlayıcı)
     OtoparkKamera.exe --durum          → çalışıyor mu
     OtoparkKamera.exe --kaldir         → kaldır
-    OtoparkKamera.exe --plaka          → plaka okumayı ve araç bulucuyu canlı göster
+    OtoparkKamera.exe --plaka [dakika] → plaka okumayı ve araç bulucuyu canlı göster (1-60, varsayılan 2)
     OtoparkKamera.exe --plaka-sina     → plaka okuyucu ve araç bulucu yükleniyor mu (öz sınama)
+    OtoparkKamera.exe --video <dosya>  → bir kaydı gerçek köprüden geçir, hiçbir şey gönderme
 
 Çift tıklayan kişi hiçbir argüman bilmek zorunda değil: ilk kurulumda doğrudan
 sihirbaz açılır, sonrasında menü çıkar.
@@ -26,6 +27,13 @@ for _a in (sys.stdout, sys.stderr):
         _a.reconfigure(encoding="utf-8", errors="replace")
 
 DONMUS = getattr(sys, "frozen", False)
+
+# 1.4.2 (E12): komutun yazıldığı klasör — aşağıdaki chdir'den ÖNCE. `--video
+# kayit.mp4` gibi göreli bir yol buna göre çözülür, .exe'nin klasörüne değil.
+try:
+    BASLANGIC_KLASORU = os.getcwd()
+except OSError:
+    BASLANGIC_KLASORU = ""
 
 if DONMUS:
     # UAC ile yükseltilen bir süreç System32'de başlayabiliyor. `--kare`
@@ -86,12 +94,35 @@ def _kurulum() -> int:
     return kurulum.main()
 
 
+PLAKA_DAKIKA_VARSAYILAN = 2
+PLAKA_DAKIKA_EN_COK = 60
+
+
+def _plaka_dakikasi(args: list[str]) -> int | None:
+    """
+    1.4.2 (E11): `--plaka [dakika]`. Verilmezse 2; 1-60 arası tam sayı.
+    Geçersizse None (çağıran ne yazılacağını söyler).
+    """
+    if not args:
+        return PLAKA_DAKIKA_VARSAYILAN
+    d = args[0].strip()
+    if not d.isdigit():
+        return None
+    n = int(d)
+    return n if 1 <= n <= PLAKA_DAKIKA_EN_COK else None
+
+
 def _plaka() -> int:
     """
     Kurulu her şeridin kamerasında plaka bulma ve okumayı sırayla gösterir
     (yönetici olarak açılmalı: ayar dosyası yalnızca yöneticilere açık).
     Hiçbir şey göndermez ve kaydetmez — köprü çalışırken de güvenle koşar.
+    1.4.2: `--plaka 10` → her şerit 10 dakika (1-60; verilmezse 2).
     """
+    dakika = _plaka_dakikasi(sys.argv[2:])
+    if dakika is None:
+        print(f"\n  Süre 1-{PLAKA_DAKIKA_EN_COK} dakika olmalı: --plaka 10")
+        return 2
     ayarlar = sorted(glob.glob(os.path.join(_ayar_klasoru(), "kopru-*.json")))
     if not ayarlar:
         print("\n  Kurulu bir köprü bulunamadı — önce kurulumu çalıştırın.")
@@ -100,8 +131,47 @@ def _plaka() -> int:
     kod = 0
     for yol in ayarlar:
         print(f"\n  ── {os.path.basename(yol)} ──")
-        kod = kopru.plaka_testi(yol) or kod
+        kod = kopru.plaka_testi(yol, sure_sn=dakika * 60.0) or kod
     return kod
+
+
+def _video() -> int:
+    """
+    1.4.2 (E12): `--video <dosya> [GIRIS|CIKIS|ORTAK]` — bir kamera kaydını
+    gerçek köprü döngüsünden geçirir, hiçbir şey göndermez (video.py). Tek
+    şerit kuruluysa o; birden çoksa şerit yazılmalı. Ayar dosyası kopru İÇE
+    AKTARILMADAN önce ortama yazılır: kopru ayarlarını içe aktarılırken okur.
+    """
+    args = sys.argv[2:]
+    if not args:
+        print("\n  Kullanım: --video <dosya> [GIRIS|CIKIS|ORTAK]")
+        return 2
+    dosya = os.path.join(BASLANGIC_KLASORU, args[0]) if BASLANGIC_KLASORU else args[0]
+    if not os.path.isfile(dosya):
+        print(f"\n  Video dosyası bulunamadı: {dosya}")
+        return 2
+    ayarlar = sorted(glob.glob(os.path.join(_ayar_klasoru(), "kopru-*.json")))
+    if not ayarlar:
+        print("\n  Kurulu bir köprü bulunamadı — önce kurulumu çalıştırın.")
+        return 1
+    kurulu = {os.path.basename(y)[len("kopru-"):-len(".json")].upper(): y for y in ayarlar}
+    if len(args) > 1:
+        serit = args[1].strip().upper()
+        if serit not in kurulu:
+            print(f"\n  {serit} şeridi kurulu değil. Kurulu: {', '.join(sorted(kurulu))}")
+            return 2
+        yol = kurulu[serit]
+    elif len(kurulu) == 1:
+        yol = next(iter(kurulu.values()))
+    else:
+        print(f"\n  Birden çok şerit kurulu — hangisi? --video <dosya> "
+              f"{'|'.join(sorted(kurulu))}")
+        return 2
+    os.environ["OTOPARK_AYAR"] = yol
+    # Oynatma GPU için köprüyü yeniden başlatmasın (gerçek dosyaya yazardı).
+    os.environ["GPU_YENIDEN_BASLAT_SN"] = "1000000000"
+    import video
+    return video.oynat(dosya).kod
 
 
 def _plaka_sina() -> int:
@@ -128,13 +198,42 @@ def _plaka_sina() -> int:
         print(f"  ✗ Araç bulucu çalışmıyor: {e}")
         return 1
     print("  ✓ Araç bulucu hazır (model doğrulandı, öz sınama geçti).")
+    return _gpu_sina(ayar)
+
+
+def _gpu_sina(ayar: dict) -> int:
+    """
+    1.4.2: grafik işlemcisi kümesi — okuyucu ve İKİ araç modeli (tiny, YOLO11s)
+    GPU'da öz sınamadan geçmeli. GPU YOKSA geçer (köprü işlemcide çalışır) ama
+    söylenir; GPU varken bir model tutmazsa 1 (paketteki OpenVINO bozuk olabilir).
+    """
+    import arac
+    import hizlandirici
+    import plaka
+    try:
+        hiz = hizlandirici.Hizlandirici.ac()
+    except plaka.HizlandiriciHatasi as e:
+        print(f"  ! Grafik işlemcisi kullanılamıyor: {e} — köprü işlemcide çalışır.")
+        return 0
+    try:
+        plaka.yukle(ayar, hiz=hiz)
+    except plaka.PlakaHatasi as e:
+        print(f"  ✗ Grafik işlemcisinde plaka okuyucu çalışmıyor: {e}")
+        return 1
+    for p in (arac.YOLOX_TINY, arac.YOLO11S):
+        try:
+            arac.yukle(ayar, profil=p, hiz=hiz)
+        except plaka.PlakaHatasi as e:
+            print(f"  ✗ Grafik işlemcisinde {p.ad} çalışmıyor: {e}")
+            return 1
+    print("  ✓ Grafik işlemcisi hazır (plaka okuyucu, YOLOX-tiny ve YOLO11s öz sınamayı geçti).")
     return 0
 
 
 # Geç içe aktarma bilerek: `--durum` cv2'ye hiç dokunmasın ve paketlenmemiş
 # kurulumda opencv olmadan da çalışabilsin.
 KIPLER = {"--durum": _durum, "--kaldir": _kaldir, "--kurulum": _kurulum,
-          "--plaka": _plaka, "--plaka-sina": _plaka_sina}
+          "--plaka": _plaka, "--plaka-sina": _plaka_sina, "--video": _video}
 
 
 def main() -> int:
@@ -160,7 +259,8 @@ def main() -> int:
         # Duraklamadan ÖNCE yazılmalı: ters sırada mesaj "Enter'a basın"ın
         # altında kalır ve kullanıcı neyi yanlış yazdığını göremez.
         print(f"\n  Bilinmeyen seçenek: {kip}")
-        print("  Kullanım: --durum | --kaldir | --kurulum | --plaka | --plaka-sina | "
+        print("  Kullanım: --durum | --kaldir | --kurulum | --plaka [dakika] | --plaka-sina | "
+              "--video <dosya> [şerit] | "
               "--kopru --ayar <dosya>")
         if DONMUS:
             bekle()

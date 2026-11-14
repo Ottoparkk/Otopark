@@ -117,6 +117,52 @@ def test_kutu_esik_ve_kirpma():
     assert plaka.kutulari_coz(np.zeros((0, 7), np.float32), 1.0, 0, 0, 0.3, 100, 100) == []
 
 
+def test_kutu_gpu_dolgu_satirlari_atlanir():
+    # 1.4.2: OpenVINO bulucunun çıktısını HEP 100 satıra doldurur; dolgu
+    # satırının görüntü sırası (ilk sütun) -1'dir (2026-11-12 ölçümü). Skoru
+    # bugün 0 olsa da dolgu satırı ASLA plaka sayılmaz.
+    satirlar = np.array([
+        [0, 10, 10, 50, 30, 0, 0.9],
+        [-1, 60, 60, 90, 80, 0, 0.95],     # dolgu (skorlu olsa bile)
+        [-1, 0, 0, 0, 0, 0, 0],
+    ], np.float32)
+    kutular = plaka.kutulari_coz(satirlar, 1.0, 0.0, 0.0, 0.30, 100, 100)
+    assert [round(k.skor, 2) for k in kutular] == [0.9], kutular
+
+
+class _SahteHiz:
+    """
+    Hizlandirici yerine: istenen oturumları (dosya, hassas, şekiller) kaydeder
+    ve açamaz — yükleme PlakaHatasi ile durmalı (köprü işlemciye geçer).
+    """
+
+    def __init__(self):
+        self.istenen = []
+
+    def oturum(self, yol, hassas=False, sekiller=None):
+        # 1.4.2: oturum YEDEKSİZ açılır (öz sınama grafik işlemcisinde koşsun);
+        # işlemci yedeği sınamadan sonra `yedekli` ile takılır.
+        self.istenen.append((os.path.basename(yol), hassas, sekiller))
+        if yol.endswith(plaka.OKUYUCU.dosya):
+            raise plaka.HizlandiriciHatasi("sahte: okuyucu açılmadı")
+        return object()
+
+
+def test_yukle_gpu_okuyucu_tam_hassas():
+    # 1.4.2: okuyucu grafik işlemcisinde f32 (f16 olasılığı 0.007 kaydırıyor —
+    # 0.95 / 0.99 eşiklerinin dibinde), bulucu f16. Okuyucunun kullandığı iki
+    # toplu boyut (öz sınama 1, okuma 2) baştan derlenir.
+    h = _SahteHiz()
+    try:
+        plaka.yukle(plaka.calisma_ayarlari()[0], hiz=h)
+        raise AssertionError("açılamayan grafik işlemcisi oturumuyla yüklendi")
+    except plaka.PlakaHatasi as e:
+        assert "sahte: okuyucu açılmadı" in str(e), e
+    assert h.istenen == [(plaka.BULUCU.dosya, False, None),
+                         (plaka.OKUYUCU.dosya, True, plaka.OKUYUCU_SEKILLERI)], h.istenen
+    assert plaka.OKUYUCU_SEKILLERI == [(1, 64, 128, 3), (2, 64, 128, 3)]
+
+
 def test_tam_plaka_kenar_payi():
     en, boy = 1568, 668                           # pay: x 15.68, y 6.68
     K = plaka.Kutu
@@ -829,8 +875,8 @@ def test_gercek_okuyucu_sabit_girdide_sabit_cikti():
 if __name__ == "__main__":
     # Bu çalıştırmanın geçici dosyaları tek klasörde toplanır ve SİLİNMEZ
     # (sahibin kuralı: hiçbir betik bir şey silmez); yolu sonunda yazılır.
-    kok = tempfile.mkdtemp(prefix="otopark-test-plaka-")
-    tempfile.tempdir = kok
+    import kalinti
+    kok = kalinti.klasor("otopark-test-plaka-")       # tek klasörde (kalinti.py)
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     basarisiz: list[str] = []
     for t in testler:

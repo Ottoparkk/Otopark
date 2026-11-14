@@ -110,12 +110,29 @@ class PlakaHatasi(Exception):
     """Okuyucu kullanılamıyor — sebep kullanıcıya gösterilecek Türkçe metin."""
 
 
+class HizlandiriciHatasi(Exception):
+    """
+    1.4.2: grafik işlemcisi (OpenVINO) açılamadı ya da bir çağrıda bozuldu.
+    Burada tanımlı (hizlandirici.py değil): plaka ve arac onu yakalar,
+    hizlandirici ise ikisini içe aktarır.
+    """
+
+
+# 1.4.2: çalışırken grafik işlemcisini bırakıp işlemciye geçen modeller (ad),
+# geçiş sırasıyla. Kalp satırı (hizlandirici.kalp_etiketi) bunu söyler.
+GPU_BIRAKILANLAR: list[str] = []
+# Bir çağrı grafik işlemcisinde kaç kez denenir (sahibin isteği, 2026-11-13:
+# tek hatada işlemciye düşmesin). Üçü de olmazsa AYNI çağrı işlemcide yapılır.
+GPU_DENEME = 3
+
+
 # ------------------------------------------------------------------ ayarlar ----
 
 AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK",
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
                "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP",
-               "PLAKA_BIRLESIK")
+               "PLAKA_BIRLESIK", "HIZLANDIRICI", "ARAC_MODEL", "ARAC11_BUL_ESIK",
+               "ARAC11_GECIS_ESIK")
 
 
 def _oran(alt_dahil: bool):
@@ -150,6 +167,17 @@ _KURALLAR = (
     # 0 = yalnızca tek karede %95 iki görünüm kuralı.
     ("PLAKA_BIRLESIK", "birlesik", True, lambda s: {"1": True, "0": False}[s.strip()],
      lambda v: True),
+    # 1.4.2: modeller grafik işlemcisinde (OpenVINO). CPU = 1.4.1 kümesi
+    # (ORT-CPU + YOLOX-tiny); GPU açılamazsa köprü kendiliğinden ona döner.
+    ("HIZLANDIRICI", "hizlandirici", "GPU", lambda s: s.strip().upper(),
+     lambda v: v in ("GPU", "CPU")),
+    # Grafik işlemcisindeki araç modeli. "otomatik": YOLO11s'in eşikleri
+    # ölçülene kadar (arac.YOLO11S.yer_tutucu) tiny; işlemci kümesi hep tiny.
+    ("ARAC_MODEL", "arac_model", "otomatik", lambda s: s.strip().lower(),
+     lambda v: v in ("otomatik", "yolo11s", "tiny")),
+    # YOLO11s'in eşikleri (puan ölçeği YOLOX'tan farklı). Boş = profilin değeri.
+    ("ARAC11_BUL_ESIK", "arac11_esik", None, float, lambda v: 0 < v < 1),
+    ("ARAC11_GECIS_ESIK", "arac11_gecis_esik", None, float, lambda v: 0 < v < 1),
 )
 
 
@@ -226,6 +254,8 @@ def kutulari_coz(cikti: np.ndarray, r: float, dw: float, dh: float, esik: float,
     """Model satırları [b, x1, y1, x2, y2, sınıf, skor] → kırpıntı kutuları (skora göre)."""
     kutular = []
     for satir in np.asarray(cikti).reshape(-1, 7).tolist():
+        if satir[0] < 0:
+            continue        # 1.4.2: OpenVINO'nun dolgu satırı (görüntü sırası -1)
         skor = float(satir[6])
         if skor < esik:
             continue
@@ -853,11 +883,29 @@ def oturum_ayarlari(ort, iplik: int):
     return so
 
 
-def yukle(ayar: dict, dizin: str | None = None) -> Plakaci:
+def ort_oturumu(yol: str, iplik: int):
+    """Bir modelin onnxruntime (işlemci) oturumu; onnxruntime yoksa ImportError."""
+    ort = _ort_yukle()
+    return ort.InferenceSession(yol, oturum_ayarlari(ort, iplik), providers=["CPUExecutionProvider"])
+
+
+# 1.4.2: okuyucu grafik işlemcisinde bu toplu boyutlarla baştan derlenir
+# (öz sınama 1, oku_cift 2); girdisi değişken boyutlu, GPU ilk görüşte derler.
+OKUYUCU_SEKILLERI = [(1, OKUYUCU_BOY, OKUYUCU_EN, 3), (2, OKUYUCU_BOY, OKUYUCU_EN, 3)]
+
+
+def yukle(ayar: dict, dizin: str | None = None, hiz=None) -> Plakaci:
     """
     İki modeli doğrular, açar ve sınar. Her hata PlakaHatasi (Türkçe sebep);
     köprü bunu yakalar, kayda yazar ve plaka okuyucusuz (araçlar personele)
     çalışmaya devam eder — asla düşmez.
+
+    `hiz` (1.4.2, hizlandirici.Hizlandirici): modeller grafik işlemcisinde
+    açılır — bulucu f16, okuyucu f32 (f16 olasılığı 0.007'ye kadar kaydırıyor:
+    0.95 / 0.99 eşiklerinin dibinde). Öz sınama grafik işlemcisinde YEDEKSİZ
+    koşar (bozuk GPU sınamayı işlemcide geçip "GPU" denmesin — 2026-11-13);
+    geçince her oturum işlemci yedeğiyle sarılır (hiz.yedekli): çalışırken
+    bozulursa AYNI modelin işlemci oturumuna geçer.
     """
     d = dizin or MODEL_DIZINI
     for m in (BULUCU, OKUYUCU):
@@ -866,15 +914,20 @@ def yukle(ayar: dict, dizin: str | None = None) -> Plakaci:
             raise PlakaHatasi(f"model dosyası bulunamadı: {m.dosya}")
         if sha256_dosya(yol) != m.sha256:
             raise PlakaHatasi(f"model doğrulanamadı (özet uyuşmuyor): {m.dosya}")
+    b_yol, o_yol = os.path.join(d, BULUCU.dosya), os.path.join(d, OKUYUCU.dosya)
+    iplik = ayar["iplik"]
+    if hiz is None:
+        try:
+            _ort_yukle()
+        except ImportError as e:
+            raise PlakaHatasi(f"onnxruntime yüklenemedi: {e}") from None
     try:
-        ort = _ort_yukle()
-    except ImportError as e:
-        raise PlakaHatasi(f"onnxruntime yüklenemedi: {e}") from None
-    try:
-        so = oturum_ayarlari(ort, ayar["iplik"])
-        saglayici = ["CPUExecutionProvider"]
-        bulucu = ort.InferenceSession(os.path.join(d, BULUCU.dosya), so, providers=saglayici)
-        okuyucu = ort.InferenceSession(os.path.join(d, OKUYUCU.dosya), so, providers=saglayici)
+        if hiz is None:
+            bulucu = ort_oturumu(b_yol, iplik)
+            okuyucu = ort_oturumu(o_yol, iplik)
+        else:
+            bulucu = hiz.oturum(b_yol, hassas=False)
+            okuyucu = hiz.oturum(o_yol, hassas=True, sekiller=OKUYUCU_SEKILLERI)
     except Exception as e:  # noqa: BLE001
         raise PlakaHatasi(f"model açılamadı: {type(e).__name__}: {e}") from None
     p = Plakaci(bulucu, okuyucu, ayar)
@@ -884,4 +937,7 @@ def yukle(ayar: dict, dizin: str | None = None) -> Plakaci:
         raise
     except Exception as e:  # noqa: BLE001
         raise PlakaHatasi(f"öz sınama çalışmadı: {type(e).__name__}: {e}") from None
+    if hiz is not None:
+        p._bulucu = hiz.yedekli(bulucu, lambda: ort_oturumu(b_yol, iplik), "plaka bulucu")
+        p._okuyucu = hiz.yedekli(okuyucu, lambda: ort_oturumu(o_yol, iplik), "plaka okuyucu")
     return p

@@ -1,0 +1,53 @@
+OTOPARK HIZ TESTİ — İÇERİK VE LİSANSLAR
+=====================================
+
+Bu paket YALNIZCA ölçüm içindir; Otopark ürününün (köprünün) parçası değildir
+ve başkasına dağıtılmaz.
+
+Program
+-------
+hiz_testi.py — Otopark projesi (tools/hiz-testi).
+Python 3.14 (PSF), NumPy 2.3.4 (BSD-3-Clause), OpenCV 4.13.0.92 headless
+(Apache-2.0), onnxruntime 1.31.0 (MIT), OpenVINO 2026.4.1 (Apache-2.0),
+PyInstaller 6.22.3 önyükleyicisi (GPL-2.0, önyükleyici istisnası ile).
+
+Modeller (modeller\ klasörü; SHA-256)
+-------------------------------------
+yolox_tiny.onnx      427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7
+  YOLOX-tiny, Megvii-BaseDetection YOLOX 0.1.1rc0 (köprüdeki ile aynı). Apache-2.0.
+yolox_s_640.onnx     c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063
+  YOLOX-s, aynı sürümden, değiştirilmeden. Apache-2.0.
+  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+yolox_s_416.onnx     88decee906559f571fdf83741fe57d935976f774234caae110d90f4b9aebcc3f
+  Aynı ağırlıklar; yalnızca girdi boyutu 416 olarak işaretlendi (onnx 1.23.2,
+  shape_inference + checker). Apache-2.0.
+yolo11s_416.onnx     8f9570cebf53fa8dc3820d5c52099b92d080001aa82cc9115e5b0eb04e8e4c54
+yolo11s_640.onnx     5c56db2f3bc7baaf650ad3e55e4ec4ecda1d245f83d8968e731ad806bebc3161
+  YOLO11s, Ultralytics. AGPL-3.0. Kaynak ağırlık:
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt
+  (19 313 732 bayt), ultralytics 8.4.210 ile ONNX'e çevrildi (imgsz 416 / 640,
+  simplify kapalı). Kaynak kod: https://github.com/ultralytics/ultralytics
+  Burada YALNIZCA ölçüm içindir. Güncelleme (2026-11-12): sahibin kararıyla
+  YOLO11s köprü 1.4.2'nin araç bulucusu oldu (yalnızca kendi otoparkımız;
+  satılırsa YOLOX-s); 2026-11-13 gece fotoğraflarından sonra yolo11s_640.onnx
+  (416 uzak / kesik araçları kaçırıyordu) — bkz. kamera-koprusu/modeller/LISANS.txt 5.
+yolo-v9-t-640-license-plates-end2end.onnx
+                     c3c1026ca7d0585dd88084d68182dd897113712fa734ae1557ca70174440c076
+  Plaka bulucu, open-image-models 0.5.1 (köprüdeki ile aynı). Kod MIT;
+  ağırlıkların lisansı kaynakta ayrıca belirtilmemiş (köprü LISANS.txt).
+cct_s_v2_global.onnx 384bbbd2cea3ef54761d3df70822ef3a349ee1a112aeafddbe0e3ba06bc6e47b
+  Plaka okuyucu, fast-plate-ocr 1.1.0 (köprüdeki ile aynı). MIT.
+arac_sinama.jpg      0c32b6e8364fcd8e32385faecea52c1eaa90483d1aa40849d1be36b9cb07b956
+  Köprünün araç öz sınama resmi (YOLOX assets/dog.jpg, küçültülmüş). Apache-2.0.
+
+dfine_n_416.onnx     a6538692b1efd73368e45a0d1e24c35985b9608e58893836824a669f704570ad
+dfine_n_640.onnx     876e5fc90c5f57d1921875c5f1d67dbd0a8ce959c849c62b7add1bd544572a0b
+  D-FINE-N (Peterande/D-FINE), Apache-2.0. Resmî ağırlık:
+  https://github.com/Peterande/storage/releases/download/dfinev1.0/dfine_n_coco.pth
+  (15 489 558 bayt), depo commit 956d1709314c2c6a4df6f34de232054578a7449f,
+  yapılandırma configs/dfine/dfine_hgnetv2_n_coco.yml. Depodaki
+  tools/deployment/export_onnx.py ile aynı adımlar (opset 16, onnx checker);
+  yapılandırmada eval_spatial_size = 416 / 640 ve remap_mscoco_category =
+  False (sınıflar 0-79, köprüdeki gibi). 416'da decoder.anchors /
+  decoder.valid_mask yeniden üretilir (öğrenilmiş değil, boyuttan hesaplanır);
+  öğrenilmiş bütün ağırlıklar yüklendi ve denetlendi.

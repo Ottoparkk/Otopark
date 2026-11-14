@@ -20,16 +20,22 @@ yerleştirilmiş, 114 dolgu (güncel YOLOX). Eski "legacy" biçim (RGB + ImageNe
 ortalama/sapma) aynı dosyada HİÇ araç bulmuyordu — hata vermeden. Öz sınama
 (gerçek bir resimde aracı bulmalı) ve test_arac bu seçimi kilitler.
 
+1.4.2: ikinci model YOLO11s (Ultralytics, AGPL-3.0 — sahibin kararı
+2026-11-12: köprü yalnızca kendi otoparkımızda; satılırsa YOLOX-s). Girdisi
+ve çıktısı farklı; her model kendi `Profil`ini taşır (aşağıda). Lisans:
+modeller/LISANS.txt 5).
+
 onnxruntime burada içe aktarılmaz: telemetrisi kapalı tek yol plaka._ort_yukle.
 """
 from __future__ import annotations
 
 import os
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import cv2
 import numpy as np
 
+import gunluk
 import plaka
 
 
@@ -123,6 +129,39 @@ def coz(ham: np.ndarray, r: float, en: int, boy: int):
     return kutular, arac, insan
 
 
+# ------------------------------------------------------ YOLO11 (1.4.2) ---
+# Ultralytics YOLO11 dışa aktarımı: girdi ORTALANMIŞ letterbox, RGB, /255
+# (plaka bulucunun letterbox'ı birebir aynı — tek kod yolu); çıktı [1, 84, N]:
+# satır 0-3 GİRDİ pikselinde (cx, cy, w, h), 4-83 sınıf olasılıkları. Nesne
+# puanı YOK. YOLOX ön işlemiyle beslenirse hata vermeden zayıf görür.
+
+def on_isle11(img: np.ndarray, n: int = GIRDI) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """BGR kırpıntı → ((1, 3, n, n) float32 RGB 0-1, (r, dw, dh))."""
+    x, r, dw, dh = plaka.letterbox(img, n)
+    return x, (r, dw, dh)
+
+
+def coz11(ham: np.ndarray, donus: tuple[float, float, float], en: int, boy: int):
+    """
+    Ham çıktı [1, 84, N] → (kutular (N, 4) kırpıntı pikselinde x1 y1 x2 y2,
+    araç puanı (N,), insan puanı (N,)). Puan = sınıf olasılığı.
+    """
+    p = np.asarray(ham, dtype=np.float32)
+    if p.ndim != 3 or p.shape[:2] != (1, 84):
+        raise ValueError(f"beklenmedik çıktı: {np.shape(ham)}")
+    p = p[0].T
+    r, dw, dh = donus
+    merkez, yari = p[:, :2], p[:, 2:4] / 2
+    kutular = np.concatenate([merkez - yari, merkez + yari], axis=1)
+    kutular -= np.array([dw, dh, dw, dh], dtype=np.float32)
+    kutular /= r
+    kutular[:, 0::2] = np.clip(kutular[:, 0::2], 0, en)
+    kutular[:, 1::2] = np.clip(kutular[:, 1::2], 0, boy)
+    arac = p[:, [4 + s for s in ARAC_SINIFLARI]].max(axis=1)
+    insan = p[:, 4 + INSAN]
+    return kutular, arac, insan
+
+
 def _haric_orani(kutular: np.ndarray, haric) -> np.ndarray:
     """
     plaka.haric_orani'nin vektör hâli: kutunun kesilen köşelerin BİRLEŞİMİNDE
@@ -150,9 +189,13 @@ def _haricsiz(kutular: np.ndarray, arac: np.ndarray, insan: np.ndarray, haric):
     return kutular[tut], arac[tut], insan[tut]
 
 
-def skorla(ham: np.ndarray, r: float, en: int, boy: int, haric) -> tuple[float, float]:
-    """(en yüksek araç puanı, en yüksek insan puanı); kesilen köşedekiler hariç."""
-    kutular, arac, insan = _haricsiz(*coz(ham, r, en, boy), haric)
+def skorla(ham: np.ndarray, r, en: int, boy: int, haric,
+           profil: "Profil | None" = None) -> tuple[float, float]:
+    """
+    (en yüksek araç puanı, en yüksek insan puanı); kesilen köşedekiler hariç.
+    `r`: profilin ön işleminin döndürdüğü dönüş bilgisi (YOLOX: ölçek).
+    """
+    kutular, arac, insan = _haricsiz(*(profil or YOLOX_TINY).coz(ham, r, en, boy), haric)
     a = float(arac.max()) if arac.size else 0.0
     i = float(insan.max()) if insan.size else 0.0
     return max(a, 0.0), max(i, 0.0)
@@ -167,13 +210,14 @@ def ortusme(a, b) -> float:
     return kesisim / birlesim if birlesim > 0 and kesisim > 0 else 0.0
 
 
-def kutulari_coz(ham: np.ndarray, r: float, en: int, boy: int, haric,
-                 alt: float = KUTU_ALT) -> tuple[list[AracKutu], float]:
+def kutulari_coz(ham: np.ndarray, r, en: int, boy: int, haric,
+                 alt: float = KUTU_ALT,
+                 profil: "Profil | None" = None) -> tuple[list[AracKutu], float]:
     """
     (araç kutuları — puanı ≥ alt, aynı aracın kopyaları birleşmiş (NMS),
     puana göre azalan; en yüksek insan puanı). Kesilen köşedekiler hariç.
     """
-    kutular, arac, insan = _haricsiz(*coz(ham, r, en, boy), haric)
+    kutular, arac, insan = _haricsiz(*(profil or YOLOX_TINY).coz(ham, r, en, boy), haric)
     i = float(insan.max()) if insan.size else 0.0
     sec = np.nonzero(arac >= alt)[0]
     if sec.size == 0:
@@ -184,75 +228,233 @@ def kutulari_coz(ham: np.ndarray, r: float, en: int, boy: int, haric,
     return sorted(sonuc, key=lambda k: -k.skor), max(i, 0.0)
 
 
+# ---------------------------------------------------------------- profiller ---
+
+class Profil(NamedTuple):
+    """
+    1.4.2: bir araç modeli ve ona ait her şey. Puan ölçeği modele göre değişir
+    (YOLO11'inki YOLOX'tan düşük), bu yüzden eşikler ve altın değer de burada.
+    """
+    ad: str
+    model: plaka.ModelDosyasi
+    girdi: int
+    hazirla: Callable    # BGR kırpıntı → (girdi, dönüş bilgisi)
+    coz: Callable        # (ham, dönüş bilgisi, en, boy) → (kutular, araç, insan)
+    altin: float         # SINAMA resmindeki en yüksek araç puanı (onnxruntime 1.31.0)
+    esik: float          # duran / kapıdan geçen araç (ARAC_BUL_ESIK'in karşılığı)
+    gecis_esik: float    # plakasız geçiş personele (ARAC_GECIS_ESIK'in karşılığı)
+    esik_anahtari: str   # calisma_ayarlari'nda üstüne yazan anahtar
+    gecis_anahtari: str
+    yer_tutucu: bool     # True: eşikler ölçülmedi, sahada açılmaz
+
+
+YOLOX_TINY = Profil("YOLOX-tiny", MODEL, GIRDI, on_isle, coz, ALTIN_ARAC, 0.35, 0.60,
+                    "arac_esik", "arac_gecis_esik", False)
+
+# YOLO11s (Ultralytics, AGPL-3.0). Sahibin kararı (2026-11-12): köprü yalnızca
+# kendi otoparkımızda çalışır; satılırsa YOLOX-s'e dönülür. Resmî yolo11s.pt
+# (assets v8.3.0), ultralytics 8.4.210 ile 640'ta ONNX'e aktarıldı.
+#
+# Neden 640 (2026-11-13, sahibin kararı): uygulamadaki 25 gece kanıt
+# fotoğrafı (11.11 20:00'den sonra, hepsi gerçek araç; sahibi baktı) yedi
+# modelle puanlandı. 416'da uzaktaki ya da kırpma kenarıyla kesilen araçları
+# her model kaçırıyor (YOLO11s 416: 21/25, tiny: 20/25 ≥ 0.30); YOLO11s 640
+# hepsini gördü (en düşük 0.34 — kameranın dibindeki büyük koyu araç).
+# Bedeli: sahadaki GPU'da ~85 ms (416'da 37), köprü ~6-7 kare/sn.
+#
+# Eşikler 0.30 / 0.60: 0.30 yirmi beşinin hepsini tutar; 0.60 bugünkünün
+# aynısı (640'ta 22/25 üstünde, tiny'de 12/25).
+#
+# Yanlış alarm (2026-11-13, aynı gün ölçüldü): 25 gece fotoğrafında araçlar
+# köprünün maske grisiyle (114) örtülüp kalan şerit (far yansıması, iz,
+# gölge) puanlandı → en yüksek 0.00. 48 kişili fotoğrafta YOLO11s'in her
+# araç puanı gerçek bir araçtandı; kişiye araç kutusu yok. 3 el arabası
+# (fıçı / kasa): YOLO11s 0.00-0.01, tiny 0.53 / 0.78 / 0.66 (tiny yanlış
+# alarm veriyordu). → ölçülmüş, "otomatik"in seçtiği model (sahibin kararı).
+GIRDI11 = 640
+
+
+def on_isle11_640(img: np.ndarray):
+    return on_isle11(img, GIRDI11)
+
+
+YOLO11S = Profil(
+    "YOLO11s",
+    plaka.ModelDosyasi(
+        "yolo11s_640.onnx",
+        "5c56db2f3bc7baaf650ad3e55e4ec4ecda1d245f83d8968e731ad806bebc3161",
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt",
+    ),
+    # Altın 0.49103: 2026-11-13, onnxruntime 1.31.0 CPU (kutu sağ üstte). Sınama
+    # resmi 416 × 312 — 640'a büyütülünce puan düşük, öz sınama yalnızca
+    # kaymayı arar. GPU (f16) 0.496.
+    GIRDI11, on_isle11_640, coz11, 0.49103, 0.30, 0.60,
+    "arac11_esik", "arac11_gecis_esik", False)
+
+
 # ------------------------------------------------------------------ bulucu ---
+
+def resim_oku(yol: str):
+    """
+    1.4.2: Türkçe harfli klasörde de okur. cv2.imread Windows'ta ASCII dışı
+    yolu açamaz ve sessizce None döner (hız aracı 1.0 sahada böyle açılmadı).
+    """
+    try:
+        veri = np.fromfile(yol, np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(veri, cv2.IMREAD_COLOR) if veri.size else None
+
 
 class AracBulucu:
     """Yüklenmiş model. Köprüde yalnızca `yukle()` oluşturur."""
 
-    def __init__(self, oturum, ayar: dict, dizin: str):
+    def __init__(self, oturum, ayar: dict, dizin: str, profil: Profil | None = None,
+                 yedek: Callable | None = None):
+        self._ayar = ayar
+        self._dizin = dizin
+        # 1.4.2: grafik işlemcisi çalışırken bozulursa (plaka.GPU_DENEME
+        # denemede) yedek() → (işlemci oturumu, YOLOX_TINY): bulucu geçer,
+        # eşikleri de değişir. yedek None = işlemci kümesi (hata işçiye gider).
+        self._yedek = yedek
+        self._cpu = None                  # açılmış işlemci yedeği (bir kez açılır)
+        self._yeni = None                 # GpuGeriDonus'un yayımladığı (oturum, profil)
+        self.islemcide = False
+        self._ac(oturum, profil or YOLOX_TINY)
+
+    def _ac(self, oturum, profil: Profil) -> None:
+        self.profil = profil
         self._oturum = oturum
         self._girdi = oturum.get_inputs()[0].name
-        self.esik = float(ayar["arac_esik"])
-        self.gecis_esik = float(ayar["arac_gecis_esik"])
-        self._dizin = dizin
+        self.esik = self._esik(profil.esik_anahtari, profil.esik)
+        self.gecis_esik = self._esik(profil.gecis_anahtari, profil.gecis_esik)
+
+    def _esik(self, anahtar: str, varsayilan: float) -> float:
+        v = self._ayar.get(anahtar)
+        return float(varsayilan if v is None else v)
+
+    def _yedege_gec(self, hata: Exception) -> None:
+        if self._cpu is None:
+            self._cpu = self._yedek()
+        self._ac(*self._cpu)
+        self.islemcide = True
+        plaka.GPU_BIRAKILANLAR.append("araç bulucu")
+        print(f"[!] {gunluk.GPU_BIRAKILDI_ISARETI}: araç bulucu ({hata}) — "
+              f"{plaka.GPU_DENEME} denemede olmadı, işlemcide {self.profil.ad} ile sürüyor "
+              f"(duran ≥{self.esik:.2f}, geçen ≥{self.gecis_esik:.2f})", flush=True)
+
+    @property
+    def gpu_da(self) -> bool:
+        """Grafik işlemcisinde mi (ya da yayımlanmış GPU oturumunu bekliyor mu)?"""
+        return self._yeni is not None or (self._yedek is not None and not self.islemcide)
+
+    def gpu_ver(self, oturum, profil: Profil) -> None:
+        """
+        1.4.2: öz sınamadan geçmiş yeni GPU oturumu (GpuGeriDonus, kendi iş
+        parçacığından). Bulucu onu bir sonraki karenin başında, KENDİ iş
+        parçacığında devralır: profil, ön işlem ve eşikler birlikte değişir.
+        """
+        self._yeni = (oturum, profil)
+
+    def _uygula(self) -> None:
+        yeni = self._yeni
+        if yeni is None:
+            return
+        self._yeni = None
+        if self._yedek is None:           # işlemci kümesiyle başladı: o oturum yedek olur
+            mevcut = (self._oturum, self.profil)
+            self._yedek = lambda: mevcut
+        self._ac(*yeni)
+        self.islemcide = False
 
     def _ham(self, kirpik: np.ndarray):
-        x, r = on_isle(kirpik)
-        return self._oturum.run(None, {self._girdi: x})[0], r
+        self._uygula()
+        x, donus = self.profil.hazirla(kirpik)
+        if self._yedek is None or self.islemcide:
+            return self._oturum.run(None, {self._girdi: x})[0], donus
+        son = None
+        for _ in range(plaka.GPU_DENEME):
+            try:
+                return self._oturum.run(None, {self._girdi: x})[0], donus
+            except plaka.HizlandiriciHatasi as e:
+                son = e
+        self._yedege_gec(son)
+        return self._ham(kirpik)                # AYNI kare işlemcide: kaybolmaz
 
     def skor(self, kirpik: np.ndarray, haric) -> tuple[float, float]:
         """Kırpıntıdaki (araç, insan) puanı, 0..1 (`--plaka` ve öz sınama)."""
         ham, r = self._ham(kirpik)
         h, w = kirpik.shape[:2]
-        return skorla(ham, r, w, h, haric)
+        return skorla(ham, r, w, h, haric, profil=self.profil)
 
     def kutular(self, kirpik: np.ndarray, haric) -> tuple[list[AracKutu], float]:
         """1.3.2: (araç kutuları, insan puanı) — köprü "araç NEREDE" diye bakar."""
         ham, r = self._ham(kirpik)
         h, w = kirpik.shape[:2]
-        return kutulari_coz(ham, r, w, h, haric)
+        return kutulari_coz(ham, r, w, h, haric, profil=self.profil)
 
     def oz_sinama(self) -> None:
         """Dosya doğru ama ÇALIŞIYOR mu? Değilse PlakaHatasi."""
         a, _ = self.skor(np.full((668, 1568, 3), 110, np.uint8), None)
         if a >= BOS_SINIR:
             raise plaka.PlakaHatasi(f"öz sınama başarısız: boş sahnede araç bulundu ({a:.2f})")
-        img = cv2.imread(os.path.join(self._dizin, SINAMA.dosya))
+        img = resim_oku(os.path.join(self._dizin, SINAMA.dosya))
         if img is None:
             raise plaka.PlakaHatasi(f"öz sınama başarısız: {SINAMA.dosya} okunamadı")
         a, _ = self.skor(img, None)
-        if abs(a - ALTIN_ARAC) > ALTIN_PAYI:
+        if abs(a - self.profil.altin) > ALTIN_PAYI:
             raise plaka.PlakaHatasi(f"öz sınama başarısız: sınama resminde araç puanı {a:.3f}")
 
 
-def yukle(ayar: dict, dizin: str | None = None) -> AracBulucu:
-    """
-    Modeli ve sınama resmini doğrular, açar ve sınar. Her hata PlakaHatasi
-    (Türkçe sebep); köprü onu kayda yazar ve araç bulucusuz (1.3.0 kuralıyla)
-    çalışmaya devam eder — asla düşmez.
-    """
-    d = dizin or plaka.MODEL_DIZINI
-    for m in (MODEL, SINAMA):
+def _dogrula(d: str, *dosyalar: plaka.ModelDosyasi) -> None:
+    for m in dosyalar:
         yol = os.path.join(d, m.dosya)
         if not os.path.isfile(yol):
             raise plaka.PlakaHatasi(f"araç bulucu dosyası bulunamadı: {m.dosya}")
         if plaka.sha256_dosya(yol) != m.sha256:
             raise plaka.PlakaHatasi(f"araç bulucu dosyası doğrulanamadı (özet uyuşmuyor): {m.dosya}")
+
+
+def yukle(ayar: dict, dizin: str | None = None, profil: Profil | None = None,
+          hiz=None) -> AracBulucu:
+    """
+    Modeli ve sınama resmini doğrular, açar ve sınar. Her hata PlakaHatasi
+    (Türkçe sebep); köprü onu kayda yazar ve araç bulucusuz (1.3.0 kuralıyla)
+    çalışmaya devam eder — asla düşmez. `profil` yoksa YOLOX-tiny (1.4.1).
+
+    `hiz` (1.4.2): model grafik işlemcisinde (f16) açılır; çalışırken
+    bozulursa bulucu işlemcideki YOLOX-tiny'ye geçer (yedek) — YOLO11s'in
+    işlemcide 123 ms'si bugünkünden yavaş olurdu.
+    """
+    p = profil or YOLOX_TINY
+    d = dizin or plaka.MODEL_DIZINI
+    for m in (p.model, SINAMA):
+        _dogrula(d, m)
+    if hiz is None:
+        try:
+            plaka._ort_yukle()
+        except ImportError as e:
+            raise plaka.PlakaHatasi(f"onnxruntime yüklenemedi: {e}") from None
+    yedek = None
     try:
-        ort = plaka._ort_yukle()
-    except ImportError as e:
-        raise plaka.PlakaHatasi(f"onnxruntime yüklenemedi: {e}") from None
-    try:
-        oturum = ort.InferenceSession(os.path.join(d, MODEL.dosya),
-                                      plaka.oturum_ayarlari(ort, ayar["iplik"]),
-                                      providers=["CPUExecutionProvider"])
+        if hiz is None:
+            oturum = plaka.ort_oturumu(os.path.join(d, p.model.dosya), ayar["iplik"])
+        else:
+            oturum = hiz.oturum(os.path.join(d, p.model.dosya))
+
+            def yedek():
+                _dogrula(d, MODEL)
+                return plaka.ort_oturumu(os.path.join(d, MODEL.dosya), ayar["iplik"]), YOLOX_TINY
     except Exception as e:  # noqa: BLE001
         raise plaka.PlakaHatasi(f"araç modeli açılamadı: {type(e).__name__}: {e}") from None
-    b = AracBulucu(oturum, ayar, d)
+    # Öz sınama YEDEKSİZ: grafik işlemcisinde bozuksa sınama işlemcide geçip
+    # "GPU" denmesin (2026-11-13); yedek ancak sınama geçince takılır.
+    b = AracBulucu(oturum, ayar, d, profil=p)
     try:
         b.oz_sinama()
     except plaka.PlakaHatasi:
         raise
     except Exception as e:  # noqa: BLE001
         raise plaka.PlakaHatasi(f"araç bulucu öz sınaması çalışmadı: {type(e).__name__}: {e}") from None
+    b._yedek = yedek
     return b

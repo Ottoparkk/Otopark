@@ -2682,7 +2682,8 @@ def test_paket_tum_moduller() -> None:
     burasi = os.path.dirname(os.path.abspath(__file__))
     kendi = {f[:-3] for f in os.listdir(burasi)
              if f.endswith(".py") and not f.startswith("test_")
-             and f not in ("paketle.py", "giris.py")}
+             # kalinti.py yalnızca testlerin (bıraktıkları tek klasörde): pakete girmez.
+             and f not in ("paketle.py", "giris.py", "kalinti.py")}
     eksik = kendi - set(paketle.MODULLER)
     assert not eksik, f"paketlenmeyen modül: {sorted(eksik)}"
     # Tersi de: listede olup dosyası olmayan modül (1.3.0'da silinen olay.py)
@@ -4075,6 +4076,128 @@ def test_durum_arac_izleme_satiri() -> None:
     assert "kapıda bekleyen: 1" in cikti, cikti
 
 
+def test_yerel_kipirti_kucuk_hareketi_gorur() -> None:
+    """
+    1.4.2 (A1): sahada gece hareket eden araçta bütün kırpıntının ortalama
+    farkı 0.27 (durgunken 0.04) — DURGUN_ESIGI (≥ 2.0) hiç aşılmıyordu.
+    Yerel kıpırtı = 16×15 px yamaların (160×120 gri) en büyük ortalama farkı:
+    küçük bir araç onu aşar, hafif gürültü aşmaz.
+    """
+    _kopru_yuklu()
+    import numpy as np
+    import kopru
+    a = np.full((120, 160), 100, np.uint8)
+    b = a.copy()
+    b[40:50, 64:76] = 220                                    # küçük araç belirdi
+    assert kopru.fark(a, b) < 2.0, kopru.fark(a, b)
+    assert kopru.yerel_kipirti(a, b) >= 2.0, kopru.yerel_kipirti(a, b)
+    r = np.random.default_rng(0)
+    g1 = (a + r.integers(0, 3, a.shape)).astype(np.uint8)
+    g2 = (a + r.integers(0, 3, a.shape)).astype(np.uint8)
+    assert kopru.yerel_kipirti(g1, g2) < 2.0, kopru.yerel_kipirti(g1, g2)
+    assert kopru.yerel_kipirti(None, a) == 0.0
+    assert kopru.yerel_kipirti(a, a[:60]) == 0.0              # şekil değişti (kamera)
+    assert kopru.yerel_kipirti(a, a.copy()) == 0.0
+
+
+def test_model_karesi_istegi() -> None:
+    """
+    1.4.2: izleme döngüsü modellere ne zaman kare verir — tek fonksiyon, her
+    koşul tek tek. `degisti` (aracın / kapı alanının pikselleri SON MODEL
+    karesinden beri değişti) A1'in yerel tetiğiyle çoğu durumda örtüşür, ama
+    kare başına ~1 px'ten yavaş sürünen aracı yalnızca o yakalar — sahibin
+    kararı (2026-11-14): güvenli yol, kalır.
+    """
+    _kopru_yuklu()
+    import kopru
+
+    class Izci:
+        def __init__(self, istiyor=False, degisti=False):
+            self.i, self.d = istiyor, degisti
+
+        def kare_istiyor(self):
+            return self.i
+
+        def degisti(self, gri):
+            return self.d
+
+    eski = float("-inf")
+    sessiz = dict(simdi=100.0, son_kipirti=eski, son_yerel=eski, son_kare_t=99.5)
+    assert not kopru.model_karesi_istenir(Izci(), None, **sessiz)
+    assert kopru.model_karesi_istenir(Izci(istiyor=True), None, **sessiz)
+    assert kopru.model_karesi_istenir(Izci(degisti=True), None, **sessiz)
+    assert kopru.model_karesi_istenir(Izci(), None, **dict(sessiz, son_kipirti=98.0))
+    assert kopru.model_karesi_istenir(Izci(), None, **dict(sessiz, son_yerel=98.0))
+    assert not kopru.model_karesi_istenir(
+        Izci(), None, **dict(sessiz, son_kipirti=100.0 - kopru.KUYRUK_SN))
+    assert kopru.model_karesi_istenir(
+        Izci(), None, **dict(sessiz, son_kare_t=100.0 - kopru.YOKLAMA_SN))
+
+
+def test_her_izleme_olayinin_kopruda_adi_var() -> None:
+    """
+    1.4.2 (A2): izcinin verebileceği HER olay türü köprünün iki yerinde de
+    tanınır — canlı döngü (gönderilen / yalnız kayda yazılan) ve `--plaka`.
+    Biri eksik kalırsa `olay_adlari[olay.tur]` KeyError verir ve köprü düşer.
+    """
+    _kopru_yuklu()
+    import kopru
+    import takip
+    canli = set(kopru.OLAY_ADLARI) | set(kopru.YALNIZ_KAYIT)
+    assert set(takip.OLAY_TURLERI) <= canli, set(takip.OLAY_TURLERI) - canli
+    assert set(takip.OLAY_TURLERI) <= set(kopru.PLAKA_OLAY_ADLARI), \
+        set(takip.OLAY_TURLERI) - set(kopru.PLAKA_OLAY_ADLARI)
+    assert "KAPIDA_KAYBOLDU" in kopru.OLAY_ADLARI      # gönderilir (personele)
+
+
+def test_kararsiz_iz_satiri() -> None:
+    """
+    1.4.2 (A2): kararsız biten iz kayda TEK satır yazar — yer, görünüm, en iyi
+    araç puanı, plaka görüldü mü. Plakanın kendisi kayda YAZILMAZ.
+    """
+    _kopru_yuklu()
+    import gunluk
+    import kopru
+    import okuma
+    import plaka
+    import takip
+
+    class Iz:
+        id, gorunum_no = 7, 3
+        gecis = okuma.Gecis(1, None, plaka.Oylama())
+
+    iz = Iz()
+    iz.gecis.arac_max = 0.4567
+    s = kopru.kararsiz_satiri(iz, "kapı")
+    assert s.startswith(f"[i] {gunluk.KARARSIZ_ISARETI} (iz 7"), s
+    assert "yer kapı" in s and "3 görünüm" in s and "araç 0.46" in s and "plaka görülmedi" in s, s
+    iz.gecis.kutulu = (0.9, None)
+    iz.gecis.oylama.okuma("34ABC123", 0.99, None, 0)
+    s = kopru.kararsiz_satiri(iz, "otopark")
+    assert "plaka görüldü" in s and "34ABC123" not in s and "yer otopark" in s, s
+    iz.gecis.arac_max = None
+    assert "araç —" in kopru.kararsiz_satiri(iz, "otopark")
+    assert takip.Takipci.kararsiz_al  # izcinin kayıt notları
+
+
+def test_durum_kararsiz_ozet() -> None:
+    """1.4.2 (A2): --durum kapıda kaybolan (personele) ve kararsız biten izleri sayar."""
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    satirlar = [f"{bugun} 09:10:00  [i] {gunluk.KAPIDA_KAYBOLDU_ISARETI} (iz 3, 4 görünüm) — "
+                "1 personele gönderiliyor",
+                f"{bugun} 09:20:00  [i] {gunluk.KARARSIZ_ISARETI} (iz 5, yer otopark, 2 görünüm, "
+                "araç 0.41, plaka görülmedi)",
+                f"{bugun} 09:21:00  [i] {gunluk.KARARSIZ_ISARETI} (iz 6, yer kapı, 1 görünüm, "
+                "araç 0.38, plaka görülmedi)",
+                f"01.01 09:21:00  [i] {gunluk.KARARSIZ_ISARETI} (iz 6, yer kapı, 1 görünüm, "
+                "araç 0.38, plaka görülmedi)"]
+    assert durum.kararsiz_ozet(satirlar) == (1, 2), durum.kararsiz_ozet(satirlar)
+    for s in satirlar[:2]:
+        assert durum.kamera_kopuk([f"{bugun} 09:00:05  [!] {gunluk.KARE_YOK_ISARETI}", s]) is False, s
+
+
 def test_durum_arac_bulucu_satiri() -> None:
     """
     1.3.1: "Araç bulucu:" satırı bulucunun hâlini kayıttan okur (bu
@@ -4110,6 +4233,93 @@ def test_durum_arac_bulucu_satiri() -> None:
                             f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}",
                             f"{bugun} 09:00:03  [i] {gunluk.SUNUCU_TAMAM_ISARETI}"])
     assert ok is True and "araç bulucu çalışmıyor" in cikti.lower(), cikti
+
+
+def test_durum_model_kumesi() -> None:
+    """
+    1.4.2: modeller hangi kümede — grafik işlemcisi mi, işlemci mi; GPU neden
+    kullanılamadı ya da çalışırken neyi bıraktı. Sağlığı BOZMAZ: işlemcide
+    köprü 1.4.1 gibi çalışır (yalnızca yavaş).
+    """
+    import durum
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    bas = f"{bugun} 09:00:00  [i] ——— köprü başladı (ORTAK) — pid 1 ———"
+    gpu = f"{bugun} 09:00:01  [i] {gunluk.MODELLER_ISARETI}: GPU · YOLO11s"
+    assert durum.model_durumu([bas]) is None
+    assert durum.model_durumu([gpu, bas]) is None                    # önceki başlangıç sayılmaz
+    assert durum.model_durumu([bas, gpu]) == "GPU · YOLO11s"
+    yok = (f"{bugun} 09:00:01  [!] {gunluk.GPU_YOK_ISARETI}: grafik işlemcisi bulunamadı "
+           "(aygıtlar: CPU) — modeller işlemcide (1.4.1 kümesi)")
+    cpu = f"{bugun} 09:00:01  [i] {gunluk.MODELLER_ISARETI}: CPU · YOLOX-tiny (yedek)"
+    m = durum.model_durumu([bas, yok, cpu])
+    assert m == "CPU · YOLOX-tiny (yedek) — GPU kullanılamadı: grafik işlemcisi bulunamadı " \
+                "(aygıtlar: CPU)", m
+    birakti = (f"{bugun} 11:00:00  [!] {gunluk.GPU_BIRAKILDI_ISARETI}: araç bulucu "
+               "(HizlandiriciHatasi: CL) — işlemcide YOLOX-tiny ile sürüyor")
+    m = durum.model_durumu([bas, gpu, birakti])
+    assert m == "GPU · YOLO11s — GPU bırakıldı (11:00): araç bulucu → işlemci", m
+    calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim · GPU · YOLO11s"
+    plaka_hazir = f"{bugun} 09:00:01  [i] {gunluk.PLAKA_HAZIR_ISARETI} (GPU · YOLO11s)"
+    ok, cikti = _durum_senaryosu([bas, gpu, plaka_hazir, birakti,
+                                  f"{bugun} 09:00:02  [i] {gunluk.KAMERA_VAR_ISARETI}", calisiyor])
+    assert ok is True and "Modeller     : GPU · YOLO11s — GPU bırakıldı (11:00)" in cikti, cikti
+    # 1.4.2: GPU geri gelince durum ekranı onu da söyler.
+    geldi = (f"{bugun} 11:02:00  [i] {gunluk.GPU_GERI_GELDI_ISARETI}: GPU · YOLO11s — "
+             "işlemcide 2 dk kaldı")
+    m = durum.model_durumu([bas, gpu, birakti, geldi])
+    assert m == "GPU · YOLO11s — GPU bırakıldı (11:00), geri geldi (11:02)", m
+    # Açılışta GPU yoktu, sonra geldi.
+    m = durum.model_durumu([bas, yok, cpu, geldi])
+    assert m == "GPU · YOLO11s — açılışta GPU yoktu, geri geldi (11:02)", m
+
+
+def test_durum_uzun_sure_islemcide_uyarir() -> None:
+    """
+    1.4.2: köprü 1 saatten uzun süredir işlemcide (GPU yok / geri gelmedi)
+    ise durum ekranı uyarır ve son sebebi yazar — sağlığı BOZMAZ (köprü
+    1.4.1 gibi çalışır, yalnızca yavaş). GPU için yeniden başlatma süreyi
+    SIFIRLAMAZ (yeni süreç de işlemcide açıldıysa süre sürer).
+    """
+    from datetime import datetime, timedelta
+    import durum
+    import gunluk
+    t0 = datetime.now().replace(microsecond=0) - timedelta(minutes=100)
+
+    def s(dk: int, metin: str) -> str:
+        return f"{(t0 + timedelta(minutes=dk)).strftime('%d.%m %H:%M:%S')}  {metin}"
+
+    bas = "[i] ——— köprü başladı (ORTAK) — pid 1 ———"
+    gpu = f"[i] {gunluk.MODELLER_ISARETI}: GPU · YOLO11s"
+    birakti = (f"[!] {gunluk.GPU_BIRAKILDI_ISARETI}: araç bulucu (CL_DEVICE_LOST) — 3 denemede "
+               "olmadı, işlemcide YOLOX-tiny ile sürüyor")
+    hala = (f"[!] {gunluk.GPU_HALA_YOK_ISARETI}: HizlandiriciHatasi: CL_DEVICE_NOT_AVAILABLE — "
+            "işlemcide 10 dk; 30 sn'de bir deneniyor")
+    simdi = t0 + timedelta(minutes=100)
+    # 40 dk işlemcide: uyarı yok.
+    assert durum.model_uyarisi([s(0, bas), s(0, gpu), s(60, birakti), s(70, hala)], simdi) is None
+    # 80 dk işlemcide: uyarı, son sebep ile.
+    u = durum.model_uyarisi([s(0, bas), s(0, gpu), s(20, birakti), s(30, hala)], simdi)
+    assert u and "1 sa 20 dk" in u and "CL_DEVICE_NOT_AVAILABLE" in u, u
+    # GPU geri geldiyse uyarı yok.
+    geldi = f"[i] {gunluk.GPU_GERI_GELDI_ISARETI}: GPU · YOLO11s — işlemcide 30 dk kaldı"
+    assert durum.model_uyarisi([s(0, bas), s(0, gpu), s(20, birakti), s(50, geldi)], simdi) is None
+    # GPU için yeniden başlatıldı ve yeni süreç de GPU'suz açıldı: süre sürer.
+    yeniden = f"[!] {gunluk.GPU_YENIDEN_BASLAT_ISARETI} — CPU · YOLOX-tiny (yedek, 10 dk)"
+    yok = f"[!] {gunluk.GPU_YOK_ISARETI}: grafik işlemcisi bulunamadı — modeller işlemcide"
+    cpu = f"[i] {gunluk.MODELLER_ISARETI}: CPU · YOLOX-tiny (yedek)"
+    u = durum.model_uyarisi([s(0, bas), s(0, gpu), s(20, birakti), s(31, yeniden),
+                             s(33, bas), s(33, yok), s(33, cpu)], simdi)
+    assert u and "1 sa 20 dk" in u, u
+    # Elle yeniden başlatma (GPU için değil) süreyi sıfırlar.
+    u = durum.model_uyarisi([s(0, bas), s(0, gpu), s(20, birakti),
+                             s(60, bas), s(60, yok), s(60, cpu)], simdi)
+    assert u is None, u
+    # Durum ekranında satır olarak; sağlık bozulmaz.
+    ok, cikti = _durum_senaryosu([s(0, bas), s(0, gpu), s(1, f"[i] {gunluk.KAMERA_VAR_ISARETI}"),
+                                  s(20, birakti), s(30, hala),
+                                  s(99, "[i] çalışıyor — 900 kare, 0 gönderim · CPU · YOLOX-tiny")])
+    assert ok is True and "işlemcide" in cikti and "CL_DEVICE_NOT_AVAILABLE" in cikti, cikti
 
 
 def test_durum_arac_gorulmedi_sayilir() -> None:
@@ -4394,8 +4604,210 @@ def test_giris_plaka_kipi() -> None:
             os.environ["PROGRAMDATA"] = eski_pd
 
 
-def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hata=False):
-    """kopru.plaka_testi'ni sahte kamera ve sahte okuyucuyla koşar: (kod, çıktı, kamera açıldı mı)."""
+def test_giris_plaka_kipi_dakika() -> None:
+    """
+    1.4.2 (E11): `--plaka <dakika>` — gece bir araç iki dakikalık koşunun
+    sınırına denk geldi (handoff §4). 1-60 dakika; verilmezse 2. Geçersiz
+    değer kod 2 ile ne yazılacağını söyler ve hiçbir şey koşmaz.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import giris
+    _kopru_yuklu()
+    import kopru
+    klasor = tempfile.mkdtemp()
+    os.makedirs(os.path.join(klasor, "Otopark"))
+    for ad in ("kopru-giris.json", "kopru-cikis.json"):
+        with open(os.path.join(klasor, "Otopark", ad), "w", encoding="utf-8") as f:
+            f.write("{}")
+    eski_pd, eski_argv, onceki = os.environ.get("PROGRAMDATA"), list(sys.argv), kopru.plaka_testi
+    os.environ["PROGRAMDATA"] = klasor
+    cagrilar: list[tuple[str, float]] = []
+    kopru.plaka_testi = lambda yol, sure_sn=kopru.PLAKA_TEST_SN, **k: (
+        cagrilar.append((os.path.basename(yol), sure_sn)), 0)[1]
+    try:
+        for argv, beklenen in ((["--plaka", "10"], 600.0), (["--plaka"], 120.0),
+                               (["--plaka", "1"], 60.0), (["--plaka", "60"], 3600.0)):
+            cagrilar.clear()
+            sys.argv = ["giris.py"] + argv
+            with redirect_stdout(_io.StringIO()):
+                kod = giris.KIPLER["--plaka"]()
+            assert kod == 0, (argv, kod)
+            assert sorted(cagrilar) == [("kopru-cikis.json", beklenen),
+                                        ("kopru-giris.json", beklenen)], (argv, cagrilar)
+        for kotu in ("0", "61", "abc", "1.5", "-5"):
+            cagrilar.clear()
+            sys.argv = ["giris.py", "--plaka", kotu]
+            yakala = _io.StringIO()
+            with redirect_stdout(yakala):
+                kod = giris.KIPLER["--plaka"]()
+            assert kod == 2 and cagrilar == [], (kotu, kod, cagrilar)
+            assert "1-60" in yakala.getvalue() and "--plaka 10" in yakala.getvalue(), yakala.getvalue()
+    finally:
+        kopru.plaka_testi = onceki
+        sys.argv = eski_argv
+        if eski_pd is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = eski_pd
+
+
+def test_giris_video_kipi() -> None:
+    """
+    1.4.2 (E12): `--video <dosya> [GIRIS|CIKIS|ORTAK]` bir kaydı GERÇEK köprü
+    döngüsünden geçirir, hiçbir şey göndermez (video.oynat; döngünün kendisi
+    test_kopru `video_tekrar`). Burada yalnızca argümanlar: dosya yok /
+    bulunamadı / birden çok şerit seçilmedi → kod 2; tek şerit ya da seçilen
+    şerit → o şeridin ayar dosyasıyla oynatılır. Ayar dosyası köprü İÇE
+    AKTARILMADAN önce ortama yazılır (kopru ayarları içe aktarılırken okur).
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    import giris
+    import video
+    assert "--video" in giris.KIPLER
+    klasor = tempfile.mkdtemp()
+    os.makedirs(os.path.join(klasor, "Otopark"))
+    kayit = os.path.join(klasor, "kayit.mp4")
+    with open(kayit, "wb") as f:
+        f.write(b"x")
+    eski = {k: os.environ.get(k) for k in ("PROGRAMDATA", "OTOPARK_AYAR", "GPU_YENIDEN_BASLAT_SN")}
+    eski_argv, onceki = list(sys.argv), video.oynat
+    os.environ["PROGRAMDATA"] = klasor
+    cagrilar: list[tuple] = []
+    video.oynat = lambda dosya, **k: (cagrilar.append(
+        (dosya, os.environ.get("OTOPARK_AYAR"), os.environ.get("GPU_YENIDEN_BASLAT_SN"))),
+        video.Ozet(0, [], {}, klasor))[1]
+
+    def kos(*argv):
+        sys.argv = ["giris.py", "--video", *argv]
+        yakala = _io.StringIO()
+        with redirect_stdout(yakala):
+            kod = giris.KIPLER["--video"]()
+        return kod, yakala.getvalue()
+
+    try:
+        kod, cikti = kos()
+        assert kod == 2 and "--video" in cikti and not cagrilar, (kod, cikti)
+        kod, cikti = kos(os.path.join(klasor, "yok.mp4"))
+        assert kod == 2 and "bulunamadı" in cikti and not cagrilar, (kod, cikti)
+        kod, cikti = kos(kayit)
+        assert kod == 1 and "kurulum" in cikti.lower() and not cagrilar, (kod, cikti)
+        for ad in ("kopru-giris.json", "kopru-cikis.json"):
+            with open(os.path.join(klasor, "Otopark", ad), "w", encoding="utf-8") as f:
+                f.write("{}")
+        kod, cikti = kos(kayit)
+        assert kod == 2 and "GIRIS" in cikti and "CIKIS" in cikti and not cagrilar, (kod, cikti)
+        kod, cikti = kos(kayit, "ORTAK")
+        assert kod == 2 and not cagrilar, (kod, cikti)              # o şerit kurulu değil
+        # Paketli .exe kendi klasörüne geçer (giris içe aktarılırken): göreli
+        # yol komutun YAZILDIĞI klasöre göre çözülmeli.
+        eski_bas = giris.BASLANGIC_KLASORU
+        giris.BASLANGIC_KLASORU = klasor
+        try:
+            kod, cikti = kos("kayit.mp4", "giris")
+        finally:
+            giris.BASLANGIC_KLASORU = eski_bas
+        assert kod == 0 and cagrilar and cagrilar[-1][0] == kayit, (kod, cikti, cagrilar)
+        cagrilar.clear()
+        kod, cikti = kos(kayit, "cikis")
+        assert kod == 0 and len(cagrilar) == 1, (kod, cikti, cagrilar)
+        dosya, ayar, gpu = cagrilar[0]
+        assert dosya == kayit and os.path.basename(ayar) == "kopru-cikis.json", cagrilar
+        assert float(gpu) >= 1e8, gpu        # oynatma GPU için köprüyü yeniden başlatmaz
+        # Tek şerit kurulu (ayrı, yeni klasör — testler dosya silmez): seçmeye gerek yok.
+        tek = tempfile.mkdtemp()
+        os.makedirs(os.path.join(tek, "Otopark"))
+        with open(os.path.join(tek, "Otopark", "kopru-ortak.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        os.environ["PROGRAMDATA"] = tek
+        cagrilar.clear()
+        kod, cikti = kos(kayit)
+        assert kod == 0 and os.path.basename(cagrilar[0][1]) == "kopru-ortak.json", cagrilar
+    finally:
+        video.oynat = onceki
+        sys.argv = eski_argv
+        for k, v in eski.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_video_yardimcilari() -> None:
+    """
+    1.4.2 (E12, bağımsız inceleme): oynatmanın kenar durumları.
+      · süre / zaman aşımı: dosyanın fps'i ve kare sayısı yanlış olabilir
+        (0, -1, 1000 — NVR dışa aktarımları); süre KAMERANIN kullandığı aynı
+        sınırlanmış fps'le hesaplanır, kare sayısı ≤ 0 ise süre bilinmez;
+      · geride kalan döngü kareleri ATLAR (canlı kamera yalnızca en yeni kareyi
+        tutar — her kareyi işlemek zamanı uzatır, kararları değiştirirdi);
+      · oynatma bitince köprü DONAR (özetin altına satır yazmasın, işlemciyi
+        boşuna kullanmasın);
+      · kayıt sayıları tarihe bakmaz (gece yarısını geçen oynatma).
+    """
+    import threading as _th
+    import numpy as np
+    import gunluk
+    import video
+    assert video.oynatma_suresi(25.0, 150) == (25.0, 6.0)
+    assert video.oynatma_suresi(0.0, 150) == (25.0, 6.0)
+    assert video.oynatma_suresi(1000.0, 15000) == (25.0, 600.0)
+    assert video.oynatma_suresi(25.0, -1) == (25.0, None)
+    assert video.oynatma_suresi(25.0, 0) == (25.0, None)
+    assert video.oynatma_suresi(float("nan"), 100) == (25.0, 4.0)
+
+    class Sahte:
+        def __init__(self):
+            self.no = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, _p):
+            return 25.0
+
+        def grab(self):
+            self.no += 1
+            return True
+
+        def read(self):
+            self.no += 1
+            return True, np.full((2, 2, 3), self.no % 256, np.uint8)
+
+    s = Sahte()
+    bitti, dur = _th.Event(), _th.Event()
+    saat = {"t0": time.monotonic() - 1.0, "sure": None}
+    k = video.DosyaKamera("x", 1.0, bitti, saat, acici=lambda d: s, dur=dur)
+    ok, kare = k.read()
+    assert ok and int(kare[0, 0, 0]) >= 24, int(kare[0, 0, 0])   # ~1 sn geride: atladı
+    dur.set()
+    is_ = _th.Thread(target=k.read, daemon=True)
+    is_.start()
+    is_.join(0.3)
+    assert is_.is_alive(), "oynatma bittikten sonra kamera donmalı"
+
+    satirlar = [
+        f"13.11 23:59:58  [i] {gunluk.GIRDI_ISARETI} (iz 3, 4 görünüm) — 1 plaka gönderiliyor",
+        f"14.11 00:00:05  [i] {gunluk.CIKTI_ISARETI} (iz 5, 6 görünüm) — 1 plaka gönderiliyor",
+        f"14.11 00:00:06  [i] {gunluk.ICERIDE_ISARETI} (iz 7)",
+        f"14.11 00:00:07  [i] {gunluk.KAPIDA_KAYBOLDU_ISARETI} (iz 8, 2 görünüm) — gönderim yok",
+        f"14.11 00:00:08  [i] {gunluk.KARARSIZ_ISARETI} (iz 9, yer otopark, 2 görünüm, "
+        "araç 0.41, plaka görülmedi)",
+        f"14.11 00:00:09  [i] {gunluk.CIKTI_ISARETI} — {gunluk.YON_DISI_ISARETI} (iz 10)",
+    ]
+    assert video.kayit_sayilari(satirlar) == {
+        "giris": 1, "cikis": 1, "iceride": 1, "kapida_kaybolan": 1, "kararsiz": 1}, \
+        video.kayit_sayilari(satirlar)
+
+
+def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hata=False,
+                gpu=False):
+    """
+    kopru.plaka_testi'ni sahte kamera ve sahte okuyucuyla koşar: (kod, çıktı,
+    kamera açıldı mı). 1.4.2: `gpu` — sahte grafik işlemcisi kümesi (YOLO11s,
+    eşikleri 0.20 / 0.45); yoksa işlemci kümesi (HIZLANDIRICI=CPU).
+    """
     import io as _io
     from contextlib import redirect_stdout
     import numpy as np
@@ -4419,10 +4831,13 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
                 k = arac.AracKutu(10.0, 10.0, 300.0, 200.0, 0.9)
             return [k], 0.05
 
-    def arac_yukle(ayar, dizin=None):
+    def arac_yukle(ayar, dizin=None, profil=None, hiz=None):
         if arac_hata:
             raise plaka.PlakaHatasi("araç bulucu dosyası bulunamadı: (test)")
-        return SahteArac()
+        b = SahteArac()
+        if profil is arac.YOLO11S:
+            b.esik, b.gecis_esik = 0.20, 0.45
+        return b
 
     K = plaka.Kutu
     orta = K(600, 300, 800, 345, 0.9)
@@ -4459,7 +4874,7 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
         def release(self):
             pass
 
-    def yukle(ayar, dizin=None):
+    def yukle(ayar, dizin=None, hiz=None):
         if yukle_hata:
             raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
         return SahtePlakaci()
@@ -4472,12 +4887,17 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
     with open(yol, "w", encoding="utf-8") as f:
         json.dump({"YON": "GIRIS", "RTSP_URL": "rtsp://u:p@10.0.0.9:554/1",
                    "WEBHOOK_URL": "https://x", "KAMERA_SECRET": "z" * 32,
-                   "KIRPMA": "0,0,1600,700", "KIRPMA_HARIC": "", **(ayar_ek or {})}, f)
+                   "KIRPMA": "0,0,1600,700", "KIRPMA_HARIC": "",
+                   "HIZLANDIRICI": "GPU" if gpu else "CPU",
+                   **({"ARAC_MODEL": "yolo11s"} if gpu else {}), **(ayar_ek or {})}, f)
     calisma = tempfile.mkdtemp()
     acildi: list[str] = []
-    eski = (plaka.yukle, gunluk.baslat, kopru.requests.post, os.getcwd(), arac.yukle)
+    import hizlandirici
+    eski = (plaka.yukle, gunluk.baslat, kopru.requests.post, os.getcwd(), arac.yukle,
+            hizlandirici.Hizlandirici.__dict__["ac"])
     plaka.yukle, gunluk.baslat, kopru.requests.post = yukle, yasak, yasak
     arac.yukle = arac_yukle
+    hizlandirici.Hizlandirici.ac = classmethod(lambda cls, *a, **k: object())
     try:
         os.chdir(calisma)
         yakala = _io.StringIO()
@@ -4488,6 +4908,7 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
     finally:
         plaka.yukle, gunluk.baslat, kopru.requests.post = eski[:3]
         arac.yukle = eski[4]
+        hizlandirici.Hizlandirici.ac = eski[5]
         os.chdir(eski[3])
     # Hiçbir dosya yazılmaz: ne çalışma klasörüne ne ayar klasörüne.
     assert os.listdir(calisma) == [], os.listdir(calisma)
@@ -4519,6 +4940,20 @@ def test_plaka_kipi_emin_okuma() -> None:
     # ortanca + öneri (sektör: en az 130, en iyi 140–160 px).
     assert any(" px" in s and "EMİN" in s for s in c.splitlines()), c
     assert "Plaka genişliği: ortanca" in c, c
+
+
+def test_plaka_kipi_gpu_kumesi() -> None:
+    """
+    1.4.2: `--plaka` köprüyle AYNI kümeyi açar (önce grafik işlemcisi) ve
+    hangisinde çalıştığını yazar. Eşikler YÜKLENEN bulucunun: gece YOLO11s
+    karşılaştırması (ARAC_MODEL=yolo11s) onun eşikleriyle karar verir.
+    """
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.97)], gpu=True)
+    assert kod == 0, c
+    assert "GPU · YOLO11s" in c, c
+    assert "Araç bulucu hazır (duran ≥0.20, geçen ≥0.45)" in c, c
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.97)])
+    assert "CPU · YOLOX-tiny" in c and "duran ≥0.35, geçen ≥0.60" in c, c
 
 
 def test_plaka_kipi_izleme_ve_kirpma_alani() -> None:
@@ -4610,11 +5045,12 @@ def test_paket_model_kontrolu() -> None:
     with open(os.path.join(d, plaka.BULUCU.dosya), "wb") as f:
         f.write(b"bozuk")
     sorunlar = paketle.model_sorunlari(d)
-    # 1.3.1: araç modeli ve öz sınama resmi de (biri bozuk, üçü eksik).
-    assert len(sorunlar) == 4, sorunlar
-    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA):
+    # 1.3.1: araç modeli ve öz sınama resmi de; 1.4.2: YOLO11s de (biri
+    # bozuk, dördü eksik).
+    assert len(sorunlar) == 5, sorunlar
+    for m in (plaka.BULUCU, plaka.OKUYUCU, arac.MODEL, arac.SINAMA, arac.YOLO11S.model):
         assert any(m.dosya in s for s in sorunlar), (m.dosya, sorunlar)
-    for ad in (arac.MODEL.dosya, arac.SINAMA.dosya):
+    for ad in (arac.MODEL.dosya, arac.SINAMA.dosya, arac.YOLO11S.model.dosya):
         assert ad in paketle.MODEL_DOSYALARI, ad
 
 
@@ -4639,6 +5075,17 @@ def test_model_lisansi_yaninda() -> None:
     assert "Copyright (c) 2021-2022 Megvii Inc." in metin
     for gerekli in ("YOLOX", arac.MODEL.sha256, arac.MODEL.dosya, arac.MODEL.kaynak,
                     arac.SINAMA.sha256, arac.SINAMA.dosya):
+        assert gerekli in metin, gerekli
+    # 1.4.2: araç bulucu YOLO11s (Ultralytics, AGPL-3.0). AGPL'nin TAM metni bir
+    # kez (lisans koşulu: alan herkese lisansın bir kopyası verilir), kaynak
+    # kodun yeri, dışa aktarma ve sahibin kararı (yalnızca kendi otoparkımız;
+    # satılırsa YOLOX-s) modelin yanında yazılı olmalı.
+    y = arac.YOLO11S.model
+    assert metin.count("GNU AFFERO GENERAL PUBLIC LICENSE") == 1
+    assert "Version 3, 19 November 2007" in metin
+    for gerekli in ("YOLO11s", "AGPL-3.0", y.sha256, y.dosya, y.kaynak,
+                    "https://github.com/ultralytics/ultralytics", "ultralytics 8.4.210",
+                    "yalnızca kendi otoparkımızda", "YOLOX-s"):
         assert gerekli in metin, gerekli
 
 
@@ -4690,12 +5137,149 @@ def test_paket_lisanslari_toplanir() -> None:
             assert normal(alt) in satir_adlari, (ad, alt, sorted(satir_adlari))
     assert "modeller-LISANS.txt" in dosyalar and "fast-plate-ocr" in dizin, (dosyalar, dizin)
     assert "YOLOX" in dizin and "Apache-2.0" in dizin, dizin
+    assert "YOLO11s" in dizin and "AGPL-3.0" in dizin, dizin            # 1.4.2
     try:
         paketle.lisanslari_topla(tempfile.mkdtemp(), ["yok-boyle-bir-paket"])
     except SystemExit as e:
         assert "yok-boyle-bir-paket" in str(e), e
     else:
         raise AssertionError("kurulu olmayan paket sessizce geçti")
+
+
+def test_paket_openvino_secimi() -> None:
+    """
+    1.4.2: OpenVINO'nun PyInstaller kancası YOK — açıkça toplanmazsa GPU
+    eklentisi pakete girmez ve köprü sahada SESSİZCE işlemcide çalışır.
+    Hız aracında (sahada çalıştı) olduğu gibi gerekmeyenler girmez: NPU
+    (~103 MB), ONNX / IR dışındaki model okuyucuları, .lib ve debug dosyaları.
+    openvino_telemetry hiç girmez (OpenVINO onsuz çalışır).
+    """
+    import paketle
+    for ad in ("openvino/libs/openvino_intel_gpu_plugin.dll", "openvino/libs/openvino.dll",
+               "openvino/libs/openvino_onnx_frontend.dll", "openvino/libs/openvino_ir_frontend.dll",
+               "openvino/libs/openvino_intel_cpu_plugin.dll", "openvino/libs/tbb12.dll",
+               "openvino/libs/cache.json", "openvino/_pyopenvino.cp314-win_amd64.pyd"):
+        assert paketle.ov_gerekli(ad), ad
+    for ad in ("openvino/libs/openvino_intel_npu_compiler.dll",
+               "openvino/libs/openvino_intel_npu_plugin.dll", "openvino/libs/openvino.lib",
+               "openvino/libs/openvino_tensorflow_frontend.dll",
+               "openvino/libs/openvino_pytorch_frontend.dll",
+               "openvino/libs/openvino_paddle_frontend.dll", "openvino/libs/openvino_gguf_frontend.dll",
+               "openvino/libs/openvino_jax_frontend.dll",
+               "openvino/libs/openvino_tensorflow_lite_frontend.dll",
+               "openvino\\libs\\tbb12_debug.dll", "cv2/opencv_videoio_ffmpeg4130_64.dll"):
+        assert not paketle.ov_gerekli(ad), ad
+    assert "openvino_telemetry" in paketle.HARIC
+    assert "hizlandirici" in paketle.MODULLER
+
+    def sahte_collect(ad):
+        assert ad == "openvino", ad
+        return ([("C:/sp/openvino/libs/cache.json", "openvino/libs"),
+                 ("C:/sp/openvino/libs/openvino.lib", "openvino/libs")],
+                [("C:/sp/openvino/libs/openvino_intel_gpu_plugin.dll", "openvino/libs"),
+                 ("C:/sp/openvino/libs/openvino_intel_npu_compiler.dll", "openvino/libs")],
+                ["openvino.runtime", "openvino_telemetry"])
+    veriler, ikililer, gizli = paketle.ov_toplanacaklar(sahte_collect)
+    assert ikililer == [("C:/sp/openvino/libs/openvino_intel_gpu_plugin.dll", "openvino/libs")]
+    assert veriler == [("C:/sp/openvino/libs/cache.json", "openvino/libs")]
+    assert gizli == ["openvino.runtime"], gizli
+    # Seçim PyInstaller kancasıyla yapılır (pyi_kancalari/hook-openvino.py):
+    # ~950 dosyayı komut satırına yazmak Windows'un sınırını aşıyordu
+    # (WinError 206 — 2026-11-12 sınama derlemesinde görüldü).
+    k = paketle.derleme_komutu()
+    i = k.index("--additional-hooks-dir")
+    kanca = os.path.join(k[i + 1], "hook-openvino.py")
+    assert os.path.isfile(kanca), kanca
+    with open(kanca, encoding="utf-8") as f:
+        assert "ov_toplanacaklar" in f.read()
+    assert "--hidden-import" in k and "openvino" in k and "openvino_telemetry" in k
+    # Paket bilgisi de girsin (OpenVINO sürümünü kendi bilgisinden okur).
+    assert any(k[i:i + 2] == ["--copy-metadata", "openvino"] for i in range(len(k))), k
+    import subprocess
+    assert len(subprocess.list2cmdline(k)) < 8000, len(subprocess.list2cmdline(k))
+
+
+def test_paket_derleme_sinamasi_gpu() -> None:
+    """
+    1.4.2: derleyen bilgisayarda grafik işlemcisi VARSA paketlenmiş .exe'nin
+    onu kullanabildiği görülmeli ("Grafik işlemcisi hazır") — yoksa eksik bir
+    OpenVINO eklentisi sahada sessizce işlemciye düşerdi.
+    """
+    import paketle
+    tam = ("  ✓ Plaka okuyucu hazır (…).\n  ✓ Araç bulucu hazır (…).\n"
+           "  ✓ Grafik işlemcisi hazır (plaka okuyucu, YOLOX-tiny ve YOLO11s öz sınamayı geçti).\n")
+    yok = ("  ✓ Plaka okuyucu hazır (…).\n  ✓ Araç bulucu hazır (…).\n"
+           "  ! Grafik işlemcisi kullanılamıyor: grafik işlemcisi bulunamadı (aygıtlar: CPU)\n")
+    assert paketle.sinama_hatasi(0, tam, gpu_var=True) is None
+    assert paketle.sinama_hatasi(0, tam, gpu_var=False) is None
+    assert paketle.sinama_hatasi(0, yok, gpu_var=False) is None
+    h = paketle.sinama_hatasi(0, yok, gpu_var=True)
+    assert h and "grafik işlemcisi" in h.lower(), h
+    # Çıkış kodu 0 değilse ya da "hazır" hiç yoksa (1.4.1'in kuralı) yine hata.
+    assert paketle.sinama_hatasi(1, tam, gpu_var=False)
+    assert paketle.sinama_hatasi(0, "", gpu_var=False)
+
+
+def test_paket_telemetri_lisansi_listelenmez() -> None:
+    """openvino_telemetry pakete girmez: lisans listesinde de görünmez."""
+    import importlib.util
+    if importlib.util.find_spec("openvino") is None:
+        return
+    import paketle
+    d = tempfile.mkdtemp()
+    # requirements.txt'teki gibi: telemetri de sabitli (venv tekrar kurulabilsin).
+    klasor = paketle.lisanslari_topla(d, ["openvino", "openvino-telemetry"])
+    with open(os.path.join(klasor, "LISANSLAR.txt"), encoding="utf-8") as f:
+        dizin = f.read()
+    assert "openvino " in dizin.lower(), dizin
+    assert "telemetry" not in dizin.lower(), dizin
+
+
+def test_test_kalintilari_tek_klasorde() -> None:
+    """
+    Testler hiçbir şey SİLMEZ (sahibin kuralı); bıraktıkları her şey TEK bir
+    klasörde toplanır, sahibi onu tek seferde siler: %TEMP%\\otopark-test-
+    kalintilari. 2026-11-12'de dağınık 850 klasör 25 GB olmuştu. Alt süreçler
+    de (mutasyon, senaryolar) aynı yere yazsın diye TEMP / TMP / TMPDIR da
+    oraya çevrilir; iç içe çağrı kökü ikinci kez açmaz.
+    """
+    import subprocess
+    kod = r"""
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import kalinti
+taban = tempfile.gettempdir()
+k = kalinti.klasor("otopark-test-deneme-")
+kok = os.path.join(taban, kalinti.KOK_AD)
+assert os.path.dirname(k) == kok and os.path.basename(k).startswith("otopark-test-deneme-"), k
+for ad in ("TEMP", "TMP", "TMPDIR"):
+    assert os.environ[ad] == k, (ad, os.environ[ad])
+assert tempfile.gettempdir() == k and os.path.dirname(tempfile.mkdtemp()) == k
+ic = kalinti.klasor("otopark-test-ic-")          # alt süreç / iç içe: kök yine aynı
+assert os.path.dirname(ic) == kok, ic
+print("tamam")
+"""
+    # Alt süreç GERÇEK %TEMP%'ten başlar (bu dosya koşarken TEMP zaten kökün
+    # içindedir); PROGRAMDATA da geçici (test_alt_surecler_programdata_devralmaz).
+    import kalinti
+    gercek = os.path.dirname(kalinti._kok())
+    ortam = {**os.environ, "TEMP": gercek, "TMP": gercek, "TMPDIR": gercek,
+             "PROGRAMDATA": tempfile.mkdtemp()}
+    r = subprocess.run([sys.executable, "-c", kod, os.path.dirname(os.path.abspath(__file__))],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env=ortam)
+    assert r.returncode == 0 and "tamam" in r.stdout, r.stdout + r.stderr
+    # Her test dosyasının koşucusu ve mutasyon / senaryo kökleri kalinti'yi
+    # kullanır: %TEMP%'in tepesine doğrudan klasör açan kök kalmadı.
+    import glob
+    import re
+    burasi = os.path.dirname(os.path.abspath(__file__))
+    for yol in glob.glob(os.path.join(burasi, "test_*.py")):
+        with open(yol, encoding="utf-8") as f:
+            metin = f.read()
+        assert not re.search(r"kok = tempfile\.mkdtemp\(", metin), yol
+        assert 'os.environ["PROGRAMDATA"] = tempfile.mkdtemp(prefix="otopark-test-")' not in metin \
+            or "kalinti.klasor" in metin, yol
 
 
 def test_giris_plaka_sinama_kipi() -> None:
@@ -4711,9 +5295,10 @@ def test_giris_plaka_sinama_kipi() -> None:
     import giris
     import plaka
     assert "--plaka-sina" in giris.KIPLER
-    eski = plaka.yukle, arac.yukle
+    import hizlandirici
+    eski = plaka.yukle, arac.yukle, hizlandirici.Hizlandirici.__dict__["ac"]
 
-    def bozuk(ayar, dizin=None):
+    def bozuk(ayar, dizin=None, **_k):
         raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
 
     def kos() -> tuple[int, str]:
@@ -4722,21 +5307,47 @@ def test_giris_plaka_sinama_kipi() -> None:
             kod = giris.KIPLER["--plaka-sina"]()
         return kod, yakala.getvalue()
 
+    def gpu_yok(cls, *a, **k):
+        raise plaka.HizlandiriciHatasi("grafik işlemcisi bulunamadı (aygıtlar: CPU)")
+
     try:
-        plaka.yukle = lambda ayar, dizin=None: object()
-        arac.yukle = lambda ayar, dizin=None: object()
+        hizlandirici.Hizlandirici.ac = classmethod(gpu_yok)
+        plaka.yukle = lambda ayar, dizin=None, hiz=None: object()
+        arac.yukle = lambda ayar, dizin=None, profil=None, hiz=None: object()
         kod, c = kos()
         assert kod == 0 and "Plaka okuyucu hazır" in c and "Araç bulucu hazır" in c, c
+        # 1.4.2: grafik işlemcisi yoksa derleme sınaması YİNE geçer (köprü
+        # işlemcide çalışır) ama bunu açıkça söyler.
+        assert "Grafik işlemcisi kullanılamıyor" in c and "aygıtlar: CPU" in c, c
         plaka.yukle = bozuk
         kod, c = kos()
         assert kod == 1 and "Plaka okuyucu çalışmıyor" in c, c
         # 1.3.1: paketteki araç modeli eksik/bozuksa derleme sınaması da düşmeli.
-        plaka.yukle = lambda ayar, dizin=None: object()
+        plaka.yukle = lambda ayar, dizin=None, hiz=None: object()
         arac.yukle = bozuk
         kod, c = kos()
         assert kod == 1 and "Araç bulucu çalışmıyor" in c, c
+        # 1.4.2: grafik işlemcisi varsa okuyucu ve İKİ araç modeli orada da
+        # öz sınamadan geçer (paketteki OpenVINO eklentileri derlemede sınansın).
+        istenen = []
+        hizlandirici.Hizlandirici.ac = classmethod(lambda cls, *a, **k: "hiz")
+        plaka.yukle = lambda ayar, dizin=None, hiz=None: istenen.append(("plaka", hiz)) or object()
+        arac.yukle = lambda ayar, dizin=None, profil=None, hiz=None: (
+            istenen.append(("arac", hiz, (profil or arac.YOLOX_TINY).ad)) or object())
+        kod, c = kos()
+        assert kod == 0, c
+        assert ("plaka", "hiz") in istenen and ("arac", "hiz", "YOLOX-tiny") in istenen \
+            and ("arac", "hiz", "YOLO11s") in istenen, istenen
+        assert "Grafik işlemcisi hazır" in c and "YOLO11s" in c, c
+        # GPU'da biri tutmazsa: derleme sınaması DÜŞER (paket bozuk demektir),
+        # sebebi yazılır; işlemci kümesi ayrıca yazılır.
+        arac.yukle = lambda ayar, dizin=None, profil=None, hiz=None: (
+            bozuk(ayar) if hiz is not None and profil is arac.YOLO11S else object())
+        kod, c = kos()
+        assert kod == 1 and "Grafik işlemcisinde YOLO11s çalışmıyor" in c, c
     finally:
-        plaka.yukle, arac.yukle = eski
+        plaka.yukle, arac.yukle = eski[:2]
+        hizlandirici.Hizlandirici.ac = eski[2]
 
 
 if __name__ == "__main__":
@@ -4747,10 +5358,8 @@ if __name__ == "__main__":
     # kurarlar). Eskiden her çalıştırma %TEMP%'e ~20 ayrı klasör bırakıyordu.
     # Klasör SİLİNMEZ; sonunda yolu yazılır, elle temizlenir. Python önce
     # TMPDIR'a bakar (Git Bash onu kurabilir), o yüzden üçü birden atanır.
-    kok = tempfile.mkdtemp(prefix="otopark-test-kurulum-")
-    tempfile.tempdir = kok
-    for _ad in ("TMPDIR", "TEMP", "TMP"):
-        os.environ[_ad] = kok
+    import kalinti
+    kok = kalinti.klasor("otopark-test-kurulum-")     # tek klasörde; TEMP/TMP/TMPDIR da
     # Her test PROGRAMDATA olarak BOŞ bir tuzak klasörünü devralır. Kendi
     # geçici klasörünü kurmayı unutan test oraya yazar — makinenin gerçek
     # C:\ProgramData\Otopark klasörüne değil — ve o test FAIL olur. Her testten

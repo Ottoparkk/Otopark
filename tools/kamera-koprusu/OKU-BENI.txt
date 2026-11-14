@@ -175,6 +175,16 @@ ELİNİZDE HAZIR OLSUN
   yazın, sağ tık → "Yönetici olarak çalıştır", sonra programın yolunu
   --plaka ile yazın:
       "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --plaka
+  (1.4.2: süre verilebilir — "--plaka 10" on dakika koşar, 1-60 dakika;
+  verilmezse iki dakika. Ctrl+C ile erken bitirseniz de özet yazılır.)
+
+  KAYITTAN DENEME (1.4.2): bir araç kaçtıysa, o dakikanın kaydını kameranın
+  kayıt cihazından (NVR) dışa aktarın ve şöyle oynatın:
+      "C:\Otopark\OtoparkKamera\OtoparkKamera.exe" --video "D:\kayit.mp4"
+  (birden çok şerit kuruluysa sonuna GIRIS, CIKIS ya da ORTAK yazın).
+  Kayıt GERÇEK köprüden, kendi hızında geçer; hiçbir şey sunucuya gitmez,
+  gerçek kayıt dosyasına dokunulmaz. Sonunda neyin GİDECEĞİ (plaka ve yön,
+  ya da personele) yazar — bunu iletin.
   İki dakika boyunca bulduğu plakaları ve okumalarını, 1.3.1'den beri
   her satırda "araç / insan" puanını da gösterir; hiçbir şey göndermez,
   hiçbir şey kaydetmez. Birkaç araç geçirin: her araç en az bir kez doğru

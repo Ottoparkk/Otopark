@@ -18,6 +18,7 @@ import {
   cihazKimligi,
   fotoYuklemeTamam,
   hamFotosuz,
+  hareketIpucu,
   kameraFotoYolu,
   kameraGirisiKarari,
   kameraOkumaLogu,
@@ -555,6 +556,27 @@ esit(
   /if \(olay\.koprudenOkunamadi\) return rpcHatasi\('kamera_okunamadi', okErr\)/.test(webhook),
   true,
 )
+
+// --- 056: köprünün yön ipucu (hareket) -------------------------------------------
+// Köprü izlediği aracın yönünü gönderir; sunucu onu YALNIZCA yanlış tahmini
+// durdurmak için kullanır. Tanınmayan her değer "ipucu yok" demektir — asla
+// 400 değil (400 köprüde kesin ret, araç kaybolurdu).
+esit('hareket: GIRDI', hareketIpucu({ hareket: 'GIRDI' }), 'GIRDI')
+esit('hareket: CIKTI', hareketIpucu({ hareket: 'CIKTI' }), 'CIKTI')
+esit('hareket: ICERIDE', hareketIpucu({ hareket: 'ICERIDE' }), 'ICERIDE')
+esit('hareket: yok', hareketIpucu({}), null)
+esit('hareket: boş', hareketIpucu({ hareket: null }), null)
+esit('hareket: küçük harf tanınmaz', hareketIpucu({ hareket: 'girdi' }), null)
+esit('hareket: bilinmeyen', hareketIpucu({ hareket: 'XYZ' }), null)
+esit('hareket: sayı', hareketIpucu({ hareket: 1 }), null)
+esit('hareket: dizi', hareketIpucu({ hareket: ['GIRDI'] }), null)
+esit('hareket: şerit adı yön değildir', hareketIpucu({ hareket: 'ORTAK' }), null)
+esit('webhook: tek kapı ipucunu iletir',
+  /rpc\('kamera_tek_kapi', \{[\s\S]*?p_hareket: olay\.hareket,[\s\S]*?\}\)/.test(webhook), true)
+esit('webhook: ipucu ham gövdeden yardımcıyla okunur', webhook.includes('hareket: hareketIpucu(body)'), true)
+const sema = /const OlaySchema = z\.object\(\{([\s\S]*?)\n\}\)/.exec(webhook)
+esit('webhook: şema bulundu', Boolean(sema), true)
+esit('webhook: ipucu şemada değil (kötü değer 400 olmasın)', sema ? sema[1].includes('hareket') : true, false)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 process.exit(kalan === 0 ? 0 : 1)

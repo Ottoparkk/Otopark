@@ -1003,6 +1003,251 @@ def test_degisti_aracin_ya_da_kapinin_bolgesine_bakar():
     assert not t.degisti(uzak)
 
 
+# ------------------------------ 1.4.2 (A2): hiçbir iz sessizce bitmez ---------
+# Sahada 11.11: 07:38, 19:15, 19:39, 12:10, 12:38 çıkan araçlar ne bilet ne
+# kayıt satırı bıraktı. Hızlı ya da koyu araç ilk kez kapı alanında (ya da
+# kapının "pay"ı içinde) bulundu ve kenardan çıktı: hiç otoparkta görülmediği
+# için ÇIKTI sayılmadı, _son_karar sessizce döndü. 1.4.2: kapıda kaybolan,
+# hareketli, kararsız araç izi personele (yönü bilinmez — KAPIDA_KAYBOLDU);
+# kararsız biten her başka araç izi bir kayıt notu (kararsiz_al).
+
+def _yerler(s):
+    return [yer for _, yer in s.t.kararsiz_al()]
+
+
+def test_kapida_dogup_kapida_kaybolan_arac_personele():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    _yol(s, (150, 480), (60, 600), adim=3)                   # çapa (300, 680) → kenar
+    s.bekle(6.0, [])
+    assert s.turler() == ["KAPIDA_KAYBOLDU"], s.turler()
+    assert s.olaylar[0].iz.kaynak == "arac"
+    assert _yerler(s) == [], "personele giden iz ayrıca kararsız yazılmaz"
+
+
+def test_kapi_payinda_dogup_kapida_kaybolan_arac_personele():
+    # test_kapi_sinirinda_dogan_arac_kapida_kaybolunca_cikis_sayilmaz'ın yolu:
+    # ÇIKTI hâlâ sayılmaz (nereden geldiği bilinmez) ama sessizce de düşmez.
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(410, 268)])
+    _yol(s, (410, 268), (60, 600), adim=4)
+    s.bekle(6.0, [])
+    assert s.turler() == ["KAPIDA_KAYBOLDU"], s.turler()
+
+
+def test_kapida_duran_arac_kaybolunca_personele_gitmez():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    son = _yol(s, (150, 480), (100, 560), adim=3)
+    s.bekle(3.0, [son])                                      # durdu
+    s.bekle(8.0, [])                                         # örtüldü
+    assert "KAPIDA_KAYBOLDU" not in s.turler(), s.turler()
+    assert _yerler(s) == [], "duran araç park belleğine gider — kararsız değil"
+
+
+def test_plaka_izi_kapida_kaybolunca_personele_gitmez():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    for x, y in [(150, 480), (120, 520), (90, 560), (60, 600)]:
+        s.kare([], [_pk(x, y)], cizim=[_arac(x, y)])
+    s.bekle(6.0, [])
+    assert "KAPIDA_KAYBOLDU" not in s.turler(), _olaylar(s)
+    assert _yerler(s) == [], "plaka izi kayıt notu yazmaz"
+
+
+def test_geri_donen_arac_kapida_kaybolunca_yalniz_geri_dondu():
+    s = _isin(Sahne(_takipci()))
+    _yol(s, (50, 600), (520, 300), adim=4)
+    _yol(s, (520, 300), (50, 600), adim=4)
+    s.bekle(6.0, [])
+    assert "GERI_DONDU" in s.turler() and "KAPIDA_KAYBOLDU" not in s.turler(), s.turler()
+
+
+def test_kapida_tek_karede_kipirdamayan_personele_gitmez_kayda_yazilir():
+    s = _isin(Sahne(_takipci()))
+    a = _arac(100, 520)                                      # kapının içinde, park etmiş gibi
+    for _ in range(4):
+        s.kare([], cizim=[a])
+    s.kare([a], cizim=[a])
+    for _ in range(20):
+        s.kare([], cizim=[a])
+    assert s.turler() == [], s.turler()
+    assert _yerler(s) == ["kapı"]
+
+
+def test_kararsiz_biten_iz_kayda_yazilir():
+    # Otoparkın derininde bir kare görülen araç: gönderilmez, ama kayıtta.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    s.kare([_arac(1200, 100)])
+    s.bekle(6.0, [])
+    assert "TEK_KARE" not in s.turler(), s.turler()
+    assert _yerler(s) == ["otopark"]
+    assert s.t.kararsiz_al() == [], "alınan notlar bir daha verilmez"
+    # Otoparkta görülmüş, kapıda kaybolmuş ama kenara gitmiyordu: ÇIKTI değil,
+    # personele kart da değil (kapı yanında manevra olabilir) — yalnızca kayıt.
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)]).bekle(1.0, [_arac(900, 150)])
+    _yol(s, (900, 150), (150, 480), adim=6)
+    _yol(s, (150, 480), (260, 420), adim=2)
+    s.bekle(6.0, [])
+    assert not ({"CIKTI", "KAPIDA_KAYBOLDU"} & set(s.turler())), s.turler()
+    assert _yerler(s) == ["kapı"]
+    # Kapı alanı yokken de (olay listesi değişmez, yalnızca not).
+    s = _isin(Sahne(_takipci(kapi=None)))
+    s.kare([])
+    s.kare([_arac(500, 200)])
+    s.bekle(6.0, [])
+    assert s.turler() == [], s.turler()
+    assert _yerler(s) == ["otopark"]
+
+
+def test_karar_verilen_ya_da_duran_iz_kararsiz_yazilmaz():
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)]).bekle(3.0, [_arac(900, 150)])
+    _yol(s, (900, 150), (60, 600), adim=10)
+    s.bekle(6.0, [])
+    assert s.turler().count("CIKTI") == 1 and _yerler(s) == [], s.turler()
+    s = _isin(Sahne(_takipci()))
+    son = _yol(s, (50, 600), (900, 150), adim=10)
+    s.bekle(3.0, [son]).bekle(8.0, [])
+    assert s.turler().count("GIRDI") == 1 and _yerler(s) == [], s.turler()
+
+
+def test_kenardan_cikan_aracin_kuyrugu_komsulu_dogar():
+    # 1.4.2 (A3 koruması): araç alt kenardan çıkarken resimde yalnızca kuyruğu
+    # kalır; kutusu çok küçüldüğü için (alan oranı DIKIS_ALAN dışında) kendi
+    # izine dikilmez, tek karelik YENİ iz doğar (test_kopru'da 0.39 ile
+    # personele kart açtı). Bu iz "komşulu" doğar: yanında, bir saniye içinde
+    # görülmüş başka bir araç izi var — tek kare eşiği onda 0.60 kalır.
+    s = _isin(Sahne(_takipci()))
+    s.kare([_arac(900, 150)]).bekle(3.0, [_arac(900, 150)])
+    _yol(s, (900, 150), (60, 560), adim=8)                   # kapıda, kenarın dibinde
+    s.kare([A(60, 740, 360, 800, 0.4)])                      # yalnızca kuyruğu (alan ×0.3)
+    yeni = [z for z in s.t.izler if z.gorulme == 1]
+    assert len(yeni) == 1 and yeni[0].dogumda_komsu, s.t.izler
+    s.bekle(6.0, [])
+    tek = [o for o in s.olaylar if o.tur == "TEK_KARE"]
+    assert tek and all(o.iz.dogumda_komsu for o in tek), _olaylar(s)
+
+
+def test_yalniz_tek_kare_komsusuz_dogar():
+    # 13:52'deki gibi YALNIZ görülen araç: komşusuz (doğum eşiği geçerli).
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    s.kare([_arac(100, 520)])
+    s.bekle(6.0, [])
+    assert s.turler() == ["TEK_KARE"] and not s.olaylar[0].iz.dogumda_komsu
+    # Uzakta park etmiş (izlenen) araç komşu sayılmaz: komşu = bir araç
+    # köşegeni içinde.
+    s = _isin(Sahne(_takipci()))
+    park = _arac(1200, 100)
+    s.kare([park]).bekle(2.0, [park])
+    s.kare([park, _arac(100, 520)])
+    s.bekle(6.0, [park])
+    tek = [o for o in s.olaylar if o.tur == "TEK_KARE"]
+    assert len(tek) == 1 and not tek[0].iz.dogumda_komsu, _olaylar(s)
+
+
+# ----------------------- 1.4.2 (A4): kapıdan görülmeden girip hemen duran araç --
+# Sahada 11.11 19:08: giren araç kapı alanından geçerken bulucu onu yakalamadı,
+# kapının hemen dışında DURURKEN buldu. Duran doğum bilerek giriş sayılmıyor
+# (kapının dibinde park etmiş araç da böyle görünür) → "otopark içinde hareket",
+# hiçbir şey gönderilmedi. Ayırt eden: az önce (≤ KAPI_GECIS_SN) kapı alanının
+# pikselleri değişti ve bunu izlenen hiçbir araç açıklamıyor — bir şey kapıdan
+# geçti. O zaman kapının bir araç boyu yakınında, duran, yeni doğan, yanında
+# başka araç olmayan iz kapıdan gelmiştir ("kapıda görülmedi"). Yalnızca B5
+# ile: yanılırsa sunucu GIRDI ipucunu görür, eski bileti kapatmaz.
+
+GECEN = [(60, 600), (100, 450), (130, 300)]                  # kapıdan içeri (çizilir, bulunmaz)
+DURAN = (150, 180)                                           # çapa (300, 380): kapının 70 px dışı
+
+
+def _kapidan_gorulmeden_gecer(s, ek=()):
+    for x, y in GECEN:
+        s.kare(list(ek), cizim=list(ek) + [_arac(x, y)])
+
+
+def test_kapidan_gorulmeden_girip_duran_arac_girdi():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    _kapidan_gorulmeden_gecer(s)
+    a = _arac(*DURAN)
+    s.kare([a]).bekle(3.0, [a])
+    assert s.turler() == ["GIRDI"], s.turler()
+    assert s.olaylar[0].iz.kapida_gorulmedi, "kayıtta 'kapıda görülmedi' yazmalı"
+
+
+def test_kapi_yaninda_duran_dogum_kapi_kipirtisi_yoksa_girdi_degil():
+    s = _isin(Sahne(_takipci()))
+    for _ in range(4):
+        s.kare([])
+    a = _arac(*DURAN)
+    s.kare([a]).bekle(3.0, [a])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_kapi_kipirtisi_eskiyse_girdi_degil():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    _kapidan_gorulmeden_gecer(s)
+    s.bekle(4.0, [])                                         # KAPI_GECIS_SN'den uzun
+    a = _arac(*DURAN)
+    s.kare([a]).bekle(3.0, [a])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_kapi_kipirtisini_izlenen_arac_aciklarsa_girdi_degil():
+    # Kapıdaki değişimi kapıda İZLENEN bir araç yapıyor (sağ tarafta, yeni
+    # doğanın bir araç boyundan uzağında): kimse görülmeden geçmedi.
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    for x in (360, 400, 440):
+        s.kare([_arac(x, 600)])                              # çapa (510..590, 800): kapıda
+    b = _arac(440, 600)
+    a = _arac(*DURAN)
+    s.kare([b, a]).bekle(3.0, [b, a])
+    tur = [o.tur for o in s.olaylar if o.iz.dogum_kutu == a]
+    assert "GIRDI" not in tur, _olaylar(s)
+
+
+def test_kapidan_gecis_sonrasi_komsulu_duran_dogum_girdi_degil():
+    # Yeni doğanın hemen yanında izlenen (park etmiş) bir araç var: kapıdaki
+    # değişim ona ya da yanındaki bir harekete ait olabilir — kural uygulanmaz.
+    s = _isin(Sahne(_takipci()))
+    park = _arac(500, 150)                                   # çapa (650, 350)
+    s.kare([park]).bekle(2.5, [park])
+    _kapidan_gorulmeden_gecer(s, ek=(park,))
+    a = _arac(*DURAN)
+    s.kare([park, a]).bekle(3.0, [park, a])
+    assert "GIRDI" not in s.turler(), _olaylar(s)
+
+
+def test_kapidan_gecis_sonrasi_uzakta_duran_dogum_girdi_degil():
+    s = _isin(Sahne(_takipci()))
+    s.kare([])
+    _kapidan_gorulmeden_gecer(s)
+    a = _arac(1000, 100)                                     # kapıdan bir araç boyundan uzak
+    s.kare([a]).bekle(3.0, [a])
+    assert "GIRDI" not in s.turler(), s.turler()
+
+
+def test_kopmada_hareketli_kararsiz_iz_kayda_yazilir():
+    s = _isin(Sahne(_takipci()))
+    _yol(s, (900, 100), (1100, 100), adim=3)                 # otoparkta gidiyor
+    assert s.t.kopma(s.mono) == []
+    assert _yerler(s) == ["otopark"]
+    s = _isin(Sahne(_takipci()))
+    _yol(s, (50, 600), (900, 150), adim=10)                  # GİRDİ bekliyor: olay olur
+    assert [o.tur for o in s.t.kopma(s.mono)] == ["GIRDI"]
+    assert _yerler(s) == []
+    s = _isin(Sahne(_takipci()))
+    son = _yol(s, (900, 100), (1000, 100), adim=3)
+    s.bekle(3.0, [son])                                      # durmuş (park)
+    s.t.kopma(s.mono)
+    assert _yerler(s) == [], "duran araç kopmada kararsız sayılmaz"
+
+
 if __name__ == "__main__":
     testler = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     basarisiz: list[str] = []

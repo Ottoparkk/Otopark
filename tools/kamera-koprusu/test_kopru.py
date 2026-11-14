@@ -344,18 +344,55 @@ CIKIS_YOLU = [(0.0, 3.0, 420, 60, 420, 60, 0, 220), (3.0, 5.0, 420, 60, 20, 400,
 SENARYOLAR.update({
     # Kapıdan girip otoparka geçen, duran araç: BİR plaka.
     "takip_giris": dict(_IZ, araclar=GIRIS_YOLU, sure=10.0,
-                        plakalar=[(3, 10, 0)], gonderim_sayisi=1,
+                        plakalar=[(3, 10, 0)], gonderim_sayisi=1, hareketler={0: "GIRDI"},
                         kayitta_sirayla=["araç izleme açık (kapı alanı var)", "araç girdi"]),
     # Park etmiş araç (köprü açılırken oradaydı) kapıya gidip kayboluyor: çıkış.
     "takip_cikis": dict(_IZ, araclar=CIKIS_YOLU, sure=12.0, yon="ORTAK",
-                        plakalar=[(5, 12, 0)], gonderim_sayisi=1,
+                        plakalar=[(5, 12, 0)], gonderim_sayisi=1, hareketler={0: "CIKTI"},
                         kayitta_sirayla=["araç çıktı"]),
-    # Otopark içinde yer değiştiren araç: hiçbir şey gönderilmez (sahada 17 kart).
+    # Otopark içinde yer değiştiren araç: kart AÇILMAZ (sahada 17 kart). 1.4.2
+    # (B6, sahibin kararı): tek kapıda plakası EMİN okunduysa "içeride" ipucuyla
+    # sunucuya sorulur — sunucu bileti varsa hiçbir şey yapmaz (asla kapatmaz),
+    # yoksa "İçeride bileti olmayan araç" kaydı açar. Önceden: hiç gönderim.
     "takip_iceride": dict(_IZ, araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
                                         (3, 4.5, 420, 60, 450, 200, 0, 220),
                                         (4.5, 99, 450, 200, 450, 200, 0, 220)],
-                          sure=10.0, gonderim_sayisi=0, yon="ORTAK",
-                          kayitta_sirayla=["otopark içinde hareket"]),
+                          sure=10.0, gonderim_sayisi=1, yon="ORTAK",
+                          hareketler={0: "ICERIDE"},
+                          kayitta_sirayla=["otopark içinde hareket",
+                                           "içeride görülen araç sunucuya soruldu"]),
+    # Aynı sahne, plaka EMİN okunamıyor (iki kırpıntı 0.80): içeride gezen
+    # araç için personele kart AÇILMAZ (17 kart dersi) — yalnızca emin plaka sorulur.
+    "takip_iceride_belirsiz": dict(_IZ, guven=0.80,
+                                   araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
+                                            (3, 4.5, 420, 60, 450, 200, 0, 220),
+                                            (4.5, 99, 450, 200, 450, 200, 0, 220)],
+                                   sure=10.0, gonderim_sayisi=0, yon="ORTAK",
+                                   kayitta_sirayla=["otopark içinde hareket"],
+                                   kayitta_yok=["sunucuya soruldu"]),
+    # Aynı sahne GİRİŞ şeridinde: orada sunucu plakayla bilet AÇARDI — içeride
+    # görülen araç yalnızca tek kapıda sorulur.
+    "takip_iceride_giris_seridi": dict(_IZ, araclar=[(0, 3, 420, 60, 420, 60, 0, 220),
+                                                     (3, 4.5, 420, 60, 450, 200, 0, 220),
+                                                     (4.5, 99, 450, 200, 450, 200, 0, 220)],
+                                       sure=10.0, gonderim_sayisi=0, yon="GIRIS",
+                                       kayitta_sirayla=["otopark içinde hareket"],
+                                       kayitta_yok=["sunucuya soruldu"]),
+    # 1.4.2 (A4): sahada 11.11 19:08 — giren araç kapıdan geçerken bulucu onu
+    # görmedi (koyu, plakası henüz okunmuyor), kapının hemen dışında DURURKEN
+    # buldu. Kapı alanı az önce kıpırdadı, kimse açıklamıyor: kapıdan gelmiş —
+    # GİRDİ (kapıda görülmedi), "girdi" ipucuyla. 1.4.1: hiçbir şey.
+    "takip_gorulmeden_girip_duran": dict(
+        _IZ, yon="ORTAK",
+        araclar=[(1.0, 2.0, 10, 380, 150, 150, None, 150),
+                 (2.0, 99, 150, 150, 150, 150, 0, 220)],
+        sure=11.0, plakalar=[(2, 11, 0)], gonderim_sayisi=1, hareketler={0: "GIRDI"},
+        kayitta_sirayla=["araç girdi", "kapıda görülmedi"]),
+    # Aynı araç kapıdan GEÇMEDEN (kapı kıpırdamadı) orada duruyor: park etmiş
+    # gibi — gönderim yok (1.4.1'in koruması aynen).
+    "takip_kapi_yaninda_duran": dict(
+        _IZ, yon="ORTAK", araclar=[(2.0, 99, 150, 150, 150, 150, 0, 220)],
+        sure=10.0, gonderim_sayisi=0, kayitta_yok=["araç girdi"]),
     # Girip durdu, sonra park yerine ilerledi: yine BİR gönderim.
     "takip_dur_kalk": dict(_IZ, araclar=[(1, 3, 10, 380, 250, 170, 0, 220),
                                          (3, 6, 250, 170, 250, 170, 0, 220),
@@ -416,6 +453,7 @@ SENARYOLAR.update({
     "takip_kapali": dict(takip="0", kapi=KAPI,
                          sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 7, DURDU, 0)],
                          sure=7.0, pencereler=[(1.8, 7.0)], plakalar=[(1.8, 7.0, 0)],
+                         hareketler={0: None},           # 1.3.4 geçiş kuralı yön bilmez
                          kayitta_sirayla=["araç izleme kapalı (TAKIP=0)"]),
     # Eski kırpma (kutu + hariç alan) izlemeyle çalışır; hariç alandaki park
     # etmiş aracın plakası hiç gitmez; kanıt fotoğrafı gider (kutu var).
@@ -511,14 +549,114 @@ SENARYOLAR.update({
     "takip_birlesik_kapali": dict(_IZ, guven=0.94, guven_iki=0.60, araclar=GIRIS_YOLU,
                                   sure=10.0, birlesik="0", personele=[(3, 10, 0)],
                                   gonderim_sayisi=1),
+    # 1.4.2 (A3): aynı tek kare, araç puanı 0.49 (sahada 11.11 13:52, plaka
+    # yok): 0.60'ın altında 1.4.1 hiçbir şey göndermiyordu — doğum eşiğinden
+    # (0.35) personele.
+    "takip_tek_kare_zayif": dict(_IZ, arac_bir_kez=True, arac_puan=0.49, sure=11.0,
+                                 araclar=[(1.0, 2.0, 330, 200, 150, 260, None, 220)],
+                                 personele=[(1, 11, None)], gonderim_sayisi=1,
+                                 kayitta_sirayla=["araç tek karede görüldü"]),
+    # 1.4.2 (A3 koruması): park etmiş araç kapıdan alt kenara çıkar; çıkarken
+    # aracın son kutusu tam (kenara değiyor), hemen ardından bulucu yalnızca
+    # KUYRUĞUNU (kenarda 25 px'lik şerit, araç 0.40) bir kez ayrı kutu görür
+    # (takip_gece_hizli_cikis'te görülen) — kutu son kutunun ~¼'ü, araca
+    # dikilmez, tek karelik iz doğar.
+    # Yanında az önce görülmüş araç var (komşulu): 0.60 eşiği, kart YOK.
+    # A3 korumasız: plaka çıkışının yanına ikinci (personele) kart.
+    "takip_kenar_kuyrugu": dict(
+        _IZ, yon="ORTAK",
+        araclar=[(0.0, 3.0, 420, 60, 420, 60, 0, 220),
+                 (3.0, 4.9, 420, 60, 150, 370, 0, 220),
+                 (4.95, 5.15, 150, 455, 150, 455, None, 230, 160, 25)],
+        sure=12.0, plakalar=[(5, 12, 0)], gonderim_sayisi=1,
+        kayitta_sirayla=["araç çıktı", "araç tek karede görüldü"]),
+    # 1.4.2 (E12): `--video` — takip_giris'in sahnesi bir video DOSYASINA
+    # yazılıp gerçek köprü döngüsünden geçirilir: plaka "girdi" ipucuyla
+    # özette, hiçbir şey ağa gitmez, kayıt geçici klasörde, plaka kayıtta yok.
+    "video_tekrar": dict(_IZ, yon="ORTAK", araclar=GIRIS_YOLU, video=True,
+                         video_sure=6.0, kuyruk_sn=6.0, sure=30.0,
+                         video_plakalar=[(0, "GIRDI")], video_gonderim=1,
+                         video_sayilar={"giris": 1, "cikis": 0}),
     "takip_tek_kare_otoparkta": dict(_IZ, arac_bir_kez=True,
                                      araclar=[(1.0, 2.0, 470, 20, 470, 60, None, 220)],
                                      sure=9.0, gonderim_sayisi=0),
+    # 1.4.2: eşikler YÜKLENEN bulucunun (modelin). Grafik işlemcisinde YOLO11s
+    # (puan ölçeği YOLOX'tan düşük, eşikleri 0.20 / 0.45 varsayalım); 0.30 alan
+    # plakasız araç kapıdan girip durdu: izlenir ve personele gider. 1.4.1
+    # ayardaki 0.35'i okurdu — araç doğmaz, sessizce düşerdi.
+    "takip_gpu_esikleri": dict(_IZ, gpu=True, arac_esikleri=(0.20, 0.45), arac_puan=0.30,
+                               araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                        (3, 99, 400, 60, 400, 60, None, 220)],
+                               sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1,
+                               kayitta_sirayla=["modeller çalışıyor: GPU · YOLO11s",
+                                                "araç bulucu hazır (duran ≥0.20, geçen ≥0.45)",
+                                                "araç girdi"]),
+    # Aynı araç, ama grafik işlemcisi araç gelmeden bozuldu ve bulucu tiny'ye
+    # (0.35 / 0.60) geçti: izci de yeni doğum eşiğini kullanır — 0.30 araç
+    # doğmaz (tiny ölçeğinde zayıf), hiçbir şey gönderilmez.
+    "takip_gpu_tiny_ye_gecti": dict(_IZ, gpu=True, arac_esikleri=(0.20, 0.45),
+                                    esik_degisir=(0.5, (0.35, 0.60)), arac_puan=0.30,
+                                    araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                             (3, 99, 400, 60, 400, 60, None, 220)],
+                                    sure=10.0, gonderim_sayisi=0,
+                                    kayitta_yok=["araç girdi"]),
+    # 1.4.2: grafik işlemcisi kayıp ve geri gelmiyor (bulucu işlemcide, her
+    # deneme başarısız). Süreler kısaltıldı: 0.5 sn'de bir dener, 2 sn sonra
+    # yeniden başlatma gerekir — ama ancak SAKİN anda: araç girip kararı
+    # verildikten sonra, bir kez (zaman diske yazılır, saatte en çok bir).
+    "takip_gpu_kayip_yeniden_baslat": dict(
+        _IZ, gpu=True, gpu_kayip=True, araclar=GIRIS_YOLU, sure=10.0,
+        plakalar=[(3, 10, 0)], gonderim_sayisi=1, gpu_cikis=True,
+        gpu_cikis_en_erken=4.5,                   # araç 3.0'te durdu + 2 sn sakinlik
+        ortam={"GPU_GERI_DENE_SN": "0.5", "GPU_YENIDEN_BASLAT_SN": "2",
+               "GPU_SAKIN_SN": "2", "GPU_YENIDEN_ARALIK_SN": "3600"},
+        kayitta_sirayla=["grafik işlemcisi hâlâ kullanılamıyor", "araç girdi",
+                         "grafik işlemcisi için köprü yeniden başlatılıyor"]),
+    # Aynısı 1.3.4 geçiş kuralında (TAKIP=0): sakin an = süren geçiş yok, iki
+    # model boşta, GPU_SAKIN_SN'dir güçlü hareket yok.
+    "gpu_kayip_gecis_kurali": dict(
+        sahne=[(0, 1, BOS), (1, 1.8, GELIYOR, 0), (1.8, 8, DURDU, 0)],
+        sure=8.0, pencereler=[(1.8, 4.0)], plakalar=[(1.8, 4.0, 0)], gonderim_sayisi=1,
+        gpu=True, gpu_kayip=True, gpu_cikis=True,
+        gpu_cikis_en_erken=3.5,                   # araç 1.8'de durdu + 2 sn sakinlik
+        ortam={"GPU_GERI_DENE_SN": "0.5", "GPU_YENIDEN_BASLAT_SN": "2",
+               "GPU_SAKIN_SN": "2", "GPU_YENIDEN_ARALIK_SN": "3600"},
+        kayitta_sirayla=["grafik işlemcisi hâlâ kullanılamıyor",
+                         "grafik işlemcisi için köprü yeniden başlatılıyor"]),
     "takip_karanlik_giris": dict(_IZ, araclar=[(1.0, 2.0, 10, 380, 300, 150, 0, 150),
                                                (2.0, 3.0, 300, 150, 400, 60, 0, 220),
                                                (3.0, 99, 400, 60, 400, 60, 0, 220)],
                                  sure=10.0, plakalar=[(2, 10, 0)], gonderim_sayisi=1,
                                  kayitta_sirayla=["araç girdi"]),
+    # 1.4.2 (A1): GECE hızlı çıkan araç (sahada 07:38 / 19:15 / 19:39). Küçük
+    # araç kadrajın dışından girer (birden belirmez) ve kapıdan kenara gider;
+    # bütün kırpıntının ortalama farkı her karede < 2.0 (dusuk_fark denetler —
+    # sahada gece 0.27). 1.4.1: izlenmeyen araca yalnızca 2 sn'de bir kare
+    # bakılır → araç ilk kez kapıda bulunur → kayıp. Yerel kıpırtı (yama)
+    # tetiği aracı otoparkta yakalar → ÇIKTI, plakasıyla. Araç yukarıdan
+    # (kadraj dışından) iner, otoparkta ~0.6 sn görünür. Üç araç, aralarında
+    # > 6 sn: kaybolan iz DIKIS_SN (4 sn) boyunca kare ister — araçlar sık
+    # gelirse eski kod da yakalar; 2 sn'lik yoklamanın şans eseri yakalaması da
+    # üç araçta birden olmasın.
+    "takip_gece_hizli_cikis": dict(
+        _IZ, yon="ORTAK", dusuk_fark=True,
+        araclar=[(1.0, 2.45, 200, -100, 200, 480, 0, 220, 130, 100),
+                 (8.5, 9.95, 200, -100, 200, 480, 1, 220, 130, 100),
+                 (15.7, 17.15, 200, -100, 200, 480, 2, 220, 130, 100)],
+        sure=23.0, plakalar=[(1.0, 8.5, 0), (8.5, 15.7, 1), (15.7, 23, 2)], gonderim_sayisi=3,
+        kayitta_sirayla=["model karesi", "araç çıktı"]),
+    # 1.4.2 (A2): araç ilk kez KAPI alanında bulunur ve kenardan çıkar (hızlı,
+    # koyu). Nereden geldiği bilinmez: ÇIKTI sayılmaz — ama 1.4.1 onu sessizce
+    # düşürüyordu (ne kart ne kayıt). Şimdi personele.
+    "takip_kapida_dogan_cikis": dict(
+        _IZ, yon="ORTAK", araclar=[(1.0, 2.0, 150, 330, 60, 480, None, 220)],
+        sure=10.0, personele=[(1.0, 10.0, None)], gonderim_sayisi=1,
+        kayitta_sirayla=["araç kapı alanında kayboldu"]),
+    # 1.4.2 (A2): otoparkın ortasında biraz kıpırdayıp kaybolan araç: karar
+    # yok, gönderim yok — ama kayıtta TEK satır (sessiz kayıp görünür olsun).
+    "takip_kararsiz_iz": dict(
+        _IZ, yon="ORTAK", araclar=[(1.0, 1.6, 420, 60, 470, 60, None, 220)],
+        sure=10.0, gonderim_sayisi=0, kayitta_sirayla=["iz kararsız bitti"]),
 })
 
 KESKIN_ARALIK = 130
@@ -613,10 +751,14 @@ class SahteArac:
     şerit hiç kutu vermez. En iyi kare aracın en büyük göründüğü karedir.
     """
 
-    esik, gecis_esik = 0.35, 0.60
-
     def __init__(self, S: dict | None = None):
         S = S or {}
+        # 1.4.2: eşikler bulucunun (modelin) — YOLO11s'inki tiny'ninkinden farklı;
+        # "esik_degisir": (t, eşikler) — grafik işlemcisi bozulup tiny'ye geçti.
+        self._esikler = tuple(S.get("arac_esikleri", (0.35, 0.60)))
+        self._degisir = S.get("esik_degisir")
+        # 1.4.2: GpuGeriDonus'un baktığı yüz — gpu_kayip: bulucu işlemcide.
+        self.gpu_da = not S.get("gpu_kayip")
         self.gecikme = float(S.get("model_gecikme", 0))
         # 1.4.0 izleme senaryoları: her araç kendi gri değeriyle (210/220/230/240)
         # AYRI nesne — yan yana iki araç tek kutu olmasın. Puan 0.3 + 8 × pay:
@@ -630,6 +772,19 @@ class SahteArac:
         # 1.4.1: her araç kutusunun puanı sabit (sahada plakasız düşen araçlar
         # 0.46 / 0.54 aldı) — eşik kuralını gerçek zamanlı sınamak için.
         self.puan = S.get("arac_puan")
+
+    def _simdiki(self) -> tuple:
+        if self._degisir is not None and time.monotonic() - T0 >= self._degisir[0]:
+            return tuple(self._degisir[1])
+        return self._esikler
+
+    @property
+    def esik(self) -> float:
+        return self._simdiki()[0]
+
+    @property
+    def gecis_esik(self) -> float:
+        return self._simdiki()[1]
 
     def kutular(self, kirpik: np.ndarray, haric):
         kutular, insan = self._kutular(kirpik, haric)
@@ -678,8 +833,8 @@ class SahteArac:
 
 
 def hepsini_kos() -> int:
-    import tempfile
-    kok = tempfile.mkdtemp(prefix="otopark-test-kopru-")
+    import kalinti
+    kok = kalinti.klasor("otopark-test-kopru-")       # tek klasörde (kalinti.py)
     kotu = []
     for ad in SENARYOLAR:
         print(f"\n{'=' * 62}\n{ad}\n{'=' * 62}", flush=True)
@@ -695,6 +850,89 @@ def hepsini_kos() -> int:
         return 1
     print(f"TÜM TESTLER GEÇTİ ({len(SENARYOLAR)} senaryo)")
     return 0
+
+
+def video_senaryosu(S: dict, kopru, izleme_karesi, gonderimler: list, kalpler: list) -> int:
+    """
+    1.4.2 (E12): bir kaydı GERÇEK köprü döngüsünden geçir (video.oynat).
+    Senaryonun sahnesi (izleme_karesi) KAYIPSIZ bir video dosyasına yazılır
+    (sahte bulucu tam gri değerlere bakar), sonra oynatılır. Beklenen:
+    gidecek olan plaka (yön ipucuyla) ÖZETTE; hiçbir istek ağa — bu
+    senaryonun sahte sunucusuna da — gitmez; kayıt ve kutu geçici klasörde;
+    özet (plaka içerir) kayıt dosyasına YAZILMAZ.
+    """
+    import tempfile
+    import cv2 as _cv2
+    import video
+    yol = os.path.join(tempfile.mkdtemp(prefix="otopark-video-"), "kayit.avi")
+    fps = 25.0
+    yazici = None
+    for kod in ("FFV1", None):
+        fourcc = _cv2.VideoWriter_fourcc(*kod) if kod else 0
+        yazici = _cv2.VideoWriter(yol, fourcc, fps, (640, 480))
+        if yazici.isOpened():
+            break
+    if yazici is None or not yazici.isOpened():
+        print("FAIL: kayıpsız video yazılamadı (FFV1 / ham)")
+        return 1
+    n = int(S["video_sure"] * fps)
+    for i in range(n):
+        yazici.write(izleme_karesi(i / fps))
+    yazici.release()
+    okuyucu = _cv2.VideoCapture(yol)
+    ok, ilk = okuyucu.read()
+    okuyucu.release()
+    if not ok or not np.array_equal(ilk, izleme_karesi(0.0)):
+        print("FAIL: video kayıpsız değil — sahte bulucu tam gri değer bekler")
+        return 1
+
+    yazilan: list[str] = []
+    ozet = video.oynat(yol, kuyruk_sn=S.get("kuyruk_sn", 6.0), yaz=yazilan.append)
+    hata = 0
+
+    def fail(m: str) -> None:
+        nonlocal hata
+        print(f"FAIL: {m}")
+        hata = 1
+
+    # Bu süreçte print köprünün kaydına da gider (gunluk.baslat): plaka içeren
+    # satır yalnızca gerçek konsola — oynatmanın kendi özeti gibi.
+    sys.__stdout__.write(f"   özet: kod={ozet.kod} gonderimler={ozet.gonderimler} "
+                         f"sayilar={ozet.sayilar}\n")
+    if ozet.kod != 0:
+        fail(f"oynatma kodu {ozet.kod}")
+    if gonderimler or kalpler:
+        fail(f"oynatma ağa istek attı: {len(gonderimler)} olay, {len(kalpler)} kalp atışı")
+    for no, h in S.get("video_plakalar", []):
+        if not any(g["tur"] == "PLAKA" and g["plaka"] == PLAKALAR[no] and g.get("hareket") == h
+                   for g in ozet.gonderimler):
+            fail(f"özette {PLAKALAR[no]} ({h}) yok: {ozet.gonderimler}")
+    if len(ozet.gonderimler) != S.get("video_gonderim", 0):
+        fail(f"{S.get('video_gonderim', 0)} gönderim bekleniyordu, {len(ozet.gonderimler)}")
+    for anahtar, deger in S.get("video_sayilar", {}).items():
+        if ozet.sayilar.get(anahtar) != deger:
+            fail(f"kayıt sayısı {anahtar}={ozet.sayilar.get(anahtar)} (beklenen {deger})")
+    gercek_kayit = os.path.join(os.environ["PROGRAMDATA"], "Otopark", "kayit")
+    if os.path.abspath(ozet.klasor).startswith(os.path.abspath(gercek_kayit)):
+        fail(f"oynatma gerçek kayıt klasörüne yazdı: {ozet.klasor}")
+    if os.path.isdir(gercek_kayit) and os.listdir(gercek_kayit):
+        fail(f"gerçek kayıt klasöründe dosya var: {os.listdir(gercek_kayit)}")
+    metin = "\n".join(yazilan)
+    for no, _h in S.get("video_plakalar", []):
+        if PLAKALAR[no] not in metin:
+            fail(f"ekran özetinde {PLAKALAR[no]} yok")
+    kayit_metni = ""
+    for ad in os.listdir(ozet.klasor):
+        if ad.endswith(".log"):
+            with open(os.path.join(ozet.klasor, ad), encoding="utf-8", errors="replace") as f:
+                kayit_metni += f.read()
+    if "araç girdi" not in kayit_metni:
+        fail("geçici kayıtta köprünün karar satırı yok")
+    for p in PLAKALAR:
+        if p in kayit_metni:
+            fail(f"kayıt dosyasında plaka metni var ({p}) — kayıtlara plaka yazılmaz")
+    print("TAMAM" if not hata else "")
+    return hata
 
 
 def tek_kos(ad: str) -> int:
@@ -728,6 +966,7 @@ def tek_kos(ad: str) -> int:
         kayit = {"t": time.monotonic() - T0, "id": json["islem_id"], "yon": json.get("yon"),
                  "tur": tur, "plaka": json.get("plaka"), "tahmin": json.get("tahmin"),
                  "zaman": json.get("zaman"), "foto_var": "foto_base64" in json,
+                 "hareket": json.get("hareket"), "hareket_var": "hareket" in json,
                  "kanit_var": "foto_kanit_base64" in json, "kanit": json.get("foto_kanit_base64")}
         gonderimler.append(kayit)
         if S.get("yavas"):
@@ -746,6 +985,8 @@ def tek_kos(ad: str) -> int:
     sys.modules["requests"] = sahte
 
     import tempfile
+    import kalinti
+    kalinti.klasor("otopark-test-kopru-")             # tek senaryo da tek klasörde
     os.environ["PROGRAMDATA"] = tempfile.mkdtemp(prefix="otopark-test-")
     os.environ.update(WEBHOOK_URL="http://stub/kamera-webhook",
                       KAMERA_SECRET="x" * 32,
@@ -771,26 +1012,39 @@ def tek_kos(ad: str) -> int:
     if S.get("yeniden_baglan"):
         os.environ["YENIDEN_BAGLAN_SN"], os.environ["YENIDEN_BAGLAN_MAX_SN"] = S["yeniden_baglan"]
     os.environ["BEKCI_SN"] = S.get("bekci", "3")
+    for k, v in S.get("ortam", {}).items():
+        os.environ[k] = v
 
     sys.path.insert(0, BURASI)
     import plaka
 
+    # 1.4.2: eski senaryolar 1.4.1'in işlemci kümesini sınar (HIZLANDIRICI=CPU);
+    # "gpu" senaryoları grafik işlemcisi kümesini — sahte Hizlandirici ile.
+    if S.get("gpu"):
+        os.environ["HIZLANDIRICI"] = "GPU"
+        os.environ["ARAC_MODEL"] = S.get("arac_model", "yolo11s")
+    else:
+        os.environ["HIZLANDIRICI"] = "CPU"
+        os.environ.pop("ARAC_MODEL", None)
+    import hizlandirici
+    hizlandirici.Hizlandirici.ac = classmethod(lambda cls, *a, **k: object())
+
     if S.get("okuyucu") == "yok":
-        def _yukle_yok(ayar, dizin=None):
+        def _yukle_yok(ayar, dizin=None, hiz=None):
             raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
         plaka.yukle = _yukle_yok
     else:
-        plaka.yukle = lambda ayar, dizin=None: SahtePlakaci(S)
+        plaka.yukle = lambda ayar, dizin=None, hiz=None: SahtePlakaci(S)
 
     # 1.3.1: araç bulucu her senaryoda TAKLİT edilir (gerçek model test
     # karelerindeki gri dikdörtgeni araç sanmaz); "yok" = yüklenemedi.
     import arac
     if S.get("arac") == "yok":
-        def _arac_yok(ayar, dizin=None):
+        def _arac_yok(ayar, dizin=None, profil=None, hiz=None):
             raise plaka.PlakaHatasi("model dosyası bulunamadı: (test)")
         arac.yukle = _arac_yok
     else:
-        arac.yukle = lambda ayar, dizin=None: SahteArac(S)
+        arac.yukle = lambda ayar, dizin=None, profil=None, hiz=None: SahteArac(S)
 
     import kopru
     import kesif
@@ -800,6 +1054,8 @@ def tek_kos(ad: str) -> int:
 
     bekci_cagrilari: list[float] = []
     kopru._bekci_cik = lambda: bekci_cagrilari.append(time.monotonic() - T0)
+    gpu_cikislari: list[float] = []
+    kopru._gpu_cik = lambda: gpu_cikislari.append(time.monotonic() - T0)
 
     sinamalar: list[tuple[float, tuple]] = []
 
@@ -940,7 +1196,25 @@ def tek_kos(ad: str) -> int:
         def release(self):
             pass
 
+    if S.get("video"):
+        # 1.4.2 (E12): kamerayı oynatma kendisi değiştirir (gerçek
+        # VideoCapture'ı dosyayı açmak için kullanır) — sahte kamera YOK.
+        return video_senaryosu(S, kopru, izleme_karesi, gonderimler, kalpler)
     kopru.cv2.VideoCapture = lambda *a, **k: SahteKamera()
+
+    if S.get("dusuk_fark"):
+        # Senaryo gerçekten "gece" mi: ardışık iki kamera karesinin BÜTÜN
+        # kırpıntı farkı (köprünün d'si) hiçbir anda DURGUN_ESIGI'ne (2.0)
+        # ulaşmamalı — yoksa eski tetik de yakalar, test bir şey kanıtlamaz.
+        en_cok, onceki, t = 0.0, None, 0.0
+        while t < S["sure"]:
+            g = kopru.gri_kucuk(izleme_karesi(t))
+            en_cok = max(en_cok, kopru.fark(onceki, g))
+            onceki, t = g, t + 0.04
+        print(f"   en büyük bütün-kırpıntı farkı: {en_cok:.2f}")
+        if en_cok >= 2.0:
+            print(f"FAIL: senaryo gece değil — bütün kırpıntı farkı {en_cok:.2f} ≥ 2.0")
+            return 1
 
     threading.Thread(target=kopru.main, daemon=True).start()
     time.sleep(S["sure"])
@@ -966,6 +1240,19 @@ def tek_kos(ad: str) -> int:
     for a, b, no in S.get("plakalar", []):
         if not [g for g in tekil if a <= g["t"] <= b and g["plaka"] == PLAKALAR[no]]:
             fail(f"{a}-{b}s arasında {PLAKALAR[no]} plakası gönderilmedi")
+    # 1.4.2 (B5): köprünün yön ipucu. "hareketler": {plaka no: beklenen ipucu
+    # (None = ipucu YOK)} — o plakanın her gönderimi. Personele giden olay hiç
+    # ipucu taşımaz (yönü bilinmez).
+    for no, h in S.get("hareketler", {}).items():
+        bunlar = [g for g in tekil if g["plaka"] == PLAKALAR[no]]
+        if not bunlar:
+            fail(f"{PLAKALAR[no]} hiç gönderilmedi (ipucu denetimi)")
+        for g in bunlar:
+            if g["hareket"] != h or g["hareket_var"] != (h is not None):
+                fail(f"{PLAKALAR[no]} yön ipucu {g['hareket']!r} (beklenen {h!r})")
+    for g in gonderimler:
+        if g["tur"] == "OKUNAMADI" and g["hareket_var"]:
+            fail(f"personele giden olayda yön ipucu var: {g['hareket']!r}")
     for a, b, no in S.get("personele", []):
         uyan = [g for g in tekil if a <= g["t"] <= b and g["tur"] == "OKUNAMADI"]
         if not uyan:
@@ -1013,15 +1300,18 @@ def tek_kos(ad: str) -> int:
             fail(f"kamera açılmadan kalp atışı gönderildi (t={erken[0]:.2f}s)")
         if not kalpler:
             fail("kamera açıldıktan sonra hiç kalp atışı gönderilmedi")
-    if S.get("kayitta_sirayla"):
+    if S.get("kayitta_sirayla") or S.get("kayitta_yok"):
         import glob as _glob
         metin = ""
         for yol in _glob.glob(os.path.join(os.environ["PROGRAMDATA"], "Otopark",
                                            "kayit", "*.log")):
             with open(yol, encoding="utf-8", errors="replace") as f:
                 metin += f.read()
+        for parca in S.get("kayitta_yok", []):
+            if parca in metin:
+                fail(f"kayıtta olmamalıydı: {parca!r}")
         konum = 0
-        for parca in S["kayitta_sirayla"]:
+        for parca in S.get("kayitta_sirayla", []):
             i = metin.find(parca, konum)
             if i < 0:
                 fail(f"kayıtta sırayla bulunamadı: {parca!r}")
@@ -1108,6 +1398,20 @@ def tek_kos(ad: str) -> int:
             fail(f"bekçi takılan döngüyü {a}-{b}s içinde kapatmalıydı")
     elif bekci_cagrilari:
         fail(f"bekçi takılmayan döngüde tetiklendi (t={bekci_cagrilari[0]:.2f}s)")
+    # 1.4.2: GPU için yeniden başlatma — yalnızca beklendiğinde, bir kez, son
+    # gönderimden SONRA (sakin an: araç kararı verilmeden kesilmez).
+    if S.get("gpu_cikis"):
+        son_gonderim = max((g["t"] for g in gonderimler), default=0.0)
+        if len(gpu_cikislari) != 1:
+            fail(f"GPU yeniden başlatması bir kez olmalıydı, {len(gpu_cikislari)} kez")
+        elif gpu_cikislari[0] <= son_gonderim:
+            fail(f"GPU yeniden başlatması araç kararından önce (t={gpu_cikislari[0]:.2f}s, "
+                 f"son gönderim {son_gonderim:.2f}s)")
+        elif gpu_cikislari[0] < S.get("gpu_cikis_en_erken", 0.0):
+            fail(f"GPU yeniden başlatması sakin an gelmeden (t={gpu_cikislari[0]:.2f}s, "
+                 f"en erken {S['gpu_cikis_en_erken']}s)")
+    elif gpu_cikislari:
+        fail(f"GPU yeniden başlatması beklenmezken oldu (t={gpu_cikislari[0]:.2f}s)")
 
     if not hata:
         print(f"PASS: {ad}")

@@ -180,6 +180,22 @@ export function koprudenOkunamadi(govde: Record<string, unknown>): KoprudenOkuna
 }
 
 /**
+ * The bridge's direction hint (bridge 1.4.2, 056): its tracker saw the car
+ * ENTER (`GIRDI`), LEAVE (`CIKTI`) or move INSIDE the yard (`ICERIDE`). Only
+ * these exact strings count; anything else — missing, lowercase, a number, a
+ * lane name — is "no hint", never a 400: the bridge treats a 400 as final and
+ * the car would be lost. Read from the raw body, deliberately NOT in the zod
+ * schema for the same reason. The database uses it only to refuse a wrong
+ * guess on the single gate (kamera_tek_kapi), never to open or close alone.
+ */
+export type HareketIpucu = 'GIRDI' | 'CIKTI' | 'ICERIDE'
+
+export function hareketIpucu(govde: Record<string, unknown>): HareketIpucu | null {
+  const h = govde.hareket
+  return h === 'GIRDI' || h === 'CIKTI' || h === 'ICERIDE' ? h : null
+}
+
+/**
  * Is this the bridge's LAST attempt for the event (`x-kamera-son-gonderim`,
  * bridge 1.2.1+)? Exactly "1", like `x-kamera-deneme`.
  *

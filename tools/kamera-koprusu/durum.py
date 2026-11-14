@@ -146,7 +146,8 @@ def sunucu_reddi(satirlar: list[str]) -> str | None:
 
 _IZLEME_OLAYLARI = (gunluk.GIRDI_ISARETI, gunluk.CIKTI_ISARETI, gunluk.ESKI_GIRDI_ISARETI,
                     gunluk.KAPISIZ_ISARETI, gunluk.ICERIDE_ISARETI, gunluk.GERI_DONDU_ISARETI,
-                    gunluk.KAPIDA_BEKLIYOR_ISARETI, gunluk.TEK_KARE_ISARETI)
+                    gunluk.KAPIDA_BEKLIYOR_ISARETI, gunluk.TEK_KARE_ISARETI,
+                    gunluk.KAPIDA_KAYBOLDU_ISARETI, gunluk.KARARSIZ_ISARETI)
 
 
 def _son_kamera_sozu(satirlar: list[str]) -> str | None:
@@ -265,6 +266,102 @@ def arac_durumu(satirlar: list[str]) -> str | None:
     return None
 
 
+def model_durumu(satirlar: list[str]) -> str | None:
+    """
+    1.4.2 modellerin kümesi — bu başlangıçtan beri: "GPU · YOLO11s", GPU neden
+    kullanılamadı, çalışırken neyi bıraktı. Sağlığı BOZMAZ: işlemcide köprü
+    1.4.1 gibi çalışır, yalnızca yavaş.
+    """
+    for i in range(len(satirlar) - 1, -1, -1):
+        if "köprü başladı" in satirlar[i]:
+            satirlar = satirlar[i + 1:]
+            break
+    ad = gpu_yok = geldi = geldi_ad = None
+    birakilan: list[str] = []
+    saat = None
+    for satir in satirlar:
+        if gunluk.MODELLER_ISARETI in satir:
+            ad = satir.split(gunluk.MODELLER_ISARETI, 1)[1].lstrip(": ").strip()
+        elif gunluk.GPU_YOK_ISARETI in satir:
+            gpu_yok = satir.split(gunluk.GPU_YOK_ISARETI, 1)[1].lstrip(": ").split(" — ")[0].strip()
+        elif gunluk.GPU_BIRAKILDI_ISARETI in satir:
+            if geldi is not None:                 # döndükten sonra yeniden bırakıldı
+                birakilan, saat, geldi = [], None, None
+            birakilan.append(satir.split(gunluk.GPU_BIRAKILDI_ISARETI, 1)[1]
+                             .lstrip(": ").split(" (")[0].strip())
+            if saat is None and len(satir.split()) > 1:
+                saat = satir.split()[1][:5]
+        elif gunluk.GPU_GERI_GELDI_ISARETI in satir:
+            geldi = satir.split()[1][:5] if len(satir.split()) > 1 else "?"
+            geldi_ad = satir.split(gunluk.GPU_GERI_GELDI_ISARETI, 1)[1].lstrip(": ").split(" — ")[0]
+    if ad is None:
+        return None
+    if geldi and birakilan:
+        return f"{ad} — GPU bırakıldı ({saat}), geri geldi ({geldi})"
+    if geldi and gpu_yok:
+        return f"{geldi_ad.strip()} — açılışta GPU yoktu, geri geldi ({geldi})"
+    if gpu_yok:
+        ad += f" — GPU kullanılamadı: {gpu_yok}"
+    if birakilan:
+        ad += f" — GPU bırakıldı ({saat}): {', '.join(birakilan)} → işlemci"
+    return ad
+
+
+# 1.4.2: bundan uzun süredir işlemcideyse (GPU yok / geri gelmedi) uyarılır.
+ISLEMCI_UYARI_SN = 3600
+
+
+def _satir_zamani(satir: str, simdi):
+    """Kayıt satırının zamanı ("gg.aa SS:DD:ss"), yılı simdi'den; olmazsa None."""
+    from datetime import datetime
+    try:
+        z = datetime.strptime(f"{simdi.year} {satir[:14]}", "%Y %d.%m %H:%M:%S")
+    except ValueError:
+        return None
+    return z.replace(year=simdi.year - 1) if (z - simdi).days >= 1 else z
+
+
+def model_uyarisi(satirlar: list[str], simdi=None) -> str | None:
+    """
+    1.4.2: köprü ISLEMCI_UYARI_SN'den uzun süredir işlemcideyse (GPU kayıp ya
+    da açılışta yoktu) uyarı metni ve son sebep; değilse None. GPU için
+    yapılan yeniden başlatma süreyi SIFIRLAMAZ (yeni süreç de işlemcide
+    açıldıysa sürer); elle yeniden başlatma sıfırlar. Sağlığı bozmaz.
+    """
+    from datetime import datetime
+    simdi = simdi or datetime.now()
+    cpu_bas = None
+    neden = None
+    son_yeniden = False
+    for satir in satirlar:
+        if "köprü başladı" in satir:
+            if not son_yeniden:
+                cpu_bas, neden = None, None
+            son_yeniden = False
+            continue
+        if gunluk.GPU_YENIDEN_BASLAT_ISARETI in satir:
+            son_yeniden = True
+            continue
+        if gunluk.GPU_GERI_GELDI_ISARETI in satir:
+            cpu_bas, neden = None, None
+        elif gunluk.GPU_BIRAKILDI_ISARETI in satir or gunluk.GPU_YOK_ISARETI in satir:
+            if cpu_bas is None:
+                cpu_bas = _satir_zamani(satir, simdi)
+            isaret = (gunluk.GPU_YOK_ISARETI if gunluk.GPU_YOK_ISARETI in satir
+                      else gunluk.GPU_BIRAKILDI_ISARETI)
+            neden = satir.split(isaret, 1)[1].lstrip(": ").split(" — ")[0].strip()
+        elif gunluk.GPU_HALA_YOK_ISARETI in satir:
+            neden = satir.split(gunluk.GPU_HALA_YOK_ISARETI, 1)[1].lstrip(": ").split(" — ")[0].strip()
+    if cpu_bas is None:
+        return None
+    sure = (simdi - cpu_bas).total_seconds()
+    if sure < ISLEMCI_UYARI_SN:
+        return None
+    sa, dk = int(sure // 3600), int(sure % 3600 // 60)
+    return (f"{sa} sa {dk} dk'dır işlemcide (grafik işlemcisi geri gelmedi; köprü çalışıyor, "
+            f"yalnızca yavaş) — son hata: {neden or 'bilinmiyor'}")
+
+
 def takip_durumu(satirlar: list[str]) -> str | None:
     """
     1.4.0 araç izlemenin hâli — bu başlangıçtan beri SON söz. Kapalı / kapandı
@@ -299,6 +396,20 @@ def izleme_ozet(satirlar: list[str]) -> tuple[int, int, int, int]:
         elif gunluk.KAPIDA_BEKLIYOR_ISARETI in s:
             sayi[3] += 1
     return sayi[0], sayi[1], sayi[2], sayi[3]
+
+
+def kararsiz_ozet(satirlar: list[str]) -> tuple[int, int]:
+    """1.4.2 (A2) bugün: (kapı alanında kaybolan → personele, kararsız biten iz)."""
+    bugun = time.strftime("%d.%m")
+    kapida = kararsiz = 0
+    for s in satirlar:
+        if not s.startswith(bugun):
+            continue
+        if f"[i] {gunluk.KAPIDA_KAYBOLDU_ISARETI} (iz" in s:
+            kapida += 1
+        elif f"[i] {gunluk.KARARSIZ_ISARETI} (iz" in s:
+            kararsiz += 1
+    return kapida, kararsiz
 
 
 def arac_yok_sayisi(satirlar: list[str]) -> int:
@@ -446,6 +557,12 @@ def serit_durumu(ayar_yolu: str) -> bool:
     arac_hali = arac_durumu(satirlar)
     if arac_hali:
         print(f"     Araç bulucu  : {arac_hali}")
+    model_hali = model_durumu(satirlar)
+    if model_hali:
+        print(f"     Modeller     : {model_hali}")
+    model_uyari = model_uyarisi(satirlar)
+    if model_uyari:
+        print(f"     ! Modeller   : {model_uyari}")
     takip_hali = takip_durumu(satirlar)
     if takip_hali:
         print(f"     Araç izleme  : {takip_hali}")
@@ -465,6 +582,9 @@ def serit_durumu(ayar_yolu: str) -> bool:
         ek += f"; {giris} giriş, {cikis} çıkış, {iceride} otopark içi hareket"
         if kapida:
             ek += f" (kapıda bekleyen: {kapida})"
+    kayboldu, kararsiz = kararsiz_ozet(satirlar)
+    if kayboldu or kararsiz:
+        ek += f"; kapıda kaybolan: {kayboldu}, kararsız biten iz: {kararsiz}"
     print(f"     Bugün        : {gonderim} gönderim, {red} reddedilme{ek}")
     if son_hata:
         print(f"     Son uyarı    : {son_hata[:110]}")

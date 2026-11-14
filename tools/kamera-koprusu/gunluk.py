@@ -140,6 +140,18 @@ PLAKA_KAPALI_ISARETI = "plaka okuyucu kapalı"
 ARAC_HAZIR_ISARETI = "araç bulucu hazır"
 ARAC_BOZUK_ISARETI = "araç bulucu çalışmıyor"
 ARAC_KAPALI_ISARETI = "araç bulucu kapalı"
+# 1.4.2: modeller hangi kümede çalışıyor ("GPU · YOLO11s" / "CPU · YOLOX-tiny").
+# Grafik işlemcisi kullanılamazsa ya da çalışırken bozulursa köprü DÜŞMEZ:
+# işlemcideki 1.4.1 kümesine geçer — araç kaybolmaz, yalnızca yavaşlar.
+MODELLER_ISARETI = "modeller çalışıyor"
+GPU_YOK_ISARETI = "grafik işlemcisi kullanılamıyor"
+GPU_BIRAKILDI_ISARETI = "grafik işlemcisi bırakıldı"
+# Geri dönüş (hizlandirici.GpuGeriDonus): işlemcideyken 30 sn'de bir denenir.
+GPU_GERI_GELDI_ISARETI = "grafik işlemcisi geri geldi"
+GPU_HALA_YOK_ISARETI = "grafik işlemcisi hâlâ kullanılamıyor"
+# 10 dk'da dönmezse sakin anda (saatte en çok bir) — TAKILDI değil: durum
+# ekranı bunu "durmuş" saymaz.
+GPU_YENIDEN_BASLAT_ISARETI = "grafik işlemcisi için köprü yeniden başlatılıyor"
 # Duran plakasız şeyde araç görülmedi: gönderilmez (PLAKASIZ ile aynı satırda).
 ARAC_YOK_ISARETI = "araç görülmedi"
 # Karar anında durulan kare henüz ölçülmemişti: 1.3.0 kuralı (personele).
@@ -168,6 +180,14 @@ KAPIDA_GORULMEDI_ISARETI = "kapıda görülmedi"
 # 1.4.1: kapıda yalnızca BİR karede görülen hareketli araç — yönü bilinmez,
 # plakası okunsa bile personele (Çözülmemiş kayıt) gider.
 TEK_KARE_ISARETI = "araç tek karede görüldü — personele"
+# 1.4.2 (A2): kapı alanında kaybolan, hiç otoparkta görülmemiş, kararsız araç
+# (sahada 11.11 beş araç böyle iz bırakmadan kayboldu) — yönü bilinmez.
+KAPIDA_KAYBOLDU_ISARETI = "araç kapı alanında kayboldu — yönü bilinmiyor — personele"
+# 1.4.2 (A2): olay vermeden biten her araç izi bir satır (sessiz kayıp görünsün).
+KARARSIZ_ISARETI = "iz kararsız bitti"
+# 1.4.2 (B6): tek kapıda içeride gezen, plakası emin okunan araç "içeride"
+# ipucuyla sunucuya soruldu (bileti yoksa sunucu çözülmemiş kayıt açar).
+ICERIDE_SORULDU_ISARETI = "içeride görülen araç sunucuya soruldu"
 # 1.4.1: plaka tek karede %95'e ulaşmadı ama en az üç farklı görünümde AYNI
 # okundu (çok karede birleştirme, PLAKA_BIRLESIK) — denetim için kayda yazılır.
 BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"

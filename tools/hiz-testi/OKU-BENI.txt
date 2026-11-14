@@ -1,0 +1,39 @@
+OTOPARK — HIZ TESTİ
+===================
+
+Bu program kamera bilgisayarında (Dell Latitude 5590) plaka ve araç
+modellerinin ne kadar hızlı çalıştığını ölçer: bugünkü yol (işlemci),
+Intel OpenVINO ile işlemci, ve OpenVINO ile bilgisayarın kendi grafik
+işlemcisi (Intel UHD 620). Sonuca göre köprünün GPU kullanıp kullanmayacağına
+ve araç bulucu modeline karar verilecek.
+
+HİÇBİR ŞEY GÖNDERMEZ, köprüye ve ayarlara DOKUNMAZ, hiçbir şey kurmaz.
+Köprü çalışırken de koşabilir.
+
+
+NASIL ÇALIŞTIRILIR
+------------------
+1. ZIP'i bir klasöre ÇIKARIN (ör. C:\OtoparkHizTesti). ZIP'in içinden
+   çalıştırmayın.
+2. Bilgisayar PRİZE TAKILI olsun, başka iş yapmayın.
+3. OtoparkHizTesti\OtoparkHizTesti.exe'ye çift tıklayın.
+   (SmartScreen mavi ekran gösterirse: "Daha fazla bilgi" → "Yine de
+   çalıştır". Program imzalanmamıştır.)
+4. Yaklaşık 12-15 dakika sürer. Bitince "Bitti" yazar ve programın yanına
+   hiz-sonuc.txt dosyasını bırakır.
+5. hiz-sonuc.txt dosyasının İÇERİĞİNİ Claude'a iletin.
+
+İlk GPU satırları biraz uzun sürebilir (grafik işlemcisi modeli ilk kez
+hazırlar); bu hazırlık programın yanındaki ov-onbellek klasöründe saklanır.
+
+
+SATIRLAR NE DEMEK
+-----------------
+"Tek tek modeller": her model, her yolda, tek başına kaç milisaniye sürüyor.
+  "araç 0.xx" = modelin örnek resimdeki aracı ne kadar emin bulduğu; 0.50'nin
+  altındaysa o satır geçersizdir (yanında uyarı yazar).
+"Birleşik senaryolar": köprünün gerçek işi — araç bulucu ile plaka işi aynı
+  anda. "kare/sn" ne kadar yüksekse köprü saniyede o kadar çok kareye bakar.
+  1) bugünkü köprüdür; ötekiler onunla karşılaştırılır.
+"dosya yok": o model bu pakette yok — iletin.
+"GPU yok": grafik işlemcisi kullanılamadı — sonucu yine iletin.

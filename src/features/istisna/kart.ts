@@ -21,6 +21,11 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
   // ticket that blocks that plate's next real entry.
   OKUNAMADI:
     'Kamera bir araç gördü ama plakasını okuyamadı; bilet açılmadı. Araç içerideyse ve bileti yoksa girişini elle açın. Zaten bileti varsa kaydı çözüldü olarak işaretleyin.',
+  // 056: the bridge saw the direction, and it contradicts the ticket state.
+  GIRISTE_ACIK_BILET:
+    'Kamera bu aracı tek kapıdan GİRERKEN gördü ama plakasının eski bir açık bileti var; araç önceki çıkışında görülmemiş olabilir. Eski bileti kontrol edin: araç çıkıp yeniden girdiyse eski bileti Çıkış ekranından kapatın ve yeni girişi elle açın; araç hiç çıkmadıysa kaydı çözüldü olarak işaretleyin.',
+  ICERIDE_BILETSIZ:
+    'Otoparkın içinde hareket eden bu aracın plakası okundu ama açık bileti yok. Kamera bu aracın biletini yakın zamanda çıkış diye kapattıysa (Çıktı listesinde, ödeme bekliyor) yeni giriş açmayın; o bilette "Araç çıkmadı"yı kullanın. Öyle değilse ve araç içerideyse girişini açın — giriş saati aracın içeride görüldüğü an olur; bileti varsa ya da araç çıktıysa kaydı çözüldü olarak işaretleyin.',
 }
 
 // The last sentence matches the entrance text's "Zaten bileti varsa…": a later
@@ -58,6 +63,8 @@ const KISA: Record<IstisnaTur, string> = {
   COKLU_ESLESME: 'İçeride benzer plakalı bilet var',
   YON_BELIRSIZ: 'İçerideki bir plakaya çok benziyor',
   OKUNAMADI: 'Plaka tam olarak okunamadı',
+  GIRISTE_ACIK_BILET: 'Girerken görüldü — eski açık bileti var',
+  ICERIDE_BILETSIZ: 'İçeride, bileti yok',
 }
 
 /** The card's single status line. */
@@ -78,19 +85,22 @@ export function baslangicPlakasi(i: Istisna): string {
 }
 
 /**
- * Buttons on an open row. "Giriş aç" only for an unreadable plate — the only
- * kind istisna_bilet_ac accepts (044). "Çıkış" keeps the old rule exactly: an
- * exit-lane event, a doubtful single-gate read, or an unreadable plate on the
- * single gate (that car may have been leaving). A resolved row has none.
+ * Buttons on an open row. "Giriş aç" for an unreadable plate and, since 056,
+ * a car seen inside with no ticket — the kinds istisna_bilet_ac accepts.
+ * "Çıkış" keeps the old rule exactly — an exit-lane event, a doubtful
+ * single-gate read, or an unreadable plate on the single gate (that car may
+ * have been leaving) — plus, since 056, a car seen entering whose OLD ticket
+ * is still open (close that one from the exit screen). A resolved row has none.
  */
 export function eylemler(i: Istisna): { girisAc: boolean; cikis: boolean; kapat: boolean } {
   if (i.cozuldu_at !== null) return { girisAc: false, cikis: false, kapat: false }
   return {
-    girisAc: i.tur === 'OKUNAMADI',
+    girisAc: i.tur === 'OKUNAMADI' || i.tur === 'ICERIDE_BILETSIZ',
     cikis:
       (i.tur !== 'GELECEK' && i.yon === 'CIKIS') ||
       i.tur === 'YON_BELIRSIZ' ||
-      (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK'),
+      (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK') ||
+      i.tur === 'GIRISTE_ACIK_BILET',
     kapat: true,
   }
 }
@@ -109,7 +119,13 @@ export function eylemler(i: Istisna): { girisAc: boolean; cikis: boolean; kapat:
  *   - a later photo of the same car is a new event: it opens the ticket and
  *     leaves this row open.
  */
-const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set(['YON_BELIRSIZ', 'OKUNAMADI'])
+const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set([
+  'YON_BELIRSIZ',
+  'OKUNAMADI',
+  // 056: the camera deliberately left these to a person.
+  'GIRISTE_ACIK_BILET',
+  'ICERIDE_BILETSIZ',
+])
 
 /** The one-line "camera may still fix this — don't enter it by hand" warning. */
 export function elleGirmeUyarisi(i: Istisna): boolean {

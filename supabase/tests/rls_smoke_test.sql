@@ -123,6 +123,7 @@ declare
   v_txt3         text;
   v_bool         boolean;
   v_json         jsonb;
+  v_json2        jsonb;
   v_rec          record;
   v_liste        text[];
   v_beklenen     text[];
@@ -1926,7 +1927,11 @@ foreach v_txt in array array[
   -- bildirim yazdırabilir ya da bekleyen bildirimleri erken gönderttirebilirdi.
   'public.notify_herkes(public.bildirim_tur, text, text, text)',
   'public.istisna_bildirim_gonder()',
-  'public.kamera_okunamadi_kapat()'
+  'public.kamera_okunamadi_kapat()',
+  -- 058: kameranın günlük özeti. Yalnızca gece işi çağırır; açık kalsaydı
+  -- istemci Yönetici'ye istediği gün için özet yazdırabilirdi.
+  'public.kamera_gunluk_sayim(date)',
+  'public.kamera_gunluk_rapor(date)'
 ] loop
   if has_function_privilege('anon', v_txt, 'execute')
      or has_function_privilege('authenticated', v_txt, 'execute')
@@ -3751,13 +3756,13 @@ perform pg_temp.logout();
 
 -- (a) Sınır grant'ta: kimlik basmıyor ama bilet AÇIYOR, istemciye kapalı.
 if has_function_privilege('anon',
-     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb)', 'execute')
+     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb, text)', 'execute')
    or has_function_privilege('authenticated',
-     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb)', 'execute') then
+     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb, text)', 'execute') then
   raise exception 'FAIL 58a: kamera_tek_kapi istemciye açık';
 end if;
 if not has_function_privilege('service_role',
-     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb)', 'execute') then
+     'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb, text)', 'execute') then
   raise exception 'FAIL 58a: webhook kamera_tek_kapi çağıramıyor';
 end if;
 foreach v_txt in array array['anon', 'authenticated', 'service_role'] loop
@@ -4926,7 +4931,7 @@ if v_json ->> 'karar' is distinct from 'ISTISNA'
 end if;
 
 foreach v_txt in array array[
-  'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb)',
+  'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb, text)',
   'public.kamera_okunamadi(text, uuid, timestamptz, text, numeric, jsonb)'
 ] loop
   if not has_function_privilege('service_role', v_txt, 'execute') then
@@ -7301,6 +7306,326 @@ if exists (select 1 from pg_trigger where tgname = 'kamera_cikis_bildirim_tg'
 end if;
 
 raise notice 'PASS 75: kamera bileti olayın saatinde ödemesiz kapatır, herkes bildirim alır, borç kendi vardiyasında toplanıp Onay''a düşer, "Araç çıkmadı" yalnızca kameranın parasız kapattığını geri açar, benzer plaka kapatmaz';
+
+-- =====================================================================
+-- 76  Tek kapı: köprünün yön ipucu yalnızca YANLIŞ TAHMİNİ durdurur (055, 056)
+--     Köprü aracı izler ve gördüğü yönü gönderir (p_hareket: GIRDI, CIKTI,
+--     ICERIDE). Sunucu ipucuyla ASLA tek başına bilet açmaz ya da kapatmaz;
+--     yalnızca bilet durumunun tahmini ipucuyla çelişince insana bırakır:
+--       · çıkan araç, açık bileti yok   → ACIK_BILET_YOK (hayalet giriş yok —
+--         sahada 11.11 11:35 / 13:46);
+--       · giren araç, eski açık bileti var → GIRISTE_ACIK_BILET (yanlış
+--         kapatma yok);
+--       · içeride gezen araç: bileti varsa hiçbir şey (asla kapatma), yoksa
+--         ICERIDE_BILETSIZ — personel "Giriş aç"la açabilir.
+--     İpucu yok ya da tanınmıyor → bugünkü karar (eski köprü, kuyruktaki eski
+--     olay). now() bu transaction'da sabit; "eski bilet" PASS 58 gibi
+--     created_at geri çekilerek kurulur.
+-- =====================================================================
+perform pg_temp.logout();
+
+-- (a) Tek imza (ipucu sonda, varsayılanı boş), yalnızca webhook çağırır.
+v_txt := 'public.kamera_tek_kapi(text, uuid, timestamptz, text, jsonb, text)';
+if to_regprocedure(v_txt) is null then
+  raise exception 'FAIL 76a: kamera_tek_kapi ipucu parametresiyle yok — 056 çalıştırılmadı';
+end if;
+if (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'kamera_tek_kapi') <> 1 then
+  raise exception 'FAIL 76a: kamera_tek_kapi birden çok imzayla tanımlı';
+end if;
+if not has_function_privilege('service_role', v_txt, 'execute')
+   or has_function_privilege('anon', v_txt, 'execute')
+   or has_function_privilege('authenticated', v_txt, 'execute') then
+  raise exception 'FAIL 76a: kamera_tek_kapi yetkileri yanlış';
+end if;
+select tek_kapi_giris_yoksay_dk, tek_kapi_cikis_yoksay_dk
+  into v_n, v_n2 from public.otopark_ayarlari where id = 1;
+v_n := coalesce(v_n, 3);
+
+-- (b) Tanınmayan ipucu yok sayılır: yeni araç bugünkü gibi GİRER. İpucusuz
+--     çağrı PASS 58'de (dört/üç argüman) aynen geçer.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76AA101', gen_random_uuid(), now(), null, null, 'XYZ') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 76b: tanınmayan ipucu kararı değiştirdi (%)', v_json;
+end if;
+-- GIRDI + bileti yok: ipucu kararla aynı yönde — giriş açılır.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76BB202', gen_random_uuid(), now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS'
+   or not exists (select 1 from public.biletler where plaka = 'ZZ76BB202' and durum = 'ACIK') then
+  raise exception 'FAIL 76b: giren ve bileti olmayan araç girmedi (%)', v_json;
+end if;
+
+-- (c) ÇIKAN araç, açık bileti yok: hayalet giriş AÇILMAZ, insana gider.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76CC303', v_islem, now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'CIKIS_BILETSIZ' then
+  raise exception 'FAIL 76c: çıkan ve bileti olmayan araç insana gitmedi (%)', v_json;
+end if;
+if exists (select 1 from public.biletler where plaka = 'ZZ76CC303') then
+  raise exception 'FAIL 76c: çıkan araca hayalet giriş bileti açıldı';
+end if;
+if (select count(*) from public.istisnalar
+     where islem_id = v_islem and tur::text = 'ACIK_BILET_YOK' and yon = 'ORTAK'
+       and plaka = 'ZZ76CC303' and cozuldu_at is null) <> 1 then
+  raise exception 'FAIL 76c: ACIK_BILET_YOK kaydı (tek kapı) yazılmadı';
+end if;
+select id into v_id2 from public.istisnalar where islem_id = v_islem;
+
+-- (h) Aynı olay yeniden gelir (köprü cevabı göremedi): ikinci kayıt yok.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76CC303', v_islem, now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'TEKRAR'
+   or (select count(*) from public.istisnalar where plaka = 'ZZ76CC303') <> 1 then
+  raise exception 'FAIL 76h: tekrar oynatılan olay ikinci kayıt üretti (%)', v_json;
+end if;
+
+-- (e) GİREN araç, bileti az önce açılmış: aynı ziyaret — bugünkü gibi yok say.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD404', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_bilet is null then
+  raise exception 'FAIL 76e: hazırlık bileti açılmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD404', gen_random_uuid(), now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_GIRIS' then
+  raise exception 'FAIL 76e: az önce giren araç yok sayılmadı (%)', v_json;
+end if;
+
+-- (d) GİREN araç ama ESKİ açık bileti var: bilet KAPATILMAZ, insana gider.
+update public.biletler
+   set created_at = now() - make_interval(mins => v_n + 1) where id = v_bilet;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD404', v_islem, now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'GIRIS_ACIK_BILET' then
+  raise exception 'FAIL 76d: giren aracın eski açık bileti insana gitmedi (%)', v_json;
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK' and cikis_bekliyor_at is null) then
+  raise exception 'FAIL 76d: giren aracın eski bileti kapatıldı ya da işaretlendi';
+end if;
+if (select count(*) from public.istisnalar
+     where islem_id = v_islem and tur::text = 'GIRISTE_ACIK_BILET' and yon = 'ORTAK'
+       and plaka = 'ZZ76DD404' and aday_bilet_ids = array[v_bilet]
+       and cozuldu_at is null) <> 1 then
+  raise exception 'FAIL 76d: GIRISTE_ACIK_BILET kaydı adayıyla birlikte yazılmadı';
+end if;
+
+-- (f) ÇIKAN araç, eski açık bileti var: bugünkü gibi ÇIKIŞ (bilet kapanır).
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD404', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI') then
+  raise exception 'FAIL 76f: çıkan aracın bileti kapanmadı (%)', v_json;
+end if;
+
+-- (g) İÇERİDE gezen araç. Bileti varsa hiçbir şey olmaz — ESKİ bilet de
+--     kapanmaz (bugün aynı olay çıkış sayılırdı).
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76EE505', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+v_bilet2 := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_bilet2 is null then
+  raise exception 'FAIL 76g: hazırlık bileti açılmadı (%)', v_json;
+end if;
+update public.biletler
+   set created_at = now() - make_interval(mins => v_n + 1) where id = v_bilet2;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76EE505', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'ICERIDE_ACIK'
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet2 and durum = 'ACIK' and cikis_bekliyor_at is null) then
+  raise exception 'FAIL 76g: içerideki biletli araç için bir şey yapıldı (%)', v_json;
+end if;
+-- Bir karakter uzak okunmuş hâli: içerideki o araçtır — kayıt da bilet de yok.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76EE506', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'ICERIDE_BENZER'
+   or exists (select 1 from public.biletler where plaka = 'ZZ76EE506')
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ76EE506') then
+  raise exception 'FAIL 76g: benzer plakalı içerideki araç iz bıraktı (%)', v_json;
+end if;
+-- Bileti az önce kapanmış (f): ödeyip çıkıyor — yok say.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD404', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS' then
+  raise exception 'FAIL 76g: bileti az önce kapanan araç yok sayılmadı (%)', v_json;
+end if;
+-- Bileti yok: bilet AÇILMAZ, insana gider.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76FF606', v_islem, now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
+   or exists (select 1 from public.biletler where plaka = 'ZZ76FF606') then
+  raise exception 'FAIL 76g: içeride bileti olmayan araç insana gitmedi (%)', v_json;
+end if;
+select id into v_id from public.istisnalar
+ where islem_id = v_islem and tur::text = 'ICERIDE_BILETSIZ' and yon = 'ORTAK'
+   and plaka = 'ZZ76FF606' and cozuldu_at is null;
+if v_id is null then
+  raise exception 'FAIL 76g: ICERIDE_BILETSIZ kaydı yazılmadı';
+end if;
+-- Aynı biletsiz araç yeniden görüldü (başka iz, yeni olay): açık kaydı
+-- dururken ikinci kart ve ikinci bildirim YOK.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76FF606', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'ICERIDE_KAYITLI'
+   or (select count(*) from public.istisnalar where plaka = 'ZZ76FF606') <> 1 then
+  raise exception 'FAIL 76g: içeride biletsiz araç ikinci kart açtı (%)', v_json;
+end if;
+-- Bileti az önce kapanan araca (f) BİR KARAKTER uzak okuma: ödeyip çıkan
+-- aracın yanlış okunması — kart yok (048'in 4. adımı gibi).
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ76DD405', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS_BENZER'
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ76DD405')
+   or exists (select 1 from public.biletler where plaka = 'ZZ76DD405') then
+  raise exception 'FAIL 76g: az önce çıkanın benzeri içeride kart açtı (%)', v_json;
+end if;
+
+-- (i) "Giriş aç": ICERIDE_BILETSIZ kaydından açılır (044'ün bütün
+--     korumalarıyla), ACIK_BILET_YOK kaydından açılmaz.
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac(v_id, 'ZZ76FF606') into v_json;
+perform pg_temp.logout();
+if (v_json ->> 'zaten_vardi')::boolean is distinct from false
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ76FF606'
+                     and durum = 'ACIK' and islem_id = v_islem)
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_by = u_personel and cozuldu_at is not null) then
+  raise exception 'FAIL 76i: içeride bileti olmayan araç için giriş açılmadı (%)', v_json;
+end if;
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac(v_id2, 'ZZ76CC303');
+  raise exception 'FAIL 76i: çıkışta bileti olmayan araç kaydından giriş açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Bu kayıttan giriş açılamaz%' then
+    raise exception 'FAIL 76i: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+raise notice 'PASS 76: tek kapıda köprünün yön ipucu yalnızca yanlış tahmini durdurur — çıkan biletsiz araca hayalet giriş yok, girenin eski bileti kapanmaz, içerideki araç asla kapatılmaz; bileti yoksa insana gider ve "Giriş aç"la açılır';
+
+-- =====================================================================
+-- 77  Kameranın günlük özeti Yönetici'ye (057, 058)
+--     Gece işi (00:05) bir önceki İstanbul gününü sayar: kameranın açtığı
+--     ve kapattığı biletler, personele düşen çözülmemiş kayıtlar (ve kaçı
+--     hâlâ açık). Kamera açıkken her gün TEK bildirim — hiç araç yoksa da
+--     (o da bir alarm). Sayım otoparkın boş olduğunu varsaymaz: önce/sonra
+--     farkı. now() bu transaction'da sabit.
+-- =====================================================================
+perform pg_temp.logout();
+
+-- (a) İki yardımcı var ve hiçbir role açık değil (yalnızca gece işi çağırır);
+--     yeni bildirim türü Yönetici'ye özel.
+foreach v_txt in array array['public.kamera_gunluk_sayim(date)', 'public.kamera_gunluk_rapor(date)'] loop
+  if to_regprocedure(v_txt) is null then
+    raise exception 'FAIL 77a: % yok — 058 çalıştırılmadı', v_txt;
+  end if;
+  if has_function_privilege('public', v_txt, 'execute')
+     or has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 77a: % bir role açık', v_txt;
+  end if;
+end loop;
+if not public.bildirim_yonetici_turu('KAMERA_GUNLUK') then
+  raise exception 'FAIL 77a: KAMERA_GUNLUK Yönetici''ye özel değil';
+end if;
+
+-- (b) Sayım: bugün kameranın bir girişi (iki araç), bir çıkışı ve personele
+--     düşen bir kaydı eklenince sayılar tam o kadar artar.
+v_gun := (now() at time zone 'Europe/Istanbul')::date;
+v_json := public.kamera_gunluk_sayim(v_gun);
+perform pg_temp.kamera();
+perform public.kamera_tek_kapi('ZZ77KG001', gen_random_uuid(), now());
+perform pg_temp.logout();
+perform pg_temp.kamera();
+perform public.kamera_tek_kapi('ZZ77KG202', gen_random_uuid(), now());
+perform pg_temp.logout();
+select id into v_bilet from public.biletler where plaka = 'ZZ77KG202' and durum = 'ACIK';
+update public.biletler set created_at = now() - interval '30 minutes' where id = v_bilet;
+perform pg_temp.kamera();
+perform public.kamera_tek_kapi('ZZ77KG202', gen_random_uuid(), now());
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI'
+                                              and cikis_kaynak::text = 'KAMERA') then
+  raise exception 'FAIL 77b: hazırlık — kamera çıkışı kapatmadı';
+end if;
+perform pg_temp.kamera();
+perform public.kamera_okunamadi('ORTAK', gen_random_uuid(), now(), null, null, null);
+perform pg_temp.logout();
+v_json2 := public.kamera_gunluk_sayim(v_gun);
+if (v_json2 ->> 'giris')::int - (v_json ->> 'giris')::int is distinct from 2
+   or (v_json2 ->> 'cikis')::int - (v_json ->> 'cikis')::int is distinct from 1
+   or (v_json2 ->> 'personele')::int - (v_json ->> 'personele')::int is distinct from 1
+   or (v_json2 ->> 'acik')::int - (v_json ->> 'acik')::int is distinct from 1 then
+  raise exception 'FAIL 77b: sayım farkı yanlış (önce %, sonra %)', v_json, v_json2;
+end if;
+
+-- (c) Kamera açıkken o gün için TEK bildirim, sayılarla; ikinci çağrı yazmaz.
+select kamera_aktif into v_bool from public.otopark_ayarlari where id = 1;
+update public.otopark_ayarlari set kamera_aktif = true where id = 1;
+if public.kamera_gunluk_rapor(v_gun) is distinct from true then
+  raise exception 'FAIL 77c: kamera açıkken günlük özet yazılmadı';
+end if;
+select count(*) into v_n from public.notifications
+ where tur::text = 'KAMERA_GUNLUK' and profile_id = u_yonetici
+   and link = '/yonetim/kameralar?gun=' || v_gun::text
+   and govde like '%' || (v_json2 ->> 'giris') || ' giriş%'
+   and govde like '%' || (v_json2 ->> 'cikis') || ' çıkış%'
+   and govde like '%' || (v_json2 ->> 'personele') || ' personele%';
+if v_n <> 1 then
+  raise exception 'FAIL 77c: Yönetici''ye % özet (1 beklenirdi, sayılarla)', v_n;
+end if;
+if public.kamera_gunluk_rapor(v_gun) is distinct from false
+   or (select count(*) from public.notifications
+        where tur::text = 'KAMERA_GUNLUK' and profile_id = u_yonetici
+          and link = '/yonetim/kameralar?gun=' || v_gun::text) <> 1 then
+  raise exception 'FAIL 77c: aynı gün için ikinci özet yazıldı';
+end if;
+
+-- (d) Kamera kapalıyken özet yok (dedupe saklamasın diye başka bir gün).
+--     Yalnızca BU testin Yönetici'si: canlı veritabanında gerçek gece işi o
+--     gün için gerçek Yönetici'lere zaten yazmış olabilir (bağımsız inceleme).
+update public.otopark_ayarlari set kamera_aktif = false where id = 1;
+if public.kamera_gunluk_rapor(v_gun - 3) is distinct from false
+   or exists (select 1 from public.notifications
+               where tur::text = 'KAMERA_GUNLUK' and profile_id = u_yonetici
+                 and link = '/yonetim/kameralar?gun=' || (v_gun - 3)::text) then
+  raise exception 'FAIL 77d: kamera kapalıyken günlük özet yazıldı';
+end if;
+update public.otopark_ayarlari set kamera_aktif = v_bool where id = 1;
+
+-- (e) Gece işi özeti çağırıyor (kendi alt bloğunda — sorun 1-8'i geri almaz).
+v_txt := pg_get_functiondef('public.run_gunluk_bakim()'::regprocedure);
+if position('kamera_gunluk_rapor(' in v_txt) = 0 then
+  raise exception 'FAIL 77e: run_gunluk_bakim kameranın günlük özetini çağırmıyor';
+end if;
+
+raise notice 'PASS 77: kameranın günlük özeti — gece işi bir önceki günü sayar, kamera açıkken Yönetici''ye günde tek bildirim';
 
 perform pg_temp.logout();
 raise notice '';
