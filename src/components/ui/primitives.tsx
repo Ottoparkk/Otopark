@@ -675,10 +675,17 @@ export function ListeDurumu({
  * scroll there was nothing beneath it to lift away from in the first place.
  * The tinted, blurred band is what actually says "content passes under this",
  * and it does that whether or not anything is scrolling.
+ *
+ * On a phone it sticks ABOVE the fixed bottom nav (AppShell.tsx, 65 px tall
+ * plus the home-indicator inset), not at the screen edge. At `bottom-0` the
+ * nav covered its lower 65 px mid-scroll, hiding the second row of buttons
+ * (Çıkış Ver / Ücretsiz on Tahsilat). The nav already clears the home
+ * indicator, so the phone padding is plain. From `md` there is no bottom nav.
+ * If the nav's height changes, change 65px here and in Gise.tsx's "+ Giriş".
  */
 export function FloatingBar({ children }: { children: ReactNode }) {
   return (
-    <div className="safe-bottom sticky bottom-0 z-10 mt-6 bg-bg/85 px-5 pt-3 backdrop-blur">
+    <div className="sticky bottom-[calc(65px+env(safe-area-inset-bottom))] z-10 mt-6 bg-bg/85 px-5 pt-3 pb-3 backdrop-blur md:bottom-0 md:safe-bottom">
       {children}
     </div>
   )

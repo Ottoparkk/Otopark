@@ -366,7 +366,8 @@ function ParkYerleriBolumu() {
  * Labelled, not a bare "+": an operator at a barrier should not have to
  * remember what the plus does, and there is room for one word.
  *
- * It clears the bottom nav (~72px) plus the home indicator, and drops to a
+ * It clears the bottom nav (65 px, AppShell.tsx — FloatingBar uses the same
+ * figure) by 19 px plus the home indicator, and drops to a
  * normal margin from `md` up where the nav moves to the top of the screen.
  */
 function GirisFab({ onClick }: { onClick: () => void }) {
