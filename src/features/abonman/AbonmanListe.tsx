@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   Card,
+  Chip,
   EmptyState,
   Input,
   ListeDurumu,
@@ -159,9 +160,13 @@ export default function AbonmanListe() {
                     <p className="mt-1 truncate text-label text-faint">
                       {a.musteri_ad || 'İsimsiz'}
                     </p>
-                    <p className="truncate text-label text-faint tnum">
-                      {ayinGunu(a.yenileme_gunu ?? Number(a.bitis.slice(8, 10)))} ·{' '}
-                      {formatTarih(a.bitis)} tarihine kadar
+                    {/* Owner 2026-11-15: the payment day in the same green as
+                        the "Abonman" chip on Gişe, so it stands out. */}
+                    <p className="mt-1 flex min-w-0 items-center gap-2 text-label text-faint tnum">
+                      <Chip size="sm" tone="success" className="shrink-0">
+                        {ayinGunu(a.yenileme_gunu ?? Number(a.bitis.slice(8, 10)))}
+                      </Chip>
+                      <span className="truncate">{formatTarih(a.bitis)} tarihine kadar</span>
                     </p>
                     {ekleyen && (
                       <p className="truncate text-label text-faint">Ekleyen: {ekleyen}</p>

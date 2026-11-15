@@ -3844,18 +3844,18 @@ if public.plaka_yakin(null, '34ABC123') or public.plaka_yakin('34ABC123', null) 
   raise exception 'FAIL 58b: null plaka "yakın" sayıldı';
 end if;
 
--- (c) İki süre ayardan okunur. Giriş süresi 3 dakikanın altına inememeli:
---     köprü, kadrajda bir şey kıpırdayıp durulunca aynı aracı yeniden
---     gönderebilir; süre kısa olursa kapıda oyalanan, az önce girmiş araç
---     "çıkıyor" diye işaretlenir.
+-- (c) İki süre ayardan okunur. Giriş süresi 2 dakikanın altına inememeli
+--     (068, sahip 2026-11-15; önceden 3): köprü, kadrajda bir şey kıpırdayıp
+--     durulunca aynı aracı yeniden gönderebilir; süre kısa olursa kapıda
+--     oyalanan, az önce girmiş araç "çıkıyor" diye işaretlenir.
 select tek_kapi_giris_yoksay_dk, tek_kapi_cikis_yoksay_dk
   into v_n, v_n2 from public.otopark_ayarlari where id = 1;
 if v_n is null or v_n2 is null then
   raise exception 'FAIL 58c: tek kapı süreleri tanımlı değil';
 end if;
 begin
-  update public.otopark_ayarlari set tek_kapi_giris_yoksay_dk = 2 where id = 1;
-  raise exception 'FAIL 58c: giriş yok sayma süresi 3 dakikanın altına indi';
+  update public.otopark_ayarlari set tek_kapi_giris_yoksay_dk = 1 where id = 1;
+  raise exception 'FAIL 58c: giriş yok sayma süresi 2 dakikanın altına indi';
 exception when check_violation then
   null;
 end;
@@ -9051,6 +9051,93 @@ if v_n <> 2 then
 end if;
 
 raise notice 'PASS 85: abonmanı ekleyen kişi yazılır (Personel ve Yönetici) ve listede okunur';
+
+-- =====================================================================
+-- 86  Tek kapı: giriş süresi 3 → 2 dakika, elle yazılan bilette de (068)
+-- =====================================================================
+-- Sahip (2026-11-15), sahada 35 KV 044: bilet personelce yazıldıktan 3 dakika
+-- dolmadan araç çıktı, köprü "çıktı" dedi ama 1a "az önce girdi" diye yok
+-- saydı. Kural: giriş süresi (Girişten sonra) alt sınırı ve varsayılanı 2;
+-- kameranın açtığı ve elle yazılan bilet AYNI 2 dakikaya tabidir — elle
+-- yazılan bilete istisna yok (sahibin kararı). kamera_tek_kapi değişmedi:
+-- süreyi ayardan okur.
+
+-- (a) Ayar: 2 kabul edilir, 1 reddedilir, varsayılan 2.
+perform pg_temp.logout();
+update public.otopark_ayarlari
+   set tek_kapi_giris_yoksay_dk = 2, kamera_gecikme_limiti_dk = 720
+ where id = 1;
+begin
+  update public.otopark_ayarlari set tek_kapi_giris_yoksay_dk = 1 where id = 1;
+  raise exception 'FAIL 86a: giriş yok sayma süresi 1 dakikaya indi';
+exception when check_violation then
+  null;
+end;
+if (select column_default from information_schema.columns
+     where table_schema = 'public' and table_name = 'otopark_ayarlari'
+       and column_name = 'tek_kapi_giris_yoksay_dk') is distinct from '2' then
+  raise exception 'FAIL 86a: giriş yok sayma süresinin varsayılanı 2 değil';
+end if;
+
+if exists (select 1 from public.biletler b,
+                  unnest(array['ZZ86ELL01', 'ZZ86KAM02']) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 86: fixture — ZZ86 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- Ziyaretin başı: 10 dakika önce. Olaylar o ana göre saatli gelir (048).
+v_ts := now() - interval '10 minutes';
+
+-- (b) ELLE yazılmış bilet: 1 dk sonraki "çıktı" yok sayılır (istisna yok),
+--     2,5 dk sonraki kapatır (3 dakikayken yok sayılırdı).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, giris_kaynak, created_at)
+values (gen_random_uuid(), 'ZZ86ELL01', v_ts, v_tarife_yeni, 'ACIK', 'MOBIL', v_ts)
+returning id into v_bilet;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ86ELL01', gen_random_uuid(), v_ts + interval '1 minute',
+                              null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_GIRIS'
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 86b: elle yazılan bilet 2 dakika dolmadan kapandı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ86ELL01', gen_random_uuid(), v_ts + interval '150 seconds',
+                              null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet then
+  raise exception 'FAIL 86b: elle yazılan bilet 2,5 dakikada çıkışla kapanmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI' and cikis_kaynak = 'KAMERA'
+                  and tahsil_kurus = 0) then
+  raise exception 'FAIL 86b: elle yazılan bilet kamera çıkışıyla ödemesiz kapanmadı';
+end if;
+
+-- (c) KAMERANIN açtığı bilet, ipucusuz: aynı 2 dakika.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ86KAM02', gen_random_uuid(), v_ts) into v_json;
+perform pg_temp.logout();
+v_id := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_id is null then
+  raise exception 'FAIL 86c: hazırlık bileti açılmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ86KAM02', gen_random_uuid(), v_ts + interval '1 minute') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_GIRIS'
+   or not exists (select 1 from public.biletler where id = v_id and durum = 'ACIK') then
+  raise exception 'FAIL 86c: kamera bileti 2 dakika dolmadan kapandı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ86KAM02', gen_random_uuid(), v_ts + interval '150 seconds') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or (v_json ->> 'bilet_id')::uuid is distinct from v_id
+   or not exists (select 1 from public.biletler where id = v_id and durum = 'KAPALI') then
+  raise exception 'FAIL 86c: kamera bileti 2,5 dakikada çıkışla kapanmadı (%)', v_json;
+end if;
+
+raise notice 'PASS 86: giriş süresi 2 dakika (alt sınır 2), elle yazılan ve kameranın açtığı bilette aynı';
 
 perform pg_temp.logout();
 raise notice '';

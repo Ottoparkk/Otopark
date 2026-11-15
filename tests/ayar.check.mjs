@@ -21,14 +21,14 @@ function esit(ad, gercek, beklenen) {
   }
 }
 
-const GIRIS = 'Tek kapı: girişten sonra yok sayma 3-60 dakika arasında olmalı.'
+const GIRIS = 'Tek kapı: girişten sonra yok sayma 2-60 dakika arasında olmalı.'
 const CIKIS = 'Tek kapı: çıkıştan sonra yok sayma 1-60 dakika arasında olmalı.'
 
-// --- 037'deki CHECK'lerin aynası: giriş 3-60, çıkış 1-60 -----------------------
-esit('varsayılanlar geçer', tekKapiHatasi('3', '5'), null)
-esit('giriş alt sınır', tekKapiHatasi('3', '1'), null)
+// --- 037/068'deki CHECK'lerin aynası: giriş 2-60 (068; önce 3), çıkış 1-60 ------
+esit('varsayılanlar geçer', tekKapiHatasi('2', '5'), null)
+esit('giriş alt sınır', tekKapiHatasi('2', '1'), null)
 esit('giriş üst sınır', tekKapiHatasi('60', '60'), null)
-esit('giriş 2 reddedilir', tekKapiHatasi('2', '5'), GIRIS)
+esit('giriş 1 reddedilir', tekKapiHatasi('1', '5'), GIRIS)
 esit('giriş 61 reddedilir', tekKapiHatasi('61', '5'), GIRIS)
 esit('giriş 0 reddedilir', tekKapiHatasi('0', '5'), GIRIS)
 esit('giriş boş reddedilir', tekKapiHatasi('', '5'), GIRIS)

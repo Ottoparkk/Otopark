@@ -236,8 +236,8 @@ export interface OtoparkAyarlari {
   vardiya_acilis_nakit_kurus: number
   kamera_kalp_atisi: string | null
   kamera_kalp_esik_dk: number
-  /** Single-gate windows (037): a car seen again this soon after its ticket
-   *  opened (3-60) / closed (1-60) is ignored instead of acted on. */
+  /** Single-gate windows (037, 068): a car seen again this soon after its
+   *  ticket opened (2-60) / closed (1-60) is ignored instead of acted on. */
   tek_kapi_giris_yoksay_dk: number
   tek_kapi_cikis_yoksay_dk: number
   guncelleyen: string | null

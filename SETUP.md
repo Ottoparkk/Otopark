@@ -117,8 +117,9 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/065_ucretsiz_cikis.sql` | Free exit (`bilet_ucretsiz_cikis`): any role lets a car out at 0 ₺ with a reason (Fiyat sordu, Polis, Ambulans, Personel aracı, Diğer) and a required note; no payment row, the Yönetici is notified with the person's name |
 | `supabase/migrations/066_sonradan_ucretsiz.sql` | Free exit after the car has left: on a ticket the camera (or "Çıkış Ver") closed owing, the "Ödeme topla" box also offers "Ücretsiz çıkış" — reason + required note, same permission as collecting (own shift for Personel), the fee becomes 0 ₺ and nothing is collected; every free exit records who gave it and when |
 | `supabase/migrations/067_personel_cikis_penceresi.sql` | Personel see exits from the last 3 days (Istanbul, from 00:00 two days ago) on Gişe → Çıkanlar, with "Bugün" and "3 gün" chips; older exits stay Yönetici-only. Collecting, free exit and "Araç çıkmadı" stay own shift only. Adds an index on exit time |
+| `supabase/migrations/068_tek_kapi_giris_2dk.sql` | Single gate: the entry window (**Girişten sonra**) goes from 3 to 2 minutes for every ticket, camera-opened and hand-typed alike — minimum 2, default 2, a live value of 3 becomes 2 |
 
-**Run all of them, 001 through 067, in this order.** Stopping early leaves the
+**Run all of them, 001 through 068, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -189,7 +190,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 85** (as of migration 067). It stops
+The last block before that line is **PASS 86** (as of migration 068). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.
@@ -663,10 +664,10 @@ and an exit. Live events behave exactly as before.
 
 | The plate… | Result |
 |---|---|
-| has an open ticket opened under `tek_kapi_giris_yoksay_dk` (3) minutes ago | ignored — still in view after arriving |
+| has an open ticket opened under `tek_kapi_giris_yoksay_dk` (2) minutes ago | ignored — still in view after arriving (camera-opened or hand-typed alike) |
 | has an older open ticket | **closed unpaid** at the event's time (054) — "Ödeme topla" in the Çıktı list, everyone notified if money is owed |
 | was closed/cancelled under `tek_kapi_cikis_yoksay_dk` (5) minutes ago | ignored — driving out after paying |
-| is one character off an open ticket from the last 3 minutes | ignored — same car, second read differs |
+| is one character off an open ticket from the last 2 minutes | ignored — same car, second read differs |
 | is one character off an older open ticket | **Çözülmemiş kayıtlar** as `YON_BELIRSIZ` — never guessed |
 | is one character off a ticket closed in the last 5 minutes | ignored — paid car, misread on the way out |
 | none of these | a ticket is opened |
@@ -682,8 +683,9 @@ them, and none of them moves money:
   **new ticket** (cancel it). So collect at the gate, not long before it;
 - a car with **no** open ticket is always treated as arriving — including one
   leaving whose entry was never recorded (camera or internet was down);
-- a stay shorter than 3 minutes is not flagged at exit;
-- a just-arrived car that waits in front of the camera longer than 3 minutes
+- a stay shorter than 2 minutes is not flagged at exit (3 before 068), counted
+  from when the ticket was opened — for a hand-typed ticket, when it was typed;
+- a just-arrived car that waits in front of the camera longer than 2 minutes
   can be closed as an exit by mistake (staff tap **Araç çıkmadı**, 054): past 60 s the bridge may send the same
   plate again when something moves in view and it is read again. Aim the camera
   where cars pass, and draw the installer's **cut-out** over any place where
@@ -692,7 +694,7 @@ them, and none of them moves money:
 Tune the two durations on installation day in **Yönetim → Otopark ayarları →
 Kamera → Tek kapı** (shown while the camera is on; Yönetici only, saved with
 Kaydet). The screen checks the same ranges as the database: **Girişten sonra**
-3–60, **Çıkıştan sonra** 1–60.
+2–60 (3–60 before 068), **Çıkıştan sonra** 1–60.
 
 **"Kapıda" removed from the app (052, owner 2026-11-10).** The Gişe list chip,
 the "N araç çıkış kapısında bekliyor" banner and the **Araç çıkmadı** button
@@ -760,7 +762,7 @@ or closes a ticket on the hint alone:
 | The bridge saw the car… | and the plate… | Result |
 |---|---|---|
 | leaving (`CIKTI`) | has no open ticket (and none of the "ignored" rows above) | **Çözülmemiş kayıtlar** `ACIK_BILET_YOK` — no ghost entry (site 11.11 11:35 / 13:46) |
-| entering (`GIRDI`) | has an open ticket older than 3 minutes | **Çözülmemiş kayıtlar** `GIRISTE_ACIK_BILET` with that ticket — it is NOT closed |
+| entering (`GIRDI`) | has an open ticket older than the entry window (2 minutes) | **Çözülmemiş kayıtlar** `GIRISTE_ACIK_BILET` with that ticket — it is NOT closed |
 | inside the yard (`ICERIDE`) | has an open ticket, one one character off, was closed in the last 5 minutes (or one character off such), or already has an open in-yard card | ignored — never closed |
 | inside the yard (`ICERIDE`) | none of these | **Çözülmemiş kayıtlar** `ICERIDE_BILETSIZ` — **Giriş aç** opens it from the moment it was seen inside |
 

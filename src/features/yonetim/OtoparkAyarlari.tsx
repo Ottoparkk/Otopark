@@ -93,7 +93,7 @@ export default function OtoparkAyarlari() {
     setKameraAktif(ayar.kamera_aktif)
     setGecikme(String(ayar.kamera_gecikme_limiti_dk))
     // ?? : both columns arrive with 037, and their defaults are 3 and 5.
-    setTkGiris(String(ayar.tek_kapi_giris_yoksay_dk ?? 3))
+    setTkGiris(String(ayar.tek_kapi_giris_yoksay_dk ?? 2))
     setTkCikis(String(ayar.tek_kapi_cikis_yoksay_dk ?? 5))
   }, [ayar])
 
@@ -188,7 +188,7 @@ export default function OtoparkAyarlari() {
     // longer see is neither saved nor able to block the save.
     tek_kapi_giris_yoksay_dk: kameraAktif
       ? Number(tkGiris)
-      : (ayar.tek_kapi_giris_yoksay_dk ?? 3),
+      : (ayar.tek_kapi_giris_yoksay_dk ?? 2),
     tek_kapi_cikis_yoksay_dk: kameraAktif
       ? Number(tkCikis)
       : (ayar.tek_kapi_cikis_yoksay_dk ?? 5),
@@ -234,7 +234,7 @@ export default function OtoparkAyarlari() {
     )
     fark(
       'Tek kapı: girişten sonra yok sayma',
-      `${ayar.tek_kapi_giris_yoksay_dk ?? 3} dk`,
+      `${ayar.tek_kapi_giris_yoksay_dk ?? 2} dk`,
       `${yeniAyar.tek_kapi_giris_yoksay_dk} dk`,
     )
     fark(
@@ -531,7 +531,7 @@ export default function OtoparkAyarlari() {
                   value={tkGiris}
                   onChange={(e) => setTkGiris(digitsOnly(e.target.value, 2))}
                   inputMode="numeric"
-                  hint="3-60"
+                  hint="2-60"
                 />
                 <Input
                   label="Çıkıştan sonra (dakika)"

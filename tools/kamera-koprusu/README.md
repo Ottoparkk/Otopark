@@ -423,7 +423,7 @@ durumundan** çıkar:
 
 | Plaka… | Karar |
 |---|---|
-| açık bileti var, bilet az önce açıldı (varsayılan 3 dk) | yok sayılır — araç hâlâ kameranın önünde |
+| açık bileti var, bilet az önce açıldı (varsayılan 2 dk) | yok sayılır — araç hâlâ kameranın önünde |
 | açık bileti var, daha eski | çıkış: yalnızca "kapıda" damgası |
 | bileti az önce kapandı (varsayılan 5 dk) | yok sayılır — ödeyip çıkan araç |
 | içerideki bir plakaya bir karakter uzak | Çözülmemiş kayıtlar (`YON_BELIRSIZ`) — tahmin edilmez |
@@ -438,12 +438,13 @@ okur; `ORTAK` hiçbir yerde `GIRIS`e yuvarlanmaz. 1.0.0 kurulum programı
 `ORTAK`ı tanımaz ve "şerit anlaşılmadı" diye durur — tek kapı için **1.1.0**
 gerekir.
 
-Giriş süresi 3 dakikanın altına indirilemez. Köprü bir aracı gönderdikten sonra
+Giriş süresi 2 dakikanın altına indirilemez (068'den önce 3); kameranın açtığı
+ve elle yazılan bilet aynı süreye tabidir. Köprü bir aracı gönderdikten sonra
 o araç gidene kadar susar; 1.3.0'da aynı plaka 60 sn içinde ikinci kez
 gönderilmez ve gönderilmiş duran aracın **gidişi** tanınıp gönderilmez. Ama
 kadrajda 60 sn'den uzun duran araç, önünde bir şey kıpırdayıp plakası yeniden
 okunursa **yeniden gönderilir** — araç kaçırmamak için böyle. Tek kapıda o
-ikinci gönderim, bilet 3 dakikadan eskiyse "çıkıyor" sayılır (para hareket
+ikinci gönderim, bilet 2 dakikadan eskiyse "çıkıyor" sayılır (para hareket
 etmez, yalnızca "Kapıda" işareti). Kamerayı araçların **geçtiği** noktaya
 çevirin; sıra beklenen ya da park edilen bir yeri hariç alanla dışarıda
 bırakın.
