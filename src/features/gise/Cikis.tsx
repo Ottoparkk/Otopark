@@ -66,7 +66,8 @@ import {
   type AcikBilet,
   type OdemeYontemi,
 } from '../../lib/types'
-import { onayDurumu, zatenKapandi } from '../../lib/bilet'
+import { kapaliBiletIslemYapabilir, onayDurumu, zatenKapandi } from '../../lib/bilet'
+import { useVardiyaOzetim } from '../vardiya/api'
 import { ucretsizEtiket } from '../../lib/ucretsiz'
 import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
 
@@ -244,6 +245,7 @@ export function AracListesi({
   refetch,
   onSec,
   aramaOdak = false,
+  cikisAralik = null,
 }: {
   sorgu: string
   setSorgu: (v: string) => void
@@ -254,6 +256,8 @@ export function AracListesi({
   onSec: (b: AcikBilet) => void
   /** Arrived as "Çıkış" from Çözülmemiş kayıtlar: cursor in the search. */
   aramaOdak?: boolean
+  /** Gişe's period chip as Istanbul days (067); null = Tümü, no bound. */
+  cikisAralik?: { bas: string; bit: string } | null
 }) {
   const navigate = useNavigate()
   const yonetici = isYonetici(useAuth().profile)
@@ -284,7 +288,12 @@ export function AracListesi({
     // unpaid is the one who needs to find it again.
     onay: yonetici ? onay : 'TUMU',
     odeme,
+    aralik: cikisAralik,
   })
+  const cikanSatirlar = useMemo(() => (cikanlar.data?.pages ?? []).flat(), [cikanlar.data])
+  // 067: Personel read 3 days of exits but act only on their own open shift's
+  // (the server refuses the rest). Same query Gişe's shift card already runs.
+  const { data: vardiyaOzet } = useVardiyaOzetim()
 
   return (
     <div className="flex flex-1 flex-col">
@@ -439,7 +448,7 @@ export function AracListesi({
                 pending={cikanlar.isPending}
                 error={cikanlar.error}
                 onRetry={() => void cikanlar.refetch()}
-                empty={(cikanlar.data ?? []).length === 0}
+                empty={cikanSatirlar.length === 0}
                 // A compact line, not another big empty state: two full
                 // illustrations stacked on one screen would drown the section
                 // that actually needs attention.
@@ -458,24 +467,37 @@ export function AracListesi({
                           .join(', ')}).`
                       : sorgu
                         ? 'Bu plakayla eşleşen çıkış yok.'
-                        : yonetici
-                          ? 'Henüz çıkış yok.'
-                          : 'Kendi vardiyanızda çıkışı yapılan araçlar burada görünür.'}
+                        : cikisAralik
+                          ? 'Bu tarihlerde çıkış yok.'
+                          : 'Henüz çıkış yok.'}
                   </p>
                 }
               >
-                {(cikanlar.data ?? []).map((b) => (
+                {cikanSatirlar.map((b) => (
                   <CikanKart
                     key={b.id}
                     bilet={b}
                     adlar={adlar}
                     onay={yonetici ? onayDurumu(b) : null}
+                    islem={kapaliBiletIslemYapabilir(b, yonetici, vardiyaOzet?.vardiya_id)}
                     // A closed ticket cannot be collected again — this opens the
                     // record instead of the payment screen.
                     onClick={() => navigate(`/gise/bilet/${b.id}`)}
                   />
                 ))}
               </ListeDurumu>
+              {/* Pages of 20 (067): a "30 gün" range must not stop at the
+                  newest 20 with no way to see the rest. */}
+              {cikanlar.hasNextPage && (
+                <Button
+                  variant="secondary"
+                  block
+                  loading={cikanlar.isFetchingNextPage}
+                  onClick={() => void cikanlar.fetchNextPage()}
+                >
+                  Daha fazla göster
+                </Button>
+              )}
             </div>
           </section>
         )}

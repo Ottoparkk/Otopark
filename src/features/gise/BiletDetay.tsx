@@ -31,7 +31,15 @@ import {
 import { formatPlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
-import { biletBorcu, cikisGeriAlma, gosterilenUcret, odemeAlindi, sureBitisi } from '../../lib/bilet'
+import {
+  biletBorcu,
+  cikisGeriAlma,
+  gosterilenUcret,
+  kapaliBiletIslemYapabilir,
+  odemeAlindi,
+  sureBitisi,
+} from '../../lib/bilet'
+import { useVardiyaOzetim } from '../vardiya/api'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop, IconKalem } from '../../components/ui/icons'
 import { ODEME_CHIP, ODEME_ETIKET, ONAY_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
@@ -85,6 +93,8 @@ export default function BiletDetay() {
   // An open ticket's stored fee is 0 until exit; the live price is the
   // server's, the same one Tahsilat shows. Not fetched for a closed ticket.
   const { data: canliUcret } = useUcretOnizleme(bilet?.durum === 'ACIK' ? bilet : null)
+  // 067: whose shift is open — Personel act only on tickets it closed.
+  const { data: vardiyaOzet } = useVardiyaOzetim()
 
   if (isPending) {
     return (
@@ -105,9 +115,15 @@ export default function BiletDetay() {
   const acik = bilet.durum === 'ACIK'
   const ucret = gosterilenUcret(bilet, canliUcret)
   const borc = biletBorcu(bilet)
-  const odenmedi = bilet.durum === 'KAPALI' && borc > 0 && !odemeAlindi(bilet)
+  // 067 (owner, 2026-11-15): Personel now read 3 days of exits, but collect,
+  // waive and "Araç çıkmadı" stay own-shift (034 / 066 / 054 / 060 refuse the
+  // rest). A button the server will refuse is not offered; a line says why.
+  const islem = kapaliBiletIslemYapabilir(bilet, yonetici, vardiyaOzet?.vardiya_id)
+  const borcluKapali = bilet.durum === 'KAPALI' && borc > 0 && !odemeAlindi(bilet)
+  const odenmedi = borcluKapali && islem
   const kameraKapatti = bilet.durum === 'KAPALI' && bilet.cikis_kaynak === 'KAMERA'
-  const geriAlma = cikisGeriAlma(bilet)
+  const geriAlma = islem ? cikisGeriAlma(bilet) : null
+  const baskaVardiya = bilet.durum === 'KAPALI' && !islem
 
   return (
     <div>
@@ -165,6 +181,18 @@ export default function BiletDetay() {
             caption="Süre"
           />
         </Card>
+
+        {baskaVardiya && (
+          <p className="rounded-field bg-field px-3.5 py-3 text-body text-soft">
+            {borcluKapali && (
+              <>
+                <strong className="font-semibold text-warn">{formatTL(borc)}</strong> ödeme
+                alınmadı.{' '}
+              </>
+            )}
+            Bu bilet başka bir vardiyada kapandı; işlem için Yönetici'ye başvurun.
+          </p>
+        )}
 
         {/* The other half of "Çıkış Ver": the car has gone, the money has
             not. Only ever shown on a closed ticket that owes something —
@@ -273,8 +301,10 @@ export default function BiletDetay() {
         )}
 
         {/* Not on a ticket that is already cancelled — the server would only
-            refuse it. */}
-        {bilet.durum !== 'IPTAL' && (
+            refuse it. Nor for Personel on a closed one: 050 refuses that
+            ("Kapanmış bileti yalnızca Yönetici iptal edebilir"), and since 067
+            they open other shifts' exits too. */}
+        {bilet.durum !== 'IPTAL' && (acik || yonetici) && (
           <div className="border-t border-divider pt-4">
             <IptalButonu
               onClick={aksiyon.iptalAc}

@@ -93,6 +93,10 @@ export default function Gise() {
   const { donem, ozel, secim } = useDonem('BUGUN')
   const gecmis = yonetici && donem !== 'BUGUN'
   const { bas, bit, hazir } = useDonemAralik(donem, ozel)
+  // 067 (owner, 2026-11-15): the chips also scope Çıkanlar. Tümü is no
+  // bound at all (not "since the first ticket", which needs a round trip
+  // first). Personel only ever pick Bugün / 3 gün, and RLS holds them to it.
+  const cikisAralik = donem === 'TUMU' ? null : { bas, bit }
   const { data: aralikOzet } = useRaporOzet(bas, bit, gecmis && hazir)
   const { data: acikIstisna = 0 } = useAcikIstisnaSayisi()
 
@@ -250,7 +254,19 @@ export default function Gise() {
           }
         />
 
-        {yonetici && <DonemSecici value={donem} ozel={ozel} onChange={secim} />}
+        {yonetici ? (
+          <DonemSecici value={donem} ozel={ozel} onChange={secim} />
+        ) : (
+          // 067: Personel see exits from today or the last 3 days, no further
+          // (RLS) — so two chips and no calendar. The card above stays
+          // "bugün", and its labels say so.
+          <DonemSecici
+            value={donem}
+            onChange={secim}
+            secenekler={['BUGUN', 'UC_GUN']}
+            takvim={false}
+          />
+        )}
 
         {girisBasari && (
           <p className="flex items-center gap-2 rounded-card bg-success-soft px-4 py-3 text-body font-medium text-success">
@@ -280,6 +296,7 @@ export default function Gise() {
             setSecili(b)
           }}
           aramaOdak={cikisAra !== null}
+          cikisAralik={cikisAralik}
         />
       </div>
 

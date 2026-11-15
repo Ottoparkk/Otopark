@@ -8,7 +8,14 @@
 // hesabından (ucret_hesapla) gelir.
 //
 // Gerçek dosyayı içe aktarır; lib/bilet.ts yalnızca `import type` kullanır.
-import { cikisGeriAlma, gosterilenUcret, sureBitisi, uzunKalan, zatenKapandi } from '../src/lib/bilet.ts'
+import {
+  cikisGeriAlma,
+  gosterilenUcret,
+  kapaliBiletIslemYapabilir,
+  sureBitisi,
+  uzunKalan,
+  zatenKapandi,
+} from '../src/lib/bilet.ts'
 
 let gecen = 0
 let kalan = 0
@@ -92,6 +99,17 @@ esit('geri al: elle, ödenmiş → sebepli', cikisGeriAlma(kapanmis('MOBIL', 500
 esit('geri al: manuel kaynak → sebepli', cikisGeriAlma(kapanmis('MANUEL', 2500)), 'SEBEPLI')
 esit('geri al: açık bilet → yok', cikisGeriAlma({ durum: 'ACIK', cikis_kaynak: null, tahsil_kurus: 0 }), null)
 esit('geri al: iptal → yok', cikisGeriAlma({ durum: 'IPTAL', cikis_kaynak: 'MOBIL', tahsil_kurus: 5000 }), null)
+
+// 067: Personel 3 günlük çıkışları OKUR ama yalnızca kendi açık vardiyasında
+// kapanmış bilette işlem yapar (tahsil, ücretsiz, geri alma — sunucu da
+// aynısını söyler, 034 / 066 / 054 / 060). Yönetici her bilette.
+esit('işlem: Yönetici, başka vardiya', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: 'v9' }, true, 'v1'), true)
+esit('işlem: Yönetici, vardiyasız', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: null }, true, null), true)
+esit('işlem: Personel, kendi vardiyası', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: 'v1' }, false, 'v1'), true)
+esit('işlem: Personel, başka vardiya', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: 'v9' }, false, 'v1'), false)
+esit('işlem: Personel, vardiyasız bilet', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: null }, false, 'v1'), false)
+esit('işlem: Personel, açık vardiyası yok', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: 'v1' }, false, null), false)
+esit('işlem: Personel, ikisi de boş', kapaliBiletIslemYapabilir({ kapatan_vardiya_id: null }, false, null), false)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

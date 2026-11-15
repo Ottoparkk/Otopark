@@ -38,6 +38,9 @@ bridge is Python, in `tools/kamera-koprusu/`.
 - Personel must not reach what they should not see: RLS policies, `SECURITY
   DEFINER` RPCs that re-check the role, and grants. Hiding a button is never the
   boundary.
+- Personel read closed tickets only from their own open shift or with an
+  exit in the last 3 Istanbul days (067, `biletler_select`); acting on a
+  closed ticket (collect, free exit, "Araç çıkmadı") stays own shift only.
 - New signups are `PENDING` with `rol = NULL` and see zero rows — keep that
   case tested.
 - New function: `revoke all ... from public` **and** `from anon,

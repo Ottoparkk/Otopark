@@ -264,6 +264,7 @@ export function CikanKart({
   adlar,
   onClick,
   onay = null,
+  islem = true,
 }: {
   bilet: Bilet
   /** Same rule as BiletKart: the list subscribes once, the rows do not. */
@@ -279,6 +280,12 @@ export function CikanKart({
    * people's approved tickets.
    */
   onay?: OnayDurum | null
+  /**
+   * Whether this viewer may act on the ticket (`kapaliBiletIslemYapabilir`,
+   * 067). A Personel reading another shift's exit sees the debt as a state
+   * ("Ödeme alınmadı"), not as a to-do they would be refused.
+   */
+  islem?: boolean
 }) {
   // Since 027 a closed ticket can owe money, so "tahsil_kurus === 0" no longer
   // means the exit was free — it means no cash changed hands, which is now two
@@ -299,7 +306,7 @@ export function CikanKart({
   // money is collected afterwards, so an owed exit is a to-do. The tile says
   // so before a word is read: the till icon in amber, and the chip names the
   // action ("Ödeme topla") rather than the state.
-  const toplanacak = !bedava && !alindi
+  const toplanacak = !bedava && !alindi && islem
 
   return (
     <button

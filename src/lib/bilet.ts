@@ -111,6 +111,22 @@ export function cikisGeriAlma(
 }
 
 /**
+ * May this user act on a closed ticket — collect it, make it free, undo the
+ * exit (067)? Personel read the last 3 days of exits but act only on a ticket
+ * closed in their OWN open shift; the Yönetici on any. The server checks the
+ * same thing in every one of those functions (034, 066, 054, 060) — this only
+ * keeps the screen from offering a button that will be refused.
+ */
+export function kapaliBiletIslemYapabilir(
+  b: Pick<Bilet, 'kapatan_vardiya_id'>,
+  yonetici: boolean,
+  acikVardiyaId: string | null | undefined,
+): boolean {
+  if (yonetici) return true
+  return Boolean(b.kapatan_vardiya_id) && b.kapatan_vardiya_id === acikVardiyaId
+}
+
+/**
  * Whether a failed exit failed because the ticket is no longer open — the
  * server's `bilet_kapat` message (030). Since 054 the camera closes a ticket
  * UNPAID the moment it sees the car leave, which can land while the cashier

@@ -63,7 +63,9 @@ export function MenuKart({
 
 /* ---------------------------------------------------------- DonemSecici */
 
-export type Donem = 'TUMU' | 'BUGUN' | 'HAFTA' | 'AY' | 'OZEL'
+// UC_GUN (067): Personel's Çıkanlar window — today and the two days before.
+// Not in the default chip row; Gişe passes it to Personel only.
+export type Donem = 'TUMU' | 'BUGUN' | 'UC_GUN' | 'HAFTA' | 'AY' | 'OZEL'
 
 /** An inclusive Istanbul date range, both ends 'YYYY-MM-DD'. */
 export interface DonemAralik {
@@ -77,6 +79,7 @@ export interface DonemAralik {
 export const DONEM_ETIKET: Record<Exclude<Donem, 'OZEL'>, string> = {
   TUMU: 'Tümü',
   BUGUN: 'Bugün',
+  UC_GUN: '3 gün',
   HAFTA: '7 gün',
   AY: '30 gün',
 }
@@ -99,7 +102,7 @@ export function donemAralik(d: Donem, ilkGun?: string, ozel?: DonemAralik | null
   if (d === 'OZEL') return ozel ?? { bas: bugun, bit: bugun }
   if (d === 'TUMU') return { bas: ilkGun ?? bugun, bit: bugun }
   if (d === 'BUGUN') return { bas: bugun, bit: bugun }
-  return { bas: gunEkle(d === 'HAFTA' ? -6 : -29), bit: bugun }
+  return { bas: gunEkle(d === 'UC_GUN' ? -2 : d === 'HAFTA' ? -6 : -29), bit: bugun }
 }
 
 /**
@@ -131,14 +134,23 @@ export function useDonem(baslangic: Donem = 'TUMU') {
  * fifth of the row — five equal chips at 375px leave 60px each, which "30 gün"
  * alone does not fit.
  */
+/** The chips every finance screen shows. UC_GUN is Personel's (067). */
+const VARSAYILAN_SECENEKLER: Exclude<Donem, 'OZEL'>[] = ['TUMU', 'BUGUN', 'HAFTA', 'AY']
+
 export function DonemSecici({
   value,
   ozel,
   onChange,
+  secenekler = VARSAYILAN_SECENEKLER,
+  takvim = true,
 }: {
   value: Donem
   ozel?: DonemAralik | null
   onChange: (d: Donem, aralik?: DonemAralik) => void
+  /** Which preset chips, in order. Default: the four finance presets. */
+  secenekler?: Exclude<Donem, 'OZEL'>[]
+  /** The calendar chip for a custom range. Off for Personel (067). */
+  takvim?: boolean
 }) {
   const [acik, setAcik] = useState(false)
   const [bas, setBas] = useState('')
@@ -187,7 +199,7 @@ export function DonemSecici({
         aria-label="Dönem"
       >
         <div className="flex gap-2">
-          {(Object.keys(DONEM_ETIKET) as Exclude<Donem, 'OZEL'>[]).map((d) => {
+          {secenekler.map((d) => {
             const active = d === value
             return (
               <button
@@ -211,25 +223,27 @@ export function DonemSecici({
           })}
         </div>
 
-        <button
-          type="button"
-          role="tab"
-          aria-selected={ozelAktif}
-          aria-label="Tarih aralığı seç"
-          onClick={ac}
-          className={[
-            'flex min-h-[44px] shrink-0 items-center gap-2 self-start rounded-chip px-3',
-            'text-body font-medium transition-colors md:self-auto md:px-4',
-            ozelAktif ? 'bg-ink text-bg' : 'bg-field text-soft',
-          ].join(' ')}
-        >
-          <IconTakvim size={18} />
-          {ozelAktif && (
-            <span className="tnum">
-              {formatTarihKisa(ozel.bas)} – {formatTarihKisa(ozel.bit)}
-            </span>
-          )}
-        </button>
+        {takvim && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={ozelAktif}
+            aria-label="Tarih aralığı seç"
+            onClick={ac}
+            className={[
+              'flex min-h-[44px] shrink-0 items-center gap-2 self-start rounded-chip px-3',
+              'text-body font-medium transition-colors md:self-auto md:px-4',
+              ozelAktif ? 'bg-ink text-bg' : 'bg-field text-soft',
+            ].join(' ')}
+          >
+            <IconTakvim size={18} />
+            {ozelAktif && (
+              <span className="tnum">
+                {formatTarihKisa(ozel.bas)} – {formatTarihKisa(ozel.bit)}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       <FormModal

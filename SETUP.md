@@ -116,8 +116,9 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/064_ucretsiz_cikis_bildirimi.sql` | New notification type `UCRETSIZ_CIKIS` (its own file: a new enum value cannot be used in the transaction that adds it) |
 | `supabase/migrations/065_ucretsiz_cikis.sql` | Free exit (`bilet_ucretsiz_cikis`): any role lets a car out at 0 ₺ with a reason (Fiyat sordu, Polis, Ambulans, Personel aracı, Diğer) and a required note; no payment row, the Yönetici is notified with the person's name |
 | `supabase/migrations/066_sonradan_ucretsiz.sql` | Free exit after the car has left: on a ticket the camera (or "Çıkış Ver") closed owing, the "Ödeme topla" box also offers "Ücretsiz çıkış" — reason + required note, same permission as collecting (own shift for Personel), the fee becomes 0 ₺ and nothing is collected; every free exit records who gave it and when |
+| `supabase/migrations/067_personel_cikis_penceresi.sql` | Personel see exits from the last 3 days (Istanbul, from 00:00 two days ago) on Gişe → Çıkanlar, with "Bugün" and "3 gün" chips; older exits stay Yönetici-only. Collecting, free exit and "Araç çıkmadı" stay own shift only. Adds an index on exit time |
 
-**Run all of them, 001 through 066, in this order.** Stopping early leaves the
+**Run all of them, 001 through 067, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -188,7 +189,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 83** (as of migration 066). It stops
+The last block before that line is **PASS 84** (as of migration 067). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.

@@ -1,8 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import { yerleriSirala } from '../../lib/yerkodu'
 import { compressEvidence, fotoYolu } from '../../lib/image'
 import { normalizePlaka } from '../../lib/plaka'
+import { cikisAraligi } from '../../lib/cikisAraligi'
 import type {
   AbonmanGecerlilik,
   AcikBilet,
@@ -140,16 +141,18 @@ export function useAcikBiletler(sorgu = '') {
 /**
  * Vehicles that have already left, most recent first.
  *
- * Deliberately NOT filtered to today. "Did that car leave, and what did we
- * take for it?" is the question this answers, and at 00:30 a strict
- * today-filter would show an almost empty list right when the night shift
- * needs it. It also sidesteps converting an Istanbul calendar day into UTC
- * instants, which is a trap this codebase has paid for before.
+ * 067 (owner, 2026-11-15): `aralik` is the Gişe period chip — an inclusive
+ * Istanbul day range, turned into half-open `cikis_at` bounds by
+ * `cikisAraligi` (fixed +03:00). Null is Tümü: no bound at all. Before 067
+ * the chips moved only the summary card and this list ignored them.
+ *
+ * Pages of 20 ("Daha fazla göster"), so a 30-day range is not silently cut
+ * at the newest 20.
  *
  * SCOPE IS DECIDED BY RLS, not by this query. `biletler_select` gives
- * Yönetici every exit but gives Personel only the ones closed by their own
- * OPEN shift — so a Personel between shifts correctly sees nothing here, and
- * the empty state has to say so rather than implying the lot had no exits.
+ * Yönetici every exit; Personel get exits from the last 3 Istanbul days plus
+ * whatever their own open shift closed (067). Their chips stop at "3 gün",
+ * but the policy is the boundary.
  *
  * `enabled` is the filter switch on the Gişe screen. Closed tickets are
  * unbounded history, so when the operator has narrowed the list to "İçeride"
@@ -164,23 +167,34 @@ export type OnayFiltre = 'TUMU' | 'ONAYLANDI' | 'ONAYLANMADI'
  *  collected money still has to be approved before it counts as revenue. */
 export type OdemeFiltre = 'TUMU' | 'ALINDI' | 'ALINMADI'
 
+/** Rows per "Daha fazla göster" page on Çıkanlar. */
+const CIKAN_SAYFA = 20
+
 export function useCikanBiletler({
   sorgu = '',
   enabled = true,
   onay = 'TUMU',
   odeme = 'TUMU',
+  aralik = null,
 }: {
   sorgu?: string
   enabled?: boolean
   onay?: OnayFiltre
   odeme?: OdemeFiltre
+  /** Inclusive Istanbul days 'YYYY-MM-DD'; null = every exit (Tümü). */
+  aralik?: { bas: string; bit: string } | null
 } = {}) {
-  return useQuery({
-    // Both filters belong in the key: without them a filtered result would be
-    // served from the unfiltered cache and the list would not change.
-    queryKey: ['cikan_biletler', sorgu, onay, odeme],
+  return useInfiniteQuery({
+    // Every filter belongs in the key: without them a filtered result would be
+    // served from the unfiltered cache and the list would not change. The
+    // 'cikan_biletler' prefix is what every mutation invalidates.
+    queryKey: ['cikan_biletler', sorgu, onay, odeme, aralik?.bas ?? null, aralik?.bit ?? null],
     enabled,
-    queryFn: async (): Promise<Bilet[]> => {
+    initialPageParam: 0,
+    // A full page means there may be more; a short one is the end.
+    getNextPageParam: (son: Bilet[], _hepsi: Bilet[][], sonBaslangic: number) =>
+      son.length === CIKAN_SAYFA ? sonBaslangic + CIKAN_SAYFA : undefined,
+    queryFn: async ({ pageParam }): Promise<Bilet[]> => {
       // The collection rides along so the row can show whether the money was
       // approved, and RLS still applies to the embedded rows — which is
       // exactly why the badge is Yönetici-only: a Personel sees collections
@@ -200,10 +214,18 @@ export function useCikanBiletler({
         .select(`*, ${embed}`)
         .eq('durum', 'KAPALI')
         .order('cikis_at', { ascending: false })
-        .limit(20)
+        // id breaks ties, so two exits in the same instant cannot swap places
+        // between pages and appear twice or not at all.
+        .order('id', { ascending: false })
+        .range(pageParam, pageParam + CIKAN_SAYFA - 1)
+
+      if (aralik) {
+        const { gte, lt } = cikisAraligi(aralik.bas, aralik.bit)
+        q = q.gte('cikis_at', gte).lt('cikis_at', lt)
+      }
 
       // Filtered server-side rather than after the fact: this query takes the
-      // newest 20, so filtering the page we happened to receive would answer
+      // newest page, so filtering the page we happened to receive would answer
       // "unapproved among the last 20", which is not what the control says.
       if (onay === 'ONAYLANDI') q = q.eq('tahsilat.durum', 'ONAYLANDI')
       if (onay === 'ONAYLANMADI') q = q.in('tahsilat.durum', ['BEKLIYOR', 'REDDEDILDI'])

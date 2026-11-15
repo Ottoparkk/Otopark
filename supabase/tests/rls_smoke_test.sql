@@ -847,11 +847,21 @@ if v_n = 0 then
 end if;
 raise notice 'PASS 29: tek açık vardiya kuralı ve fark hesabı + bildirimi doğru';
 
--- Personel no longer sees the tickets they closed once the shift is shut.
+-- Personel no longer see a closed shift's tickets through the SHIFT once it
+-- is shut. Since 067 (owner, 2026-11-15) an exit from the last 3 Istanbul
+-- days stays readable anyway — v_bilet2 was closed just now, so it must
+-- still show — but an older exit from that same shift must not.
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             cikis_kaynak, kapatan_vardiya_id)
+values (gen_random_uuid(), 'ZZ30ESKI', now() - interval '10 days 1 hour',
+        now() - interval '10 days', v_tarife_yeni, 'KAPALI', 'KAMERA', v_vardiya);
 perform pg_temp.login(u_personel);
+select count(*) into v_n from public.biletler where plaka = 'ZZ30ESKI';
+if v_n <> 0 then raise exception 'FAIL 30: kapanmış vardiyanın eski biletleri hâlâ görünüyor'; end if;
 select count(*) into v_n from public.biletler where id = v_bilet2;
-if v_n <> 0 then raise exception 'FAIL 30: kapanmış vardiyanın biletleri hâlâ görünüyor'; end if;
-raise notice 'PASS 30: vardiya kapanınca geçmiş biletler Personel görüşünden çıkıyor';
+if v_n <> 1 then raise exception 'FAIL 30: bugünkü çıkış 3 günlük pencerede görünmüyor (067)'; end if;
+perform pg_temp.logout();
+raise notice 'PASS 30: vardiya kapanınca eski biletler Personel görüşünden çıkıyor; son 3 günün çıkışları kalıyor (067)';
 
 -- =====================================================================
 -- 31  Last-Yönetici protection
@@ -8906,6 +8916,102 @@ if not exists (select 1 from public.biletler
 end if;
 
 raise notice 'PASS 83: borçlu kapanmış bilete sonradan ücretsiz çıkış — tahsil yetkisiyle, para yazılmaz, koruma dar; veren ve zaman yazılır';
+
+-- =====================================================================
+-- 84  Personel'in Çıkanlar penceresi (067): son 3 İstanbul günü
+-- =====================================================================
+-- Sahip (2026-11-15): Personel "Bugün" ve "3 gün" görür, daha geriyi görmez.
+-- Sınır Postgres'te (biletler_select). Yalnızca OKUMA genişler; tahsil,
+-- ücretsiz çıkış, geri alma kendi vardiyasında kalır (75m, sahibin seçimi).
+-- Pencere başı: bugünden 2 gün önce, 00:00 İstanbul.
+
+v_ts := ((now() at time zone 'Europe/Istanbul')::date - 2)::timestamp
+          at time zone 'Europe/Istanbul';
+
+-- Vardiyasız kapanmış (kamera, açık vardiya yokken) biletler: pencere içi,
+-- pencere dışı, pencere içi ama iptal.
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum, cikis_kaynak)
+values (gen_random_uuid(), 'ZZ84PNC1', v_ts - interval '59 minutes', v_ts + interval '1 minute',
+        v_tarife_yeni, 'KAPALI', 'KAMERA')
+returning id into v_bilet;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum, cikis_kaynak)
+values (gen_random_uuid(), 'ZZ84PNC2', v_ts - interval '61 minutes', v_ts - interval '1 minute',
+        v_tarife_yeni, 'KAPALI', 'KAMERA')
+returning id into v_bilet2;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             iptal_sebep, iptal_at)
+values (gen_random_uuid(), 'ZZ84PNC3', v_ts - interval '59 minutes', v_ts + interval '1 minute',
+        v_tarife_yeni, 'IPTAL', 'Deneme', v_ts + interval '1 minute')
+returning id into v_id;
+
+-- (a) Personel: pencere içindeki kapalı bileti görür; dışını ve iptali görmez.
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.biletler where id = v_bilet) then
+  raise exception 'FAIL 84a: Personel 3 günlük penceredeki çıkışı göremiyor';
+end if;
+if exists (select 1 from public.biletler where id = v_bilet2) then
+  raise exception 'FAIL 84a: Personel 3 günden eski çıkışı görüyor';
+end if;
+if exists (select 1 from public.biletler where id = v_id) then
+  raise exception 'FAIL 84a: Personel başka vardiyanın iptal biletini görüyor';
+end if;
+perform pg_temp.logout();
+
+-- (b) PENDING hiçbirini görmez; Yönetici üçünü de görür.
+perform pg_temp.login(u_pending);
+select count(*) into v_n from public.biletler where id in (v_bilet, v_bilet2, v_id);
+perform pg_temp.logout();
+if v_n <> 0 then
+  raise exception 'FAIL 84b: PENDING penceredeki biletleri görüyor (%)', v_n;
+end if;
+perform pg_temp.login(u_yonetici);
+select count(*) into v_n from public.biletler where id in (v_bilet, v_bilet2, v_id);
+perform pg_temp.logout();
+if v_n <> 3 then
+  raise exception 'FAIL 84b: Yönetici tüm biletleri göremiyor (% / 3)', v_n;
+end if;
+
+-- (c) Yalnızca okuma genişler: başka vardiyanın (burada vardiyasız) biletini
+--     Personel ne tahsil eder ne ücretsiz yapar. İki fonksiyonda da vardiya
+--     denetimi borç denetiminden önce (034, 066): 0 ₺'lik bilet yeter.
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+v_vardiya := public.acik_vardiyam();
+begin
+  perform public.bilet_tahsil(v_bilet, 'NAKIT');
+  raise exception 'FAIL 84c: Personel penceredeki başka vardiya biletini tahsil etti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 84c: beklenmeyen hata (tahsil): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'DIGER', 'Deneme');
+  raise exception 'FAIL 84c: Personel penceredeki başka vardiya biletine ücretsiz verdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 84c: beklenmeyen hata (ücretsiz): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (d) Kendi açık vardiyasının bileti, ne kadar eski olursa olsun, görünür kalır.
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             cikis_kaynak, kapatan_vardiya_id)
+values (gen_random_uuid(), 'ZZ84PNC4', v_ts - interval '10 days 1 hour', v_ts - interval '10 days',
+        v_tarife_yeni, 'KAPALI', 'MOBIL', v_vardiya)
+returning id into v_id2;
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.biletler where id = v_id2) then
+  raise exception 'FAIL 84d: Personel kendi vardiyasının eski biletini göremiyor';
+end if;
+perform pg_temp.logout();
+
+raise notice 'PASS 84: Personel kapanmış çıkışları son 3 İstanbul gününde okur, daha eskisini görmez; işlem yine kendi vardiyasında';
 
 perform pg_temp.logout();
 raise notice '';
