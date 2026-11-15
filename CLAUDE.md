@@ -58,9 +58,11 @@ bridge is Python, in `tools/kamera-koprusu/`.
 - The server prices every fee (`ucret_hesapla`); the client only displays it.
 - Approved / closed records are immutable (`biletler_immutable_guard`);
   corrections are counter-entries or cancellations, never edits.
-  One narrow exception (owner, 054): `bilet_kamera_geri_ac` ("Araç çıkmadı")
-  reopens a ticket the **camera** closed while nothing was collected. Keep it
-  that narrow — no other reopen path.
+  Two narrow exceptions (owner), both "Araç çıkmadı": `bilet_kamera_geri_ac`
+  (054) reopens a ticket the **camera** closed while nothing was collected;
+  `bilet_cikis_geri_al` (060) reopens any other closed ticket — own shift for
+  Personel, reason required, Yönetici notified, and any payment reversed by a
+  counter-entry, never edited. No other reopen path.
 - The camera closes a ticket only unpaid (054); collecting is always a
   person (`bilet_tahsil`), and every collection waits in Onay.
 

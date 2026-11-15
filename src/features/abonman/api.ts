@@ -55,30 +55,51 @@ export interface AbonmanGirdi {
   plaka: string
   musteri_ad: string
   musteri_tel: string | null
-  baslangic: string
-  bitis: string
   ucret_kurus: number
+  /** 062: payment day of the month, 1–31. The server sets the dates. */
+  yenileme_gunu: number
   park_yeri_id: string | null
   notlar: string | null
+  /** The first month, taken in the same form. 0 only for a Yönetici. */
+  tutar_kurus: number
+  yontem: OdemeYontemi | null
 }
 
 /**
- * Direct insert rather than an RPC: there is no versioning invariant here,
- * and the EXCLUDE constraint already refuses two overlapping subscriptions
- * for one plate at the database level.
+ * New abonman with its first payment, in one call (062 `abonman_ekle`):
+ * the server sets the period (today → the next payment day), writes the
+ * payment into the open shift (it waits in Onay) and tells the Yönetici who
+ * added it. Personel need an open shift. Never retried — it takes money.
  */
 export function useAbonmanEkle() {
   const invalidate = useAbonmanInvalidate()
+  const qc = useQueryClient()
   return useMutation({
     retry: false,
     mutationFn: async (g: AbonmanGirdi) => {
-      const { error } = await supabase.from('abonmanlar').insert(g)
+      const { data, error } = await supabase.rpc('abonman_ekle', {
+        p_plaka: g.plaka,
+        p_musteri_ad: g.musteri_ad,
+        p_musteri_tel: g.musteri_tel,
+        p_ucret_kurus: g.ucret_kurus,
+        p_yenileme_gunu: g.yenileme_gunu,
+        p_park_yeri_id: g.park_yeri_id,
+        p_notlar: g.notlar,
+        p_tutar_kurus: g.tutar_kurus,
+        // A free (₺0) abonman takes no method — never send the picker's default.
+        p_yontem: g.tutar_kurus > 0 ? g.yontem : null,
+      })
       if (error) throw error
+      return data as string
     },
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate()
+      odemeInvalidate(qc)
+    },
   })
 }
 
+/** Direct update — Yönetici only by RLS (Düzenle, İptal). */
 export function useAbonmanGuncelle() {
   const invalidate = useAbonmanInvalidate()
   return useMutation({
@@ -91,26 +112,44 @@ export function useAbonmanGuncelle() {
   })
 }
 
-/** Yönetici-only by RPC guard — Personel must never handle the price. */
+/** Everything a new payment changes: Onay, the till, the shift's own sums. */
+function odemeInvalidate(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['abonman_tahsilat'] })
+  void qc.invalidateQueries({ queryKey: ['rapor_ozet'] })
+  void qc.invalidateQueries({ queryKey: ['onay'] })
+  void qc.invalidateQueries({ queryKey: ['onay_ozet'] })
+  void qc.invalidateQueries({ queryKey: ['kasa'] })
+  void qc.invalidateQueries({ queryKey: ['vardiya_ozetim'] })
+}
+
+/**
+ * A payment, and with `yenile` the period renewed to the next payment day —
+ * ONE call (062 `abonman_tahsil`), so a payment can no longer land without
+ * its renewal. Any staff; Personel need an open shift (the cash belongs to
+ * it). Waits in Onay like every collection.
+ */
 export function useAbonmanTahsil() {
+  const invalidate = useAbonmanInvalidate()
   const qc = useQueryClient()
   return useMutation({
     retry: false, // it takes money
     mutationFn: async (g: {
       abonman_id: string
       yontem: OdemeYontemi
-      tutar_kurus: number | null
+      tutar_kurus: number
+      yenile: boolean
     }) => {
       const { error } = await supabase.rpc('abonman_tahsil', {
         p_abonman_id: g.abonman_id,
         p_yontem: g.yontem,
         p_tutar_kurus: g.tutar_kurus,
+        p_yenile: g.yenile,
       })
       if (error) throw error
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['abonman_tahsilat'] })
-      void qc.invalidateQueries({ queryKey: ['rapor_ozet'] })
+      invalidate()
+      odemeInvalidate(qc)
     },
   })
 }

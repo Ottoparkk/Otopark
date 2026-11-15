@@ -171,3 +171,33 @@ export function degisiklikler(
     sebep: paraDegisti ? sebep : null,
   }
 }
+
+/**
+ * Araç Girişi's entry time (059). `yerel` null = the field is closed ("Şimdi").
+ * Same limits as the ticket's "Değiştir": an earlier time is a higher fee, so
+ * it needs a reason, and bilet_ac_saatli re-checks all of it.
+ *
+ * The current Istanbul minute counts as "now": the field opens pre-filled with
+ * it, and saving it untouched must not become an audited time change.
+ */
+export function girisSaatiSonucu(
+  yerel: string | null,
+  sebep: string,
+  now: Date,
+):
+  | { hata: string; alan: 'giris' | 'sebep' }
+  | { hata: null; girisISO: string | null; sebep: string | null } {
+  if (yerel === null || yerel === istanbulYerel(now)) {
+    return { hata: null, girisISO: null, sebep: null }
+  }
+  const girisISO = yereldenISO(yerel)
+  if (girisISO === null) return { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' }
+  const t = new Date(girisISO).getTime()
+  if (t > now.getTime()) return { hata: 'Giriş saati ileri bir zaman olamaz.', alan: 'giris' }
+  if (t < birYilOnce(now).getTime()) {
+    return { hata: 'Giriş saati bir yıldan eski olamaz.', alan: 'giris' }
+  }
+  const s = sebep.trim()
+  if (!s) return { hata: 'Sebep yazın — denetim kaydına geçer.', alan: 'sebep' }
+  return { hata: null, girisISO, sebep: s }
+}

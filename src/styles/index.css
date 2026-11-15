@@ -221,7 +221,22 @@
      that the same pair clears both, measured — retune together if either
      gradient moves. */
   --on-brand-success: #86efac;
-  --on-brand-danger: #fecaca;
+  /* Redder than the old #fecaca, which read as pink-white (owner,
+     2026-11-15). Measured where the figures actually sit rather than at the
+     far corner. On the Finans panel the gider figure is furthest along the
+     135deg gradient: 87% at md width (beside the headline), less on phones.
+     There this clears 4.61 (light theme; dark is higher). At the very
+     corner it would be 4.18 — so keep figures out of the bottom-right
+     corner, or retune. */
+  --on-brand-danger: #ffb8b8;
+
+  /* Nakit / Kart / Havale on the brand panel: the hues of the payment chips
+     (--color-nakit / -kart / -havale), lifted until they read on teal.
+     Furthest along the gradient they sit is ~81% (Havale, 360 px phone);
+     at 80% they clear 4.59 / 4.63 / 4.82, both themes. */
+  --on-brand-nakit: #4ade9b;
+  --on-brand-kart: #a5c8ff;
+  --on-brand-havale: #fbb6dc;
 }
 
 .dark {
@@ -271,6 +286,18 @@
 
 @utility text-on-brand-danger {
   color: var(--on-brand-danger);
+}
+
+@utility text-on-brand-nakit {
+  color: var(--on-brand-nakit);
+}
+
+@utility text-on-brand-kart {
+  color: var(--on-brand-kart);
+}
+
+@utility text-on-brand-havale {
+  color: var(--on-brand-havale);
 }
 
 @utility text-on-brand-soft {

@@ -10,11 +10,11 @@ import { isYonetici } from '../../lib/rbac'
 import { DonemSecici, MenuKart, useDonem } from '../yonetim/components'
 import { useDonemAralik, useRaporOzet } from '../finans/api'
 import { useAcikIstisnaSayisi } from '../istisna/api'
+import { cikisAramasi } from './cikisLink'
 import { formatTL } from '../../lib/money'
 import {
   IconAraba,
   IconArti,
-  IconIleri,
   IconKamera,
   IconTik,
   IconYer,
@@ -52,7 +52,11 @@ export default function Gise() {
   // should close the form rather than leave the app.
   const girisAcik = pathname.endsWith('/giris')
 
-  const [sorgu, setSorgu] = useState('')
+  // Opened as "Çıkış" from Çözülmemiş kayıtlar: start with that card's plate
+  // in the search and the cursor in it (cikisLink.ts). Read once, on arrival;
+  // cleared once a car is picked, so the hint does not return after collecting.
+  const [cikisAra, setCikisAra] = useState(() => cikisAramasi(pathname, state))
+  const [sorgu, setSorgu] = useState(cikisAra ?? '')
   /**
    * The confirmation handed over by Araç Girişi as it closed itself.
    *
@@ -65,6 +69,9 @@ export default function Gise() {
     yerKod: string | null
   } | null>(null)
   const [secili, setSecili] = useState<AcikBilet | null>(null)
+  // Park yerleri: opened from the icon in the occupancy card (owner,
+  // 2026-11-15 — the row of its own is gone).
+  const [yerlerAcik, setYerlerAcik] = useState(false)
 
   const { data: biletler = [], isPending, error, refetch } = useAcikBiletler(sorgu)
   const { data: ozet } = useGunlukOzet()
@@ -174,7 +181,7 @@ export default function Gise() {
               <OranCubugu yuzde={dolulukYuzde(ozet.doluluk, ozet.kapasite)} />
             </div>
 
-            <div className="mt-4 flex gap-6 border-t border-white/15 pt-3.5">
+            <div className="mt-4 flex items-center gap-6 border-t border-white/15 pt-3.5">
               <div>
                 <p className="text-lead font-semibold tnum">
                   {gecmis
@@ -200,9 +207,29 @@ export default function Gise() {
                   {gecmis ? 'onaylı tahsilat' : 'bugün tahsilat'}
                 </p>
               </div>
+              <div className="ml-auto">
+                <ParkYerleriDugmesi
+                  acik={yerlerAcik}
+                  onClick={() => setYerlerAcik((v) => !v)}
+                  zemin="brand"
+                />
+              </div>
             </div>
           </BrandPanel>
         )}
+        {/* The card waits for gunluk_ozet. Without it the bays would have no
+            way in at all, so the same icon stands on its own. */}
+        {!ozet && (
+          <div className="flex justify-end">
+            <ParkYerleriDugmesi
+              acik={yerlerAcik}
+              onClick={() => setYerlerAcik((v) => !v)}
+              zemin="yuzey"
+            />
+          </div>
+        )}
+
+        {yerlerAcik && <ParkYerleriBolumu />}
 
         {/* The same card it was in the Yönetim menu, moved rather than
             redrawn — literally the same component, so the two cannot drift
@@ -222,8 +249,6 @@ export default function Gise() {
               : 'Eşleşmeyen giriş/çıkış olayı yok'
           }
         />
-
-        <ParkYerleriBolumu />
 
         {yonetici && <DonemSecici value={donem} ozel={ozel} onChange={secim} />}
 
@@ -250,7 +275,11 @@ export default function Gise() {
           isPending={isPending}
           error={error}
           refetch={() => void refetch()}
-          onSec={setSecili}
+          onSec={(b) => {
+            setCikisAra(null)
+            setSecili(b)
+          }}
+          aramaOdak={cikisAra !== null}
         />
       </div>
 
@@ -260,62 +289,56 @@ export default function Gise() {
 }
 
 /**
- * Park yerleri, inline and collapsed by default.
+ * The way into Park yerleri: one icon, in the occupancy card's empty corner
+ * (owner, 2026-11-15). It toggles the panel under the card; the pressed look
+ * says it is open, so the same tap closes it.
  *
- * It sits with the other summary rows, under the occupancy panel — the same
- * place the link to it occupied — and expands in place rather than
- * navigating. Collapsed it costs one row, which is why the vehicle list
- * keeps its position on the screen an operator sees all day.
+ * `zemin` is what it sits on: the brand gradient, or the page when the card
+ * is not there (see the fallback in Gise).
+ */
+function ParkYerleriDugmesi({
+  acik,
+  onClick,
+  zemin,
+}: {
+  acik: boolean
+  onClick: () => void
+  zemin: 'brand' | 'yuzey'
+}) {
+  const renk =
+    zemin === 'brand'
+      ? acik
+        ? 'bg-white/30 text-on-brand'
+        : 'bg-white/15 text-on-brand active:bg-white/25'
+      : acik
+        ? 'bg-accent text-accent-ink'
+        : 'bg-accent-soft text-accent active:brightness-[0.97]'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={acik}
+      aria-label="Park yerleri"
+      title="Park yerleri"
+      className={`flex size-11 shrink-0 items-center justify-center rounded-field transition-colors ${renk}`}
+    >
+      <IconYer size={22} />
+    </button>
+  )
+}
+
+/**
+ * Park yerleri, under the occupancy card while its icon is pressed.
  *
- * Collapsed means NOT MOUNTED, not hidden: an unopened section should cost
+ * Closed means NOT MOUNTED, not hidden: an unopened section should cost
  * neither the lazy chunk nor its three queries.
  */
 function ParkYerleriBolumu() {
-  const [acik, setAcik] = useState(false)
-
   return (
-    // ONE surface, header and body together. The card styling lives out here
-    // rather than on the button, so opening the section grows the same white
-    // panel instead of dropping a second, unattached block onto the page
-    // background — which read as a separate screen rather than as more of
-    // this one.
-    <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
-      <button
-        type="button"
-        onClick={() => setAcik((v) => !v)}
-        aria-expanded={acik}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-[filter] active:brightness-[0.97]"
-      >
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-field bg-accent-soft text-accent">
-          <IconYer size={20} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-body font-medium text-ink">Park yerleri</span>
-          <span className="block text-label text-faint">Yerler ve rezervasyonlar</span>
-        </span>
-        {/* Closed points DOWN, at the content it will reveal; open points UP,
-            at the action it now offers. IconIleri is a right-pointing chevron,
-            so both states are rotations of it — and neither state is the
-            unrotated one, which is why it is easy to get wrong. */}
-        <IconIleri
-          size={18}
-          className={`shrink-0 text-faint transition-transform duration-150 ${
-            acik ? '-rotate-90' : 'rotate-90'
-          }`}
-        />
-      </button>
-
-      {acik && (
-        // A hairline, not a gap: the divider says "same panel, next part",
-        // where whitespace alone would let the two halves drift apart again.
-        <div className="border-t border-divider px-4 pt-4 pb-5">
-          <Suspense
-            fallback={<p className="py-6 text-center text-body text-faint">Yükleniyor…</p>}
-          >
-            <YerlerBolumu />
-          </Suspense>
-        </div>
-      )}
+    <section className="overflow-hidden rounded-card border border-border bg-surface px-4 pt-4 pb-5 shadow-card">
+      <Suspense fallback={<p className="py-6 text-center text-body text-faint">Yükleniyor…</p>}>
+        <YerlerBolumu />
+      </Suspense>
     </section>
   )
 }

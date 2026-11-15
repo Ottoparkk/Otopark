@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { Button, Card, Chip, IconTile, Input, Label } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { FormModal } from '../../components/ui/FormModal'
+import { FotoGoruntuleyici } from '../../components/ui/FotoGoruntuleyici'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import {
   useBiletGirisDuzelt,
@@ -51,6 +52,7 @@ import {
 } from '../../components/ui/icons'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { olusturanAdi } from '../../lib/olusturan'
+import { ucretsizEtiket } from '../../lib/ucretsiz'
 import { useAdlar } from '../yonetim/api'
 
 /**
@@ -61,9 +63,8 @@ import { useAdlar } from '../yonetim/api'
  * step down to `text-faint`, and there are no labels on either — a duration
  * looks like a duration.
  *
- * The state chip sits on the SECOND line, not beside the plate. Both lists
- * render together under "Tümü", so a row has to say which of them it belongs
- * to — but "Ödeme alınmadı" beside a plate and an Abonman chip overflows a
+ * The state chip sits on the SECOND line, not beside the plate. A row says
+ * which list it belongs to (the two lists once rendered together) — but "Ödeme alınmadı" beside a plate and an Abonman chip overflows a
  * 375px row, and the thing that would give way is the plate.
  */
 export function BiletKart({
@@ -483,6 +484,17 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
       {bilet.cikis_at && (
         <Satir k="Çıkışı yapan" v={olusturanAdi(bilet.cikis_by, bilet.cikis_kaynak, adlar)} />
       )}
+      {/* 065: a free exit's reason and note — a fact about the ticket, so
+          every role sees it. Wraps: the note is the operator's own words. */}
+      {bilet.ucretsiz_sebep && (
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="shrink-0 text-body text-faint">Ücretsiz çıkış</dt>
+          <dd className="min-w-0 text-right text-body break-words text-ink">
+            {ucretsizEtiket(bilet.ucretsiz_sebep)}
+            {bilet.ucretsiz_not ? ` — ${bilet.ucretsiz_not}` : ''}
+          </dd>
+        </div>
+      )}
       {bilet.gecikmeli_kayit && bilet.kaynak_zaman && (
         <Satir
           k="Kameradan gelme"
@@ -537,6 +549,9 @@ export function BiletUyarilari({ bilet }: { bilet: Bilet }) {
 export function BiletFoto({ bilet }: { bilet: Pick<Bilet, 'giris_foto' | 'cikis_foto'> }) {
   const giris = useFotoUrl(bilet.giris_foto)
   const cikis = useFotoUrl(bilet.cikis_foto)
+  // Tapping a photo opens it full screen, zoomable (FotoGoruntuleyici): at
+  // this size a plate's characters are too small to check.
+  const [buyuk, setBuyuk] = useState<{ url: string; etiket: string } | null>(null)
 
   // `isPending` is only meaningful when there is a path: a disabled query
   // (no path) also reports pending, which is why the path is checked first.
@@ -556,11 +571,18 @@ export function BiletFoto({ bilet }: { bilet: Pick<Bilet, 'giris_foto' | 'cikis_
             className={`overflow-hidden rounded-card bg-field ${tek ? 'aspect-video' : 'aspect-[4/3]'}`}
           >
             {k.q.data ? (
-              <img
-                src={k.q.data}
-                alt={`${k.etiket} fotoğrafı`}
-                className="size-full object-contain"
-              />
+              <button
+                type="button"
+                onClick={() => setBuyuk({ url: k.q.data!, etiket: k.etiket })}
+                aria-label={`${k.etiket} fotoğrafını büyüt`}
+                className="block size-full"
+              >
+                <img
+                  src={k.q.data}
+                  alt={`${k.etiket} fotoğrafı`}
+                  className="size-full object-contain"
+                />
+              </button>
             ) : (
               // Holds the space while the signed link loads, so the plate and
               // the fee below do not jump down the moment it arrives.
@@ -573,6 +595,11 @@ export function BiletFoto({ bilet }: { bilet: Pick<Bilet, 'giris_foto' | 'cikis_
           )}
         </figure>
       ))}
+      <FotoGoruntuleyici
+        url={buyuk?.url ?? null}
+        etiket={buyuk?.etiket}
+        onKapat={() => setBuyuk(null)}
+      />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react'
-import { Navigate, Outlet, Route, Routes } from 'react-router'
+import { Navigate, Outlet, Route, Routes, useParams } from 'react-router'
 import { AppShell } from './app/AppShell'
 import {
   HomeRedirect,
@@ -71,6 +71,12 @@ function Korumali({ children }: { children: React.ReactNode }) {
  * another <AppShell/>. Nesting the shell inside itself would draw two navs
  * and two safe-area paddings on every Yönetim screen.
  */
+/** `/yonetim/abonman/:id` → `/abonman/:id` (a plain <Navigate> cannot carry the id). */
+function EskiAbonmanLinki() {
+  const { id } = useParams()
+  return <Navigate to={id ? `/abonman/${id}` : '/abonman'} replace />
+}
+
 function YoneticiRotalari() {
   return (
     <RequireRole roles={['YONETICI']}>
@@ -153,6 +159,17 @@ export default function App() {
             <Route path="/bildirimler" element={<Bildirimler />} />
             <Route path="/ayarlar" element={<Ayarlar />} />
             <Route path="/istisnalar" element={<Istisnalar />} />
+            {/* 062 (owner, 2026-11-15): every staff role follows and collects
+                abonmans — Personel from their bottom tab, the Yönetici from
+                the Yönetim menu. Düzenle / İptal / Sil stay Yönetici-only;
+                RLS and the RPCs are what refuse a Personel. */}
+            <Route path="/abonman" element={<AbonmanListe />} />
+            <Route path="/abonman/:id" element={<AbonmanDetay />} />
+            {/* The old address. Notifications already sent, and the nightly
+                "Abonman bitiyor" job, still link here — outside the Yönetici
+                block so a Personel following one lands on the page too. */}
+            <Route path="/yonetim/abonman" element={<Navigate to="/abonman" replace />} />
+            <Route path="/yonetim/abonman/:id" element={<EskiAbonmanLinki />} />
 
             {/* Yönetici only. The guard mirrors RLS for UX; RLS and the RPCs
                 are what actually refuse a Personel who types the URL. */}
@@ -188,8 +205,6 @@ export default function App() {
               <Route path="/yonetim/biletler" element={<Navigate to="/finans/biletler" replace />} />
               <Route path="/yonetim/vardiyalar" element={<Navigate to="/finans/vardiyalar" replace />} />
 
-              <Route path="/yonetim/abonman" element={<AbonmanListe />} />
-              <Route path="/yonetim/abonman/:id" element={<AbonmanDetay />} />
               <Route path="/yonetim/hesaplar" element={<Hesaplar />} />
               <Route path="/yonetim/hesaplar/:id" element={<HesapDetay />} />
             </Route>

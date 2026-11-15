@@ -122,6 +122,13 @@ export default function Kameralar() {
   const [kopyalandi, setKopyalandi] = useState<string | null>(null)
   const [sayfaHata, setSayfaHata] = useState<string | null>(null)
 
+  // Turning a camera off/on and cancelling a setup code only ASK (owner,
+  // 2026-11-14): one stray tap here stops every automatic entry and exit.
+  const [durumHedef, setDurumHedef] = useState<KameraCihaz | null>(null)
+  const [durumHata, setDurumHata] = useState<string | null>(null)
+  const [iptalKod, setIptalKod] = useState<{ id: string; ad: string } | null>(null)
+  const [iptalHata, setIptalHata] = useState<string | null>(null)
+
   const esikDk = ayar?.kamera_kalp_esik_dk ?? 15
 
   // The settings query is cached for five minutes everywhere else, which is
@@ -195,22 +202,26 @@ export default function Kameralar() {
   }
 
   async function durumDegistir(k: KameraCihaz) {
-    setSayfaHata(null)
+    if (durum.isPending) return
+    setDurumHata(null)
     try {
       await durum.mutateAsync({ id: k.id, aktif: !k.aktif })
+      setDurumHedef(null)
     } catch (err) {
-      setSayfaHata(rpcErrorText(err, 'Kamera durumu değiştirilemedi.'))
+      setDurumHata(rpcErrorText(err, 'Kamera durumu değiştirilemedi.'))
     }
   }
 
   async function kodIptalEt(id: string) {
-    setSayfaHata(null)
+    if (kodIptal.isPending) return
+    setIptalHata(null)
     try {
       await kodIptal.mutateAsync(id)
+      setIptalKod(null)
     } catch (err) {
       // Was swallowed: a refused cancel left the code in the list with no
       // word about why, and it still counted toward the limit of ten.
-      setSayfaHata(rpcErrorText(err, 'Kurulum kodu iptal edilemedi.'))
+      setIptalHata(rpcErrorText(err, 'Kurulum kodu iptal edilemedi.'))
     }
   }
 
@@ -319,7 +330,10 @@ export default function Kameralar() {
                     <Button
                       size="md"
                       variant="soft"
-                      onClick={() => void durumDegistir(k)}
+                      onClick={() => {
+                        setDurumHata(null)
+                        setDurumHedef(k)
+                      }}
                       // Only the row that was tapped spins; one shared flag
                       // put every camera's button into loading at once.
                       loading={durum.isPending && durum.variables?.id === k.id}
@@ -366,7 +380,10 @@ export default function Kameralar() {
                   <Button
                     size="md"
                     variant="ghost"
-                    onClick={() => void kodIptalEt(k.id)}
+                    onClick={() => {
+                      setIptalHata(null)
+                      setIptalKod({ id: k.id, ad: k.ad })
+                    }}
                     loading={kodIptal.isPending && kodIptal.variables === k.id}
                   >
                     İptal
@@ -374,9 +391,6 @@ export default function Kameralar() {
                 </li>
               ))}
             </ul>
-            <p className="text-label text-faint">
-              Kod yalnızca üretildiği anda görünür. Kaybolduysa iptal edip yenisini alın.
-            </p>
           </Card>
         )}
 
@@ -402,10 +416,6 @@ export default function Kameralar() {
                 )}
               </div>
             </div>
-            <p className="text-label text-faint">
-              Böyle bir köprünüz kalmadıysa izlemeyi kapatın; yoksa her saat “haber yok” uyarısı
-              gelir.
-            </p>
             <Button
               size="md"
               variant="soft"
@@ -424,8 +434,7 @@ export default function Kameralar() {
             Webhook adresi
           </p>
           <p className="text-label text-faint">
-            Kodla kurulumda buna gerek yok — kurulum bu adresi kendisi öğrenir. Elle kurulum
-            yapan biri için burada duruyor.
+            Yalnızca elle kurulum için.
           </p>
           <p className="rounded-field bg-field px-3.5 py-3 text-label break-all text-soft">
             {WEBHOOK_URL}
@@ -505,7 +514,7 @@ export default function Kameralar() {
             {adim === 'BEKLIYOR' && (
               <>
                 <p className="rounded-field bg-warn-soft px-3.5 py-3 text-label text-warn">
-                  Bu kod bir daha gösterilmeyecek. Şimdi kopyalayın ya da dosyayı indirin.
+                  Kod bir daha gösterilmez — şimdi kopyalayın ya da indirin.
                 </p>
 
                 <div className="flex flex-wrap gap-2">
@@ -525,23 +534,12 @@ export default function Kameralar() {
                   </Button>
                 </div>
 
-                <div className="space-y-2 text-label text-faint">
-                  <p>
-                    1. Dosyayı OtoparkKamera.exe ile aynı klasöre koyun; kurulum onu kendisi
-                    okur.
-                  </p>
-                  <p>2. Dosya gönderemiyorsanız kodu kuruluma elle yazdırın.</p>
-                  <p>3. Kod 15 dakika geçerli ve yalnızca bu kamera içindir.</p>
-                </div>
+                <p className="text-label text-faint">
+                  Dosyayı OtoparkKamera.exe’nin yanına koyun. Kod 15 dakika geçerli.
+                </p>
               </>
             )}
 
-            {adim === 'ESLESTI' && (
-              <p className="text-label text-faint">
-                Kurulum yarıda kaldıysa aynı kod, süresi dolana kadar otoparktaki bilgisayarda
-                yeniden girilebilir.
-              </p>
-            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -550,7 +548,7 @@ export default function Kameralar() {
               value={ad}
               onChange={(e) => setAd(e.target.value)}
               maxLength={60}
-              hint="Bu listede görünecek ad. Örnek: Giriş bariyeri."
+              placeholder="Giriş bariyeri"
             />
             <SegmentedControl
               label="Şerit"
@@ -567,14 +565,11 @@ export default function Kameralar() {
                 about something the Yönetici did not pick. */}
             {yon === 'ORTAK' && (
               <p className="text-label text-soft">
-                Araçlar aynı kapıdan girip çıkıyorsa bunu seçin. Kamera, içeride bileti olan
-                aracı çıkıyor, olmayanı giriyor sayar; emin olamadığını Çözülmemiş kayıtlar’a
-                bırakır.
+                Araçlar aynı kapıdan girip çıkıyorsa seçin.
               </p>
             )}
             <p className="text-label text-faint">
-              Şerit sonradan değiştirilemez — çıkış kamerasını giriş sanan bir köprü, çıkan
-              araçlara bilet açar. Yanlışsa kamerayı kaldırıp yeniden ekleyin.
+              Şerit sonradan değiştirilemez.
             </p>
           </div>
         )}
@@ -599,12 +594,56 @@ export default function Kameralar() {
       />
 
       <ConfirmDialog
+        open={durumHedef !== null}
+        onOpenChange={(o) => {
+          if (!o) setDurumHedef(null)
+        }}
+        title={
+          durumHedef?.aktif ? 'Kamera devre dışı bırakılsın mı?' : 'Kamera etkinleştirilsin mi?'
+        }
+        description={
+          durumHedef
+            ? durumHedef.aktif
+              ? `${durumHedef.ad} kapanır: bu kameradan gelen giriş ve çıkışlar kabul edilmez, araçlar elle kaydedilir. İstediğiniz zaman yeniden etkinleştirebilirsiniz.`
+              : `${durumHedef.ad} yeniden giriş ve çıkış kaydeder.`
+            : undefined
+        }
+        confirmLabel={durumHedef?.aktif ? 'Devre dışı bırak' : 'Etkinleştir'}
+        tone={durumHedef?.aktif ? 'danger' : 'primary'}
+        loading={durum.isPending}
+        error={durumHata}
+        onConfirm={() => {
+          if (durumHedef) void durumDegistir(durumHedef)
+        }}
+      />
+
+      <ConfirmDialog
+        open={iptalKod !== null}
+        onOpenChange={(o) => {
+          if (!o) setIptalKod(null)
+        }}
+        title="Kurulum kodu iptal edilsin mi?"
+        description={
+          iptalKod
+            ? `${iptalKod.ad} için kod geçersiz olur. Kurulum yapılacaksa yeni bir kod oluşturmak gerekir.`
+            : undefined
+        }
+        confirmLabel="Kodu iptal et"
+        tone="danger"
+        loading={kodIptal.isPending}
+        error={iptalHata}
+        onConfirm={() => {
+          if (iptalKod) void kodIptalEt(iptalKod.id)
+        }}
+      />
+
+      <ConfirmDialog
         open={eskiSor}
         onOpenChange={(o) => {
           if (!o) setEskiSor(false)
         }}
         title="Elle kurulmuş köprü izlenmesin mi?"
-        description="Bu köprü için “haber yok” uyarısı artık gönderilmez. Köprü yeniden bağlanırsa izleme kendiliğinden geri gelir. Eşleştirilmiş kameralar etkilenmez."
+        description="“Haber yok” uyarısı artık gönderilmez."
         confirmLabel="İzlemeyi kapat"
         loading={eskiUnut.isPending}
         error={eskiHata}

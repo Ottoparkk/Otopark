@@ -111,14 +111,6 @@ export function kararSatiri(r: AuditSatiri): Karar | null {
   }
 }
 
-/** First card with something waiting, in screen order; else Bilet ve abonman. */
-export function varsayilanKategori(n: { vardiya: number; bilet: number; iptal: number }): OnayKategori {
-  if (n.vardiya > 0) return 'VARDIYA'
-  if (n.bilet > 0) return 'BILET'
-  if (n.iptal > 0) return 'BILET_IPTAL'
-  return 'BILET'
-}
-
 /** Caption of the Finans "Onay" card: every queue that is waiting, by name. */
 export function onayAltYazisi(n: { tahsilat: number; vardiya: number; iptal: number }): string {
   const parcalar: string[] = []

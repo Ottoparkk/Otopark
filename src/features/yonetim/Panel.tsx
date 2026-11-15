@@ -61,7 +61,7 @@ export default function Panel() {
         <div className="grid grid-cols-1 gap-3">
           <MenuKart
             satir
-            to="/yonetim/abonman"
+            to="/abonman"
             tone="success"
             icon={<IconAbonman size={22} />}
             baslik="Abonmanlar"

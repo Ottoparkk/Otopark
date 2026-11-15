@@ -345,14 +345,12 @@ export default function OtoparkAyarlari() {
             value={dolulukUyari}
             onChange={(e) => setDolulukUyari(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
-            hint="Bu orana ulaşınca bildirim gönderilir."
           />
           <Input
             label="Terk edilmiş sayılma süresi (saat)"
             value={terk}
             onChange={(e) => setTerk(digitsOnly(e.target.value, 3))}
             inputMode="numeric"
-            hint="İçeride listesinde de işaretlenir."
           />
         </Card>
 
@@ -368,7 +366,6 @@ export default function OtoparkAyarlari() {
             value={kapasite}
             onChange={(e) => setKapasite(digitsOnly(e.target.value, 4))}
             inputMode="numeric"
-            hint="Yerler bu sayıdan üretilir. Engelli ve rezerve dışında kalanlar normal yer olur."
           />
           <div className="grid grid-cols-2 gap-3">
             <Input
@@ -437,7 +434,7 @@ export default function OtoparkAyarlari() {
                 .map((y) => y.kod)
                 .join(', ')}${
                 mevcutDuzen.digerleri.length > 6 ? '…' : ''
-              } — silinmez, yalnızca kullanım dışına alınır.`}
+              }`}
             />
           )}
 
@@ -463,7 +460,7 @@ export default function OtoparkAyarlari() {
             value={saklama}
             onChange={(e) => setSaklama(digitsOnly(e.target.value, 2))}
             inputMode="numeric"
-            hint="Plaka fotoğrafları bu süre sonunda gece işiyle silinir. 1-30 gün — depolama alanı sınırlı."
+            hint="1-30 gün"
           />
         </Card>
 
@@ -473,7 +470,6 @@ export default function OtoparkAyarlari() {
             checked={saglayici !== 'KAPALI'}
             onChange={(v) => setSaglayici(v ? 'VLM' : 'KAPALI')}
             label="Plaka okuma açık"
-            hint="Telefonla çekilen fotoğraftan plaka önerilir. Kamera plakayı kendisi okur; bu ayardan etkilenmez."
           />
           {/* Since bridge 1.3.0 the camera reads plates on the laptop and never
               asks the server, so this switch only drives the phone's OCR
@@ -486,9 +482,6 @@ export default function OtoparkAyarlari() {
               label="Okuma modeli"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              hint={`${
-                PLAKA_MODELLERI.find((m) => m.id === model)?.aciklama ?? ''
-              } Emin olunamayan okumalar bir kez de Claude Sonnet 5.5'e sorulur.`.trim()}
             >
               <option value="">{plakaModeliMetni(null)}</option>
               {PLAKA_MODELLERI.map((m) => (
@@ -504,10 +497,6 @@ export default function OtoparkAyarlari() {
               )}
             </Select>
           )}
-          <p className="text-label text-faint">
-            Okuma her zaman bir <strong className="text-soft">öneridir</strong> — operatör
-            onaylamadan hiçbir kayıt oluşmaz.
-          </p>
         </Card>
 
         <Card className="space-y-4">
@@ -516,7 +505,6 @@ export default function OtoparkAyarlari() {
             checked={kameraAktif}
             onChange={setKameraAktif}
             label="Kamera girişi açık"
-            hint="Kapalıyken kamera olayı kabul edilmez."
           />
           {kameraAktif && (
             <>
@@ -525,7 +513,6 @@ export default function OtoparkAyarlari() {
                 value={gecikme}
                 onChange={(e) => setGecikme(digitsOnly(e.target.value, 5))}
                 inputMode="numeric"
-                hint="Daha eski olay bilet açmaz; çözülmemiş kayda düşer."
               />
               {/* Only matter for a "Tek kapı" camera (one gate for entry and
                   exit). Kept here rather than on the camera screen because
@@ -536,7 +523,7 @@ export default function OtoparkAyarlari() {
                 <div>
                   <p className="text-body font-medium text-ink">Tek kapı</p>
                   <p className="mt-0.5 text-label text-faint">
-                    Aynı aracın bu süreler içinde yeniden görülmesi yok sayılır.
+                    Yeniden görülen araç yok sayılır.
                   </p>
                 </div>
                 <Input
@@ -558,9 +545,8 @@ export default function OtoparkAyarlari() {
                   kurulum) köprü bilgisayarının saati — kameranınki değil;
                   webhook'a doğrudan gönderen kamerada kameranın kendi saati. */}
               <p className="rounded-field bg-warn-soft px-3 py-2.5 text-label text-warn">
-                Aracı damgalayan saat doğru olmalı: köprüde bilgisayarın saati otomatik
-                ayarlı, doğrudan bağlı kamerada NTP açık. Kaymış saat her aracı sessizce
-                yanlış ücretlendirir.
+                Köprü bilgisayarının saati otomatik ayarlı olmalı — yanlış saat yanlış ücret
+                demek.
               </p>
             </>
           )}

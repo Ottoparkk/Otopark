@@ -22,6 +22,8 @@ const TERCIH_TURLERI: BildirimTur[] = [
   'BILET_IPTAL_TALEBI',
   'BILET_IPTAL',
   'ABONMAN_BITIYOR',
+  'YENI_ABONMAN',
+  'UCRETSIZ_CIKIS',
   'TERK_EDILMIS',
   'DOLULUK',
   'ISTISNA',
@@ -142,7 +144,6 @@ export default function Ayarlar() {
               setKaranlik(v)
             }}
             label="Koyu mod"
-            hint="Gece vardiyasında gözü yormaz."
           />
           <p className="mt-1 flex items-center gap-1.5 text-label text-faint">
             {karanlik ? <IconAy size={14} /> : <IconGunes size={14} />}
@@ -162,11 +163,6 @@ export default function Ayarlar() {
             checked={pushAcik}
             onChange={(v) => void pushDegistir(v)}
             label="Anlık bildirim"
-            hint={
-              yonetici
-                ? 'Vardiya farkı ve ücret değişikliği telefona düşer.'
-                : 'Okunamayan plakalar telefona düşer.'
-            }
             disabled={!pushSupported()}
           />
           {pushMesaj && <p className="mt-1 text-label text-warn">{pushMesaj}</p>}

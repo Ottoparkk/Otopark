@@ -10,7 +10,6 @@ import {
   SegmentedControl,
 } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
-import { Spinner } from '../../components/ui/Spinner'
 import {
   useBiletIptalOnayla,
   useBiletIptalReddet,
@@ -24,12 +23,14 @@ import {
   useVardiyaKapatmaReddet,
   useVardiyaTalepleri,
 } from './api'
-import { varsayilanKategori, type Karar, type KararTur, type OnayKategori } from './kararlar'
+import { type Karar, type KararTur, type OnayKategori } from './kararlar'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { useAdlar } from '../yonetim/api'
 import { formatTL } from '../../lib/money'
 import { formatTam } from '../../lib/dates'
 import { formatPlaka } from '../../lib/plaka'
+import { kararKisileri, tahsilatKisileri } from '../../lib/kimYapti'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
 import { rpcErrorText } from '../../lib/errors'
 import { ODEME_ETIKET, type Bilet, type OnayDurum, type VardiyaTalebi } from '../../lib/types'
 import { IconCarpi, IconEtiket, IconOnay, IconTik, IconVardiya } from '../../components/ui/icons'
@@ -37,10 +38,11 @@ import { IconCarpi, IconEtiket, IconOnay, IconTik, IconVardiya } from '../../com
 /**
  * The gate between what happened at the barrier and what the books accept.
  *
- * Three queues, each a card at the top (owner, 2026-11-07):
- *  - Vardiya — shift-close requests (035);
+ * Three queues, each a card at the top (owner, 2026-11-07; order and the
+ * opening card 2026-11-14):
  *  - Bilet ve abonman — collections born BEKLIYOR; Finans counts only what is
- *    approved here;
+ *    approved here. The left card, and the one the screen opens on;
+ *  - Vardiya — shift-close requests (035);
  *  - Bilet iptali — Personel's cancel requests on open tickets (050).
  * Under the cards one Bekleyen / Onaylanan / Reddedilen control applies to
  * the selected card. Yönetici only — the route guard says so and every RPC
@@ -70,21 +72,16 @@ export default function Onay() {
   const ad = (id: string | null) => (id ? (adlar.get(id) ?? 'Bilinmiyor') : 'Bilinmiyor')
 
   // ---- which card ---------------------------------------------------------
-  // Chosen ONCE, when all three counts have answered: the first card with
-  // something waiting. Kept in state rather than derived, so approving the
-  // last item of a card does not yank the screen to another card under the
-  // operator's thumb (and take the "done" message with it). A count that
-  // failed to load counts as 0 here; its card says so itself.
+  // Always opens on Bilet ve abonman (owner, 2026-11-14), whatever else is
+  // waiting: that is where nearly all the work is. The other cards show their
+  // own "N bekliyor", one tap away. A count that failed to load counts as 0
+  // here; its card says so itself.
   const sayilar = {
     vardiya: talepler.data?.length ?? 0,
     bilet: ozet.data?.adet ?? 0,
     iptal: iptaller.data?.length ?? 0,
   }
-  const sayimHazir = !talepler.isPending && !ozet.isPending && !iptaller.isPending
-  const [kategori, setKategori] = useState<OnayKategori | null>(null)
-  // Adjusting state during render (React's documented pattern), not an
-  // effect: no frame is painted with the wrong card first.
-  if (kategori === null && sayimHazir) setKategori(varsayilanKategori(sayilar))
+  const [kategori, setKategori] = useState<OnayKategori>('BILET')
 
   const [sekme, setSekme] = useState<OnayDurum>('BEKLIYOR')
   const bekleyen = sekme === 'BEKLIYOR'
@@ -204,22 +201,22 @@ export default function Onay() {
             one queue below the fold of its own row and read as less important. */}
         <div className="grid grid-cols-3 gap-2" role="group" aria-label="Onay türü">
           <KategoriKarti
-            etiket="Vardiya"
-            icon={<IconVardiya size={18} />}
-            sayi={talepler.error ? null : talepler.isPending ? undefined : sayilar.vardiya}
-            secili={kategori === 'VARDIYA'}
-            onClick={() => {
-              setKategori('VARDIYA')
-              temizle()
-            }}
-          />
-          <KategoriKarti
             etiket="Bilet ve abonman"
             icon={<IconEtiket size={18} />}
             sayi={ozet.error ? null : ozet.isPending ? undefined : sayilar.bilet}
             secili={kategori === 'BILET'}
             onClick={() => {
               setKategori('BILET')
+              temizle()
+            }}
+          />
+          <KategoriKarti
+            etiket="Vardiya"
+            icon={<IconVardiya size={18} />}
+            sayi={talepler.error ? null : talepler.isPending ? undefined : sayilar.vardiya}
+            secili={kategori === 'VARDIYA'}
+            onClick={() => {
+              setKategori('VARDIYA')
               temizle()
             }}
           />
@@ -250,11 +247,7 @@ export default function Onay() {
 
         {sonuc && <p className="text-body text-success">{sonuc}</p>}
 
-        {kategori === null ? (
-          <div className="py-14">
-            <Spinner label="Yükleniyor" />
-          </div>
-        ) : kategori === 'BILET' ? (
+        {kategori === 'BILET' ? (
           <>
             {bekleyen && (ozet.data?.adet ?? 0) > 0 && (
               <Card>
@@ -297,8 +290,20 @@ export default function Onay() {
                           </span>
                         </p>
                         <p className="mt-0.5 text-label text-faint">
-                          {formatTam(k.created_at)} · {k.personel} · {ODEME_ETIKET[k.yontem]}
+                          {formatTam(k.created_at)} · {ODEME_ETIKET[k.yontem]}
                         </p>
+                        {/* 063: who collected, and once decided who approved
+                            or rejected it. */}
+                        <KimSatirlari
+                          className="mt-1"
+                          satirlar={tahsilatKisileri({
+                            tutar_kurus: k.tutar_kurus,
+                            durum: k.durum,
+                            toplayan: k.personel,
+                            onaylayan: k.onaylayan,
+                            onay_at: k.onay_at,
+                          })}
+                        />
                         {k.aciklama && <p className="mt-0.5 text-label text-faint">{k.aciklama}</p>}
                         {k.onay_notu && (
                           <p className="mt-0.5 text-label text-danger">{k.onay_notu}</p>
@@ -718,14 +723,20 @@ function KararKarti({ k, ad }: { k: Karar; ad: (id: string | null) => string }) 
   return (
     <Card>
       <p className="truncate text-body font-semibold text-ink">
-        {vardiya ? ad(k.talep_eden) : k.plaka ? formatPlaka(k.plaka) : 'Plaka yok'}
-        <span className="ml-2 text-label font-medium text-faint">
-          {vardiya ? 'Vardiya kapatma' : 'Bilet iptali'}
-        </span>
+        {vardiya ? 'Vardiya kapatma' : k.plaka ? formatPlaka(k.plaka) : 'Plaka yok'}
+        {!vardiya && <span className="ml-2 text-label font-medium text-faint">Bilet iptali</span>}
       </p>
-      <p className="mt-0.5 text-label text-faint">
-        {formatTam(k.karar_at)} · Karar: {ad(k.karar_veren)}
-      </p>
+      {/* 063: "İsteyen" and "Onaylayan"/"Reddeden", the decision's time on
+          the latter. An id that no longer resolves reads "Bilinmiyor". */}
+      <KimSatirlari
+        className="mt-1"
+        satirlar={kararKisileri({
+          sonuc: k.sonuc,
+          karar_at: k.karar_at,
+          isteyen: k.talep_eden ? ad(k.talep_eden) : null,
+          karar_veren: k.karar_veren ? ad(k.karar_veren) : null,
+        })}
+      />
 
       {vardiya ? (
         (k.sayilan_kurus !== null || k.fark_kurus !== null) && (
@@ -741,10 +752,7 @@ function KararKarti({ k, ad }: { k: Karar; ad: (id: string | null) => string }) 
           </div>
         )
       ) : (
-        <p className="mt-2 text-label text-faint">
-          İsteyen: {ad(k.talep_eden)}
-          {k.sebep && <> — {k.sebep}</>}
-        </p>
+        k.sebep && <p className="mt-2 text-label text-faint">Sebep: {k.sebep}</p>
       )}
 
       {k.ret_sebep && <p className="mt-2 text-label text-danger">Ret sebebi: {k.ret_sebep}</p>}
@@ -774,9 +782,10 @@ function IptalKarti({
             {formatPlaka(b.plaka)}
             <span className="ml-2 text-label font-medium text-faint">Bilet iptali</span>
           </p>
-          <p className="mt-0.5 text-label text-faint">
-            {b.iptal_talebi_at ? formatTam(b.iptal_talebi_at) : ''} · {ad}
-          </p>
+          {b.iptal_talebi_at && (
+            <p className="mt-0.5 text-label text-faint tnum">{formatTam(b.iptal_talebi_at)}</p>
+          )}
+          <KimSatirlari className="mt-1" satirlar={[{ etiket: 'İptal isteyen', ad, zaman: null }]} />
         </div>
       </div>
 
@@ -832,11 +841,12 @@ function TalepKarti({
           <IconVardiya size={18} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-body font-semibold text-ink">
-            {ad}
-            <span className="ml-2 text-label font-medium text-faint">Vardiya kapatma</span>
-          </p>
-          <p className="mt-0.5 text-label text-faint">{formatTam(t.kapatma_talebi_at)}</p>
+          <p className="truncate text-body font-semibold text-ink">Vardiya kapatma</p>
+          <p className="mt-0.5 text-label text-faint tnum">{formatTam(t.kapatma_talebi_at)}</p>
+          <KimSatirlari
+            className="mt-1"
+            satirlar={[{ etiket: 'Kapatma isteyen', ad, zaman: null }]}
+          />
         </div>
       </div>
 

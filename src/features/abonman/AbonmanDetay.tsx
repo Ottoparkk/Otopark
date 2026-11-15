@@ -23,17 +23,33 @@ import {
 } from './api'
 import { useAbonmanSil } from '../cop/api'
 import { useParkYerleri } from '../gise/api'
+import { useAuth } from '../../app/providers/AuthProvider'
+import { isYonetici } from '../../lib/rbac'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import { normalizeTel } from '../../lib/telefon'
-import { formatTam, formatTarih, gunEkle, gunFarki, istanbulGun } from '../../lib/dates'
+import { formatTam, formatTarih, gunFarki, istanbulGun } from '../../lib/dates'
+import { ayinGunu, yenilemeDonemi } from '../../lib/abonman'
 import { rpcErrorText } from '../../lib/errors'
+import { adCoz, tahsilatKisileri } from '../../lib/kimYapti'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
+import { useAdlar } from '../yonetim/api'
 import { IconCop } from '../../components/ui/icons'
 import { ODEME_CHIP, ODEME_ETIKET, ONAY_ETIKET, type OdemeYontemi } from '../../lib/types'
 
+const GUNLER = Array.from({ length: 31 }, (_, i) => i + 1)
+
+/**
+ * One abonman. Every staff role (062): anyone collects ("Tahsilat al", which
+ * renews in the same call); Düzenle, İptal and Sil are the Yönetici's — RLS
+ * and abonman_sil refuse a Personel whatever the screen shows.
+ */
 export default function AbonmanDetay() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { profile } = useAuth()
+  const yonetici = isYonetici(profile)
+  const adlar = useAdlar()
   const { data: a, isPending, error, refetch } = useAbonman(id)
   const {
     data: tahsilatlar = [],
@@ -52,17 +68,19 @@ export default function AbonmanDetay() {
   const [tutar, setTutar] = useState('')
   /**
    * Renewal rides along with the collection, because that is how it actually
-   * happens: the customer pays for the next month and the period moves. Two
-   * separate screens would let one be done without the other.
+   * happens: the customer pays for the next month and the period moves. Since
+   * 062 both are ONE server call, so a payment can no longer land without its
+   * renewal (the old two-step flow needed a "paid, not renewed" state).
    */
   const [yenile, setYenile] = useState(true)
-  /**
-   * The collection succeeded but the renewal did not, so the modal is still
-   * open showing why. Without this flag a second tap on "Tahsil et" would
-   * charge the customer AGAIN — the dialog stays open precisely so the
-   * operator can fix the period, not so they can re-run the payment.
-   */
-  const [tahsilEdildi, setTahsilEdildi] = useState(false)
+  // The form only ASKS (owner, 2026-11-14): frozen here, read back, sent
+  // from the box.
+  const [tahsilOnay, setTahsilOnay] = useState<{
+    tutar: number
+    yontem: OdemeYontemi
+    yenile: boolean
+  } | null>(null)
+  const [tahsilHata, setTahsilHata] = useState<string | null>(null)
 
   /* ---- edit ---- */
   const [duzenle, setDuzenle] = useState(false)
@@ -70,8 +88,7 @@ export default function AbonmanDetay() {
   const [silHata, setSilHata] = useState<string | null>(null)
   const [ad, setAd] = useState('')
   const [tel, setTel] = useState('')
-  const [bas, setBas] = useState('')
-  const [bit, setBit] = useState('')
+  const [gun, setGun] = useState(1)
   const [ucret, setUcret] = useState('')
   const [yer, setYer] = useState('')
   const [notlar, setNotlar] = useState('')
@@ -82,7 +99,7 @@ export default function AbonmanDetay() {
   if (error) {
     return (
       <div>
-        <ScreenHeader title="Abonman" back="/yonetim/abonman" />
+        <ScreenHeader title="Abonman" back="/abonman" />
         <div className="px-5">
           <LoadError error={error} onRetry={() => void refetch()} />
         </div>
@@ -93,7 +110,7 @@ export default function AbonmanDetay() {
   if (isPending || !a) {
     return (
       <div>
-        <ScreenHeader title="Abonman" back="/yonetim/abonman" />
+        <ScreenHeader title="Abonman" back="/abonman" />
         <div className="py-14">
           <Spinner label="Yükleniyor" />
         </div>
@@ -105,25 +122,24 @@ export default function AbonmanDetay() {
   const yerKod = yerler.find((y) => y.id === a.park_yeri_id)?.kod ?? null
 
   /**
-   * A renewal always buys 30 more days, but WHERE it starts depends on whether
-   * the subscription is still running:
+   * A renewal runs to the next payment day (062), and WHERE it starts depends
+   * on whether the subscription is still running:
    *
-   * - still valid  → the end moves out by 30 days and the original start is
-   *   kept, so "customer since" survives the renewal.
-   * - already lapsed → a fresh period starting today. Extending the old end
-   *   would sell 30 days that are already in the past, and a subscription that
-   *   ran out in May would still be expired after being paid for.
+   * - still valid  → from the end date to the next payment day; the original
+   *   start is kept, so "customer since" survives the renewal.
+   * - already lapsed → a fresh period from today. Extending the old end would
+   *   sell days already in the past.
    */
-  const suresiVar = kalan >= 0
-  const yeniBas = suresiVar ? a.baslangic : istanbulGun()
-  const yeniBit = suresiVar ? gunEkle(30, a.bitis) : gunEkle(29, istanbulGun())
+  const odemeGunu = a.yenileme_gunu ?? Number(a.bitis.slice(8, 10))
+  const suresiVar = a.durum === 'AKTIF' && kalan >= 0
+  // 062's rule, previewed: the server computes the same dates.
+  const { bas: yeniBas, bit: yeniBit } = yenilemeDonemi(a, istanbulGun())
 
   function tahsilAc() {
     if (!a) return
     setYontem('NAKIT')
     setTutar(kurusToInput(a.ucret_kurus))
     setYenile(true)
-    setTahsilEdildi(false)
     setHata(null)
     setTahsilAcik(true)
   }
@@ -132,8 +148,7 @@ export default function AbonmanDetay() {
     if (!a) return
     setAd(a.musteri_ad)
     setTel(a.musteri_tel ?? '')
-    setBas(a.baslangic)
-    setBit(a.bitis)
+    setGun(odemeGunu)
     setUcret(kurusToInput(a.ucret_kurus))
     setYer(a.park_yeri_id ?? '')
     setNotlar(a.notlar ?? '')
@@ -146,8 +161,9 @@ export default function AbonmanDetay() {
       <ScreenHeader
         title={formatPlaka(a.plaka)}
         subtitle={a.musteri_ad || 'İsimsiz müşteri'}
-        back="/yonetim/abonman"
+        back="/abonman"
         right={
+          yonetici && (
           <div className="flex items-center gap-1">
             {/* Deleting and cancelling are different answers: İptal (below)
                 keeps the record and reverses the money with a counter-entry,
@@ -171,6 +187,7 @@ export default function AbonmanDetay() {
               Düzenle
             </button>
           </div>
+          )
         }
       />
 
@@ -196,7 +213,8 @@ export default function AbonmanDetay() {
           </div>
 
           <dl className="mt-4 space-y-1.5 border-t border-divider pt-3">
-            <Satir k="Dönem" v={`${formatTarih(a.baslangic)} — ${formatTarih(a.bitis)}`} />
+            <Satir k="Ödeme günü" v={ayinGunu(odemeGunu)} />
+            <Satir k="Geçerli" v={`${formatTarih(a.bitis)} tarihine kadar`} />
             {a.musteri_tel && (
               <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-body text-faint">Telefon</dt>
@@ -264,6 +282,21 @@ export default function AbonmanDetay() {
                         {t.onay_notu ? ' · ' + t.onay_notu : ''}
                       </p>
                     )}
+                    {/* 063: who collected and who decided — Yönetici only
+                        (owner, 2026-11-15). */}
+                    {yonetici && (
+                      <KimSatirlari
+                        className="mt-1"
+                        satirlar={tahsilatKisileri({
+                          tutar_kurus: t.tutar_kurus,
+                          iptal_of: t.iptal_of,
+                          durum: t.durum,
+                          toplayan: adCoz(t.created_by, adlar),
+                          onaylayan: adCoz(t.onaylayan, adlar),
+                          onay_at: t.onay_at,
+                        })}
+                      />
+                    )}
                   </div>
                   <span
                     className={`shrink-0 rounded-chip px-2.5 py-1 text-label font-medium ${ODEME_CHIP[t.yontem]}`}
@@ -276,7 +309,7 @@ export default function AbonmanDetay() {
           </ListeDurumu>
         </section>
 
-        {a.durum !== 'IPTAL' && (
+        {yonetici && a.durum !== 'IPTAL' && (
           <Button variant="danger" block onClick={() => setIptalAcik(true)}>
             Abonmanı iptal et
           </Button>
@@ -298,7 +331,7 @@ export default function AbonmanDetay() {
             .mutateAsync(a.id)
             .then(() => {
               setSilAcik(false)
-              navigate('/yonetim/abonman')
+              navigate('/abonman')
             })
             .catch((e) => setSilHata(rpcErrorText(e, 'Abonman silinemedi.')))
         }}
@@ -309,8 +342,8 @@ export default function AbonmanDetay() {
         open={tahsilAcik}
         onOpenChange={setTahsilAcik}
         title="Abonman tahsilatı"
-        submitLabel={tahsilEdildi ? 'Dönemi uzat' : 'Tahsil et'}
-        loading={tahsil.isPending || guncelle.isPending}
+        submitLabel="Tahsil et"
+        loading={tahsil.isPending}
         error={hata}
         onSubmit={() => {
           const kurus = parseTLToKurus(tutar)
@@ -323,59 +356,19 @@ export default function AbonmanDetay() {
             return
           }
           setHata(null)
-          // The money moves first, and the two steps report SEPARATELY. If
-          // the renewal fails (an overlapping period for this plate) the
-          // collection still stands, and the operator must be told exactly
-          // that — a single shared error message would leave them guessing
-          // whether the customer was charged.
-          void (async () => {
-            if (!tahsilEdildi) {
-              try {
-                await tahsil.mutateAsync({ abonman_id: a.id, yontem, tutar_kurus: kurus })
-                setTahsilEdildi(true)
-              } catch (e) {
-                setHata(rpcErrorText(e, 'Tahsilat kaydedilemedi.'))
-                return
-              }
-            }
-            if (yenile) {
-              try {
-                await guncelle.mutateAsync({
-                  id: a.id,
-                  baslangic: yeniBas,
-                  bitis: yeniBit,
-                  durum: 'AKTIF',
-                })
-              } catch (e) {
-                setHata(
-                  `Tahsilat kaydedildi, ancak dönem uzatılamadı: ${rpcErrorText(
-                    e,
-                    'aynı plakada çakışan bir abonman olabilir.',
-                  )}`,
-                )
-                return
-              }
-            }
-            setTahsilAcik(false)
-          })()
+          setTahsilHata(null)
+          setTahsilOnay({ tutar: kurus, yontem, yenile })
+          // One box at a time; "Vazgeç" brings the form back unchanged.
+          setTahsilAcik(false)
         }}
       >
-        {tahsilEdildi && (
-          <p className="rounded-field bg-success-soft px-3 py-2.5 text-body text-success">
-            Tahsilat kaydedildi. Geriye yalnızca dönemi uzatmak kaldı.
-          </p>
-        )}
-
-        {/* Locked once the money has moved — editing them would suggest the
-            charge could still be changed, and it cannot. */}
         <Input
           label="Tutar (₺)"
           value={tutar}
           onChange={(e) => setTutar(e.target.value)}
           inputMode="decimal"
-          disabled={tahsilEdildi}
         />
-        <YontemSecici value={yontem} onChange={setYontem} disabled={tahsilEdildi} />
+        <YontemSecici value={yontem} onChange={setYontem} />
 
         <button
           type="button"
@@ -387,13 +380,65 @@ export default function AbonmanDetay() {
           ].join(' ')}
         >
           <span className={`block text-body font-medium ${yenile ? 'text-accent' : 'text-soft'}`}>
-            {suresiVar ? 'Dönemi 30 gün uzat' : 'Yeni 30 günlük dönem başlat'}
+            {suresiVar ? 'Dönemi uzat' : 'Yeni dönem başlat'}
           </span>
           <span className="mt-0.5 block text-label text-faint tnum">
-            {formatTarih(yeniBas)} — {formatTarih(yeniBit)} tarihine kadar
+            {yeniBit
+              ? `${formatTarih(yeniBas)} — ${formatTarih(yeniBit)} tarihine kadar`
+              : ayinGunu(odemeGunu)}
           </span>
         </button>
       </FormModal>
+
+      {/* The read-back (owner, 2026-11-14). Stays open on a refusal (no open
+          shift, an overlapping abonman) so the reason is read here. */}
+      <ConfirmDialog
+        open={tahsilOnay !== null}
+        onOpenChange={(o) => {
+          if (o || tahsil.isPending) return
+          setTahsilOnay(null)
+          setTahsilAcik(true)
+        }}
+        title="Tahsilat alınsın mı?"
+        description={
+          tahsilOnay && (
+            <>
+              <span className="block text-title font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(a.plaka)}
+              </span>
+              <span className="mt-1 block font-semibold text-warn tnum">
+                {formatTL(tahsilOnay.tutar)} · {ODEME_ETIKET[tahsilOnay.yontem]}
+              </span>
+              <span className="mt-1 block tnum">
+                {tahsilOnay.yenile && yeniBit
+                  ? `${formatTarih(yeniBit)} tarihine kadar uzar.`
+                  : 'Dönem değişmez.'}{' '}
+                Ödeme Yönetici onayına gider.
+              </span>
+            </>
+          )
+        }
+        confirmLabel={tahsilOnay ? `${formatTL(tahsilOnay.tutar)} Tahsil et` : 'Tahsil et'}
+        loading={tahsil.isPending}
+        error={tahsilHata}
+        onConfirm={() => {
+          if (!tahsilOnay || tahsil.isPending) return
+          setTahsilHata(null)
+          tahsil
+            .mutateAsync({
+              abonman_id: a.id,
+              yontem: tahsilOnay.yontem,
+              tutar_kurus: tahsilOnay.tutar,
+              yenile: tahsilOnay.yenile,
+            })
+            .then(() => setTahsilOnay(null))
+            .catch((e) =>
+              setTahsilHata(
+                rpcErrorText(e, 'Tahsilat kaydedilemedi. Tahsilat otomatik tekrarlanmaz.'),
+              ),
+            )
+        }}
+      />
 
       {/* ---------------------------------------------------------- edit --- */}
       <FormModal
@@ -408,10 +453,6 @@ export default function AbonmanDetay() {
             setHata('Geçerli bir ücret girin.')
             return
           }
-          if (bit < bas) {
-            setHata('Bitiş tarihi başlangıçtan önce olamaz.')
-            return
-          }
           void guncelle
             .mutateAsync({
               id: a.id,
@@ -419,8 +460,9 @@ export default function AbonmanDetay() {
               // normalizeTel, not a bare digit strip: an operator types the
               // trunk zero and the server refuses eleven digits outright.
               musteri_tel: normalizeTel(tel) || null,
-              baslangic: bas,
-              bitis: bit,
+              // The payment day moves the NEXT renewal; the paid period
+              // (bitis) stays as it is.
+              yenileme_gunu: gun,
               ucret_kurus: kurus,
               park_yeri_id: yer || null,
               notlar: notlar.trim() || null,
@@ -445,10 +487,17 @@ export default function AbonmanDetay() {
           placeholder="5XXXXXXXXX"
           maxLength={10}
         />
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Başlangıç" type="date" value={bas} onChange={(e) => setBas(e.target.value)} />
-          <Input label="Bitiş" type="date" value={bit} onChange={(e) => setBit(e.target.value)} />
-        </div>
+        <Select
+          label="Ödeme günü"
+          value={String(gun)}
+          onChange={(e) => setGun(Number(e.target.value))}
+        >
+          {GUNLER.map((n) => (
+            <option key={n} value={n}>
+              {ayinGunu(n)}
+            </option>
+          ))}
+        </Select>
         <Input
           label="Aylık ücret (₺)"
           value={ucret}

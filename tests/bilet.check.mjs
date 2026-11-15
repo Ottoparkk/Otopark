@@ -8,7 +8,7 @@
 // hesabından (ucret_hesapla) gelir.
 //
 // Gerçek dosyayı içe aktarır; lib/bilet.ts yalnızca `import type` kullanır.
-import { gosterilenUcret, sureBitisi, uzunKalan, zatenKapandi } from '../src/lib/bilet.ts'
+import { cikisGeriAlma, gosterilenUcret, sureBitisi, uzunKalan, zatenKapandi } from '../src/lib/bilet.ts'
 
 let gecen = 0
 let kalan = 0
@@ -78,6 +78,20 @@ esit('uzun: eşik yok', uzunKalan(ab(200), undefined, SIMDI), false)
 esit('uzun: eşik sıfır', uzunKalan(ab(200), 0, SIMDI), false)
 esit('uzun: eşik sayı değil', uzunKalan(ab(200), Number.NaN, SIMDI), false)
 esit('uzun: gelecekteki giriş', uzunKalan(ab(-5), 48, SIMDI), false)
+
+// ---- Yanlış verilen çıkışı geri almak (060) ------------------------------
+// Sahip (2026-11-15): elle verilen çıkış da (ödenmiş olsa da) geri alınır,
+// sebep yazılarak. Kameranın PARASIZ kapattığı bilet 054'ün sebepsiz
+// "Araç çıkmadı" kutusunda kalır; geri kalan her kapanmış bilet sebepli
+// kutuya gider. Açık ve iptal bilette düğme yok.
+const kapanmis = (cikis_kaynak, tahsil_kurus) => ({ durum: 'KAPALI', cikis_kaynak, tahsil_kurus })
+esit('geri al: kamera, parasız → eski kutu', cikisGeriAlma(kapanmis('KAMERA', 0)), 'KAMERA')
+esit('geri al: kamera, ödenmiş → sebepli', cikisGeriAlma(kapanmis('KAMERA', 5000)), 'SEBEPLI')
+esit('geri al: elle, parasız → sebepli', cikisGeriAlma(kapanmis('MOBIL', 0)), 'SEBEPLI')
+esit('geri al: elle, ödenmiş → sebepli', cikisGeriAlma(kapanmis('MOBIL', 5000)), 'SEBEPLI')
+esit('geri al: manuel kaynak → sebepli', cikisGeriAlma(kapanmis('MANUEL', 2500)), 'SEBEPLI')
+esit('geri al: açık bilet → yok', cikisGeriAlma({ durum: 'ACIK', cikis_kaynak: null, tahsil_kurus: 0 }), null)
+esit('geri al: iptal → yok', cikisGeriAlma({ durum: 'IPTAL', cikis_kaynak: 'MOBIL', tahsil_kurus: 5000 }), null)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 if (kalan > 0) process.exit(1)

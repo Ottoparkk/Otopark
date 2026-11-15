@@ -95,6 +95,22 @@ export function odemeAlindi(b: Bilet): boolean {
 }
 
 /**
+ * Which "Araç çıkmadı" box a ticket gets, or null for none (owner, 2026-11-15).
+ *
+ * 'KAMERA': the camera closed it and no money was taken — 054's box, no
+ * reason asked (`bilet_kamera_geri_ac`). 'SEBEPLI': any other closed ticket —
+ * a person gave the exit, or the debt was already collected — so a reason is
+ * required and any payment is reversed (`bilet_cikis_geri_al`, 060). The
+ * server checks everything again (own shift, no other open ticket).
+ */
+export function cikisGeriAlma(
+  b: Pick<Bilet, 'durum' | 'cikis_kaynak' | 'tahsil_kurus'>,
+): 'KAMERA' | 'SEBEPLI' | null {
+  if (b.durum !== 'KAPALI') return null
+  return b.cikis_kaynak === 'KAMERA' && b.tahsil_kurus <= 0 ? 'KAMERA' : 'SEBEPLI'
+}
+
+/**
  * Whether a failed exit failed because the ticket is no longer open — the
  * server's `bilet_kapat` message (030). Since 054 the camera closes a ticket
  * UNPAID the moment it sees the car leave, which can land while the cashier

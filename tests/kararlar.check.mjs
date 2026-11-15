@@ -10,7 +10,6 @@ import {
   KARAR_AKSIYONLARI,
   kararAksiyonu,
   kararSatiri,
-  varsayilanKategori,
   onayAltYazisi,
 } from '../src/features/finans/kararlar.ts'
 
@@ -129,14 +128,7 @@ esit('silinmiş aktör', kararSatiri({ ...satir('bilet_iptal_onay', {}), actor: 
 esit('satır kimliği yok', kararSatiri({ ...satir('bilet_iptal_onay', {}), row_id: null }).satir_id, null)
 esit('kimlik metin', kararSatiri({ ...satir('bilet_iptal_onay', {}), id: '7' }).id, '7')
 
-// ---- 4. Açılışta seçili kart -----------------------------------------------
-// Sıra ekrandakiyle aynı: Vardiya · Bilet ve abonman · Bilet iptali.
-esit('varsayılan: hiçbiri → bilet', varsayilanKategori({ vardiya: 0, bilet: 0, iptal: 0 }), 'BILET')
-esit('varsayılan: yalnız iptal', varsayilanKategori({ vardiya: 0, bilet: 0, iptal: 2 }), 'BILET_IPTAL')
-esit('varsayılan: bilet + iptal → bilet', varsayilanKategori({ vardiya: 0, bilet: 5, iptal: 2 }), 'BILET')
-esit('varsayılan: vardiya önce', varsayilanKategori({ vardiya: 1, bilet: 5, iptal: 2 }), 'VARDIYA')
-
-// ---- 5. Finans "Onay" kartı alt yazısı --------------------------------------
+// ---- 4. Finans "Onay" kartı alt yazısı --------------------------------------
 esit('alt: boş', onayAltYazisi({ tahsilat: 0, vardiya: 0, iptal: 0 }), 'bekleyen yok')
 esit('alt: tahsilat', onayAltYazisi({ tahsilat: 3, vardiya: 0, iptal: 0 }), '3 tahsilat bekliyor')
 esit('alt: vardiya', onayAltYazisi({ tahsilat: 0, vardiya: 1, iptal: 0 }), 'vardiya kapatma bekliyor')

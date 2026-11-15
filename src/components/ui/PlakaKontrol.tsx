@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Card } from './primitives'
+import { FotoGoruntuleyici } from './FotoGoruntuleyici'
 
 /**
  * The compact "check this plate" card shared by Çözülmemiş kayıtlar and the
@@ -10,9 +11,10 @@ import { Card } from './primitives'
  * both screens can own their own mutations and errors.
  *
  * The photo is the evidence the operator compares the plate against, so it
- * leads. Tapping it toggles a taller, uncropped view: there is no lightbox in
- * the app, and a crop that cuts the plate's last character is exactly the one
- * case where the operator needs to see the whole frame.
+ * leads. Tapping it opens the whole frame full screen, zoomable
+ * (FotoGoruntuleyici): the thumbnail is cropped, and a crop that cuts the
+ * plate's last character is exactly the one case where the operator needs to
+ * see the whole frame — up close.
  */
 export function PlakaKontrol({
   fotoUrl,
@@ -44,20 +46,14 @@ export function PlakaKontrol({
       {fotoUrl && (
         <button
           type="button"
-          onClick={() => setBuyuk((b) => !b)}
-          aria-label={buyuk ? 'Fotoğrafı küçült' : 'Fotoğrafı büyüt'}
-          aria-pressed={buyuk}
+          onClick={() => setBuyuk(true)}
+          aria-label="Fotoğrafı büyüt"
           className="block w-full overflow-hidden rounded-field bg-field"
         >
-          <img
-            src={fotoUrl}
-            alt="Plaka fotoğrafı"
-            className={
-              buyuk ? 'max-h-[70vh] w-full object-contain' : 'h-36 w-full object-cover'
-            }
-          />
+          <img src={fotoUrl} alt="Plaka fotoğrafı" className="h-36 w-full object-cover" />
         </button>
       )}
+      <FotoGoruntuleyici url={buyuk ? (fotoUrl ?? null) : null} onKapat={() => setBuyuk(false)} />
 
       <p className={`flex items-center gap-2 text-label font-medium ${tonCls}`}>
         <span aria-hidden className={`size-2 shrink-0 rounded-full ${noktaCls}`} />

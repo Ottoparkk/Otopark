@@ -61,6 +61,14 @@ export type BildirimTur =
   // 057/058: the nightly camera summary (yesterday's entries / exits / staff
   // cards). Yönetici-only.
   | 'KAMERA_GUNLUK'
+  // 061/062: a new abonman was added; the body names who added it. Yönetici-only.
+  | 'YENI_ABONMAN'
+  // 064/065: a car was let out free (reason + note); the body names who did
+  // it. Yönetici-only.
+  | 'UCRETSIZ_CIKIS'
+
+/** 065: why a car left free. Labels: src/lib/ucretsiz.ts. */
+export type UcretsizSebep = 'FIYAT_SORDU' | 'POLIS' | 'ACIL' | 'PERSONEL' | 'DIGER'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
@@ -182,10 +190,15 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   // 054: the camera closed a ticket unpaid. Sent to EVERYONE (Personel and
   // Yönetici), so it is not in `bildirim_yonetici_turu`.
   ODEME_BEKLIYOR: 'Ödeme bekliyor',
-  // 054: "Araç çıkmadı" reopened a camera-closed ticket. Yönetici-only.
-  KAMERA_GERI_ACILDI: 'Kamera çıkışı geri alındı',
+  // "Araç çıkmadı" reopened a closed ticket — camera-closed (054) or any
+  // other (060). The enum keeps its 054 name. Yönetici-only.
+  KAMERA_GERI_ACILDI: 'Çıkış geri alındı',
   // 058: nightly summary of yesterday's camera work. Yönetici-only.
   KAMERA_GUNLUK: 'Kamera günlük özeti',
+  // 062: a new abonman, with who added it. Yönetici-only.
+  YENI_ABONMAN: 'Yeni abonman',
+  // 065: a free exit, with who gave it, the reason and the note. Yönetici-only.
+  UCRETSIZ_CIKIS: 'Ücretsiz çıkış',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -324,6 +337,9 @@ export interface Abonman {
   bitis: string
   ucret_kurus: number
   park_yeri_id: string | null
+  // 062: payment day of the month (1–31; 29–31 fall on a shorter month's
+  // last day). Null only on a row the pre-062 app inserted after 062 ran.
+  yenileme_gunu: number | null
   durum: AbonmanDurum
   notlar: string | null
   olusturan: string | null
@@ -412,6 +428,9 @@ export interface Bilet {
   tahsilat?: { durum: OnayDurum; iptal_of: string | null }[]
   ucret_degistirildi: boolean
   ucret_sebep: string | null
+  /** 065: a free exit's reason and its required note. Absent before 065. */
+  ucretsiz_sebep?: UcretsizSebep | null
+  ucretsiz_not?: string | null
   cikis_bekliyor_at: string | null
   /** Optional, driver-supplied, all three nullable (migration 008). */
   arac_bilgi: string | null
@@ -458,6 +477,9 @@ export interface Tahsilat {
   /** Yönetici onayı. Finans yalnızca ONAYLANDI satırları sayar. */
   durum: OnayDurum
   onay_notu: string | null
+  /** Who approved OR rejected it (`durum` says which), and when (017). */
+  onaylayan: string | null
+  onay_at: string | null
 }
 
 export interface KasaHareketi {

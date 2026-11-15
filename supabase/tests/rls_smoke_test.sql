@@ -286,8 +286,10 @@ insert into public.hesap_araclari (hesap_id, plaka) values (v_hesap, '34PUAN01')
 
 perform pg_temp.login(u_personel);
 
-select count(*) into v_n from public.abonmanlar;
-if v_n <> 0 then raise exception 'FAIL 06a: Personel abonman (fiyat) görüyor'; end if;
+-- 062 (sahip, 2026-11-15): Personel abonmanları takip eder ve tahsil eder —
+-- satırı (fiyat dahil) GÖRÜR; yazma yetkisi yok (PASS 80h), yalnızca RPC.
+select count(*) into v_n from public.abonmanlar where id = v_abonman;
+if v_n <> 1 then raise exception 'FAIL 06a: Personel abonmanı göremiyor (062''den beri görmeli)'; end if;
 select count(*) into v_n from public.kasa_hareketleri;
 if v_n <> 0 then raise exception 'FAIL 06b: Personel kasa görüyor'; end if;
 select count(*) into v_n from public.audit_log;
@@ -303,7 +305,7 @@ if v_n <> 0 then raise exception 'FAIL 06g: Personel plaka okuma logunu görüyo
 -- Tariffs ARE readable: the price is on the sign at the gate.
 select count(*) into v_n from public.tarifeler;
 if v_n = 0 then raise exception 'FAIL 06h: Personel tarifeyi göremiyor (görmeli)'; end if;
-raise notice 'PASS 06: Personel abonman fiyatı, kasa, audit, puan ve okuma logunu göremiyor; tarifeyi görüyor';
+raise notice 'PASS 06: Personel kasa, audit, puan ve okuma logunu göremiyor; tarifeyi ve abonmanları görüyor';
 
 -- The scoped RPCs still work without any of that row access.
 select a.gecerli into v_bool from public.abonman_gecerli_mi('34ABON01') a;
@@ -578,7 +580,7 @@ if v_ucret <> v_ucret2 then
   raise exception 'FAIL 18d: gösterilen ücret (%) tahsil edilenden (%) farklı', v_ucret2, v_ucret;
 end if;
 select t.tur, t.sabit_kurus, t.ucretsiz_dakika, t.ilk_saat_kurus,
-       t.sonraki_saat_kurus, t.gunluk_tavan_kurus
+       t.sonraki_saat_kurus, t.gunluk_tavan_kurus, t.kademeler
   into v_rec
   from public.tarifeler t
   join public.biletler b on b.tarife_id = t.id
@@ -588,6 +590,15 @@ if v_rec.ucretsiz_dakika >= 180 then
   v_n2 := 0;                                   -- ücretsiz süre 3 saati yutuyor
 elsif v_rec.tur = 'SABIT' then
   v_n2 := v_rec.sabit_kurus;                   -- giriş başına tek fiyat
+elsif v_rec.tur::text = 'KADEMELI' then
+  -- 051: 180 dakika bir günden kısa; sınır alttaki kademeye ait, yani üst
+  -- sınırı 180 ya da üstü olan İLK kademe. (Bu dal yokken canlı tarife
+  -- kademeliye geçince test 0 bekliyordu — 2026-11-15.)
+  select (k.e ->> 'kurus')::integer into v_n2
+    from jsonb_array_elements(v_rec.kademeler) with ordinality as k(e, sira)
+   where (k.e ->> 'dakika')::integer >= 180
+   order by k.sira
+   limit 1;
 else
   v_n2 := v_rec.ilk_saat_kurus + 2 * v_rec.sonraki_saat_kurus;
   if v_rec.gunluk_tavan_kurus > 0 then
@@ -595,6 +606,10 @@ else
   end if;
 end if;
 
+-- Boş bir beklenti `<>` ile hiç başarısız olmaz; sessizce geçmesin.
+if v_n2 is null then
+  raise exception 'FAIL 18e: tarifeden beklenen ücret hesaplanamadı (tür %)', v_rec.tur;
+end if;
 if v_ucret <> v_n2 then
   raise exception 'FAIL 18e: 3 saatlik park % kuruş çıktı, tarifeye göre % olmalıydı',
     v_ucret, v_n2;
@@ -604,7 +619,7 @@ select count(*) into v_n from public.tahsilatlar
 if v_n <> 1 then
   raise exception 'FAIL 18f: % kuruşluk tahsilat satırı yazılmadı', v_n2;
 end if;
-raise notice 'PASS 18: gösterilen ücret = tahsil edilen ücret (3 saat = 12000 kuruş), tahsilat yazılıyor';
+raise notice 'PASS 18: gösterilen ücret = tahsil edilen ücret (3 saat = % kuruş, tarifeye göre), tahsilat yazılıyor', v_n2;
 
 -- A closed ticket is immutable.
 begin
@@ -7626,6 +7641,1081 @@ if position('kamera_gunluk_rapor(' in v_txt) = 0 then
 end if;
 
 raise notice 'PASS 77: kameranın günlük özeti — gece işi bir önceki günü sayar, kamera açıkken Yönetici''ye günde tek bildirim';
+
+-- =====================================================================
+-- 78  Araç Girişi'nde giriş saati (059)
+--     Elle girişte tarih ve saat seçilebilir (sahip, 2026-11-15) — bilet
+--     ekranındaki "Değiştir" ile AYNI kurallar, çünkü bu da para:
+--       · bilet_ac_saatli = bilet_ac + bilet_giris_duzelt, TEK çağrıda;
+--         biri reddederse hiçbir şey yazılmaz (bilet "şimdi"de açık kalmaz);
+--       · ileri saat, bir yıldan eski saat, boş sebep reddedilir;
+--       · iz ve Yönetici bildirimi bilet_giris_duzelt'ten gelir;
+--       · aynı islem_id ikinci kez: aynı bilet, ikinci iz yok;
+--       · rolü olmayan kullanıcı açamaz; anon ve service_role çağıramaz.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.bilet_ac_saatli(text, uuid, text, uuid, text, text, text, text, timestamptz, text)') is null then
+  raise exception 'FAIL 78: bilet_ac_saatli yok — 059 çalıştırılmadı';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE') then
+  raise exception 'FAIL 78: fixture — u_personel aktif bir Personel değil';
+end if;
+
+-- (a) Yetki: yalnızca authenticated çağırabilir.
+if has_function_privilege('anon',
+     'public.bilet_ac_saatli(text, uuid, text, uuid, text, text, text, text, timestamptz, text)', 'execute')
+   or has_function_privilege('service_role',
+     'public.bilet_ac_saatli(text, uuid, text, uuid, text, text, text, text, timestamptz, text)', 'execute')
+   or not has_function_privilege('authenticated',
+     'public.bilet_ac_saatli(text, uuid, text, uuid, text, text, text, text, timestamptz, text)', 'execute') then
+  raise exception 'FAIL 78a: bilet_ac_saatli yetkileri yanlış';
+end if;
+
+-- (b) Rolü olmayan kullanıcı açamaz, bilet de kalmaz.
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_ac_saatli('ZZ78SAAT1', gen_random_uuid(), null, null, null, null, null, null,
+                                 now() - interval '3 hours', 'Test 78b');
+  raise exception 'FAIL 78b: rolsüz kullanıcı saatli giriş açtı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 78b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Geçersiz saat/sebep: her biri kendi sebebiyle reddedilir ve bilet
+--     AÇILMAZ — bilet_ac'ın açtığı bilet de geri alınır (tek çağrı).
+perform pg_temp.login(u_personel);
+foreach v_txt in array array['ileri', 'eski', 'sebep_bos', 'saat_null'] loop
+  begin
+    case v_txt
+      when 'ileri' then
+        perform public.bilet_ac_saatli('ZZ78SAAT1', gen_random_uuid(), null, null, null, null, null, null,
+                                       now() + interval '5 minutes', 'Test 78c');
+      when 'eski' then
+        perform public.bilet_ac_saatli('ZZ78SAAT1', gen_random_uuid(), null, null, null, null, null, null,
+                                       now() - interval '1 year 1 day', 'Test 78c');
+      when 'sebep_bos' then
+        perform public.bilet_ac_saatli('ZZ78SAAT1', gen_random_uuid(), null, null, null, null, null, null,
+                                       now() - interval '3 hours', '   ');
+      else
+        perform public.bilet_ac_saatli('ZZ78SAAT1', gen_random_uuid(), null, null, null, null, null, null,
+                                       null, 'Test 78c');
+    end case;
+    raise exception 'FAIL 78c: % girdisi kabul edildi', v_txt;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    v_txt2 := case v_txt
+                when 'ileri'     then '%ileri bir zaman%'
+                when 'eski'      then '%bir yıldan eski%'
+                when 'saat_null' then '%Giriş saati boş%'
+                else '%Sebep zorunlu%' end;
+    if sqlerrm not like v_txt2 then
+      raise exception 'FAIL 78c: % için beklenmeyen hata: %', v_txt, sqlerrm;
+    end if;
+  end;
+end loop;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where plaka = 'ZZ78SAAT1') then
+  raise exception 'FAIL 78b-c: reddedilen saatli giriş bilet bıraktı';
+end if;
+
+-- (d) Personel 3 saat önceyle açar: bilet o saatte açık, bir iz, Yöneticiye
+--     bir bildirim.
+v_islem := gen_random_uuid();
+v_ts2 := date_trunc('minute', now()) - interval '3 hours';
+perform pg_temp.login(u_personel);
+v_bilet := public.bilet_ac_saatli('ZZ78SAAT1', v_islem, null, null, null, null, null, null,
+                                  v_ts2, '  Araç önceden girmiş  ');
+perform pg_temp.logout();
+if v_bilet is null
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and plaka = 'ZZ78SAAT1' and durum = 'ACIK'
+                     and giris_at = v_ts2 and giris_by = u_personel) then
+  raise exception 'FAIL 78d: bilet seçilen saatte açılmadı';
+end if;
+if (select count(*) from public.audit_log
+     where action = 'bilet_giris_duzeltildi' and row_id = v_bilet and actor = u_personel
+       and (detay ->> 'yeni')::timestamptz = v_ts2
+       and detay ->> 'sebep' = 'Araç önceden girmiş') <> 1 then
+  raise exception 'FAIL 78d: saatli giriş audit_log''a yazılmadı';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur = 'UCRET_DEGISIKLIGI'
+       and link = '/gise/bilet/' || v_bilet) <> 1 then
+  raise exception 'FAIL 78d: Yöneticiye tek bir giriş saati bildirimi gitmedi';
+end if;
+
+-- (e) Aynı islem_id yeniden (bağlantı kopup yeniden denendi): aynı bilet,
+--     ikinci iz ve bildirim yok.
+perform pg_temp.login(u_personel);
+v_bilet2 := public.bilet_ac_saatli('ZZ78SAAT1', v_islem, null, null, null, null, null, null,
+                                   v_ts2, 'Araç önceden girmiş');
+perform pg_temp.logout();
+if v_bilet2 is distinct from v_bilet
+   or (select count(*) from public.biletler where plaka = 'ZZ78SAAT1') <> 1
+   or (select count(*) from public.audit_log
+        where action = 'bilet_giris_duzeltildi' and row_id = v_bilet) <> 1
+   or (select count(*) from public.notifications
+        where profile_id = u_yonetici and link = '/gise/bilet/' || v_bilet) <> 1 then
+  raise exception 'FAIL 78e: yeniden deneme ikinci bilet, iz ya da bildirim yazdı';
+end if;
+
+raise notice 'PASS 78: Araç Girişi''nde seçilen saat — tek çağrıda açılır ve düzeltilir, reddedilen hiçbir şey bırakmaz, iz ve Yönetici bildirimi yazılır, yeniden deneme aynı bileti döner';
+
+-- =====================================================================
+-- 79  Yanlışlıkla çıkış verilen araç geri içeri (060)
+--     Sahip (2026-11-15): bir insanın yanlış araca verdiği çıkış geri
+--     alınabilsin — parası alınmış olsa da. 054'ün "Araç çıkmadı"sı
+--     (kamera, parasız, sebepsiz) AYNEN kalır; bu, onun sebepli kardeşi:
+--       · Personel yalnızca kendi açık vardiyasında kapanan bileti,
+--         Yönetici her bileti; sebep zorunlu; iz + Yönetici bildirimi;
+--       · para DÜZENLENMEZ, karşı kayıtla geri alınır (bilet_iptal gibi):
+--         onay bekleyen ödeme Onay'dan düşer, onaylanmış olana ters kayıt;
+--       · bilet ilk giriş saatiyle yeniden ACIK, çıkış izleri temiz;
+--       · içeride aynı plakalı başka bilet varken reddedilir;
+--       · kameranın kapattığı bilet de (ödenmiş olsa da) açılır ve izi
+--         054'ün adıyla yazılır — kamera aynı aracı hemen yeniden kapatmaz.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.bilet_cikis_geri_al(uuid, text)') is null then
+  raise exception 'FAIL 79: bilet_cikis_geri_al yok — 060 çalıştırılmadı';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE') then
+  raise exception 'FAIL 79: fixture — u_personel / u_yonetici rolü beklenen gibi değil';
+end if;
+
+-- (a) Yetki: yalnızca authenticated çağırabilir; rolsüz kullanıcı reddedilir.
+if has_function_privilege('anon', 'public.bilet_cikis_geri_al(uuid, text)', 'execute')
+   or has_function_privilege('service_role', 'public.bilet_cikis_geri_al(uuid, text)', 'execute')
+   or not has_function_privilege('authenticated', 'public.bilet_cikis_geri_al(uuid, text)', 'execute') then
+  raise exception 'FAIL 79a: bilet_cikis_geri_al yetkileri yanlış';
+end if;
+
+-- Personel'in kendi açık kasa vardiyası (kasa başına tek: önce hepsi kapanır).
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
+perform public.vardiya_ac(0);
+perform pg_temp.logout();
+select v.id into v_vardiya from public.vardiyalar v where v.kapanis_at is null;
+
+-- (b) Elle, ödemesiz, ücreti değiştirilmiş çıkış → geri alınır: bilet ilk
+--     giriş saatiyle açık, çıkış izleri ve ücret değişikliği temiz, para
+--     satırı yok, bir iz (sebepli) ve Yönetici bildirimi.
+v_ts2 := now() - interval '2 hours';
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI1', v_ts2, v_tarife_yeni, 'ACIK')
+returning id into v_bilet;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_bilet, null, 1234, 'Test 79b ücret', null, 'MOBIL', false);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI' and ucret_degistirildi
+                  and kapatan_vardiya_id = v_vardiya) then
+  raise exception 'FAIL 79b: fixture — bilet elle, ücreti değişmiş, vardiyada kapanmadı';
+end if;
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_cikis_geri_al(v_bilet, 'Test 79a');
+  raise exception 'FAIL 79a: rolsüz kullanıcı çıkışı geri aldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 79a: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_cikis_geri_al(v_bilet, '   ');
+  raise exception 'FAIL 79b: boş sebeple geri alındı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Sebep zorunlu%' then
+    raise exception 'FAIL 79b: beklenmeyen hata (sebep): %', sqlerrm;
+  end if;
+end;
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI') then
+  raise exception 'FAIL 79b: reddedilen geri alma bileti açtı';
+end if;
+select public.bilet_cikis_geri_al(v_bilet, '  Yanlış araca çıkış verildi  ') into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from true
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and durum = 'ACIK' and giris_at = v_ts2
+                     and cikis_at is null and cikis_by is null and cikis_kaynak is null
+                     and kapatan_vardiya_id is null and cikis_foto is null
+                     and cikis_bekliyor_at is null and ucret_kurus = 0
+                     and tahsil_kurus = 0 and odeme_yontemi is null
+                     and not ucret_degistirildi and ucret_sebep is null) then
+  raise exception 'FAIL 79b: elle kapatılan bilet temiz biçimde geri açılmadı';
+end if;
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 79b: parasız geri alma tahsilat yazdı';
+end if;
+if (select count(*) from public.audit_log
+     where action = 'bilet_cikis_geri_alindi' and row_id = v_bilet and actor = u_personel
+       and detay ->> 'sebep' = 'Yanlış araca çıkış verildi') <> 1
+   or (select count(*) from public.notifications
+        where tur::text = 'KAMERA_GERI_ACILDI' and profile_id = u_yonetici
+          and link = '/gise/bilet/' || v_bilet) <> 1 then
+  raise exception 'FAIL 79b: geri alma denetime ya da Yönetici bildirimine yazılmadı';
+end if;
+
+-- (e) Açık bilet "geri alınamaz".
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_cikis_geri_al(v_bilet, 'Test 79e');
+  raise exception 'FAIL 79e: açık bilet geri alındı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%çıkışı yapılmış%' then
+    raise exception 'FAIL 79e: beklenmeyen hata (açık): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Ödenmiş, ödeme ONAY BEKLİYOR: asıl ve ters kayıt ikisi de Onay'dan
+--     düşer (REDDEDILDI, 017); ters kayıt geri alanın vardiyasında; bilet
+--     borçsuz açık.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI2', now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+returning id into v_bilet2;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_bilet2, 'NAKIT', null, null, null, 'MOBIL', true);
+perform pg_temp.logout();
+select id, tutar_kurus into v_id2, v_ucret from public.tahsilatlar
+ where bilet_id = v_bilet2 and iptal_of is null and durum::text = 'BEKLIYOR';
+if v_id2 is null or v_ucret <= 0 then
+  raise exception 'FAIL 79c: fixture — ödenmiş çıkış onay bekleyen bir tahsilat yazmadı';
+end if;
+perform pg_temp.login(u_personel);
+perform public.bilet_cikis_geri_al(v_bilet2, 'Yanlış araç seçildi');
+perform pg_temp.logout();
+if (select durum::text from public.tahsilatlar where id = v_id2) <> 'REDDEDILDI'
+   or not exists (select 1 from public.tahsilatlar
+                   where iptal_of = v_id2 and tutar_kurus = -v_ucret and yontem = 'NAKIT'
+                     and vardiya_id = v_vardiya and durum::text = 'REDDEDILDI')
+   or (select count(*) from public.tahsilatlar where iptal_of = v_id2) <> 1 then
+  raise exception 'FAIL 79c: bekleyen ödeme karşı kayıtla Onay''dan düşmedi';
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'ACIK' and tahsil_kurus = 0
+                  and odeme_yontemi is null and ucret_kurus = 0) then
+  raise exception 'FAIL 79c: ödenmiş bilet borçsuz açık hâle gelmedi';
+end if;
+if (select (detay ->> 'iade')::integer from public.audit_log
+     where action = 'bilet_cikis_geri_alindi' and row_id = v_bilet2) is distinct from v_ucret then
+  raise exception 'FAIL 79c: geri alınan tutar denetime yazılmadı';
+end if;
+
+-- (d) Ödenmiş ve ONAYLANMIŞ: ters kayıt defterde (ONAYLANDI), asıl yerinde;
+--     ikinci kez kapatılıp geri alınınca eski ters kayıt tekrarlanmaz.
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_bilet2, 'KREDI_KARTI', null, null, null, 'MOBIL', true);
+perform pg_temp.logout();
+select id, tutar_kurus into v_id, v_ucret from public.tahsilatlar
+ where bilet_id = v_bilet2 and iptal_of is null and durum::text = 'BEKLIYOR';
+perform pg_temp.login(u_yonetici);
+perform public.tahsilat_onayla(array[v_id]);
+perform pg_temp.logout();
+if v_id is null or (select durum::text from public.tahsilatlar where id = v_id) <> 'ONAYLANDI' then
+  raise exception 'FAIL 79d: fixture — ödeme onaylanmadı';
+end if;
+perform pg_temp.login(u_personel);
+perform public.bilet_cikis_geri_al(v_bilet2, 'Yine yanlış araç');
+perform pg_temp.logout();
+if (select durum::text from public.tahsilatlar where id = v_id) <> 'ONAYLANDI'
+   or not exists (select 1 from public.tahsilatlar
+                   where iptal_of = v_id and tutar_kurus = -v_ucret and yontem = 'KREDI_KARTI'
+                     and durum::text = 'ONAYLANDI')
+   or (select count(*) from public.tahsilatlar where iptal_of = v_id2) <> 1 then
+  raise exception 'FAIL 79d: onaylanmış ödemeye tek ve doğru ters kayıt yazılmadı';
+end if;
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and durum = 'ACIK' and tahsil_kurus = 0) then
+  raise exception 'FAIL 79d: onaylanmış ödemeli bilet geri açılmadı';
+end if;
+
+-- (e) İçeride aynı plakalı başka bilet varken reddedilir (bilet kapalı kalır).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI3', now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_id, null, null, null, null, 'MOBIL', false);
+perform pg_temp.logout();
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI3', now(), v_tarife_yeni, 'ACIK');
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_cikis_geri_al(v_id, 'Test 79e');
+  raise exception 'FAIL 79e: içeride aynı plakalı bilet varken geri alındı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%önce onu iptal%' then
+    raise exception 'FAIL 79e: beklenmeyen hata (aynı plaka): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_id and durum = 'KAPALI') then
+  raise exception 'FAIL 79e: reddedilen geri alma bileti açtı (aynı plaka)';
+end if;
+
+-- (e) İptal edilmiş bilet geri alınamaz.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI4', now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_yonetici);
+perform public.bilet_iptal(v_id, 'Test 79e iptal');
+begin
+  perform public.bilet_cikis_geri_al(v_id, 'Test 79e');
+  raise exception 'FAIL 79e: iptal edilmiş bilet geri alındı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%çıkışı yapılmış%' then
+    raise exception 'FAIL 79e: beklenmeyen hata (iptal): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Başka vardiyanın bileti: Personel geri alamaz, Yönetici alır.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ79GERI5', now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_id, null, null, null, null, 'MOBIL', false);
+perform pg_temp.logout();
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
+perform public.vardiya_ac(0);
+begin
+  perform public.bilet_cikis_geri_al(v_id, 'Test 79e');
+  raise exception 'FAIL 79e: Personel başka vardiyanın biletini geri aldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%yetkiniz yok%' then
+    raise exception 'FAIL 79e: beklenmeyen hata (vardiya): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+select public.bilet_cikis_geri_al(v_id, 'Yönetici düzeltti') into v_bool;
+perform pg_temp.logout();
+if v_bool is distinct from true
+   or not exists (select 1 from public.biletler where id = v_id and durum = 'ACIK') then
+  raise exception 'FAIL 79e: Yönetici başka vardiyanın biletini geri alamadı';
+end if;
+select v.id into v_vardiya from public.vardiyalar v where v.kapanis_at is null;
+
+-- (f) Kameranın parasız kapattığı bilet de sebeple geri açılır; iz 054'ün
+--     adıyla (bilet_kamera_geri_acildi) — 054'ün "Araç çıkmadı"sı aynen kalır.
+-- (g) Kamera kapattı, sonra "Ödeme topla" ile ödendi: para geri alınır,
+--     bilet açılır; araç hâlâ kameranın önündeyse kamera hemen yeniden
+--     KAPATMAZ (054'ün çıkış süresi).
+foreach v_txt in array array['ZZ79KMR01', 'ZZ79KMR02'] loop
+  insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+  values (gen_random_uuid(), v_txt, now() - interval '2 hours', v_tarife_yeni, 'ACIK')
+  returning id into v_id;
+  perform pg_temp.kamera();
+  perform public.kamera_cikis_bildir(v_txt, gen_random_uuid(), now(), null, null);
+  perform pg_temp.logout();
+  if not exists (select 1 from public.biletler
+                  where id = v_id and durum = 'KAPALI' and cikis_kaynak = 'KAMERA'
+                    and kapatan_vardiya_id = v_vardiya) then
+    raise exception 'FAIL 79f-g: fixture — kamera % biletini vardiyada kapatmadı', v_txt;
+  end if;
+  v_n := 0;
+  if v_txt = 'ZZ79KMR02' then
+    perform pg_temp.login(u_personel);
+    select public.bilet_tahsil(v_id, 'NAKIT') into v_n;
+    perform pg_temp.logout();
+  end if;
+  perform pg_temp.login(u_personel);
+  select public.bilet_cikis_geri_al(v_id, 'Araç kapıda bekledi') into v_bool;
+  perform pg_temp.logout();
+  if v_bool is distinct from true
+     or not exists (select 1 from public.biletler
+                     where id = v_id and durum = 'ACIK' and cikis_kaynak is null
+                       and tahsil_kurus = 0)
+     or (select count(*) from public.audit_log
+          where action = 'bilet_kamera_geri_acildi' and row_id = v_id
+            and detay ->> 'sebep' = 'Araç kapıda bekledi') <> 1
+     or exists (select 1 from public.audit_log
+                 where action = 'bilet_cikis_geri_alindi' and row_id = v_id) then
+    raise exception 'FAIL 79f-g: kameranın kapattığı % bileti doğru geri açılmadı', v_txt;
+  end if;
+  if v_n > 0 and not exists (select 1 from public.tahsilatlar t
+                              join public.tahsilatlar a on a.id = t.iptal_of
+                             where a.bilet_id = v_id and t.tutar_kurus = -v_n) then
+    raise exception 'FAIL 79g: kamera biletinin toplanan ödemesi geri alınmadı';
+  end if;
+  perform pg_temp.kamera();
+  perform public.kamera_cikis_bildir(v_txt, gen_random_uuid(), now(), null, null);
+  perform pg_temp.logout();
+  if not exists (select 1 from public.biletler where id = v_id and durum = 'ACIK') then
+    raise exception 'FAIL 79f-g: geri açılan % bileti kamera hemen yeniden kapattı', v_txt;
+  end if;
+end loop;
+
+raise notice 'PASS 79: yanlışlıkla verilen çıkış geri alınır — sebepli, kendi vardiyası ya da Yönetici, para karşı kayıtla geri döner, bilet ilk giriş saatiyle açık, kamera hemen yeniden kapatmaz';
+
+-- =====================================================================
+-- 80  Abonman: ödeme günü, Personel ekler ve tahsil eder (061, 062)
+--     Sahip (2026-11-15):
+--       · başlangıç/bitiş seçilmez, ÖDEME GÜNÜ seçilir ("Ayın 13'ü");
+--         29–31 kısa ayda ayın son günü olur;
+--       · Personel abonmanları görür, ekler (ilk ödeme aynı formda) ve
+--         tahsil eder; düzenleme / iptal / silme Yönetici'de kalır;
+--       · Personel'in eklediği abonman Yönetici'ye adıyla bildirilir;
+--       · ödeme açık vardiyaya yazılır, Onay bekler; uzatma aynı çağrıda.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.abonman_ekle(text, text, text, integer, integer, uuid, text, integer, public.odeme_yontemi)') is null
+   or to_regprocedure('public.abonman_tahsil(uuid, public.odeme_yontemi, integer, boolean)') is null
+   or to_regprocedure('public.abonman_sonraki_yenileme(integer, date)') is null then
+  raise exception 'FAIL 80: 062 çalıştırılmadı (abonman_ekle / abonman_tahsil / abonman_sonraki_yenileme yok)';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE') then
+  raise exception 'FAIL 80: fixture — u_personel / u_yonetici rolü beklenen gibi değil';
+end if;
+
+-- (a) Yetkiler. Eski üç argümanlı abonman_tahsil yok; yardımcı kimseye açık değil.
+if to_regprocedure('public.abonman_tahsil(uuid, public.odeme_yontemi, integer)') is not null then
+  raise exception 'FAIL 80a: eski abonman_tahsil(uuid, odeme_yontemi, integer) duruyor';
+end if;
+foreach v_txt in array array[
+    'public.abonman_ekle(text, text, text, integer, integer, uuid, text, integer, public.odeme_yontemi)',
+    'public.abonman_tahsil(uuid, public.odeme_yontemi, integer, boolean)'] loop
+  if not has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 80a: % yetkileri yanlış', v_txt;
+  end if;
+end loop;
+foreach v_txt2 in array array['anon', 'authenticated', 'service_role'] loop
+  if has_function_privilege(v_txt2, 'public.abonman_sonraki_yenileme(integer, date)', 'execute') then
+    raise exception 'FAIL 80a: abonman_sonraki_yenileme % rolüne açık', v_txt2;
+  end if;
+end loop;
+if not public.bildirim_yonetici_turu('YENI_ABONMAN') then
+  raise exception 'FAIL 80a: YENI_ABONMAN Yönetici''ye özel bildirim değil';
+end if;
+
+-- (b) Sonraki ödeme günü: verilen günden SONRAKİ ilk tarih; kısa ayda ayın
+--     son günü. tests/abonman.check.mjs aynı tabloyu istemci için sınar.
+foreach v_txt in array array[
+    '13|2026-11-13|2026-12-13', '13|2026-11-12|2026-11-13', '31|2027-02-15|2027-02-28',
+    '31|2027-02-28|2027-03-31', '31|2028-02-15|2028-02-29', '30|2028-02-29|2028-03-30',
+    '1|2026-12-01|2027-01-01',  '15|2026-12-20|2027-01-15', '31|2026-04-30|2026-05-31',
+    '31|2026-03-31|2026-04-30', '29|2027-01-31|2027-02-28', '1|2026-11-30|2026-12-01'] loop
+  if public.abonman_sonraki_yenileme(split_part(v_txt, '|', 1)::integer,
+                                     split_part(v_txt, '|', 2)::date)
+     is distinct from split_part(v_txt, '|', 3)::date then
+    raise exception 'FAIL 80b: sonraki ödeme günü yanlış (gün|tarih|beklenen = %): %', v_txt,
+      public.abonman_sonraki_yenileme(split_part(v_txt, '|', 1)::integer,
+                                      split_part(v_txt, '|', 2)::date);
+  end if;
+end loop;
+
+v_gun := (now() at time zone 'Europe/Istanbul')::date;
+
+-- (c) Rolsüz kullanıcı ekleyemez.
+perform pg_temp.login(u_pending);
+begin
+  perform public.abonman_ekle('ZZ80ABN1', 'X', null, 100000, 5, null, null, 100000, 'NAKIT');
+  raise exception 'FAIL 80c: rolsüz kullanıcı abonman ekledi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 80c: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (d) Açık vardiya yokken Personel ne ekler ne tahsil eder (para kasaya
+--     yazılır). Yönetici ücretsiz (ilk ödemesiz) abonman ekleyebilir.
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
+begin
+  perform public.abonman_ekle('ZZ80ABN1', 'X', null, 100000, 5, null, null, 100000, 'NAKIT');
+  raise exception 'FAIL 80d: vardiyasız Personel abonman ekledi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%vardiya%' then
+    raise exception 'FAIL 80d: beklenmeyen hata (ekle): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.abonmanlar where plaka = 'ZZ80ABN1') then
+  raise exception 'FAIL 80d: reddedilen ekleme abonman bıraktı';
+end if;
+
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_yonetici);
+v_id := public.abonman_ekle('zz80 abn0', 'Ücretsiz Müşteri', null, 0, 13, null, null, 0, null);
+perform pg_temp.logout();
+if not exists (select 1 from public.abonmanlar
+                where id = v_id and plaka = 'ZZ80ABN0' and durum = 'AKTIF' and yenileme_gunu = 13
+                  and baslangic = v_gun
+                  and bitis = public.abonman_sonraki_yenileme(13, v_gun)
+                  and olusturan = u_yonetici) then
+  raise exception 'FAIL 80d: Yönetici''nin ücretsiz abonmanı doğru eklenmedi';
+end if;
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 80d: ilk ödemesiz abonman tahsilat yazdı';
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.abonman_tahsil(v_id, 'NAKIT', 100000, true);
+  raise exception 'FAIL 80d: vardiyasız Personel abonman tahsil etti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%vardiya%' then
+    raise exception 'FAIL 80d: beklenmeyen hata (tahsil): %', sqlerrm;
+  end if;
+end;
+perform public.vardiya_ac(0);
+perform pg_temp.logout();
+select v.id into v_vardiya from public.vardiyalar v where v.kapanis_at is null;
+
+-- (e) Personel ilk ödemeyle ekler: abonman bugünden sonraki ödeme gününe
+--     kadar geçerli; ödeme vardiyasına, Onay bekler; iz; Yönetici'ye adıyla
+--     bildirim.
+select ad_soyad into v_txt3 from public.profiles where id = u_personel;
+perform pg_temp.login(u_personel);
+v_abonman := public.abonman_ekle('ZZ80ABN1', '  Test Müşteri  ', '5321234567', 150000, 5, null,
+                                 null, 150000, 'NAKIT');
+perform pg_temp.logout();
+if not exists (select 1 from public.abonmanlar
+                where id = v_abonman and plaka = 'ZZ80ABN1' and musteri_ad = 'Test Müşteri'
+                  and musteri_tel = '5321234567' and ucret_kurus = 150000 and yenileme_gunu = 5
+                  and durum = 'AKTIF' and baslangic = v_gun
+                  and bitis = public.abonman_sonraki_yenileme(5, v_gun)
+                  and olusturan = u_personel) then
+  raise exception 'FAIL 80e: Personel''in abonmanı doğru eklenmedi';
+end if;
+if (select count(*) from public.tahsilatlar
+     where abonman_id = v_abonman and tur::text = 'ABONMAN' and tutar_kurus = 150000
+       and yontem = 'NAKIT' and vardiya_id = v_vardiya and durum::text = 'BEKLIYOR'
+       and created_by = u_personel and iptal_of is null) <> 1 then
+  raise exception 'FAIL 80e: ilk ödeme vardiyaya, onay bekler hâlde yazılmadı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'abonman_ekle' and row_id = v_abonman and actor = u_personel) then
+  raise exception 'FAIL 80e: abonman ekleme denetime yazılmadı';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur::text = 'YENI_ABONMAN'
+       and link = '/abonman/' || v_abonman
+       and govde like '%' || v_txt3 || '%' and govde like '%ZZ80ABN1%') <> 1 then
+  raise exception 'FAIL 80e: Yönetici''ye Personel''in adıyla tek bildirim gitmedi';
+end if;
+-- Personel abonman_gecerli_mi ile de bulur (giriş ücretsiz).
+perform pg_temp.login(u_personel);
+select a.gecerli into v_bool from public.abonman_gecerli_mi('ZZ80ABN1') a;
+perform pg_temp.logout();
+if v_bool is distinct from true then
+  raise exception 'FAIL 80e: yeni abonman girişte geçerli görünmüyor';
+end if;
+
+-- (f) Hiçbir şey yazmayan retler: Personel ilk ödemesiz; gün 0 / 32;
+--     aynı plakada çakışan dönem (Türkçe mesaj, tahsilat yok).
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_personel);
+foreach v_txt in array array['tutar0', 'gun0', 'gun32', 'cakisma'] loop
+  begin
+    case v_txt
+      when 'tutar0' then
+        perform public.abonman_ekle('ZZ80ABN2', 'X', null, 100000, 5, null, null, 0, null);
+      when 'gun0' then
+        perform public.abonman_ekle('ZZ80ABN2', 'X', null, 100000, 0, null, null, 100000, 'NAKIT');
+      when 'gun32' then
+        perform public.abonman_ekle('ZZ80ABN2', 'X', null, 100000, 32, null, null, 100000, 'NAKIT');
+      else
+        perform public.abonman_ekle('ZZ80ABN1', 'X', null, 100000, 5, null, null, 100000, 'NAKIT');
+    end case;
+    raise exception 'FAIL 80f: % kabul edildi', v_txt;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    v_txt2 := case v_txt
+                when 'tutar0' then '%sıfırdan büyük%'
+                when 'cakisma' then '%başka bir abonmanı var%'
+                else '%1 ile 31%' end;
+    if sqlerrm not like v_txt2 then
+      raise exception 'FAIL 80f: % için beklenmeyen hata: %', v_txt, sqlerrm;
+    end if;
+  end;
+end loop;
+perform pg_temp.logout();
+if exists (select 1 from public.abonmanlar where plaka = 'ZZ80ABN2')
+   or (select count(*) from public.abonmanlar where plaka = 'ZZ80ABN1') <> 1
+   or (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 80f: reddedilen ekleme abonman ya da tahsilat bıraktı';
+end if;
+
+-- (g) Personel tahsil eder. Süresi sürerken uzatma bitişi bir sonraki ödeme
+--     gününe taşır; uzatmasız yalnızca ödeme; süresi dolmuşsa dönem bugünden
+--     yeniden başlar; iptal edilmiş abonman tahsil edilmez.
+select bitis, baslangic into v_ts2, v_ts from (select bitis::timestamptz, baslangic::timestamptz
+  from public.abonmanlar where id = v_abonman) x;
+perform pg_temp.login(u_personel);
+select public.abonman_tahsil(v_abonman, 'KREDI_KARTI', 150000, true) into v_id2;
+perform pg_temp.logout();
+if not exists (select 1 from public.abonmanlar
+                where id = v_abonman and baslangic = v_ts::date and durum = 'AKTIF'
+                  and bitis = public.abonman_sonraki_yenileme(5, v_ts2::date))
+   or not exists (select 1 from public.tahsilatlar
+                   where id = v_id2 and abonman_id = v_abonman and tutar_kurus = 150000
+                     and yontem = 'KREDI_KARTI' and vardiya_id = v_vardiya and durum::text = 'BEKLIYOR') then
+  raise exception 'FAIL 80g: süren abonman bir sonraki ödeme gününe uzamadı ya da ödeme vardiyaya yazılmadı';
+end if;
+select bitis::timestamptz into v_ts2 from public.abonmanlar where id = v_abonman;
+select count(*) into v_bigint from public.tahsilatlar where abonman_id = v_abonman;
+perform pg_temp.login(u_personel);
+perform public.abonman_tahsil(v_abonman, 'NAKIT', 50000, false);
+perform pg_temp.logout();
+if (select bitis from public.abonmanlar where id = v_abonman) <> v_ts2::date
+   or (select count(*) from public.tahsilatlar where abonman_id = v_abonman) <> v_bigint + 1 then
+  raise exception 'FAIL 80g: uzatmasız tahsilat bitişi değiştirdi ya da ödeme yazmadı';
+end if;
+
+update public.abonmanlar
+   set baslangic = v_gun - 60, bitis = v_gun - 20, durum = 'DOLDU'
+ where id = v_id;
+perform pg_temp.login(u_personel);
+perform public.abonman_tahsil(v_id, 'NAKIT', 100000, true);
+perform pg_temp.logout();
+if not exists (select 1 from public.abonmanlar
+                where id = v_id and durum = 'AKTIF' and baslangic = v_gun
+                  and bitis = public.abonman_sonraki_yenileme(13, v_gun)) then
+  raise exception 'FAIL 80g: süresi dolan abonman bugünden yeniden başlamadı';
+end if;
+
+update public.abonmanlar set durum = 'IPTAL' where id = v_id;
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_personel);
+begin
+  perform public.abonman_tahsil(v_id, 'NAKIT', 100000, true);
+  raise exception 'FAIL 80g: iptal edilmiş abonman tahsil edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%İptal edilmiş%' then
+    raise exception 'FAIL 80g: beklenmeyen hata (iptal): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 80g: reddedilen tahsilat satır bıraktı';
+end if;
+
+-- (h) Personel tabloya doğrudan yazamaz: düzenleme / silme 0 satır, ekleme
+--     reddedilir. (Düzenle, İptal, Sil Yönetici'nin.)
+perform pg_temp.login(u_personel);
+update public.abonmanlar set ucret_kurus = 1 where id = v_abonman;
+get diagnostics v_n = row_count;
+delete from public.abonmanlar where id = v_abonman;
+get diagnostics v_n2 = row_count;
+if v_n <> 0 or v_n2 <> 0 then
+  raise exception 'FAIL 80h: Personel abonmanı doğrudan değiştirdi/sildi (% / %)', v_n, v_n2;
+end if;
+begin
+  insert into public.abonmanlar (plaka, baslangic, bitis, ucret_kurus)
+  values ('ZZ80ABN3', v_gun, v_gun + 30, 1);
+  raise exception 'FAIL 80h: Personel abonmanı doğrudan ekledi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%row-level security%' then
+    raise exception 'FAIL 80h: beklenmeyen hata (ekleme): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.abonmanlar where id = v_abonman and ucret_kurus = 150000) then
+  raise exception 'FAIL 80h: Personel''in denemesi abonmanı değiştirdi';
+end if;
+
+raise notice 'PASS 80: abonman ödeme günüyle — Personel görür, ilk ödemeyle ekler (Yönetici adıyla bilgilenir) ve tahsil eder; uzatma aynı çağrıda; düzenleme Yönetici''de';
+
+-- =====================================================================
+-- 81  Kim yaptı: toplayan ve onaylayan (063)
+--     Sahip (2026-11-15): Onay'da "Ödeme toplayan", karar verilince ve
+--     Finans'ta "Ödeme toplayan" + "Onaylayan/Reddeden"; kasa kaydında
+--     "Kaydeden". Adları yalnızca Yönetici görür.
+--       · onay_listesi onaylayanın ADINI ve karar anını da döndürür;
+--       · kasa_hareketleri.created_by artık hep dolar: oturum açan kişi
+--         (gönderilen değer yok sayılır), gece işinde kuralı yazan kişi.
+--     Aynı geri alınan transaction içinde PASS 80'den kalan açık vardiya
+--     olabilir: vardiya yalnızca yoksa açılır, satırlar kimliğiyle bulunur.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.kasa_hareketi_kaydeden()') is null then
+  raise exception 'FAIL 81: 063 çalıştırılmadı (kasa_hareketi_kaydeden yok)';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE') then
+  raise exception 'FAIL 81: fixture — u_personel / u_yonetici rolü beklenen gibi değil';
+end if;
+select ad_soyad into v_txt  from public.profiles where id = u_personel;
+select ad_soyad into v_txt2 from public.profiles where id = u_yonetici;
+
+-- (a) Yetkiler: onay_listesi yalnızca authenticated'e (içeride Yönetici
+--     denetimi); tetik fonksiyonu kimseye açık değil; tetik takılı.
+if not has_function_privilege('authenticated', 'public.onay_listesi(public.onay_durum)', 'execute')
+   or has_function_privilege('anon', 'public.onay_listesi(public.onay_durum)', 'execute')
+   or has_function_privilege('service_role', 'public.onay_listesi(public.onay_durum)', 'execute') then
+  raise exception 'FAIL 81a: onay_listesi yetkileri yanlış';
+end if;
+foreach v_txt3 in array array['anon', 'authenticated', 'service_role'] loop
+  if has_function_privilege(v_txt3, 'public.kasa_hareketi_kaydeden()', 'execute') then
+    raise exception 'FAIL 81a: kasa_hareketi_kaydeden % rolüne açık', v_txt3;
+  end if;
+end loop;
+if not exists (select 1 from pg_trigger
+                where tgrelid = 'public.kasa_hareketleri'::regclass
+                  and tgname = 'kasa_hareketi_kaydeden_tg' and not tgisinternal) then
+  raise exception 'FAIL 81a: kasa_hareketi_kaydeden_tg tetiği yok';
+end if;
+
+-- (b) Personel iki abonman ekler (ilk ödemeyle): biri onaylanacak, biri
+--     reddedilecek.
+v_gun := (now() at time zone 'Europe/Istanbul')::date;
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+v_id  := public.abonman_ekle('ZZ81ABN1', 'zz81 bir', null, 90000, 7, null, null, 90000, 'NAKIT');
+v_id2 := public.abonman_ekle('ZZ81ABN2', 'zz81 iki', null, 80000, 9, null, null, 80000, 'KREDI_KARTI');
+perform pg_temp.logout();
+select t.id into v_islem from public.tahsilatlar t where t.abonman_id = v_id  and t.iptal_of is null;
+select t.id into v_hesap from public.tahsilatlar t where t.abonman_id = v_id2 and t.iptal_of is null;
+if v_islem is null or v_hesap is null then
+  raise exception 'FAIL 81b: fixture — abonman ödemeleri yazılmadı';
+end if;
+
+-- Bekleyen: toplayan adıyla, onaylayan boş.
+perform pg_temp.login(u_yonetici);
+select * into v_rec from public.onay_listesi('BEKLIYOR') o where o.id = v_islem;
+if not found then
+  raise exception 'FAIL 81b: bekleyen ödeme onay_listesi''nde yok';
+end if;
+if v_rec.personel is distinct from v_txt
+   or v_rec.onaylayan is not null or v_rec.onay_at is not null then
+  raise exception 'FAIL 81b: bekleyen satır yanlış (toplayan %, onaylayan %, an %)',
+    v_rec.personel, v_rec.onaylayan, v_rec.onay_at;
+end if;
+
+-- (c) Onaylanan: toplayan + onaylayanın adı + an.
+if public.tahsilat_onayla(array[v_islem]) <> 1 then
+  raise exception 'FAIL 81c: tahsilat_onayla satırı onaylamadı';
+end if;
+select * into v_rec from public.onay_listesi('ONAYLANDI') o where o.id = v_islem;
+if not found then
+  raise exception 'FAIL 81c: onaylanan ödeme onay_listesi(ONAYLANDI)''nda yok';
+end if;
+if v_rec.personel is distinct from v_txt
+   or v_rec.onaylayan is distinct from v_txt2
+   or v_rec.onay_at is null then
+  raise exception 'FAIL 81c: onaylanan satır yanlış (toplayan %, onaylayan %, an %)',
+    v_rec.personel, v_rec.onaylayan, v_rec.onay_at;
+end if;
+
+-- (d) Reddedilen: reddedenin adı aynı sütunda.
+if public.tahsilat_reddet(array[v_hesap], 'zz81 deneme') <> 1 then
+  raise exception 'FAIL 81d: tahsilat_reddet satırı reddetmedi';
+end if;
+select * into v_rec from public.onay_listesi('REDDEDILDI') o where o.id = v_hesap;
+if not found then
+  raise exception 'FAIL 81d: reddedilen ödeme onay_listesi(REDDEDILDI)''nda yok';
+end if;
+if v_rec.personel is distinct from v_txt
+   or v_rec.onaylayan is distinct from v_txt2
+   or v_rec.onay_at is null
+   or v_rec.onay_notu is distinct from 'zz81 deneme' then
+  raise exception 'FAIL 81d: reddedilen satır yanlış (toplayan %, reddeden %, not %)',
+    v_rec.personel, v_rec.onaylayan, v_rec.onay_notu;
+end if;
+perform pg_temp.logout();
+
+-- (e) Personel listeyi hâlâ okuyamaz.
+perform pg_temp.login(u_personel);
+begin
+  perform * from public.onay_listesi('ONAYLANDI');
+  raise exception 'FAIL 81e: Personel onay_listesi''ni okudu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 81e: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (f) Kasa kaydı: Yönetici elle girer → kaydeden Yönetici; başkasının
+--     kimliğini gönderse de Yönetici yazılır (taklit edilemez).
+perform pg_temp.login(u_yonetici);
+insert into public.kasa_hareketleri (tur, tutar_kurus, aciklama, kategori, yontem)
+values ('GIDER', 1234, 'zz81 elle', 'Diğer', 'NAKIT')
+returning id into v_id;
+insert into public.kasa_hareketleri (tur, tutar_kurus, aciklama, kategori, yontem, created_by)
+values ('GELIR', 4321, 'zz81 taklit', 'Diğer', 'NAKIT', u_personel)
+returning id into v_id2;
+perform pg_temp.logout();
+if (select created_by from public.kasa_hareketleri where id = v_id) is distinct from u_yonetici then
+  raise exception 'FAIL 81f: elle girilen kasa kaydında kaydeden Yönetici değil';
+end if;
+if (select created_by from public.kasa_hareketleri where id = v_id2) is distinct from u_yonetici then
+  raise exception 'FAIL 81f: kasa kaydında kaydeden taklit edilebildi';
+end if;
+
+-- (g) Gece işi (oturum yok): düzenli kaydın satırı kuralı yazanı alır.
+insert into public.kasa_tekrar_kurallari (tur, tutar_kurus, kategori, aciklama, yontem,
+                                         odeme_gunu, next_run, created_by)
+values ('GIDER', 5555, 'Diğer', 'zz81 kural', 'HAVALE', 5, v_gun + 400, u_yonetici)
+returning id into v_id;
+insert into public.kasa_hareketleri (tur, tutar_kurus, aciklama, kategori, yontem,
+                                     tekrar_kural_id, tarih)
+values ('GIDER', 5555, 'zz81 kural', 'Diğer', 'HAVALE', v_id, v_gun + 400)
+returning id into v_id2;
+if (select created_by from public.kasa_hareketleri where id = v_id2) is distinct from u_yonetici then
+  raise exception 'FAIL 81g: düzenli kayıt satırı kuralı yazanı almadı';
+end if;
+
+-- (h) Çöpten geri alınan kasa kaydı ilk kaydedenini korur (geri alan
+--     Yönetici kaydeden olmaz).
+insert into public.kasa_hareketleri (tur, tutar_kurus, aciklama, kategori, yontem, created_by)
+values ('GELIR', 777, 'zz81 cop', 'Diğer', 'NAKIT', u_personel)
+returning id into v_id;
+if (select created_by from public.kasa_hareketleri where id = v_id) is distinct from u_personel then
+  raise exception 'FAIL 81h: fixture — oturumsuz eklemede gönderilen kaydeden korunmadı';
+end if;
+delete from public.kasa_hareketleri where id = v_id;
+select c.id into v_id2 from public.cop c
+ where c.tablo = 'kasa_hareketleri' and c.kayit_id = v_id;
+if v_id2 is null then
+  raise exception 'FAIL 81h: fixture — silinen kasa kaydı çöpe düşmedi';
+end if;
+perform pg_temp.login(u_yonetici);
+perform public.cop_geri_al(v_id2);
+perform pg_temp.logout();
+if (select created_by from public.kasa_hareketleri where id = v_id) is distinct from u_personel then
+  raise exception 'FAIL 81h: çöpten geri alınan kasa kaydının kaydedeni değişti';
+end if;
+
+raise notice 'PASS 81: kim yaptı — onay_listesi toplayanı ve onaylayanı/reddedeni adıyla, anıyla verir; kasa kaydının kaydedeni hep dolar, taklit edilemez';
+
+-- =====================================================================
+-- 82  Ücretsiz çıkış: sebep + zorunlu not (064, 065)
+--     Sahip (2026-11-15): fiyat soran, polis, ambulans, personel aracı…
+--     Her rol çıkış ekranından ücretsiz çıkış verir: sebep seçer, not
+--     yazar (zorunlu). Para yazılmaz (tahsilat yok, Onay'a düşmez);
+--     Yönetici adıyla bilgilendirilir, onay beklenmez.
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.bilet_ucretsiz_cikis(uuid, public.ucretsiz_sebep, text)') is null then
+  raise exception 'FAIL 82: 065 çalıştırılmadı (bilet_ucretsiz_cikis yok)';
+end if;
+if not exists (select 1 from public.profiles
+                where id = u_personel and rol = 'PERSONEL' and durum = 'ACTIVE')
+   or not exists (select 1 from public.profiles
+                   where id = u_yonetici and rol = 'YONETICI' and durum = 'ACTIVE') then
+  raise exception 'FAIL 82: fixture — u_personel / u_yonetici rolü beklenen gibi değil';
+end if;
+select ad_soyad into v_txt from public.profiles where id = u_personel;
+
+-- (a) Tür, yetkiler, Yönetici'ye özel bildirim.
+select string_agg(e.enumlabel, ',' order by e.enumsortorder) into v_txt2
+  from pg_enum e where e.enumtypid = 'public.ucretsiz_sebep'::regtype;
+if v_txt2 is distinct from 'FIYAT_SORDU,POLIS,ACIL,PERSONEL,DIGER' then
+  raise exception 'FAIL 82a: ucretsiz_sebep değerleri beklenmedik: %', v_txt2;
+end if;
+v_txt3 := 'public.bilet_ucretsiz_cikis(uuid, public.ucretsiz_sebep, text)';
+if not has_function_privilege('authenticated', v_txt3, 'execute')
+   or has_function_privilege('anon', v_txt3, 'execute')
+   or has_function_privilege('service_role', v_txt3, 'execute') then
+  raise exception 'FAIL 82a: bilet_ucretsiz_cikis yetkileri yanlış';
+end if;
+if not public.bildirim_yonetici_turu('UCRETSIZ_CIKIS') then
+  raise exception 'FAIL 82a: UCRETSIZ_CIKIS Yönetici''ye özel bildirim değil';
+end if;
+
+-- Ücreti olan açık bilet (3 saat önce girmiş).
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ82UCR1', now() - interval '3 hours', v_tarife_yeni, 'ACIK')
+returning id into v_bilet;
+v_ucret := public.ucret_hesapla(now() - interval '3 hours', now(), v_tarife_yeni);
+if coalesce(v_ucret, 0) <= 0 then
+  raise exception 'FAIL 82: fixture — 3 saatlik kalışın ücreti yok (%)', v_ucret;
+end if;
+
+-- (b) Rolsüz kullanıcı yapamaz.
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', 'Ekip aracı');
+  raise exception 'FAIL 82b: rolsüz kullanıcı ücretsiz çıkış verdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 82b: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (c) Not zorunlu, en fazla 200 karakter; reddedilen deneme bileti açık bırakır.
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+foreach v_txt2 in array array['', '   ', repeat('x', 201)] loop
+  begin
+    perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', v_txt2);
+    raise exception 'FAIL 82c: geçersiz notla (% karakter) ücretsiz çıkış verildi', length(v_txt2);
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if sqlerrm not like '%Not%' then
+      raise exception 'FAIL 82c: beklenmeyen hata (not): %', sqlerrm;
+    end if;
+  end;
+end loop;
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', null);
+  raise exception 'FAIL 82c: notsuz ücretsiz çıkış verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Not%' then
+    raise exception 'FAIL 82c: beklenmeyen hata (null not): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, null, 'Ekip aracı');
+  raise exception 'FAIL 82c: sebepsiz ücretsiz çıkış verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Sebep%' then
+    raise exception 'FAIL 82c: beklenmeyen hata (sebep): %', sqlerrm;
+  end if;
+end;
+v_vardiya := public.acik_vardiyam();
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK' and ucretsiz_sebep is null) then
+  raise exception 'FAIL 82c: reddedilen deneme bileti değiştirdi';
+end if;
+
+-- (d) Personel geçerli çağrı: bilet 0 ₺ kapanır, para yazılmaz, iz ve bildirim kalır.
+select count(*) into v_bigint from public.tahsilatlar;
+perform pg_temp.login(u_personel);
+perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', '  Ekip aracı  ');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI'
+                  and ucret_kurus = 0 and tahsil_kurus = 0 and odeme_yontemi is null
+                  and ucretsiz_sebep = 'POLIS' and ucretsiz_not = 'Ekip aracı'
+                  and ucret_degistirildi and ucret_sebep like 'Ücretsiz çıkış%'
+                  and cikis_by = u_personel and cikis_kaynak = 'MOBIL'
+                  and kapatan_vardiya_id is not distinct from v_vardiya
+                  and cikis_at is not null) then
+  raise exception 'FAIL 82d: bilet ücretsiz çıkışla doğru kapanmadı';
+end if;
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 82d: ücretsiz çıkış tahsilat satırı yazdı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_ucretsiz_cikis' and row_id = v_bilet
+                  and actor = u_personel
+                  and (detay ->> 'hesaplanan')::integer > 0
+                  and detay ->> 'sebep' = 'POLIS') then
+  raise exception 'FAIL 82d: denetim kaydı yok ya da eksik';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur::text = 'UCRETSIZ_CIKIS'
+       and link = '/gise/bilet/' || v_bilet
+       and govde like '%' || v_txt || '%' and govde like '%ZZ82UCR1%'
+       and govde like '%Polis%' and govde like '%Ekip aracı%') <> 1 then
+  raise exception 'FAIL 82d: Yönetici''ye Personel''in adıyla tek bildirim gitmedi';
+end if;
+
+-- (e) Kapanmış bilet ikinci kez verilemez.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'DIGER', 'Tekrar');
+  raise exception 'FAIL 82e: kapanmış bilete ikinci kez ücretsiz çıkış verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%kapatılmış%' then
+    raise exception 'FAIL 82e: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (f) Puan kullanılmış bilet: önce puan geri alınır; bilet açık kalır.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum,
+                             indirim_kurus, puan_kullanilan)
+values (gen_random_uuid(), 'ZZ82UCR2', now() - interval '3 hours', v_tarife_yeni, 'ACIK', 100, 10)
+returning id into v_bilet2;
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet2, 'FIYAT_SORDU', 'Fiyat sordu, çıktı');
+  raise exception 'FAIL 82f: puan kullanılmış bilete ücretsiz çıkış verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%puan%' then
+    raise exception 'FAIL 82f: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_bilet2 and durum = 'ACIK') then
+  raise exception 'FAIL 82f: reddedilen deneme bileti kapattı';
+end if;
+
+-- (g) Yönetici kendisi verirse kendine bildirim gitmez; denetim yine yazılır.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ82UCR3', now() - interval '3 hours', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_yonetici);
+perform public.bilet_ucretsiz_cikis(v_id, 'ACIL', 'Ambulans');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI' and ucretsiz_sebep = 'ACIL'
+                  and cikis_by = u_yonetici) then
+  raise exception 'FAIL 82g: Yönetici''nin ücretsiz çıkışı bileti kapatmadı';
+end if;
+if exists (select 1 from public.notifications
+            where profile_id = u_yonetici and tur::text = 'UCRETSIZ_CIKIS'
+              and link = '/gise/bilet/' || v_id) then
+  raise exception 'FAIL 82g: Yönetici kendi ücretsiz çıkışı için bildirim aldı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_ucretsiz_cikis' and row_id = v_id
+                  and actor = u_yonetici) then
+  raise exception 'FAIL 82g: Yönetici''nin ücretsiz çıkışı denetime yazılmadı';
+end if;
+
+-- (h) "Araç çıkmadı" (060) ücretsiz çıkışı geri açarsa sebep ve not da düşer —
+-- yoksa bilet sonra parayla çıksa bile "Ücretsiz" görünürdü.
+perform pg_temp.login(u_yonetici);
+perform public.bilet_cikis_geri_al(v_id, 'Araç içeride');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'ACIK'
+                  and ucretsiz_sebep is null and ucretsiz_not is null) then
+  raise exception 'FAIL 82h: geri açılan ücretsiz çıkışın sebebi/notu kaldı';
+end if;
+
+raise notice 'PASS 82: ücretsiz çıkış — her rol, sebep ve zorunlu notla; para yazılmaz, bilet 0 ₺ kapanır, Yönetici adıyla bilgilenir; geri açılınca sebep düşer';
 
 perform pg_temp.logout();
 raise notice '';

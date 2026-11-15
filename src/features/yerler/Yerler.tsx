@@ -255,6 +255,8 @@ export function YerlerBolumu() {
   } | null>(null)
   const [tasimaHata, setTasimaHata] = useState<string | null>(null)
   const [tasimaBasari, setTasimaBasari] = useState<string | null>(null)
+  /** The empty bay tapped as the destination — the box asks before moving. */
+  const [tasimaHedef, setTasimaHedef] = useState<ParkYeri | null>(null)
   /** The bay under a live long-press — it is the one drawing the progress bar. */
   const [basilan, setBasilan] = useState<string | null>(null)
 
@@ -363,16 +365,18 @@ export function YerlerBolumu() {
     basmayiBirak()
     setTasimaHata(null)
     setTasimaBasari(null)
+    setTasimaHedef(null)
     setTasima({ biletId: d.bilet_id, yerId: y.id, plaka: d.plaka })
   }
 
   function tasi(hedef: ParkYeri) {
-    if (!tasima) return
+    if (!tasima || yerDegistir.isPending) return
     const plaka = tasima.plaka
     setTasimaHata(null)
     void yerDegistir
       .mutateAsync({ bilet_id: tasima.biletId, yeni_yer_id: hedef.id })
       .then(() => {
+        setTasimaHedef(null)
         setTasima(null)
         setTasimaBasari(`${formatPlaka(plaka)} → ${hedef.kod}`)
       })
@@ -397,7 +401,9 @@ export function YerlerBolumu() {
         return
       }
       if (d || !y.is_active) return // not a destination
-      tasi(y)
+      // Only asks (owner, 2026-11-14): the move runs from the box.
+      setTasimaHata(null)
+      setTasimaHedef(y)
       return
     }
 
@@ -590,7 +596,7 @@ export function YerlerBolumu() {
             </div>
           )}
 
-          {tasimaHata && (
+          {tasimaHata && !tasimaHedef && (
             <p
               role="alert"
               className="mb-2 rounded-card bg-danger-soft px-3.5 py-2.5 text-body text-danger"
@@ -903,6 +909,35 @@ export function YerlerBolumu() {
           maxLength={120}
         />
       </FormModal>
+
+      {/* Vazgeç closes the box and keeps the car in hand — another bay can be
+          tapped straight away. A refusal (the bay was taken a moment ago, the
+          car has left) stays in the box until it is closed. */}
+      <ConfirmDialog
+        open={tasimaHedef !== null && tasima !== null}
+        onOpenChange={(a) => {
+          if (!a) setTasimaHedef(null)
+        }}
+        title="Araç taşınsın mı?"
+        description={
+          tasima && tasimaHedef ? (
+            <>
+              <span className="block text-title font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(tasima.plaka)}
+              </span>
+              <span className="mt-1 block tnum">
+                {yerler.find((y) => y.id === tasima.yerId)?.kod ?? '—'} → {tasimaHedef.kod}
+              </span>
+            </>
+          ) : undefined
+        }
+        confirmLabel="Taşı"
+        loading={yerDegistir.isPending}
+        error={tasimaHata}
+        onConfirm={() => {
+          if (tasimaHedef) tasi(tasimaHedef)
+        }}
+      />
 
       <ConfirmDialog
         open={silinecek !== null}

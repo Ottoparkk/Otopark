@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Button, Card, DataPoint, LoadError, ScreenHeader } from '../../components/ui/primitives'
+import { Button, Card, DataPoint, Input, LoadError, ScreenHeader } from '../../components/ui/primitives'
 import { Spinner } from '../../components/ui/Spinner'
 import { YontemSecici } from '../../components/ui/YontemSecici'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import {
   useBilet,
+  useBiletTahsilatlari,
+  useBiletCikisGeriAl,
   useBiletGeriAc,
   useBiletPlakaDogrula,
   useBiletPlakaDuzelt,
@@ -28,10 +30,17 @@ import {
 import { formatPlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { sureMetni } from '../../lib/sure'
-import { biletBorcu, gosterilenUcret, odemeAlindi, sureBitisi } from '../../lib/bilet'
+import { biletBorcu, cikisGeriAlma, gosterilenUcret, odemeAlindi, sureBitisi } from '../../lib/bilet'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCop, IconKalem } from '../../components/ui/icons'
-import { type Bilet, type OdemeYontemi } from '../../lib/types'
+import { ODEME_CHIP, ODEME_ETIKET, ONAY_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
+import { useAuth } from '../../app/providers/AuthProvider'
+import { isYonetici } from '../../lib/rbac'
+import { useAdlar } from '../yonetim/api'
+import { useSonKararlar } from '../finans/api'
+import { adCoz, tahsilatKisileri, type KimSatiri } from '../../lib/kimYapti'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
+import { formatTam } from '../../lib/dates'
 
 /**
  * Full history of one ticket. Reached from the vehicles list, Finans and
@@ -52,10 +61,18 @@ export default function BiletDetay() {
   const tahsil = useBiletTahsil()
   const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
+  const [tahsilOnay, setTahsilOnay] = useState(false)
   const [degistirAcik, setDegistirAcik] = useState(false)
   const geriAc = useBiletGeriAc()
   const [geriAcOnay, setGeriAcOnay] = useState(false)
   const [geriAcHata, setGeriAcHata] = useState<string | null>(null)
+  // 060: the same "Araç çıkmadı" for any other closed ticket — with a reason,
+  // and any payment reversed.
+  const geriAl = useBiletCikisGeriAl()
+  const [geriAlOnay, setGeriAlOnay] = useState(false)
+  const [geriAlSebep, setGeriAlSebep] = useState('')
+  const [geriAlSebepHata, setGeriAlSebepHata] = useState<string | null>(null)
+  const [geriAlHata, setGeriAlHata] = useState<string | null>(null)
   // An open ticket's stored fee is 0 until exit; the live price is the
   // server's, the same one Tahsilat shows. Not fetched for a closed ticket.
   const { data: canliUcret } = useUcretOnizleme(bilet?.durum === 'ACIK' ? bilet : null)
@@ -81,7 +98,7 @@ export default function BiletDetay() {
   const borc = biletBorcu(bilet)
   const odenmedi = bilet.durum === 'KAPALI' && borc > 0 && !odemeAlindi(bilet)
   const kameraKapatti = bilet.durum === 'KAPALI' && bilet.cikis_kaynak === 'KAMERA'
-  const geriAcilabilir = kameraKapatti && !odemeAlindi(bilet)
+  const geriAlma = cikisGeriAlma(bilet)
 
   return (
     <div>
@@ -159,12 +176,14 @@ export default function BiletDetay() {
 
             <YontemSecici value={yontem} onChange={setYontem} />
 
-            {tahsilHata && (
+            {tahsilHata && !tahsilOnay && (
               <p role="alert" className="rounded-field bg-danger-soft px-3.5 py-3 text-body text-danger">
                 {tahsilHata}
               </p>
             )}
 
+            {/* Only ASKS (owner, 2026-11-14): the payment is recorded from the
+                box below, after the amount and method are read back. */}
             <Button
               size="lg"
               block
@@ -175,13 +194,7 @@ export default function BiletDetay() {
                   setTahsilHata('Ödeme yöntemi seçin.')
                   return
                 }
-                void tahsil
-                  .mutateAsync({ bilet_id: bilet.id, odeme_yontemi: yontem })
-                  .catch((e) =>
-                    setTahsilHata(
-                      rpcErrorText(e, 'Tahsilat kaydedilemedi. Tahsilat otomatik tekrarlanmaz.'),
-                    ),
-                  )
+                setTahsilOnay(true)
               }}
             >
               {formatTL(borc)} Ödeme topla
@@ -189,18 +202,27 @@ export default function BiletDetay() {
           </Card>
         )}
 
-        {/* 054: the camera closed this ticket and no money was taken — if the
-            car never actually left (it waited at the gate), put it back
-            inside. Also on a free stay, which a wrong exit closes just the
-            same. The server checks everything again (own shift, unpaid, no
-            second open ticket for this plate). */}
-        {geriAcilabilir && (
+        {/* The car never actually left — put it back inside with its first
+            entry time. 054: the camera closed it and no money was taken (it
+            waited at the gate) → today's box, no reason. 060 (owner,
+            2026-11-15): any other closed ticket — the exit was given to the
+            wrong car, or the debt was already collected → the box asks a
+            reason and reverses the payment. The server checks everything
+            again (own shift, no second open ticket for this plate). */}
+        {geriAlma && (
           <Button
             variant="soft"
             block
             onClick={() => {
-              setGeriAcHata(null)
-              setGeriAcOnay(true)
+              if (geriAlma === 'KAMERA') {
+                setGeriAcHata(null)
+                setGeriAcOnay(true)
+                return
+              }
+              setGeriAlSebep('')
+              setGeriAlSebepHata(null)
+              setGeriAlHata(null)
+              setGeriAlOnay(true)
             }}
           >
             Araç çıkmadı
@@ -211,6 +233,8 @@ export default function BiletDetay() {
           bilet={bilet}
           yerKod={bilet.park_yeri_id ? (yerKodlari[bilet.park_yeri_id] ?? null) : null}
         />
+
+        <BiletKimKarti bilet={bilet} />
 
         {/* Only while the car is inside: after exit the money is in a shift,
             and the way to undo it is İptal below (owner, 2026-11-02). */}
@@ -251,6 +275,40 @@ export default function BiletDetay() {
 
       {aksiyon.dialoglar}
 
+      {/* "Ödeme topla", read back before it is recorded. Stays open on a
+          refusal (already paid, another shift) so the reason is read here. */}
+      <ConfirmDialog
+        open={tahsilOnay}
+        onOpenChange={setTahsilOnay}
+        title="Ödeme toplansın mı?"
+        description={
+          <>
+            <span className="block text-title font-semibold tracking-wide text-ink tnum">
+              {formatPlaka(bilet.plaka)}
+            </span>
+            <span className="mt-1 block">
+              <strong className="font-semibold text-ink tnum">{formatTL(borc)}</strong>
+              {yontem ? ` · ${ODEME_ETIKET[yontem]}` : ''}. Ödeme Yönetici onayına gider.
+            </span>
+          </>
+        }
+        confirmLabel={`${formatTL(borc)} Ödeme topla`}
+        loading={tahsil.isPending}
+        error={tahsilHata}
+        onConfirm={() => {
+          if (tahsil.isPending || !yontem) return
+          setTahsilHata(null)
+          tahsil
+            .mutateAsync({ bilet_id: bilet.id, odeme_yontemi: yontem })
+            .then(() => setTahsilOnay(false))
+            .catch((e) =>
+              setTahsilHata(
+                rpcErrorText(e, 'Tahsilat kaydedilemedi. Tahsilat otomatik tekrarlanmaz.'),
+              ),
+            )
+        }}
+      />
+
       {/* Stays open on a refusal, so the server's Turkish reason (another
           open ticket for this plate, another shift, already paid) is read
           beside the button that failed. */}
@@ -270,6 +328,63 @@ export default function BiletDetay() {
           })
         }}
       />
+
+      {/* 060: the reason goes to the audit log and the Yönetici. A taken
+          payment is read back, because it is reversed. Stays open on a
+          refusal (another open ticket for this plate, another shift). */}
+      <ConfirmDialog
+        open={geriAlOnay}
+        onOpenChange={setGeriAlOnay}
+        title="Araç çıkmadı mı?"
+        description={
+          <>
+            <span className="block text-title font-semibold tracking-wide text-ink tnum">
+              {formatPlaka(bilet.plaka)}
+            </span>
+            {odemeAlindi(bilet) && (
+              <span className="mt-1 block font-semibold text-warn tnum">
+                {formatTL(bilet.tahsil_kurus)}
+                {bilet.odeme_yontemi ? ` · ${ODEME_ETIKET[bilet.odeme_yontemi]}` : ''} ödemesi geri
+                alınır.
+              </span>
+            )}
+            <span className="mt-1 block">
+              Bilet yeniden açılır; ücret çıkışta hesaplanır. Yönetici bilgilendirilir.
+            </span>
+          </>
+        }
+        confirmLabel="Bileti geri aç"
+        loading={geriAl.isPending}
+        error={geriAlHata}
+        onConfirm={() => {
+          if (geriAl.isPending) return
+          const sebep = geriAlSebep.trim()
+          if (!sebep) {
+            setGeriAlSebepHata('Sebep yazın — denetim kaydına geçer.')
+            return
+          }
+          setGeriAlHata(null)
+          geriAl.mutate(
+            { bilet_id: bilet.id, sebep },
+            {
+              onSuccess: () => setGeriAlOnay(false),
+              onError: (e) => setGeriAlHata(rpcErrorText(e, 'Bilet geri açılamadı.')),
+            },
+          )
+        }}
+      >
+        <Input
+          label="Sebep"
+          maxLength={200}
+          placeholder="Yanlış araca çıkış verildi"
+          value={geriAlSebep}
+          error={geriAlSebepHata}
+          onChange={(e) => {
+            setGeriAlSebep(e.target.value)
+            setGeriAlSebepHata(null)
+          }}
+        />
+      </ConfirmDialog>
     </div>
   )
 }
@@ -295,23 +410,40 @@ function PlakaSuphesi({ bilet }: { bilet: Bilet }) {
   const { data: fotoUrl } = useFotoUrl(bilet.giris_foto)
   const [yeni, setYeni] = useState(bilet.plaka)
   const [hata, setHata] = useState<string | null>(null)
+  // The plate AS IT WAS when the box opened — what the box reads back and
+  // what is sent. The field behind the box must not be able to change it.
+  const [onayPlaka, setOnayPlaka] = useState<string | null>(null)
+  const [onayHata, setOnayHata] = useState<string | null>(null)
   const calisiyor = dogrula.isPending || duzelt.isPending
   const degisti = yeni !== bilet.plaka
+  const onayDegisti = onayPlaka !== null && onayPlaka !== bilet.plaka
 
-  async function onayla() {
+  /** The button (and Enter) only ASKS (owner, 2026-11-14); the box acts. */
+  function sor() {
     if (calisiyor) return
     setHata(null)
     if (degisti && !plakaGecerli(yeni)) {
       setHata('Geçerli bir plaka girin.')
       return
     }
+    setOnayHata(null)
+    // Off the field (Enter leaves it focused): on a phone this also drops the
+    // keyboard that would cover the box's buttons.
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    setOnayPlaka(yeni)
+  }
+
+  async function onayla() {
+    if (calisiyor || onayPlaka === null) return
+    setOnayHata(null)
     try {
-      if (degisti) await duzelt.mutateAsync({ bilet_id: bilet.id, plaka: yeni })
+      if (onayDegisti) await duzelt.mutateAsync({ bilet_id: bilet.id, plaka: onayPlaka })
       else await dogrula.mutateAsync(bilet.id)
+      setOnayPlaka(null)
     } catch (e) {
       // The field keeps what was typed. The likeliest error is "another open
       // ticket already has this plate", and the sentence explains what next.
-      setHata(rpcErrorText(e, degisti ? 'Plaka değiştirilemedi.' : 'Doğrulanamadı.'))
+      setOnayHata(rpcErrorText(e, onayDegisti ? 'Plaka değiştirilemedi.' : 'Doğrulanamadı.'))
     }
   }
 
@@ -326,10 +458,10 @@ function PlakaSuphesi({ bilet }: { bilet: Bilet }) {
         hideLabel
         placeholder="Plakayı yazın"
         error={hata}
-        onEnter={() => void onayla()}
+        onEnter={sor}
       />
       <div className="flex gap-2">
-        <Button className="flex-1" loading={calisiyor} onClick={() => void onayla()}>
+        <Button className="flex-1" loading={calisiyor} onClick={sor}>
           {degisti ? 'Kaydet' : 'Doğru'}
         </Button>
         {degisti && (
@@ -345,6 +477,105 @@ function PlakaSuphesi({ bilet }: { bilet: Bilet }) {
           </Button>
         )}
       </div>
+
+      <ConfirmDialog
+        open={onayPlaka !== null}
+        onOpenChange={(o) => {
+          if (!o) setOnayPlaka(null)
+        }}
+        title={onayDegisti ? 'Plaka değiştirilsin mi?' : 'Plaka doğru mu?'}
+        description={
+          onayDegisti ? (
+            <span className="block text-title font-semibold tracking-wide text-ink tnum">
+              {formatPlaka(bilet.plaka)} → {formatPlaka(onayPlaka ?? yeni)}
+            </span>
+          ) : (
+            <>
+              <span className="block text-title font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(bilet.plaka)}
+              </span>
+              <span className="mt-1 block">Fotoğraftaki plakayla aynı.</span>
+            </>
+          )
+        }
+        confirmLabel={onayDegisti ? 'Kaydet' : 'Doğru'}
+        loading={calisiyor}
+        error={onayHata}
+        onConfirm={() => void onayla()}
+      />
     </PlakaKontrol>
+  )
+}
+
+const IPTAL_KARARI = ['bilet_iptal_onay']
+
+/**
+ * Who did what with this ticket's money (063, owner 2026-11-15): each
+ * payment's collector and approver, and for a cancelled ticket who asked and
+ * who cancelled. Yönetici only — Personel see nothing here (owner's choice),
+ * and the queries do not even run for them.
+ */
+function BiletKimKarti({ bilet }: { bilet: Bilet }) {
+  const { profile } = useAuth()
+  const yonetici = isYonetici(profile)
+  const adlar = useAdlar()
+  const iptal = bilet.durum === 'IPTAL'
+  const { data: tahsilatlar = [] } = useBiletTahsilatlari(bilet.id, yonetici)
+  // The requester is cleared from the ticket on approval (050); it survives
+  // only in the decision's audit row.
+  const { data: kararlar } = useSonKararlar(IPTAL_KARARI, [bilet.id], yonetici && iptal)
+  if (!yonetici) return null
+
+  const isteyen = adCoz(kararlar?.get(bilet.id)?.talep_eden, adlar)
+  const iptalEden = adCoz(bilet.iptal_by, adlar)
+  const iptalSatirlari: (KimSatiri | null)[] = iptal
+    ? [
+        isteyen ? { etiket: 'İptal isteyen', ad: isteyen, zaman: null } : null,
+        iptalEden ? { etiket: 'İptal eden', ad: iptalEden, zaman: bilet.iptal_at } : null,
+      ]
+    : []
+  if (tahsilatlar.length === 0 && !iptalSatirlari.some(Boolean)) return null
+
+  return (
+    <section>
+      <h2 className="mb-2 text-label font-medium tracking-wide text-faint uppercase">
+        Kim yaptı
+      </h2>
+      <div className="space-y-2">
+        {tahsilatlar.map((t) => (
+          <Card key={t.id} className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-body font-medium text-ink tnum">{formatTL(t.tutar_kurus)}</p>
+              <p className="mt-0.5 text-label text-faint tnum">
+                {formatTam(t.created_at)}
+                {t.durum ? ` · ${ONAY_ETIKET[t.durum]}` : ''}
+              </p>
+              <KimSatirlari
+                className="mt-1"
+                satirlar={tahsilatKisileri({
+                  tutar_kurus: t.tutar_kurus,
+                  iptal_of: t.iptal_of,
+                  durum: t.durum,
+                  toplayan: adCoz(t.created_by, adlar),
+                  onaylayan: adCoz(t.onaylayan, adlar),
+                  onay_at: t.onay_at,
+                })}
+              />
+            </div>
+            <span
+              className={`shrink-0 rounded-chip px-2.5 py-1 text-label font-medium ${ODEME_CHIP[t.yontem]}`}
+            >
+              {ODEME_ETIKET[t.yontem]}
+            </span>
+          </Card>
+        ))}
+        {iptalSatirlari.some(Boolean) && (
+          <Card>
+            <p className="text-body font-medium text-danger">İptal</p>
+            <KimSatirlari className="mt-1" satirlar={iptalSatirlari} />
+          </Card>
+        )}
+      </div>
+    </section>
   )
 }

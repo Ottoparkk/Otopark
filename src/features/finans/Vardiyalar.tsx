@@ -7,7 +7,9 @@ import {
   ScreenHeader,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
-import { useTumVardiyalar, useVardiyaZorlaKapat } from './api'
+import { useSonKararlar, useTumVardiyalar, useVardiyaZorlaKapat } from './api'
+import { vardiyaKapatanSatiri } from '../../lib/kimYapti'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
 import { useProfiller } from '../yonetim/api'
 import { formatTL, parseTLToKurus } from '../../lib/money'
 import { formatTam } from '../../lib/dates'
@@ -27,10 +29,18 @@ import type { Vardiya } from '../../lib/types'
  * "Tutuyor". Those are three different facts and only one of them is true
  * when nobody opened the drawer.
  */
+const VARDIYA_KARARLARI = ['vardiya_kapatma_onay', 'vardiya_zorla_kapat']
+
 export default function Vardiyalar() {
   const { data: liste = [], isPending, error, refetch } = useTumVardiyalar()
   const { data: profiller = [] } = useProfiller()
   const zorlaKapat = useVardiyaZorlaKapat()
+  // 063: the Yönetici who approved the close (or force-closed it) is only in
+  // audit_log (035, 025) — this screen is Yönetici-only, as audit is.
+  const { data: kararlar } = useSonKararlar(
+    VARDIYA_KARARLARI,
+    liste.filter((v) => v.kapanis_at !== null).map((v) => v.id),
+  )
 
   const [hedef, setHedef] = useState<Vardiya | null>(null)
   const [sayilan, setSayilan] = useState('')
@@ -105,6 +115,16 @@ export default function Vardiyalar() {
                       {formatTam(v.acilis_at)} ·{' '}
                       {acik ? 'devam ediyor' : sureMetni(v.acilis_at, v.kapanis_at)}
                     </p>
+                    {!acik &&
+                      (() => {
+                        const k = kararlar?.get(v.id)
+                        return (
+                          <KimSatirlari
+                            className="mt-1"
+                            satirlar={[vardiyaKapatanSatiri(k, k?.actor ? ad(k.actor) : null)]}
+                          />
+                        )
+                      })()}
                     {/* Only when it was not the operator: a normal close needs
                         no label, an unusual one does. */}
                     {!acik && v.kapanis_kaynak && v.kapanis_kaynak !== 'ELLE' && (

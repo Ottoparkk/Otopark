@@ -26,6 +26,9 @@ import {
 import { formatTL, parseTLToKurus } from '../../lib/money'
 import { ayAraligi, ayEkle, formatAy, formatTarih, istanbulAy, istanbulGun } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
+import { adCoz, kaydedenSatiri, tahsilatKisileri, type KimSatiri } from '../../lib/kimYapti'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
+import { useAdlar } from '../yonetim/api'
 import { IconArti, IconCop, IconKasa } from '../../components/ui/icons'
 import {
   ODEME_ETIKET,
@@ -61,6 +64,8 @@ type KasaSatiri = {
   duzenli: boolean
   /** Not written yet — projected from a rule, so it is not money that moved. */
   planlanan: boolean
+  /** 063: who collected / approved / entered it. Empty on a planned row. */
+  kisiler: KimSatiri[]
 }
 
 const CHIP_TON: Record<KasaSatiri['ton'], string> = {
@@ -77,7 +82,7 @@ const gunAzalan = (a: KasaSatiri, b: KasaSatiri) =>
  * A kasa row in list shape. Shared by the period list and the month list so
  * the two cannot drift in how they render the same record.
  */
-function kasaSatiri(k: KasaHareketi): KasaSatiri {
+function kasaSatiri(k: KasaHareketi, adlar: Map<string, string>): KasaSatiri {
   // ONE expression behind both the badge and the filter, so a row can never be
   // badged "Düzenli" and then be missing from the Düzenli list.
   const duzenliMi = k.tekrar_kural_id != null
@@ -92,6 +97,10 @@ function kasaSatiri(k: KasaHareketi): KasaSatiri {
     ton: duzenliMi ? 'accent' : 'neutral',
     duzenli: duzenliMi,
     planlanan: false,
+    // Pre-063 hand-made rows recorded nobody: no line rather than a guess.
+    kisiler: [kaydedenSatiri(adCoz(k.created_by, adlar), duzenliMi)].filter(
+      (x): x is KimSatiri => x !== null,
+    ),
   }
 }
 
@@ -100,6 +109,7 @@ export default function Kasa() {
   // Tümü, like Finans: this IS the list of işlemler, and opening it on a
   // 30-day window hides older rows behind a filter nobody was told about.
   const { donem, ozel, secim } = useDonem()
+  const adlar = useAdlar()
   /** '' = one-off. Otherwise the day of the month, 1-28. */
   const [tekrarGun, setTekrarGun] = useState('')
   const { bas, bit, hazir, ilkGunHatasi } = useDonemAralik(donem, ozel)
@@ -131,6 +141,9 @@ export default function Kasa() {
   const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [hata, setHata] = useState<string | null>(null)
   const [silinecek, setSilinecek] = useState<string | null>(null)
+  // "Durdur" on a recurring rule only asks (owner, 2026-11-14).
+  const [durdurulacak, setDurdurulacak] = useState<(typeof kurallar)[number] | null>(null)
+  const [durdurHata, setDurdurHata] = useState<string | null>(null)
 
   // Moved here from the Finans home: this screen IS the expense ledger, so
   // the category split belongs beside the rows it summarises rather than on a
@@ -157,7 +170,7 @@ export default function Kasa() {
    * line from the till.
    */
   const satirlar = useMemo<KasaSatiri[]>(() => {
-    const kasa = liste.map(kasaSatiri)
+    const kasa = liste.map((k) => kasaSatiri(k, adlar))
     const tahsil: KasaSatiri[] = tahsilatlar.map((t) => ({
       id: t.id,
       kasaId: null,
@@ -171,9 +184,18 @@ export default function Kasa() {
       // is one-off by definition and drops out under the filter.
       duzenli: false,
       planlanan: false,
+      // Only ONAYLANDI rows are here: collected by, then approved by.
+      kisiler: tahsilatKisileri({
+        tutar_kurus: t.tutar_kurus,
+        iptal_of: t.iptal_of,
+        durum: t.durum,
+        toplayan: adCoz(t.created_by, adlar),
+        onaylayan: adCoz(t.onaylayan, adlar),
+        onay_at: t.onay_at,
+      }),
     }))
     return [...kasa, ...tahsil].sort(gunAzalan)
-  }, [liste, tahsilatlar])
+  }, [liste, tahsilatlar, adlar])
 
   /**
    * The filter offers itself only where the concept exists at all — an
@@ -260,14 +282,17 @@ export default function Kasa() {
         ton: 'warn',
         duzenli: true,
         planlanan: true,
+        kisiler: [],
       }))
   }, [ayModu, ay, ayKasa.data, kurallar])
 
   const gosterilen = useMemo<KasaSatiri[]>(() => {
     if (!ayModu) return satirlar
-    const gercek = (ayKasa.data ?? []).filter((k) => k.tekrar_kural_id != null).map(kasaSatiri)
+    const gercek = (ayKasa.data ?? [])
+      .filter((k) => k.tekrar_kural_id != null)
+      .map((k) => kasaSatiri(k, adlar))
     return [...gercek, ...planlanan].sort(gunAzalan)
-  }, [ayModu, satirlar, ayKasa.data, planlanan])
+  }, [ayModu, satirlar, ayKasa.data, planlanan, adlar])
 
   /** Signed, so a month of rent and electricity reads as one negative number
    *  rather than a turnover figure that hides which way the money went. */
@@ -411,7 +436,10 @@ export default function Kasa() {
                       this ends the rule, it does not undo the money. */}
                   <button
                     type="button"
-                    onClick={() => void tekrarDurdur.mutateAsync(k.id)}
+                    onClick={() => {
+                      setDurdurHata(null)
+                      setDurdurulacak(k)
+                    }}
                     className="min-h-[44px] shrink-0 text-label font-medium text-accent"
                   >
                     Durdur
@@ -537,6 +565,7 @@ export default function Kasa() {
                       </span>
                     )}
                   </p>
+                  <KimSatirlari className="mt-1" satirlar={r.kisiler} />
                 </div>
                 <span
                   className={`shrink-0 text-body font-semibold tnum ${
@@ -672,6 +701,42 @@ export default function Kasa() {
         onConfirm={() => {
           if (!silinecek) return
           void sil.mutateAsync(silinecek).then(() => setSilinecek(null))
+        }}
+      />
+
+      {/* Was one tap, and a refusal was swallowed. Stopping ends the rule; the
+          entries it already wrote stay in the kasa. */}
+      <ConfirmDialog
+        open={durdurulacak !== null}
+        onOpenChange={(a) => {
+          if (!a) setDurdurulacak(null)
+        }}
+        tone="danger"
+        title="Tekrarlayan kayıt durdurulsun mu?"
+        description={
+          durdurulacak ? (
+            <>
+              <span className="block font-semibold text-ink tnum">
+                {durdurulacak.tur === 'GIDER' ? '−' : '+'}
+                {formatTL(durdurulacak.tutar_kurus)} {durdurulacak.aciklama}
+              </span>
+              <span className="mt-1 block">
+                Her ayın {durdurulacak.odeme_gunu}. günü. Bundan sonra yazılmaz; yazılmış
+                kayıtlar kasada kalır.
+              </span>
+            </>
+          ) : undefined
+        }
+        confirmLabel="Durdur"
+        loading={tekrarDurdur.isPending}
+        error={durdurHata}
+        onConfirm={() => {
+          if (!durdurulacak || tekrarDurdur.isPending) return
+          setDurdurHata(null)
+          tekrarDurdur
+            .mutateAsync(durdurulacak.id)
+            .then(() => setDurdurulacak(null))
+            .catch((e) => setDurdurHata(rpcErrorText(e, 'Kayıt durdurulamadı.')))
         }}
       />
     </div>

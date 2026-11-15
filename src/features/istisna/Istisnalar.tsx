@@ -14,6 +14,7 @@ import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
 import { useIstisnaBiletAc, useIstisnaCoz, useIstisnalar, type IstisnaBiletSonuc } from './api'
 import { useKayitSil } from '../cop/api'
 import { useFotoUrl } from '../gise/api'
+import { cikisLinki } from '../gise/cikisLink'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
@@ -107,7 +108,11 @@ export default function Istisnalar() {
                   setKapatHata(null)
                   setKapatilacak(i)
                 }}
-                onCikis={() => navigate('/gise/cikis')}
+                onCikis={(plaka) => {
+                  // Gişe opens with this plate in its search (cikisLink.ts).
+                  const l = cikisLinki(plaka)
+                  navigate(l.to, { state: l.state })
+                }}
                 onSil={
                   yonetici
                     ? () => {
@@ -175,7 +180,7 @@ function IstisnaKart({
   istisna: Istisna
   onAcildi: (s: IstisnaBiletSonuc) => void
   onKapat: () => void
-  onCikis: () => void
+  onCikis: (plaka: string) => void
   onSil?: () => void
 }) {
   const { data: fotoUrl } = useFotoUrl(i.foto_path)
@@ -310,7 +315,7 @@ function IstisnaKart({
             </Button>
           )}
           {e.cikis && (
-            <Button variant="secondary" className="flex-1" disabled={ac.isPending} onClick={onCikis}>
+            <Button variant="secondary" className="flex-1" disabled={ac.isPending} onClick={() => onCikis(plaka)}>
               Çıkış
             </Button>
           )}

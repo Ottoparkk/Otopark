@@ -5,6 +5,7 @@ import { donemAralik, type Donem, type DonemAralik } from '../yonetim/components
 import { gunEkle, istanbulGun, istanbulSaat } from '../../lib/dates'
 import { dakikaFarki } from '../../lib/sure'
 import { kararAksiyonu, kararSatiri, type AuditSatiri, type Karar, type KararSonuc, type KararTur } from './kararlar'
+import { sonKararHaritasi, type KararAuditSatiri, type SonKarar } from '../../lib/kimYapti'
 import type {
   Bilet,
   BiletDurum,
@@ -430,7 +431,10 @@ export function useKasaSil() {
 
 /* ============================================================== history === */
 
-export function useBiletGecmisi(filtre: { durum?: BiletDurum | 'TUMU'; q?: string }) {
+/** A ticket status, all of them, or (065) only the free exits. */
+export type BiletFiltre = BiletDurum | 'TUMU' | 'UCRETSIZ'
+
+export function useBiletGecmisi(filtre: { durum?: BiletFiltre; q?: string }) {
   return useQuery({
     queryKey: ['bilet_gecmisi', filtre.durum ?? 'TUMU', filtre.q ?? ''],
     queryFn: async (): Promise<Bilet[]> => {
@@ -443,7 +447,8 @@ export function useBiletGecmisi(filtre: { durum?: BiletDurum | 'TUMU'; q?: strin
         .order('created_at', { ascending: false })
         .limit(200)
 
-      if (filtre.durum && filtre.durum !== 'TUMU') q = q.eq('durum', filtre.durum)
+      if (filtre.durum === 'UCRETSIZ') q = q.not('ucretsiz_sebep', 'is', null)
+      else if (filtre.durum && filtre.durum !== 'TUMU') q = q.eq('durum', filtre.durum)
       if (filtre.q) q = q.ilike('plaka', `%${filtre.q}%`)
 
       const { data, error } = await q
@@ -549,8 +554,12 @@ export interface OnayKayit {
   created_at: string
   durum: OnayDurum
   etiket: string
+  /** The collector's name ('Otomatik' for a system write). */
   personel: string
   onay_notu: string | null
+  /** 063: the approver's or rejecter's NAME and when. Absent before 063 runs. */
+  onaylayan?: string | null
+  onay_at?: string | null
 }
 
 /**
@@ -807,6 +816,30 @@ export function useBiletIptalReddet() {
  * (see kararlar.ts). RLS `audit_select` is Yönetici-only, which is also who
  * can open the Onay screen.
  */
+/**
+ * The latest decision among `actions` for each of `ids` (063's "who did it":
+ * a shift's approver, a cancelled ticket's requester). Yönetici-only, like
+ * every audit read; the caller passes `enabled` accordingly.
+ */
+export function useSonKararlar(actions: string[], ids: string[], enabled = true) {
+  const anahtar = [...ids].sort()
+  return useQuery({
+    enabled: enabled && ids.length > 0,
+    queryKey: ['son_kararlar', actions, anahtar],
+    queryFn: async (): Promise<Map<string, SonKarar>> => {
+      const { data, error } = await supabase
+        .from('audit_log')
+        .select('actor, action, row_id, detay, created_at')
+        .in('action', actions)
+        .in('row_id', anahtar)
+        .order('created_at', { ascending: false })
+        .limit(500)
+      if (error) throw error
+      return sonKararHaritasi((data ?? []) as KararAuditSatiri[], actions)
+    },
+  })
+}
+
 export function useKararlar(tur: KararTur, sonuc: KararSonuc, enabled = true) {
   return useQuery({
     enabled,

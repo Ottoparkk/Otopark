@@ -42,6 +42,11 @@ const TON: Record<BildirimTur, string> = {
   // 058: a routine daily summary, like KAMERA_HAREKET — neutral. A day with
   // no cars says so in its body; the tone does not pre-announce it.
   KAMERA_GUNLUK: 'bg-field text-soft',
+  // 062: news, not a problem — the same tone as a new signup.
+  YENI_ABONMAN: 'bg-accent-soft text-accent',
+  // 065: money not taken, on purpose and with a reason — worth a look, not
+  // an alarm (an unexplained fee change stays danger).
+  UCRETSIZ_CIKIS: 'bg-warn-soft text-warn',
 }
 
 export default function Bildirimler() {

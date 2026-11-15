@@ -32,6 +32,13 @@ import {
 
 const kisaTL = (kurus: number) => formatTL(kurus, { decimals: 0 })
 
+/** Method figures on the brand panel: the payment-chip hues, lifted for teal. */
+const YONTEM_RENK: Record<OdemeYontemi, string> = {
+  NAKIT: 'text-on-brand-nakit',
+  KREDI_KARTI: 'text-on-brand-kart',
+  HAVALE: 'text-on-brand-havale',
+}
+
 /**
  * The Finans home.
  *
@@ -262,7 +269,11 @@ export default function Finans() {
                 <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/15 pt-3.5">
                   {yontemNet.map((y) => (
                     <div key={y.yontem}>
-                      <p className="text-lead font-semibold tnum">{kisaTL(y.net)}</p>
+                      {/* Each method in its own colour, as on the payment
+                          buttons (owner, 2026-11-15). */}
+                      <p className={`text-lead font-semibold tnum ${YONTEM_RENK[y.yontem]}`}>
+                        {kisaTL(y.net)}
+                      </p>
                       <p className="text-label text-on-brand-soft">{ODEME_ETIKET[y.yontem]}</p>
                     </div>
                   ))}

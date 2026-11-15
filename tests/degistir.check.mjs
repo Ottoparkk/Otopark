@@ -20,6 +20,7 @@ import {
   yereldenISO,
   degistirBaslangic,
   degisiklikler,
+  girisSaatiSonucu,
 } from '../src/features/gise/degistir.ts'
 
 let gecen = 0
@@ -182,6 +183,39 @@ esit('hata önceliği: saat, sonra ücret',
 esit('hata önceliği: ücret, sonra sebep',
   degisiklikler(BAS, taslakOf(BAS, { ucretMetni: 'x' }), NOW, ARACLAR).alan,
   'ucret')
+
+// ---------------------------------------------------------------------------
+// Araç Girişi'nde giriş saati (059) — "Değiştir" ile aynı sınırlar. NOW =
+// 11:00:30Z = İstanbul 14:00.
+esit('şimdi (kapalı): saat yok, sebep gerekmez',
+  girisSaatiSonucu(null, '', NOW), { hata: null, girisISO: null, sebep: null })
+esit('alan açık ama şu anki dakika: şimdi sayılır, sebep gerekmez',
+  girisSaatiSonucu('2026-11-02T14:00', '', NOW), { hata: null, girisISO: null, sebep: null })
+esit('3 saat önce + sebep',
+  girisSaatiSonucu('2026-11-02T11:00', '  Araç önceden girmiş ', NOW),
+  { hata: null, girisISO: '2026-11-02T08:00:00.000Z', sebep: 'Araç önceden girmiş' })
+esit('dünden',
+  girisSaatiSonucu('2026-11-01T23:15', 'x', NOW),
+  { hata: null, girisISO: '2026-11-01T20:15:00.000Z', sebep: 'x' })
+esit('sebep boş',
+  girisSaatiSonucu('2026-11-02T11:00', '   ', NOW),
+  { hata: 'Sebep yazın — denetim kaydına geçer.', alan: 'sebep' })
+esit('bir dakika ileri',
+  girisSaatiSonucu('2026-11-02T14:01', 'x', NOW),
+  { hata: 'Giriş saati ileri bir zaman olamaz.', alan: 'giris' })
+esit('bir yıldan eski',
+  girisSaatiSonucu('2025-11-02T13:59', 'x', NOW),
+  { hata: 'Giriş saati bir yıldan eski olamaz.', alan: 'giris' })
+esit('tam bir yıl önce: kabul',
+  girisSaatiSonucu('2025-11-02T14:01', 'x', NOW).hata, null)
+esit('boş alan (tarayıcı temizledi)',
+  girisSaatiSonucu('', 'x', NOW),
+  { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' })
+esit('olmayan gün',
+  girisSaatiSonucu('2026-02-30T10:00', 'x', NOW),
+  { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' })
+esit('hata önceliği: saat, sonra sebep',
+  girisSaatiSonucu('2030-01-01T00:00', '', NOW).alan, 'giris')
 
 console.log(`${gecen} geçti, ${kalan} kaldı (TZ=${process.env.TZ ?? 'sistem'})`)
 if (kalan > 0) process.exit(1)

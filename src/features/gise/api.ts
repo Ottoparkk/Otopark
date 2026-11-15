@@ -14,7 +14,9 @@ import type {
   ParkYeri,
   ParkYeriDurumu,
   PuanDurumu,
+  Tahsilat,
   Tarife,
+  UcretsizSebep,
 } from '../../lib/types'
 
 /**
@@ -239,6 +241,28 @@ export function useBilet(id: string | undefined) {
   })
 }
 
+/**
+ * A ticket's payments with their people (063, Yönetici only: the caller sets
+ * `enabled`). Personel RLS would show only their own shift's rows anyway.
+ * Not cached for long — a collection or a decision in Onay changes it.
+ */
+export function useBiletTahsilatlari(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['bilet_tahsilat', id],
+    enabled: enabled && Boolean(id),
+    queryFn: async (): Promise<Tahsilat[]> => {
+      const { data, error } = await supabase
+        .from('tahsilatlar')
+        .select('*')
+        .eq('bilet_id', id!)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      return data as Tahsilat[]
+    },
+    staleTime: 0,
+  })
+}
+
 /** rpc -> TABLE with exactly one row. */
 export function useGunlukOzet() {
   return useQuery({
@@ -380,6 +404,7 @@ export function useGiseInvalidate() {
     // operator is told "another car is here" about a choice the app made.
     void qc.invalidateQueries({ queryKey: ['park_yeri_durumu'] })
     void qc.invalidateQueries({ queryKey: ['dolu_yerler'] })
+    void qc.invalidateQueries({ queryKey: ['bilet_tahsilat'] })
   }
 }
 
@@ -395,6 +420,10 @@ export interface BiletAcGirdi {
   musteri_ad?: string | null
   musteri_tel?: string | null
   notlar?: string | null
+  /** 059: an entry time chosen by hand (ISO) and its required reason. Absent =
+   *  now, by the server's clock, exactly as before. */
+  giris_at?: string | null
+  sebep?: string | null
 }
 
 /**
@@ -416,6 +445,25 @@ export function useBiletAc() {
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 4000),
     mutationFn: async (girdi: BiletAcGirdi): Promise<string | null> => {
+      // A chosen time goes through bilet_ac_saatli: bilet_ac + the audited
+      // time correction (046) in ONE call, so a refused time never leaves a
+      // ticket open at "now". Same idempotency key, so retries stay safe.
+      if (girdi.giris_at) {
+        const { data, error } = await supabase.rpc('bilet_ac_saatli', {
+          p_plaka: girdi.plaka,
+          p_islem_id: girdi.islem_id,
+          p_foto: girdi.foto ?? null,
+          p_park_yeri_id: girdi.park_yeri_id ?? null,
+          p_arac_bilgi: girdi.arac_bilgi ?? null,
+          p_musteri_ad: girdi.musteri_ad ?? null,
+          p_musteri_tel: girdi.musteri_tel ?? null,
+          p_notlar: girdi.notlar ?? null,
+          p_giris_at: girdi.giris_at,
+          p_sebep: girdi.sebep ?? '',
+        })
+        if (error) throw error
+        return (data as string | null) ?? null
+      }
       const { data, error } = await supabase.rpc('bilet_ac', {
         p_plaka: girdi.plaka,
         p_islem_id: girdi.islem_id,
@@ -540,12 +588,76 @@ export function useBiletGeriAc() {
 }
 
 /**
+ * "Araç çıkmadı" for every other closed ticket (060, owner 2026-11-15): a
+ * person gave the exit to the wrong car, or the debt was already collected.
+ * Reason required; any payment is reversed by a counter-entry — a pending
+ * one drops out of Onay. Own shift for a Personel, all checked server-side
+ * (`bilet_cikis_geri_al`). Never retried, like `useBiletGeriAc`.
+ */
+export function useBiletCikisGeriAl() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: { bilet_id: string; sebep: string }) => {
+      const { error } = await supabase.rpc('bilet_cikis_geri_al', {
+        p_bilet_id: girdi.bilet_id,
+        p_sebep: girdi.sebep,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['cikan_biletler'] })
+      // The reversed payment leaves Onay and changes the till's count.
+      void qc.invalidateQueries({ queryKey: ['onay'] })
+      void qc.invalidateQueries({ queryKey: ['onay_ozet'] })
+      void qc.invalidateQueries({ queryKey: ['kasa'] })
+    },
+  })
+}
+
+/**
  * Closing a ticket takes money, so it NEVER retries.
  *
  * A silent retry on a payment is how a double charge happens. The operator is
  * standing right there: an explicit failure they can tap again is strictly
  * better than an automatic retry they cannot see.
  */
+export interface BiletUcretsizGirdi {
+  bilet_id: string
+  sebep: UcretsizSebep
+  not: string
+}
+
+/**
+ * 065: free exit — reason + required note, any role. Closes the ticket at
+ * 0 ₺ with no payment row; the Yönetici is notified. `retry: false`, like
+ * bilet_kapat: a second attempt on a ticket that did close is refused anyway.
+ */
+export function useBiletUcretsizCikis() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationKey: ['bilet_ucretsiz_cikis'],
+    retry: false,
+    mutationFn: async (girdi: BiletUcretsizGirdi): Promise<void> => {
+      const { error } = await supabase.rpc('bilet_ucretsiz_cikis', {
+        p_bilet_id: girdi.bilet_id,
+        p_sebep: girdi.sebep,
+        p_not: girdi.not.trim(),
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['cikan_biletler'] })
+    },
+  })
+}
+
 export function useBiletKapat() {
   const invalidate = useGiseInvalidate()
   return useMutation({

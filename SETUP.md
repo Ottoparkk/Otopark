@@ -108,8 +108,15 @@ Run these one at a time, in order, in the **SQL Editor**:
 | `supabase/migrations/056_tek_kapi_hareket.sql` | Single gate: the bridge's direction hint (seen entering / leaving / inside) only stops a wrong guess — no ghost entry for a car leaving without a ticket, no wrong close for a car entering with an old ticket, a car inside is never closed; "Giriş aç" on the new in-yard card |
 | `supabase/migrations/057_kamera_gunluk_turu.sql` | Notification type for 058 (`KAMERA_GUNLUK`) — its own file, for the same enum reason |
 | `supabase/migrations/058_kamera_gunluk_rapor.sql` | The nightly job (00:05) sends the Yönetici yesterday's camera summary: entries, exits, staff cards (and how many are still open); a day with no cars at all is reported too |
+| `supabase/migrations/059_giris_saatli.sql` | Araç Girişi can take an earlier entry date and time: opened and corrected in one call (`bilet_ac_saatli`), with the same rules as the ticket's "Değiştir" — reason required, audit log, Yönetici notified |
+| `supabase/migrations/060_cikis_geri_al.sql` | An exit given by mistake can be undone ("Araç çıkmadı" on any closed ticket, `bilet_cikis_geri_al`): the car is back inside with its first entry time, a taken payment is reversed by a counter-entry — reason required, own shift for Personel, Yönetici notified |
+| `supabase/migrations/061_yeni_abonman_bildirimi.sql` | New notification type `YENI_ABONMAN` (its own file: a new enum value cannot be used in the transaction that adds it) |
+| `supabase/migrations/062_abonman_odeme_gunu.sql` | Abonman by payment day ("Ayın 13'ü") instead of dates; Personel see abonmans, add them with the first payment (`abonman_ekle`, Yönetici notified with their name) and collect them (`abonman_tahsil` renews in the same call); editing, cancelling and deleting stay Yönetici-only |
+| `supabase/migrations/063_kim_yapti.sql` | Who did it: `onay_listesi` also returns the approver's / rejecter's name and time; every new kasa entry records who entered it (the signed-in user, or the rule's author for a recurring entry; restored-from-trash entries keep theirs) |
+| `supabase/migrations/064_ucretsiz_cikis_bildirimi.sql` | New notification type `UCRETSIZ_CIKIS` (its own file: a new enum value cannot be used in the transaction that adds it) |
+| `supabase/migrations/065_ucretsiz_cikis.sql` | Free exit (`bilet_ucretsiz_cikis`): any role lets a car out at 0 ₺ with a reason (Fiyat sordu, Polis, Ambulans, Personel aracı, Diğer) and a required note; no payment row, the Yönetici is notified with the person's name |
 
-**Run all of them, 001 through 058, in this order.** Stopping early leaves the
+**Run all of them, 001 through 065, in this order.** Stopping early leaves the
 app asking the database for things that do not exist yet. Each file is one
 transaction: if one fails it changes nothing — fix the cause and run the same
 file again, then continue.
@@ -180,7 +187,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 77** (as of migration 058). It stops
+The last block before that line is **PASS 82** (as of migration 065). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.

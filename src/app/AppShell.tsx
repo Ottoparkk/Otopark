@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router'
 import { useAuth } from './providers/AuthProvider'
 import { isYonetici } from '../lib/rbac'
 import {
+  IconAbonman,
   IconAraba,
   IconKisi,
   IconPanel,
@@ -10,6 +11,7 @@ import {
   IconZil,
 } from '../components/ui/icons'
 import { useOkunmamisSayisi } from '../features/settings/api'
+import { CekYenile } from '../components/ui/CekYenile'
 
 interface NavItem {
   to: string
@@ -37,6 +39,10 @@ export function AppShell() {
     // tab lit instead of dropping the highlight the moment a mode is picked.
     { to: '/gise', label: 'Gişe', Icon: IconAraba },
     { to: '/vardiya', label: 'Vardiya', Icon: IconVardiya },
+    // 062 (owner, 2026-11-15): Personel follow and collect abonmans, right
+    // after Vardiya. The Yönetici keeps it in the Yönetim menu (owner's
+    // choice), so their row stays at four.
+    ...(yonetici ? [] : [{ to: '/abonman', label: 'Abonman', Icon: IconAbonman }]),
     // Personel only, and not out of thrift: a Yönetici reaches Profil from
     // the Yönetim menu, while a Personel has no menu at all — without this
     // tab there is no way for them to sign out. Adding it for everyone would
@@ -101,6 +107,9 @@ export function AppShell() {
       <main className="mx-auto w-full max-w-[1100px] pb-[calc(72px+env(safe-area-inset-bottom))] md:px-6 md:pb-10">
         <Outlet />
       </main>
+
+      {/* Pull down at the top of any screen to refetch it (touch only). */}
+      <CekYenile />
 
       {/* ---------------------------------------------- mobile bottom nav */}
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/90 pb-[env(safe-area-inset-bottom)] shadow-nav backdrop-blur-lg md:hidden">

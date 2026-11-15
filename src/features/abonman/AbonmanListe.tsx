@@ -9,15 +9,27 @@ import {
   Select,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
-import { useAbonmanEkle, useAbonmanlar } from './api'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { YontemSecici } from '../../components/ui/YontemSecici'
+import { useAbonmanEkle, useAbonmanlar, type AbonmanGirdi } from './api'
 import { useParkYerleri } from '../gise/api'
+import { useAuth } from '../../app/providers/AuthProvider'
+import { isYonetici } from '../../lib/rbac'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL, parseTLToKurus } from '../../lib/money'
 import { normalizeTel } from '../../lib/telefon'
-import { formatTarih, gunEkle, gunFarki, istanbulGun } from '../../lib/dates'
+import { formatTarih, gunFarki, istanbulGun } from '../../lib/dates'
+import { ayinGunu, sonrakiYenileme } from '../../lib/abonman'
 import { rpcErrorText } from '../../lib/errors'
 import { IconAbonman, IconArti } from '../../components/ui/icons'
-import type { AbonmanDurum } from '../../lib/types'
+import { ODEME_ETIKET, type AbonmanDurum, type OdemeYontemi } from '../../lib/types'
+
+const GUNLER = Array.from({ length: 31 }, (_, i) => i + 1)
+
+/** Today's day of the month in Istanbul — the default payment day. */
+function bugununGunu(): number {
+  return Number(istanbulGun().slice(8, 10))
+}
 
 const FILTRELER: { value: AbonmanDurum | 'TUMU'; label: string }[] = [
   { value: 'AKTIF', label: 'Aktif' },
@@ -25,8 +37,16 @@ const FILTRELER: { value: AbonmanDurum | 'TUMU'; label: string }[] = [
   { value: 'TUMU', label: 'Tümü' },
 ]
 
+/**
+ * Abonmanlar (062, owner 2026-11-15): every staff role. Personel reach it from
+ * their bottom tab, the Yönetici from the Yönetim menu. Anyone may add one —
+ * with its first payment, a payment DAY instead of dates — and the Yönetici
+ * is told who added it.
+ */
 export default function AbonmanListe() {
   const navigate = useNavigate()
+  const { profile } = useAuth()
+  const yonetici = isYonetici(profile)
   const [filtre, setFiltre] = useState<AbonmanDurum | 'TUMU'>('AKTIF')
   const { data: liste = [], isPending, error, refetch } = useAbonmanlar(filtre)
   const { data: yerler = [] } = useParkYerleri()
@@ -36,17 +56,27 @@ export default function AbonmanListe() {
   const [plaka, setPlaka] = useState('')
   const [ad, setAd] = useState('')
   const [tel, setTel] = useState('')
-  const [bas, setBas] = useState(istanbulGun())
-  const [bit, setBit] = useState(gunEkle(29))
+  const [gun, setGun] = useState(bugununGunu)
   const [ucret, setUcret] = useState('')
   const [yer, setYer] = useState('')
+  // The first month, taken in the same form. The amount follows the monthly
+  // fee until it is typed into (a shorter first period may cost less).
+  const [tutar, setTutar] = useState('')
+  const [tutarElle, setTutarElle] = useState(false)
+  const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [hata, setHata] = useState<string | null>(null)
+  // The form only ASKS (owner, 2026-11-14): what is sent is frozen here and
+  // read back in the box; the box sends it.
+  const [onay, setOnay] = useState<AbonmanGirdi | null>(null)
+  const [onayHata, setOnayHata] = useState<string | null>(null)
+  const bitis = sonrakiYenileme(gun, istanbulGun())
 
   return (
     <div>
       <ScreenHeader
         title="Abonmanlar"
-        back="/yonetim"
+        // A Personel arrives from the bottom tab: there is nothing to go back to.
+        back={yonetici ? '/yonetim' : undefined}
         right={
           <button
             type="button"
@@ -54,10 +84,12 @@ export default function AbonmanListe() {
               setPlaka('')
               setAd('')
               setTel('')
-              setBas(istanbulGun())
-              setBit(gunEkle(29))
+              setGun(bugununGunu())
               setUcret('')
               setYer('')
+              setTutar('')
+              setTutarElle(false)
+              setYontem('NAKIT')
               setHata(null)
               setAcik(true)
             }}
@@ -96,7 +128,7 @@ export default function AbonmanListe() {
               <EmptyState
                 icon={<IconAbonman size={44} />}
                 title="Abonman yok"
-                hint="Aylık müşterileri buradan ekleyin; girişte otomatik tanınırlar."
+                hint="Aylık müşterileri buradan ekleyin; girişte tanınırlar."
               />
             }
           >
@@ -106,7 +138,7 @@ export default function AbonmanListe() {
                 <Card key={a.id} as="div">
                   <button
                     type="button"
-                    onClick={() => navigate(`/yonetim/abonman/${a.id}`)}
+                    onClick={() => navigate(`/abonman/${a.id}`)}
                     className="w-full text-left"
                   >
                     <div className="flex items-baseline justify-between gap-3">
@@ -118,7 +150,11 @@ export default function AbonmanListe() {
                       </span>
                     </div>
                     <p className="mt-1 truncate text-label text-faint">
-                      {a.musteri_ad || 'İsimsiz'} · {formatTarih(a.bitis)} tarihine kadar
+                      {a.musteri_ad || 'İsimsiz'}
+                    </p>
+                    <p className="truncate text-label text-faint tnum">
+                      {ayinGunu(a.yenileme_gunu ?? Number(a.bitis.slice(8, 10)))} ·{' '}
+                      {formatTarih(a.bitis)} tarihine kadar
                     </p>
                     {a.durum === 'AKTIF' && kalan <= 7 && (
                       <p className="mt-2 inline-block rounded-chip bg-warn-soft px-2.5 py-1 text-label font-medium text-warn">
@@ -157,35 +193,41 @@ export default function AbonmanListe() {
           }
           const kurus = parseTLToKurus(ucret || '0')
           if (kurus === null) {
-            setHata('Geçerli bir ücret girin.')
+            setHata('Geçerli bir aylık ücret girin.')
             return
           }
-          if (bit < bas) {
-            setHata('Bitiş tarihi başlangıçtan önce olamaz.')
+          const ilk = parseTLToKurus((tutarElle ? tutar : ucret) || '0')
+          if (ilk === null || ilk < 0) {
+            setHata('Geçerli bir ilk ödeme tutarı girin.')
             return
           }
-          void ekle
-            .mutateAsync({
-              plaka: p,
-              musteri_ad: ad.trim(),
-              // normalizeTel, not a bare digit strip: an operator types the
-              // trunk zero and the server refuses eleven digits outright.
-              musteri_tel: normalizeTel(tel) || null,
-              baslangic: bas,
-              bitis: bit,
-              ucret_kurus: kurus,
-              park_yeri_id: yer || null,
-              notlar: null,
-            })
-            .then(() => setAcik(false))
-            .catch((e) =>
-              setHata(
-                rpcErrorText(
-                  e,
-                  'Abonman eklenemedi. Aynı plakada çakışan bir dönem olabilir.',
-                ),
-              ),
-            )
+          // The server says the same; a Yönetici may add a free abonman.
+          if (ilk === 0 && !yonetici) {
+            setHata('İlk ödeme tutarını girin.')
+            return
+          }
+          if (ilk > 0 && !yontem) {
+            setHata('Ödeme yöntemi seçin.')
+            return
+          }
+          setHata(null)
+          setOnayHata(null)
+          setOnay({
+            plaka: p,
+            musteri_ad: ad.trim(),
+            // normalizeTel, not a bare digit strip: an operator types the
+            // trunk zero and the server refuses eleven digits outright.
+            musteri_tel: normalizeTel(tel) || null,
+            ucret_kurus: kurus,
+            yenileme_gunu: gun,
+            park_yeri_id: yer || null,
+            notlar: null,
+            tutar_kurus: ilk,
+            yontem: ilk > 0 ? yontem : null,
+          })
+          // One box at a time: the form steps aside while the box reads it
+          // back, and comes back unchanged on "Vazgeç".
+          setAcik(false)
         }}
       >
         <Input
@@ -205,16 +247,24 @@ export default function AbonmanListe() {
           placeholder="5XXXXXXXXX"
           maxLength={10}
         />
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Başlangıç" type="date" value={bas} onChange={(e) => setBas(e.target.value)} />
-          <Input label="Bitiş" type="date" value={bit} onChange={(e) => setBit(e.target.value)} />
-        </div>
         <Input
           label="Aylık ücret (₺)"
           value={ucret}
           onChange={(e) => setUcret(e.target.value)}
           inputMode="decimal"
         />
+        <Select
+          label="Ödeme günü"
+          value={String(gun)}
+          onChange={(e) => setGun(Number(e.target.value))}
+          hint={bitis ? `Geçerli: bugün — ${formatTarih(bitis)}` : undefined}
+        >
+          {GUNLER.map((n) => (
+            <option key={n} value={n}>
+              {ayinGunu(n)}
+            </option>
+          ))}
+        </Select>
         <Select
           label="Ayrılmış yer (isteğe bağlı)"
           value={yer}
@@ -229,7 +279,69 @@ export default function AbonmanListe() {
               </option>
             ))}
         </Select>
+
+        <div className="space-y-3 border-t border-divider pt-4">
+          <p className="text-label font-medium tracking-wide text-faint uppercase">İlk ödeme</p>
+          <Input
+            label="Tutar (₺)"
+            value={tutarElle ? tutar : ucret}
+            onChange={(e) => {
+              setTutarElle(true)
+              setTutar(e.target.value)
+            }}
+            inputMode="decimal"
+          />
+          <YontemSecici value={yontem} onChange={setYontem} />
+        </div>
       </FormModal>
+
+      {/* The read-back (owner, 2026-11-14). Stays open on a refusal (an
+          overlapping abonman, no open shift) so the reason is read here. */}
+      <ConfirmDialog
+        open={onay !== null}
+        onOpenChange={(o) => {
+          if (o || ekle.isPending) return
+          setOnay(null)
+          setAcik(true)
+        }}
+        title="Abonman eklensin mi?"
+        description={
+          onay && (
+            <>
+              <span className="block text-title font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(onay.plaka)}
+              </span>
+              <span className="mt-1 block tnum">
+                {formatTL(onay.ucret_kurus)} / ay · {ayinGunu(onay.yenileme_gunu)}
+              </span>
+              <span className="block tnum">
+                {formatTarih(sonrakiYenileme(onay.yenileme_gunu, istanbulGun()) ?? '')} tarihine
+                kadar geçerli.
+              </span>
+              <span className="mt-1 block font-semibold text-warn tnum">
+                {onay.tutar_kurus > 0 && onay.yontem
+                  ? `İlk ödeme ${formatTL(onay.tutar_kurus)} · ${ODEME_ETIKET[onay.yontem]}`
+                  : 'İlk ödeme alınmadı'}
+              </span>
+            </>
+          )
+        }
+        confirmLabel="Ekle"
+        loading={ekle.isPending}
+        error={onayHata}
+        onConfirm={() => {
+          if (!onay || ekle.isPending) return
+          setOnayHata(null)
+          ekle
+            .mutateAsync(onay)
+            .then(() => setOnay(null))
+            .catch((e) =>
+              setOnayHata(
+                rpcErrorText(e, 'Abonman eklenemedi. Aynı plakada çakışan bir dönem olabilir.'),
+              ),
+            )
+        }}
+      />
     </div>
   )
 }

@@ -7,7 +7,8 @@ import {
   ListeDurumu,
   ScreenHeader,
 } from '../../components/ui/primitives'
-import { useBiletGecmisi } from './api'
+import { useBiletGecmisi, type BiletFiltre } from './api'
+import { ucretsizEtiket } from '../../lib/ucretsiz'
 import { IstatKutu } from '../yonetim/components'
 import { formatPlaka } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
@@ -22,16 +23,17 @@ import {
   ODEME_ETIKET,
   ONAY_CHIP,
   ONAY_ETIKET,
-  type BiletDurum,
   type OdemeYontemi,
 } from '../../lib/types'
 import { biletBorcu, odemeAlindi, onayDurumu } from '../../lib/bilet'
 
-const FILTRELER: { value: BiletDurum | 'TUMU'; label: string }[] = [
+const FILTRELER: { value: BiletFiltre; label: string }[] = [
   { value: 'TUMU', label: 'Tümü' },
   { value: 'ACIK', label: 'İçeride' },
   { value: 'KAPALI', label: 'Çıktı' },
   { value: 'IPTAL', label: 'İptal' },
+  // 065: free exits (reason + note), to look them over in one place.
+  { value: 'UCRETSIZ', label: 'Ücretsiz' },
 ]
 
 export default function Biletler() {
@@ -39,7 +41,7 @@ export default function Biletler() {
   // than a component, but the rule is the same one BiletKart documents.
   const adlar = useAdlar()
   const navigate = useNavigate()
-  const [durum, setDurum] = useState<BiletDurum | 'TUMU'>('TUMU')
+  const [durum, setDurum] = useState<BiletFiltre>('TUMU')
   const [q, setQ] = useState('')
   const { data: liste = [], isPending, error, refetch } = useBiletGecmisi({ durum, q })
 
@@ -223,10 +225,18 @@ export default function Biletler() {
                         Abonman
                       </span>
                     )}
-                    {b.ucret_degistirildi && (
-                      <span className="rounded-chip bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger">
-                        Ücret değişti
+                    {/* A free exit names itself; the generic "Ücret değişti"
+                        would only repeat it in a louder colour. */}
+                    {b.ucretsiz_sebep ? (
+                      <span className="rounded-chip bg-warn-soft px-2 py-0.5 text-micro font-medium text-warn">
+                        Ücretsiz · {ucretsizEtiket(b.ucretsiz_sebep)}
                       </span>
+                    ) : (
+                      b.ucret_degistirildi && (
+                        <span className="rounded-chip bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger">
+                          Ücret değişti
+                        </span>
+                      )
                     )}
                     {b.kayip_bilet && (
                       <span className="rounded-chip bg-warn-soft px-2 py-0.5 text-micro font-medium text-warn">

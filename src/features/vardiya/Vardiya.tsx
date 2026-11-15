@@ -497,11 +497,21 @@ export default function Vardiya() {
           )
         ) : (
           <>
+            {/* No help text under these fields (owner, 2026-11-15: too much
+                to read). What each one does, for whoever changes them:
+                - Otomatik açılış saati: the till shift opens by itself at this
+                  hour. Off, a shift nobody opened means the cash collected
+                  meanwhile shows up in no count.
+                - Açılış nakdi: the change in the drawer of an automatically
+                  opened shift. Nobody counts it, so this figure is used; if it
+                  is wrong every close shows that much difference.
+                - Kapanma eşiği: a shift open this long is closed by itself,
+                  without a count, difference left empty. 4-72 hours; the
+                  validation message (vardiyaAyar.ts) states the range. */}
             <Select
               label="Otomatik açılış saati"
               value={ayarTaslak.otoSaat}
               onChange={(e) => setAyarTaslak({ ...ayarTaslak, otoSaat: e.target.value })}
-              hint="Bu saatte kasa vardiyası kendiliğinden açılır. Kapalıyken vardiyayı açmak unutulursa, o sırada tahsil edilen nakit hiçbir sayımda görünmez."
             >
               <option value="">Kapalı — elle açılır</option>
               {SAAT_SECENEKLERI.map((s) => (
@@ -516,7 +526,6 @@ export default function Vardiya() {
               onChange={(e) => setAyarTaslak({ ...ayarTaslak, acilisNakit: e.target.value })}
               inputMode="decimal"
               disabled={!ayarTaslak.otoSaat}
-              hint="Otomatik açılan vardiyanın kasasında duran para üstü. Kimse saymadığı için burada yazan tutar kullanılır — yanlışsa her kapanışta o kadar fark çıkar."
             />
             <Input
               label="Vardiya kapanma eşiği (saat)"
@@ -525,7 +534,6 @@ export default function Vardiya() {
                 setAyarTaslak({ ...ayarTaslak, esik: digitsOnly(e.target.value, 2) })
               }
               inputMode="numeric"
-              hint="Bu kadar süredir açık kalan vardiya otomatik kapatılır — nakit sayılmadan, fark boş bırakılarak. 4-72 saat."
             />
           </>
         )}

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import {
@@ -8,6 +8,7 @@ import {
   EmptyState,
   FloatingBar,
   Input,
+  Label,
   ListeDurumu,
   ScreenHeader,
 } from '../../components/ui/primitives'
@@ -30,6 +31,7 @@ import {
   useAyarlar,
   useBilet,
   useBiletKapat,
+  useBiletUcretsizCikis,
   useCikanBiletler,
   type OdemeFiltre,
   type OnayFiltre,
@@ -60,19 +62,23 @@ import {
 } from '../../components/ui/icons'
 import {
   ODEME_DURUM_ETIKET,
+  ODEME_ETIKET,
   ONAY_ETIKET,
   type AcikBilet,
   type OdemeYontemi,
 } from '../../lib/types'
 import { onayDurumu, zatenKapandi } from '../../lib/bilet'
+import { UCRETSIZ_NOT_MAX, UCRETSIZ_SEBEPLER, ucretsizEtiket, ucretsizHatasi } from '../../lib/ucretsiz'
+import type { UcretsizSebep } from '../../lib/types'
 
-type Filtre = 'TUMU' | 'ICERIDE' | 'CIKAN'
+// Two views, no "Tümü" (owner, 2026-11-15): the list is either the cars still
+// here or the ones that left, and it opens on İçeride.
+type Filtre = 'ICERIDE' | 'CIKAN'
 
 // The icons are the ones the rows below already carry — a car on an open
 // ticket, the exit arrow on a closed one — so a chip looks like what it shows
-// (owner, 2026-10-31). "Tümü" has none: it is both.
+// (owner, 2026-10-31).
 const FILTRELER: { deger: Filtre; etiket: string; ikon?: ReactNode }[] = [
-  { deger: 'TUMU', etiket: 'Tümü' },
   { deger: 'ICERIDE', etiket: 'İçeride', ikon: <IconAraba size={18} /> },
   { deger: 'CIKAN', etiket: 'Çıkanlar', ikon: <IconCikis size={18} /> },
 ]
@@ -83,7 +89,7 @@ const FILTRELER: { deger: Filtre; etiket: string; ikon?: ReactNode }[] = [
  *
  * `role="tab"` would be a promise the screen makes and then breaks: a tab owns
  * a tabpanel and answers arrow keys via roving tabindex, and neither is true
- * here — "Tümü" shows both sections at once, so there is no one panel to own.
+ * here.
  * `aria-pressed` describes exactly what this is (a pressed filter) and works
  * with plain Tab navigation, so nothing has to be simulated.
  *
@@ -238,6 +244,7 @@ export function AracListesi({
   error,
   refetch,
   onSec,
+  aramaOdak = false,
 }: {
   sorgu: string
   setSorgu: (v: string) => void
@@ -246,6 +253,8 @@ export function AracListesi({
   error: unknown
   refetch: () => void
   onSec: (b: AcikBilet) => void
+  /** Arrived as "Çıkış" from Çözülmemiş kayıtlar: cursor in the search. */
+  aramaOdak?: boolean
 }) {
   const navigate = useNavigate()
   const yonetici = isYonetici(useAuth().profile)
@@ -255,12 +264,16 @@ export function AracListesi({
   const adlar = useAdlar()
   // F14 (1.4.2): the "Terk edilmiş" threshold also marks long stays here.
   const { data: ayarlar } = useAyarlar()
-  const [filtre, setFiltre] = useState<Filtre>('TUMU')
+  const [filtre, setFiltre] = useState<Filtre>('ICERIDE')
+  const aramaRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (aramaOdak) aramaRef.current?.scrollIntoView({ block: 'start' })
+  }, [aramaOdak])
   const [onay, setOnay] = useState<OnayFiltre>('TUMU')
   const [odeme, setOdeme] = useState<OdemeFiltre>('TUMU')
 
-  const iceridiGoster = filtre !== 'CIKAN'
-  const cikanGoster = filtre !== 'ICERIDE'
+  const iceridiGoster = filtre === 'ICERIDE'
+  const cikanGoster = filtre === 'CIKAN'
 
   // Skipped entirely while the filter hides it — a gate phone on mobile data
   // should not pull closed tickets nobody asked to see.
@@ -276,7 +289,15 @@ export function AracListesi({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="px-5">
+      <div ref={aramaRef} className="scroll-mt-4 px-5">
+        {/* Arrived as "Çıkış": say what to do here — on a phone the page
+            otherwise looks like the plain gate, and iOS does not open the
+            keyboard for a focus the user did not tap. */}
+        {aramaOdak && (
+          <p className="mb-3 rounded-field bg-accent-soft px-3 py-2 text-label font-medium text-accent">
+            Çıkan aracı listeden seçin.
+          </p>
+        )}
         <div className="relative">
           <IconAra
             size={20}
@@ -293,6 +314,7 @@ export function AracListesi({
             autoCorrect="off"
             spellCheck={false}
             className="pl-11 tnum"
+            autoFocus={aramaOdak}
           />
         </div>
       </div>
@@ -480,7 +502,12 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const yonetici = isYonetici(useAuth().profile)
   const yerKodlari = useYerKodlari()
   const { data: ayarlar } = useAyarlar()
-  const { data: onizleme, isPending: ucretYukleniyor } = useUcretOnizleme(bilet)
+  const {
+    data: onizleme,
+    isPending: ucretYukleniyor,
+    isError: ucretHatali,
+    refetch: ucretYenile,
+  } = useUcretOnizleme(bilet)
   const { data: puan } = usePuanDurumu(bilet.plaka, Boolean(ayarlar?.puan_aktif))
   // The full row — photos, facts, customer. `bilet` is the slim list
   // projection (AcikBilet), which carries none of them.
@@ -489,6 +516,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const aksiyon = useBiletAksiyonlari(tam, { onSilindi: onKapat })
 
   const kapat = useBiletKapat()
+  const ucretsiz = useBiletUcretsizCikis()
   const puanKullan = usePuanKullan()
   const puanGeriAl = usePuanGeriAl()
 
@@ -500,11 +528,28 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const [degistirAcik, setDegistirAcik] = useState(false)
   const [override, setOverride] = useState<{ kurus: number; sebep: string } | null>(null)
   const [cikisOnay, setCikisOnay] = useState(false)
+  // The box in front of "Tahsil Et" / "Çıkışı Kaydet" (owner, 2026-11-14:
+  // every critical action is confirmed) and in front of "puan geri al".
+  const [tahsilOnay, setTahsilOnay] = useState(false)
+  const [puanGeriOnay, setPuanGeriOnay] = useState(false)
+  const [puanGeriHata, setPuanGeriHata] = useState<string | null>(null)
   // 054: the camera closed this ticket while it was on screen.
   const [kapandi, setKapandi] = useState(false)
   const [sonuc, setSonuc] = useState<{ tahsil: number; ucret: number; indirim: number } | null>(
     null,
   )
+  // 065 (owner, 2026-11-15): free exit — a car that only asked the price, the
+  // police… Reason + REQUIRED note in the form; the form only asks, the box
+  // reads it back and sends it (owner, 2026-11-14).
+  const [ucretsizAcik, setUcretsizAcik] = useState(false)
+  const [ucretsizSebep, setUcretsizSebep] = useState<UcretsizSebep | null>(null)
+  const [ucretsizNot, setUcretsizNot] = useState('')
+  const [ucretsizFormHata, setUcretsizFormHata] = useState<string | null>(null)
+  const [ucretsizOnay, setUcretsizOnay] = useState<{ sebep: UcretsizSebep; not: string } | null>(
+    null,
+  )
+  const [ucretsizHata, setUcretsizHata] = useState<string | null>(null)
+  const [ucretsizBitti, setUcretsizBitti] = useState<string | null>(null)
 
   const abonman = Boolean(bilet.abonman_id)
   const brutKurus = override?.kurus ?? onizleme ?? 0
@@ -524,8 +569,37 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
     return Math.min(puan.bakiye, Math.floor(netKurus / kurusPerPuan))
   }, [puan, kurusPerPuan, netKurus])
 
+  /**
+   * "Tahsil Et" / "Çıkışı Kaydet" only ASKS; the money is taken from the box.
+   * The checks run first, so the box never opens on something that would be
+   * refused — and never before the fee is known: while it loads the button
+   * reads "Çıkışı Kaydet" (no fee yet), and a box saying "free exit" for a
+   * car that owes money is exactly the mistake the box is there to stop.
+   */
+  function tahsilSor() {
+    if (kapat.isPending) return
+    setHata(null)
+    if (!abonman && override === null && onizleme === undefined) {
+      // A failed lookup is asked again NOW: left to the 30-second refetch,
+      // the car could not leave for half a minute.
+      if (ucretHatali) {
+        void ucretYenile()
+        setHata('Ücret alınamadı, yeniden soruluyor. Bir saniye sonra tekrar dokunun.')
+        return
+      }
+      setHata('Ücret henüz hesaplanmadı. Bir saniye bekleyip tekrar deneyin.')
+      return
+    }
+    if (odemeGerekli && !yontem) {
+      setHata('Ödeme yöntemi seçin.')
+      return
+    }
+    setTahsilOnay(true)
+  }
+
   /** `tahsil = false`: the car leaves, the money is not taken and stays owed. */
   async function tahsilEt(tahsil: boolean) {
+    if (kapat.isPending) return
     setHata(null)
     if (tahsil && odemeGerekli && !yontem) {
       setHata('Ödeme yöntemi seçin.')
@@ -543,6 +617,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         tahsil,
       })
       setCikisOnay(false)
+      setTahsilOnay(false)
       // The RECEIPT shows what the server actually charged, not the preview.
       setSonuc({ tahsil: r.tahsil_kurus, ucret: r.ucret_kurus, indirim: r.indirim_kurus })
     } catch (err) {
@@ -555,6 +630,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         // while this screen was open. Nothing was charged here; the money is
         // taken on the ticket's own page, so offer the way there.
         setCikisOnay(false)
+        setTahsilOnay(false)
         setKapandi(true)
         // The same server message covers a colleague's exit and a cancel,
         // so the text names no cause; the ticket's page shows what is left.
@@ -563,6 +639,40 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
       }
       setHata(metin)
     }
+  }
+
+  /** "Ücretsiz çıkış" only ASKS: the box sends it. */
+  function ucretsizGonder() {
+    if (!ucretsizOnay || ucretsiz.isPending) return
+    setUcretsizHata(null)
+    ucretsiz
+      .mutateAsync({ bilet_id: bilet.id, sebep: ucretsizOnay.sebep, not: ucretsizOnay.not })
+      .then(() => {
+        setUcretsizBitti(ucretsizEtiket(ucretsizOnay.sebep) ?? 'Diğer')
+        setUcretsizOnay(null)
+      })
+      .catch((err) => {
+        const metin = rpcErrorText(err, 'Ücretsiz çıkış kaydedilemedi. Tekrar deneyin.')
+        if (zatenKapandi(metin)) {
+          // Closed by the camera or a colleague meanwhile — as in tahsilEt.
+          setUcretsizOnay(null)
+          setKapandi(true)
+          setHata('Bu bilet az önce kapandı ya da iptal edildi. Borç kaldıysa biletin sayfasından toplayın.')
+          return
+        }
+        setUcretsizHata(metin)
+      })
+  }
+
+  if (ucretsizBitti !== null) {
+    return (
+      <Fis
+        plaka={bilet.plaka}
+        sonuc={{ tahsil: 0, ucret: 0, indirim: 0 }}
+        ucretsiz={ucretsizBitti}
+        onTamam={onKapat}
+      />
+    )
   }
 
   if (sonuc) {
@@ -622,7 +732,10 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
               {bilet.puan_kullanilan} puan kullanıldı · −{formatTL(bilet.indirim_kurus)}
               <button
                 type="button"
-                onClick={() => void puanGeriAl.mutateAsync(bilet.id)}
+                onClick={() => {
+                  setPuanGeriHata(null)
+                  setPuanGeriOnay(true)
+                }}
                 className="min-h-[44px] font-medium text-on-brand underline"
               >
                 geri al
@@ -715,7 +828,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         {/* Not while the dialog is open: it shows the same message next to
             the button that failed, and a second copy behind the overlay is
             one the operator cannot read anyway. */}
-        {hata && !cikisOnay && (
+        {hata && !cikisOnay && !tahsilOnay && (
           <p role="alert" className="rounded-card bg-danger-soft px-4 py-3 text-body text-danger">
             {hata}
           </p>
@@ -734,7 +847,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
             block
             loading={kapat.isPending}
             disabled={kapandi}
-            onClick={() => void tahsilEt(true)}
+            onClick={tahsilSor}
           >
             {odemeGerekli ? `${formatTL(netKurus)} Tahsil Et ve Çıkış Ver` : 'Çıkışı Kaydet'}
           </Button>
@@ -743,21 +856,48 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
               of the button beside it. Nothing to collect means there is no
               second thing to choose. */}
           {odemeGerekli && (
-            <Button
-              variant="secondary"
-              size="lg"
-              block
-              disabled={kapat.isPending || kapandi}
-              onClick={() => {
-                // Cleared on open: the dialog renders `hata`, so a failure
-                // from the collect button beside it would appear inside the
-                // confirmation as if THIS action had already failed.
-                setHata(null)
-                setCikisOnay(true)
-              }}
-            >
-              Çıkış Ver
-            </Button>
+            // Two halves side by side so the bar does not grow: "Çıkış Ver"
+            // leaves the fee OWED, "Ücretsiz" waives it with a reason (065).
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="secondary"
+                size="lg"
+                block
+                disabled={kapat.isPending || ucretsiz.isPending || kapandi}
+                onClick={() => {
+                  // Cleared on open: the dialog renders `hata`, so a failure
+                  // from the collect button beside it would appear inside the
+                  // confirmation as if THIS action had already failed.
+                  setHata(null)
+                  setCikisOnay(true)
+                }}
+              >
+                Çıkış Ver
+              </Button>
+              {!abonman && (
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  block
+                  disabled={kapat.isPending || ucretsiz.isPending || kapandi}
+                  onClick={() => {
+                    setHata(null)
+                    // Points first: a fee lowered by points is not "free",
+                    // and the customer gets the points back (server says so too).
+                    if (bilet.indirim_kurus > 0) {
+                      setHata('Önce kullanılan puanı geri alın.')
+                      return
+                    }
+                    setUcretsizSebep(null)
+                    setUcretsizNot('')
+                    setUcretsizFormHata(null)
+                    setUcretsizAcik(true)
+                  }}
+                >
+                  Ücretsiz
+                </Button>
+              )}
+            </div>
           )}
         </div>
       </FloatingBar>
@@ -777,6 +917,156 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         loading={kapat.isPending}
         error={hata}
         onConfirm={() => void tahsilEt(false)}
+      />
+
+      {/* The money, said once more before it is taken: a closed, collected
+          ticket cannot be edited afterwards — only cancelled. Stays open on a
+          refusal so the server's reason is read beside the button. */}
+      <ConfirmDialog
+        open={tahsilOnay}
+        onOpenChange={setTahsilOnay}
+        title={odemeGerekli ? 'Tahsilat onaylansın mı?' : 'Çıkış kaydedilsin mi?'}
+        description={
+          <>
+            <span className="block text-title font-semibold tracking-wide text-ink tnum">
+              {formatPlaka(bilet.plaka)}
+            </span>
+            {odemeGerekli ? (
+              <>
+                <span className="mt-1 block">
+                  <strong className="font-semibold text-ink tnum">{formatTL(netKurus)}</strong>
+                  {yontem ? ` · ${ODEME_ETIKET[yontem]}` : ''} — tahsil edilip çıkış verilecek.
+                </span>
+                {override && (
+                  <span className="mt-1 block text-warn">Ücret elle değiştirildi.</span>
+                )}
+                <span className="mt-1 block">Tahsilat sonradan değiştirilemez.</span>
+              </>
+            ) : (
+              <span className="mt-1 block">
+                {abonman ? 'Abonman — ücretsiz çıkış.' : 'Ödenecek ücret yok — çıkış verilecek.'}
+              </span>
+            )}
+          </>
+        }
+        confirmLabel={odemeGerekli ? `${formatTL(netKurus)} Tahsil Et` : 'Çıkışı Kaydet'}
+        loading={kapat.isPending}
+        error={hata}
+        onConfirm={() => void tahsilEt(true)}
+      />
+
+      {/* ---- free exit (065) ----------------------------------------- */}
+      <FormModal
+        open={ucretsizAcik}
+        onOpenChange={setUcretsizAcik}
+        title="Ücretsiz çıkış"
+        submitLabel="Devam"
+        error={ucretsizFormHata}
+        onSubmit={() => {
+          const h = ucretsizHatasi(ucretsizSebep, ucretsizNot)
+          if (h || !ucretsizSebep) {
+            setUcretsizFormHata(h ?? 'Sebep seçin.')
+            return
+          }
+          setUcretsizFormHata(null)
+          setUcretsizHata(null)
+          setUcretsizOnay({ sebep: ucretsizSebep, not: ucretsizNot.trim() })
+          // One box at a time: the form steps aside while the box reads it
+          // back, and comes back unchanged on "Vazgeç".
+          setUcretsizAcik(false)
+        }}
+      >
+        <div>
+          <Label>Sebep</Label>
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Sebep">
+            {UCRETSIZ_SEBEPLER.map((s) => {
+              const secili = ucretsizSebep === s.value
+              return (
+                <button
+                  key={s.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={secili}
+                  onClick={() => setUcretsizSebep(s.value)}
+                  className={[
+                    'min-h-[52px] rounded-field px-3 text-body font-medium transition-colors',
+                    // "Diğer" spans the row: five chips, no orphan half.
+                    s.value === 'DIGER' ? 'col-span-2' : '',
+                    secili ? 'bg-accent text-accent-ink' : 'bg-field text-soft',
+                  ].join(' ')}
+                >
+                  {s.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div>
+          <Label htmlFor="ucretsiz-not">Not (zorunlu)</Label>
+          <textarea
+            id="ucretsiz-not"
+            value={ucretsizNot}
+            onChange={(e) => setUcretsizNot(e.target.value)}
+            maxLength={UCRETSIZ_NOT_MAX}
+            rows={3}
+            placeholder="Örn. ekip aracı, fiyat sorup çıktı"
+            className="w-full resize-y rounded-field border border-border bg-field px-4 py-3 text-body text-ink outline-none focus:border-accent"
+          />
+        </div>
+      </FormModal>
+
+      <ConfirmDialog
+        open={ucretsizOnay !== null}
+        onOpenChange={(o) => {
+          if (o || ucretsiz.isPending) return
+          setUcretsizOnay(null)
+          setUcretsizAcik(true)
+        }}
+        title="Ücretsiz çıkış verilsin mi?"
+        description={
+          ucretsizOnay && (
+            <>
+              <span className="block text-title font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(bilet.plaka)}
+              </span>
+              <span className="mt-1 block break-words">
+                <strong className="font-semibold text-ink">
+                  {ucretsizEtiket(ucretsizOnay.sebep)}
+                </strong>{' '}
+                — {ucretsizOnay.not}
+              </span>
+              <span className="mt-1 block font-semibold text-warn tnum">
+                Hesaplanan {formatTL(onizleme ?? brutKurus)} alınmayacak.
+              </span>
+              {!yonetici && <span className="mt-1 block">Yöneticiye bildirilir.</span>}
+            </>
+          )
+        }
+        confirmLabel="Ücretsiz çıkış ver"
+        loading={ucretsiz.isPending}
+        error={ucretsizHata}
+        onConfirm={ucretsizGonder}
+      />
+
+      {/* Undoing the points is a money change too (the fee goes back up). */}
+      <ConfirmDialog
+        open={puanGeriOnay}
+        onOpenChange={setPuanGeriOnay}
+        title="Puan geri alınsın mı?"
+        description={`${bilet.puan_kullanilan} puan hesaba geri döner; ${formatTL(
+          bilet.indirim_kurus,
+        )} indirim kalkar.`}
+        confirmLabel="Geri al"
+        loading={puanGeriAl.isPending}
+        error={puanGeriHata}
+        onConfirm={() => {
+          if (puanGeriAl.isPending) return
+          setPuanGeriHata(null)
+          puanGeriAl
+            .mutateAsync(bilet.id)
+            .then(() => setPuanGeriOnay(false))
+            .catch((e) => setPuanGeriHata(rpcErrorText(e, 'Puan geri alınamadı.')))
+        }}
       />
 
       {/* ---- points modal --------------------------------------------- */}
@@ -840,10 +1130,13 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
 function Fis({
   plaka,
   sonuc,
+  ucretsiz = null,
   onTamam,
 }: {
   plaka: string
   sonuc: { tahsil: number; ucret: number; indirim: number }
+  /** 065: the free exit's reason label — the receipt says so, not "₺0 taken". */
+  ucretsiz?: string | null
   onTamam: () => void
 }) {
   // An unpaid exit is still a success — the car left — but a green tick over
@@ -869,7 +1162,11 @@ function Fis({
         <span className="ml-1 text-title font-medium text-faint">₺</span>
       </p>
       <p className="mt-1 text-label text-faint">
-        {odenmedi ? 'tahsil edilmedi — borç olarak kaldı' : 'tahsil edildi'}
+        {ucretsiz !== null
+          ? `ücretsiz çıkış — ${ucretsiz}`
+          : odenmedi
+            ? 'tahsil edilmedi — borç olarak kaldı'
+            : 'tahsil edildi'}
       </p>
 
       {sonuc.indirim > 0 && (
