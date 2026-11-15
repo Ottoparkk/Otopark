@@ -118,6 +118,11 @@ export function CekYenile() {
   const g = yenileniyor ? ESIK : mesafe
   const p = yenileniyor ? 1 : ilerleme(mesafe)
   const gorunur = yenileniyor || mesafe > 0
+  // At rest draw nothing. A permanent, invisible, transformed `fixed` layer
+  // made iOS (installed app) stop pinning the bottom nav and the sticky
+  // Tahsil et / Çıkış ver bar while scrolling. The window listeners above stay
+  // attached either way, so the pull still starts from here.
+  if (!gorunur) return null
   // Circumference of the r=9 circle (Spinner's own shape).
   const CEVRE = 2 * Math.PI * 9
 
