@@ -8648,14 +8648,16 @@ if (select count(*) from public.notifications
   raise exception 'FAIL 82d: Yönetici''ye Personel''in adıyla tek bildirim gitmedi';
 end if;
 
--- (e) Kapanmış bilet ikinci kez verilemez.
+-- (e) Kapanmış bilet ikinci kez verilemez. 066'dan beri kapalı bilet kendi
+--     dalına girer ("zaten ücretsiz çıkış verilmiş"); 065'te "zaten
+--     kapatılmış" idi — ikisi de "zaten".
 perform pg_temp.login(u_personel);
 begin
   perform public.bilet_ucretsiz_cikis(v_bilet, 'DIGER', 'Tekrar');
   raise exception 'FAIL 82e: kapanmış bilete ikinci kez ücretsiz çıkış verildi';
 exception when others then
   if sqlerrm like 'FAIL%' then raise; end if;
-  if sqlerrm not like '%kapatılmış%' then
+  if sqlerrm not like '%zaten%' then
     raise exception 'FAIL 82e: beklenmeyen hata: %', sqlerrm;
   end if;
 end;
@@ -8716,6 +8718,194 @@ if not exists (select 1 from public.biletler
 end if;
 
 raise notice 'PASS 82: ücretsiz çıkış — her rol, sebep ve zorunlu notla; para yazılmaz, bilet 0 ₺ kapanır, Yönetici adıyla bilgilenir; geri açılınca sebep düşer';
+
+-- =====================================================================
+-- 83  Sonradan ücretsiz (066): kameranın ya da "Çıkış Ver"in borçlu
+--     kapattığı bilete ücretsiz çıkış; kimin verdiği yazılır
+-- =====================================================================
+-- Sahip (2026-11-15): kamera aracı ödemesiz kapatınca (054) bilet "Ödeme
+-- topla" kutusuyla kalıyordu; polis aracını yalnızca "tahsil" edebiliyordu.
+-- Aynı RPC kapalı + borçlu bilette ücreti 0 yapar; yetki bilet_tahsil'inki.
+-- Test kullanıcılarının durumu o an okunur; plakalar ZZ83….
+
+select ad_soyad into v_txt from public.profiles where id = u_personel;
+
+-- (a) Fixture: Personel aracı borçlu çıkarır (027, "Çıkış Ver").
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ83SON1', now() - interval '3 hours', v_tarife_yeni, 'ACIK')
+returning id into v_bilet;
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+v_vardiya := public.acik_vardiyam();
+perform * from public.bilet_kapat(v_bilet, null, null, null, null, 'MOBIL', false);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI' and ucret_kurus = 5000
+                  and tahsil_kurus = 0 and kapatan_vardiya_id = v_vardiya) then
+  raise exception 'FAIL 83a: fixture — bilet 5000 kuruş borçlu kapanmadı';
+end if;
+
+-- (b) PENDING, boş not, sebepsiz: reddedilir, bilet değişmez.
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', 'Ekip aracı');
+  raise exception 'FAIL 83b: PENDING kapalı bilete ücretsiz çıkış verdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yetkiniz yok%' then
+    raise exception 'FAIL 83b: beklenmeyen hata (PENDING): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', '   ');
+  raise exception 'FAIL 83b: notsuz sonradan ücretsiz verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Not%' then
+    raise exception 'FAIL 83b: beklenmeyen hata (not): %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, null, 'Ekip aracı');
+  raise exception 'FAIL 83b: sebepsiz sonradan ücretsiz verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Sebep%' then
+    raise exception 'FAIL 83b: beklenmeyen hata (sebep): %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and ucret_kurus = 5000 and ucretsiz_sebep is null) then
+  raise exception 'FAIL 83b: reddedilen deneme bileti değiştirdi';
+end if;
+
+-- (c) Personel kendi vardiyasının bileti: ücret 0, borç kalmaz, para yazılmaz;
+--     çıkış bilgileri olduğu gibi kalır; veren ve zaman yazılır.
+select count(*) into v_bigint from public.tahsilatlar;
+select cikis_at into v_ts from public.biletler where id = v_bilet;
+perform pg_temp.login(u_personel);
+perform public.bilet_ucretsiz_cikis(v_bilet, 'POLIS', '  Ekip aracı, kamera çıkışı  ');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'KAPALI'
+                  and cikis_at = v_ts and cikis_by = u_personel and cikis_kaynak = 'MOBIL'
+                  and ucret_kurus = 0 and tahsil_kurus = 0 and odeme_yontemi is null
+                  and ucretsiz_sebep = 'POLIS' and ucretsiz_not = 'Ekip aracı, kamera çıkışı'
+                  and ucretsiz_by = u_personel and ucretsiz_at is not null
+                  and ucret_degistirildi and ucret_sebep like 'Ücretsiz çıkış%') then
+  raise exception 'FAIL 83c: kapalı bilet sonradan ücretsize doğru dönmedi';
+end if;
+if (select count(*) from public.tahsilatlar) <> v_bigint then
+  raise exception 'FAIL 83c: sonradan ücretsiz tahsilat satırı yazdı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_ucretsiz_cikis' and row_id = v_bilet
+                  and actor = u_personel
+                  and (detay ->> 'hesaplanan')::integer = 5000
+                  and (detay ->> 'sonradan')::boolean) then
+  raise exception 'FAIL 83c: denetim kaydı yok ya da eksik (hesaplanan / sonradan)';
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur::text = 'UCRETSIZ_CIKIS'
+       and link = '/gise/bilet/' || v_bilet
+       and govde like '%' || v_txt || '%' and govde like '%ZZ83SON1%') <> 1 then
+  raise exception 'FAIL 83c: Yönetici''ye Personel''in adıyla tek bildirim gitmedi';
+end if;
+
+-- (d) İkinci kez verilemez.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet, 'DIGER', 'Tekrar');
+  raise exception 'FAIL 83d: ikinci kez sonradan ücretsiz verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten ücretsiz%' then
+    raise exception 'FAIL 83d: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Ödemesi alınmış kapalı bilet ücretsiz yapılamaz; ödeme yerinde kalır.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ83SON2', now() - interval '3 hours', v_tarife_yeni, 'ACIK')
+returning id into v_bilet2;
+perform pg_temp.login(u_personel);
+perform * from public.bilet_kapat(v_bilet2, 'NAKIT');
+begin
+  perform public.bilet_ucretsiz_cikis(v_bilet2, 'FIYAT_SORDU', 'Fiyat sordu');
+  raise exception 'FAIL 83e: ödenmiş bilete sonradan ücretsiz verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%ödeme%' then
+    raise exception 'FAIL 83e: beklenmeyen hata: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet2 and ucret_kurus = 5000 and tahsil_kurus = 5000
+                  and ucretsiz_sebep is null)
+   or (select count(*) from public.tahsilatlar
+        where bilet_id = v_bilet2 and iptal_of is null and tutar_kurus = 5000) <> 1 then
+  raise exception 'FAIL 83e: reddedilen deneme ödenmiş bileti değiştirdi';
+end if;
+
+-- (f) Koruma dar kalır: bayraksız ücret değişmez; bayrakla bile tahsil değişmez.
+begin
+  update public.biletler set ucret_kurus = 0 where id = v_bilet2;
+  raise exception 'FAIL 83f: kapanmış biletin ücreti bayraksız değişti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kapanmış bilet değiştirilemez%' then
+    raise exception 'FAIL 83f: beklenmeyen hata (bayraksız): %', sqlerrm;
+  end if;
+end;
+begin
+  perform set_config('app.bilet_ucretsiz', v_bilet2::text, true);
+  update public.biletler set tahsil_kurus = 1 where id = v_bilet2;
+  raise exception 'FAIL 83f: app.bilet_ucretsiz tahsil tutarını değiştirtti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Kapanmış bilet değiştirilemez%' then
+    raise exception 'FAIL 83f: beklenmeyen hata (bayraklı): %', sqlerrm;
+  end if;
+end;
+perform set_config('app.bilet_ucretsiz', '', true);
+
+-- (g) Açık bilet yolu (065) da vereni ve zamanı yazar; geçmiş satırlar dolduruldu.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum)
+values (gen_random_uuid(), 'ZZ83SON3', now() - interval '3 hours', v_tarife_yeni, 'ACIK')
+returning id into v_id;
+perform pg_temp.login(u_personel);
+perform public.bilet_ucretsiz_cikis(v_id, 'ACIL', 'Ambulans');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI'
+                  and ucretsiz_by = u_personel and ucretsiz_at = cikis_at) then
+  raise exception 'FAIL 83g: açık bilet yolu vereni/zamanı yazmadı';
+end if;
+-- Zaman hiç boşalmaz; veren, profili silinirse (on delete set null) boşalabilir.
+if exists (select 1 from public.biletler
+            where ucretsiz_sebep is not null and ucretsiz_at is null) then
+  raise exception 'FAIL 83g: zamanı boş ücretsiz çıkış var (geçmiş doldurulmadı)';
+end if;
+
+-- (h) "Araç çıkmadı" dört sütunu da düşürür.
+perform pg_temp.login(u_yonetici);
+perform public.bilet_cikis_geri_al(v_bilet, 'Araç içeride');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and durum = 'ACIK'
+                  and ucretsiz_sebep is null and ucretsiz_not is null
+                  and ucretsiz_by is null and ucretsiz_at is null) then
+  raise exception 'FAIL 83h: geri açılan sonradan ücretsizin izleri kaldı';
+end if;
+
+raise notice 'PASS 83: borçlu kapanmış bilete sonradan ücretsiz çıkış — tahsil yetkisiyle, para yazılmaz, koruma dar; veren ve zaman yazılır';
 
 perform pg_temp.logout();
 raise notice '';

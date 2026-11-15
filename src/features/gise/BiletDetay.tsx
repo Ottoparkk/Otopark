@@ -12,6 +12,7 @@ import {
   useBiletPlakaDogrula,
   useBiletPlakaDuzelt,
   useBiletTahsil,
+  useBiletUcretsizCikis,
   useFotoUrl,
   useUcretOnizleme,
   useYerKodlari,
@@ -41,6 +42,8 @@ import { useSonKararlar } from '../finans/api'
 import { adCoz, tahsilatKisileri, type KimSatiri } from '../../lib/kimYapti'
 import { KimSatirlari } from '../../components/ui/KimSatirlari'
 import { formatTam } from '../../lib/dates'
+import { sonradanUcretsizMi } from '../../lib/ucretsiz'
+import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
 
 /**
  * Full history of one ticket. Reached from the vehicles list, Finans and
@@ -62,6 +65,12 @@ export default function BiletDetay() {
   const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
   const [tahsilOnay, setTahsilOnay] = useState(false)
+  // 066 (owner, 2026-11-15): the car already left owing (camera / "Çıkış
+  // Ver") — a police car, a price asker: waive it with a reason and a note.
+  const ucretsiz = useBiletUcretsizCikis()
+  const [ucretsizAcik, setUcretsizAcik] = useState(false)
+  const { profile } = useAuth()
+  const yonetici = isYonetici(profile)
   const [degistirAcik, setDegistirAcik] = useState(false)
   const geriAc = useBiletGeriAc()
   const [geriAcOnay, setGeriAcOnay] = useState(false)
@@ -199,6 +208,24 @@ export default function BiletDetay() {
             >
               {formatTL(borc)} Ödeme topla
             </Button>
+
+            {/* 066: the other answer to "Ödeme topla" — nothing is owed after
+                all. Same flow as the exit screen's "Ücretsiz"; the server
+                re-checks who may (own shift / Yönetici), as for collecting. */}
+            {sonradanUcretsizMi(bilet, borc) && (
+              <Button
+                variant="secondary"
+                size="lg"
+                block
+                disabled={tahsil.isPending}
+                onClick={() => {
+                  setTahsilHata(null)
+                  setUcretsizAcik(true)
+                }}
+              >
+                Ücretsiz çıkış
+              </Button>
+            )}
           </Card>
         )}
 
@@ -274,6 +301,25 @@ export default function BiletDetay() {
       )}
 
       {aksiyon.dialoglar}
+
+      {ucretsizAcik && (
+        <UcretsizCikisPencereleri
+          plaka={bilet.plaka}
+          tutarKurus={borc}
+          yonetici={yonetici}
+          onKapat={() => setUcretsizAcik(false)}
+          onGonder={async (g: UcretsizGonderim) => {
+            try {
+              await ucretsiz.mutateAsync({ bilet_id: bilet.id, sebep: g.sebep, not: g.not })
+            } catch (err) {
+              // The box stays open on the server's reason (another shift,
+              // already paid…).
+              throw new Error(rpcErrorText(err, 'Ücretsiz çıkış kaydedilemedi. Tekrar deneyin.'))
+            }
+            setUcretsizAcik(false)
+          }}
+        />
+      )}
 
       {/* "Ödeme topla", read back before it is recorded. Stays open on a
           refusal (already paid, another shift) so the reason is read here. */}
@@ -534,7 +580,13 @@ function BiletKimKarti({ bilet }: { bilet: Bilet }) {
         iptalEden ? { etiket: 'İptal eden', ad: iptalEden, zaman: bilet.iptal_at } : null,
       ]
     : []
-  if (tahsilatlar.length === 0 && !iptalSatirlari.some(Boolean)) return null
+  // 066: who waived the fee, and when — at the gate (065) or after the camera.
+  const ucretsizVeren = adCoz(bilet.ucretsiz_by, adlar)
+  const ucretsizSatiri: KimSatiri | null =
+    bilet.ucretsiz_sebep && ucretsizVeren
+      ? { etiket: 'Ücretsiz çıkış veren', ad: ucretsizVeren, zaman: bilet.ucretsiz_at ?? null }
+      : null
+  if (tahsilatlar.length === 0 && !iptalSatirlari.some(Boolean) && !ucretsizSatiri) return null
 
   return (
     <section>
@@ -569,6 +621,12 @@ function BiletKimKarti({ bilet }: { bilet: Bilet }) {
             </span>
           </Card>
         ))}
+        {ucretsizSatiri && (
+          <Card>
+            <p className="text-body font-medium text-warn">Ücretsiz çıkış</p>
+            <KimSatirlari className="mt-1" satirlar={[ucretsizSatiri]} />
+          </Card>
+        )}
         {iptalSatirlari.some(Boolean) && (
           <Card>
             <p className="text-body font-medium text-danger">İptal</p>

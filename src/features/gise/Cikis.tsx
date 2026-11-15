@@ -8,7 +8,6 @@ import {
   EmptyState,
   FloatingBar,
   Input,
-  Label,
   ListeDurumu,
   ScreenHeader,
 } from '../../components/ui/primitives'
@@ -68,8 +67,8 @@ import {
   type OdemeYontemi,
 } from '../../lib/types'
 import { onayDurumu, zatenKapandi } from '../../lib/bilet'
-import { UCRETSIZ_NOT_MAX, UCRETSIZ_SEBEPLER, ucretsizEtiket, ucretsizHatasi } from '../../lib/ucretsiz'
-import type { UcretsizSebep } from '../../lib/types'
+import { ucretsizEtiket } from '../../lib/ucretsiz'
+import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
 
 // Two views, no "Tümü" (owner, 2026-11-15): the list is either the cars still
 // here or the ones that left, and it opens on İçeride.
@@ -540,15 +539,9 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   )
   // 065 (owner, 2026-11-15): free exit — a car that only asked the price, the
   // police… Reason + REQUIRED note in the form; the form only asks, the box
-  // reads it back and sends it (owner, 2026-11-14).
+  // reads it back and sends it (owner, 2026-11-14). The form and box are
+  // shared with the "Ödeme topla" box (066, UcretsizCikis.tsx).
   const [ucretsizAcik, setUcretsizAcik] = useState(false)
-  const [ucretsizSebep, setUcretsizSebep] = useState<UcretsizSebep | null>(null)
-  const [ucretsizNot, setUcretsizNot] = useState('')
-  const [ucretsizFormHata, setUcretsizFormHata] = useState<string | null>(null)
-  const [ucretsizOnay, setUcretsizOnay] = useState<{ sebep: UcretsizSebep; not: string } | null>(
-    null,
-  )
-  const [ucretsizHata, setUcretsizHata] = useState<string | null>(null)
   const [ucretsizBitti, setUcretsizBitti] = useState<string | null>(null)
 
   const abonman = Boolean(bilet.abonman_id)
@@ -641,27 +634,23 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
     }
   }
 
-  /** "Ücretsiz çıkış" only ASKS: the box sends it. */
-  function ucretsizGonder() {
-    if (!ucretsizOnay || ucretsiz.isPending) return
-    setUcretsizHata(null)
-    ucretsiz
-      .mutateAsync({ bilet_id: bilet.id, sebep: ucretsizOnay.sebep, not: ucretsizOnay.not })
-      .then(() => {
-        setUcretsizBitti(ucretsizEtiket(ucretsizOnay.sebep) ?? 'Diğer')
-        setUcretsizOnay(null)
-      })
-      .catch((err) => {
-        const metin = rpcErrorText(err, 'Ücretsiz çıkış kaydedilemedi. Tekrar deneyin.')
-        if (zatenKapandi(metin)) {
-          // Closed by the camera or a colleague meanwhile — as in tahsilEt.
-          setUcretsizOnay(null)
-          setKapandi(true)
-          setHata('Bu bilet az önce kapandı ya da iptal edildi. Borç kaldıysa biletin sayfasından toplayın.')
-          return
-        }
-        setUcretsizHata(metin)
-      })
+  /** "Ücretsiz çıkış" only ASKS: the shared box sends it through here. */
+  async function ucretsizGonder(g: UcretsizGonderim) {
+    try {
+      await ucretsiz.mutateAsync({ bilet_id: bilet.id, sebep: g.sebep, not: g.not })
+    } catch (err) {
+      const metin = rpcErrorText(err, 'Ücretsiz çıkış kaydedilemedi. Tekrar deneyin.')
+      if (zatenKapandi(metin)) {
+        // Closed by the camera or a colleague meanwhile — as in tahsilEt.
+        setUcretsizAcik(false)
+        setKapandi(true)
+        setHata('Bu bilet az önce kapandı ya da iptal edildi. Borç kaldıysa biletin sayfasından toplayın.')
+        return
+      }
+      throw new Error(metin)
+    }
+    setUcretsizAcik(false)
+    setUcretsizBitti(ucretsizEtiket(g.sebep) ?? 'Diğer')
   }
 
   if (ucretsizBitti !== null) {
@@ -888,9 +877,6 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
                       setHata('Önce kullanılan puanı geri alın.')
                       return
                     }
-                    setUcretsizSebep(null)
-                    setUcretsizNot('')
-                    setUcretsizFormHata(null)
                     setUcretsizAcik(true)
                   }}
                 >
@@ -955,98 +941,16 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         onConfirm={() => void tahsilEt(true)}
       />
 
-      {/* ---- free exit (065) ----------------------------------------- */}
-      <FormModal
-        open={ucretsizAcik}
-        onOpenChange={setUcretsizAcik}
-        title="Ücretsiz çıkış"
-        submitLabel="Devam"
-        error={ucretsizFormHata}
-        onSubmit={() => {
-          const h = ucretsizHatasi(ucretsizSebep, ucretsizNot)
-          if (h || !ucretsizSebep) {
-            setUcretsizFormHata(h ?? 'Sebep seçin.')
-            return
-          }
-          setUcretsizFormHata(null)
-          setUcretsizHata(null)
-          setUcretsizOnay({ sebep: ucretsizSebep, not: ucretsizNot.trim() })
-          // One box at a time: the form steps aside while the box reads it
-          // back, and comes back unchanged on "Vazgeç".
-          setUcretsizAcik(false)
-        }}
-      >
-        <div>
-          <Label>Sebep</Label>
-          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Sebep">
-            {UCRETSIZ_SEBEPLER.map((s) => {
-              const secili = ucretsizSebep === s.value
-              return (
-                <button
-                  key={s.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={secili}
-                  onClick={() => setUcretsizSebep(s.value)}
-                  className={[
-                    'min-h-[52px] rounded-field px-3 text-body font-medium transition-colors',
-                    // "Diğer" spans the row: five chips, no orphan half.
-                    s.value === 'DIGER' ? 'col-span-2' : '',
-                    secili ? 'bg-accent text-accent-ink' : 'bg-field text-soft',
-                  ].join(' ')}
-                >
-                  {s.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-        <div>
-          <Label htmlFor="ucretsiz-not">Not (zorunlu)</Label>
-          <textarea
-            id="ucretsiz-not"
-            value={ucretsizNot}
-            onChange={(e) => setUcretsizNot(e.target.value)}
-            maxLength={UCRETSIZ_NOT_MAX}
-            rows={3}
-            placeholder="Örn. ekip aracı, fiyat sorup çıktı"
-            className="w-full resize-y rounded-field border border-border bg-field px-4 py-3 text-body text-ink outline-none focus:border-accent"
-          />
-        </div>
-      </FormModal>
-
-      <ConfirmDialog
-        open={ucretsizOnay !== null}
-        onOpenChange={(o) => {
-          if (o || ucretsiz.isPending) return
-          setUcretsizOnay(null)
-          setUcretsizAcik(true)
-        }}
-        title="Ücretsiz çıkış verilsin mi?"
-        description={
-          ucretsizOnay && (
-            <>
-              <span className="block text-title font-semibold tracking-wide text-ink tnum">
-                {formatPlaka(bilet.plaka)}
-              </span>
-              <span className="mt-1 block break-words">
-                <strong className="font-semibold text-ink">
-                  {ucretsizEtiket(ucretsizOnay.sebep)}
-                </strong>{' '}
-                — {ucretsizOnay.not}
-              </span>
-              <span className="mt-1 block font-semibold text-warn tnum">
-                Hesaplanan {formatTL(onizleme ?? brutKurus)} alınmayacak.
-              </span>
-              {!yonetici && <span className="mt-1 block">Yöneticiye bildirilir.</span>}
-            </>
-          )
-        }
-        confirmLabel="Ücretsiz çıkış ver"
-        loading={ucretsiz.isPending}
-        error={ucretsizHata}
-        onConfirm={ucretsizGonder}
-      />
+      {/* ---- free exit (065; form + box shared with 066) ------------- */}
+      {ucretsizAcik && (
+        <UcretsizCikisPencereleri
+          plaka={bilet.plaka}
+          tutarKurus={onizleme ?? brutKurus}
+          yonetici={yonetici}
+          onKapat={() => setUcretsizAcik(false)}
+          onGonder={ucretsizGonder}
+        />
+      )}
 
       {/* Undoing the points is a money change too (the fee goes back up). */}
       <ConfirmDialog

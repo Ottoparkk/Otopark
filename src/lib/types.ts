@@ -431,6 +431,9 @@ export interface Bilet {
   /** 065: a free exit's reason and its required note. Absent before 065. */
   ucretsiz_sebep?: UcretsizSebep | null
   ucretsiz_not?: string | null
+  /** 066: who gave the free exit, and when (at the gate or after the camera). */
+  ucretsiz_by?: string | null
+  ucretsiz_at?: string | null
   cikis_bekliyor_at: string | null
   /** Optional, driver-supplied, all three nullable (migration 008). */
   arac_bilgi: string | null

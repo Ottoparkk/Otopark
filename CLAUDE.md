@@ -63,6 +63,10 @@ bridge is Python, in `tools/kamera-koprusu/`.
   `bilet_cikis_geri_al` (060) reopens any other closed ticket — own shift for
   Personel, reason required, Yönetici notified, and any payment reversed by a
   counter-entry, never edited. No other reopen path.
+  One narrow fee exception (owner, 066): `bilet_ucretsiz_cikis` on a closed,
+  unpaid ticket (camera or "Çıkış Ver") sets only the fee to 0 with a reason
+  and note (`app.bilet_ucretsiz` in the guard) — never the payment, never
+  the exit.
 - The camera closes a ticket only unpaid (054); collecting is always a
   person (`bilet_tahsil`), and every collection waits in Onay.
 
