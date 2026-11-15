@@ -13,6 +13,8 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { YontemSecici } from '../../components/ui/YontemSecici'
 import { useAbonmanEkle, useAbonmanlar, type AbonmanGirdi } from './api'
 import { useParkYerleri } from '../gise/api'
+import { useAdlar } from '../yonetim/api'
+import { adCoz } from '../../lib/kimYapti'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
@@ -50,6 +52,8 @@ export default function AbonmanListe() {
   const [filtre, setFiltre] = useState<AbonmanDurum | 'TUMU'>('AKTIF')
   const { data: liste = [], isPending, error, refetch } = useAbonmanlar(filtre)
   const { data: yerler = [] } = useParkYerleri()
+  // Once for the whole list, then read per row (same rule as Gişe's cards).
+  const adlar = useAdlar()
   const ekle = useAbonmanEkle()
 
   const [acik, setAcik] = useState(false)
@@ -134,6 +138,9 @@ export default function AbonmanListe() {
           >
             {liste.map((a) => {
               const kalan = gunFarki(a.bitis)
+              // Owner 2026-11-15: who added it (062 records it; older rows
+              // have none and show no line).
+              const ekleyen = adCoz(a.olusturan, adlar)
               return (
                 <Card key={a.id} as="div">
                   <button
@@ -156,6 +163,9 @@ export default function AbonmanListe() {
                       {ayinGunu(a.yenileme_gunu ?? Number(a.bitis.slice(8, 10)))} ·{' '}
                       {formatTarih(a.bitis)} tarihine kadar
                     </p>
+                    {ekleyen && (
+                      <p className="truncate text-label text-faint">Ekleyen: {ekleyen}</p>
+                    )}
                     {a.durum === 'AKTIF' && kalan <= 7 && (
                       <p className="mt-2 inline-block rounded-chip bg-warn-soft px-2.5 py-1 text-label font-medium text-warn">
                         {kalan < 0

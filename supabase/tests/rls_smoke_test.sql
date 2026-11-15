@@ -9013,6 +9013,45 @@ perform pg_temp.logout();
 
 raise notice 'PASS 84: Personel kapanmış çıkışları son 3 İstanbul gününde okur, daha eskisini görmez; işlem yine kendi vardiyasında';
 
+-- =====================================================================
+-- 85  Abonmanı kim ekledi (sahip 2026-11-15)
+-- =====================================================================
+-- Abonman listesi ve detayı "Ekleyen: Ad" gösterir. Veri 062'den beri var:
+-- abonman_ekle `olusturan = auth.uid()` yazar. Burada sabitlenir: Personel
+-- (ilk ödemeyle) ve Yönetici (0 ₺) eklediğinde ekleyen doğru kişi, ve
+-- Personel o sütunu okuyabiliyor (ekran Personel'e de gösterir).
+
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+v_id := public.abonman_ekle('ZZ85ABN1', 'zz85 bir', null, 70000, 3, null, null, 70000, 'NAKIT');
+perform pg_temp.logout();
+
+perform pg_temp.login(u_yonetici);
+v_id2 := public.abonman_ekle('ZZ85ABN2', 'zz85 iki', null, 60000, 4, null, null, 0, null);
+perform pg_temp.logout();
+
+-- (a) Ekleyen, ekleyen kişidir.
+if not exists (select 1 from public.abonmanlar where id = v_id and olusturan = u_personel) then
+  raise exception 'FAIL 85a: Personelin eklediği abonmanda ekleyen yazılmadı';
+end if;
+if not exists (select 1 from public.abonmanlar where id = v_id2 and olusturan = u_yonetici) then
+  raise exception 'FAIL 85a: Yöneticinin eklediği abonmanda ekleyen yazılmadı';
+end if;
+
+-- (b) Personel ikisinin de ekleyenini okur (liste herkese açık, 062).
+perform pg_temp.login(u_personel);
+select count(*) into v_n from public.abonmanlar
+ where (id = v_id and olusturan = u_personel)
+    or (id = v_id2 and olusturan = u_yonetici);
+perform pg_temp.logout();
+if v_n <> 2 then
+  raise exception 'FAIL 85b: Personel abonmanı ekleyeni okuyamıyor (% / 2)', v_n;
+end if;
+
+raise notice 'PASS 85: abonmanı ekleyen kişi yazılır (Personel ve Yönetici) ve listede okunur';
+
 perform pg_temp.logout();
 raise notice '';
 raise notice 'ALL TESTS PASSED (rolled back)';

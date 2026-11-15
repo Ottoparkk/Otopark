@@ -189,7 +189,7 @@ Expected final line:
 ALL TESTS PASSED (rolled back)
 ```
 
-The last block before that line is **PASS 84** (as of migration 067). It stops
+The last block before that line is **PASS 85** (as of migration 067). It stops
 at the first failure with `FAIL: <what broke>`. This file is the proof
 for the RBAC boundary, the fee arithmetic and the per-source clock rule. Do not
 continue without seeing it green.

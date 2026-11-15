@@ -131,6 +131,9 @@ export default function AbonmanDetay() {
    *   sell days already in the past.
    */
   const odemeGunu = a.yenileme_gunu ?? Number(a.bitis.slice(8, 10))
+  // Owner 2026-11-15: who added it. `abonman_ekle` (062) records it; null on
+  // older rows, which then show no line rather than a guess.
+  const ekleyen = adCoz(a.olusturan, adlar)
   const suresiVar = a.durum === 'AKTIF' && kalan >= 0
   // 062's rule, previewed: the server computes the same dates.
   const { bas: yeniBas, bit: yeniBit } = yenilemeDonemi(a, istanbulGun())
@@ -230,6 +233,7 @@ export default function AbonmanDetay() {
             )}
             {yerKod && <Satir k="Ayrılmış yer" v={yerKod} />}
             {a.notlar && <Satir k="Not" v={a.notlar} />}
+            {ekleyen && <Satir k="Ekleyen" v={`${ekleyen} · ${formatTam(a.created_at)}`} />}
           </dl>
         </Card>
 
