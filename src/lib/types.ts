@@ -31,6 +31,12 @@ export type IstisnaTur =
   // 055/056: single gate, a car moving INSIDE the yard (plate sure) has no
   // open ticket. "Giriş aç" opens it (istisna_bilet_ac accepts it).
   | 'ICERIDE_BILETSIZ'
+  // 071: the server REFUSED a camera car (bilet_ac / kamera_cikis_bildir /
+  // kamera_tek_kapi); the refusal sentence is in ham_yanit.ret_sebebi.
+  | 'REDDEDILDI'
+  // 072: the camera closed this ticket as an exit, then saw the same plate
+  // inside within minutes; aday_bilet_ids[0] is that ticket.
+  | 'CIKMAMIS_OLABILIR'
 export type HesapDurum = 'AKTIF' | 'PASIF'
 export type PuanHareketTur = 'KAZANIM' | 'KULLANIM' | 'IPTAL' | 'DUZELTME'
 export type KasaTur = 'GELIR' | 'GIDER'
@@ -147,6 +153,8 @@ export const ISTISNA_ETIKET: Record<IstisnaTur, string> = {
   OKUNAMADI: 'Plaka okunamadı',
   GIRISTE_ACIK_BILET: 'Girişte eski açık bilet',
   ICERIDE_BILETSIZ: 'İçeride bileti olmayan araç',
+  REDDEDILDI: 'Sunucu reddetti',
+  CIKMAMIS_OLABILIR: 'Çıkmamış olabilir',
 }
 
 /**

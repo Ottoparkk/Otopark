@@ -4,6 +4,7 @@ import {
   Button,
   Chip,
   EmptyState,
+  Input,
   ListeDurumu,
   ScreenHeader,
   SegmentedControl,
@@ -11,14 +12,21 @@ import {
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
-import { useIstisnaBiletAc, useIstisnaCoz, useIstisnalar, type IstisnaBiletSonuc } from './api'
+import {
+  useIstisnaBiletAc,
+  useIstisnaBiletAcSaatli,
+  useIstisnaCoz,
+  useIstisnalar,
+  type IstisnaBiletSonuc,
+} from './api'
 import { useKayitSil } from '../cop/api'
 import { useFotoUrl } from '../gise/api'
 import { cikisLinki } from '../gise/cikisLink'
+import { kartGirisSaati } from '../gise/degistir'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
-import { formatGoreceli } from '../../lib/dates'
+import { formatGoreceli, formatTam } from '../../lib/dates'
 import { formatSure, dakikaFarki } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
 import { IconCarpi, IconCop, IconTik } from '../../components/ui/icons'
@@ -27,7 +35,6 @@ import {
   aciklama,
   baslangicPlakasi,
   eylemler,
-  elleGirmeUyarisi,
   kisaDurum,
 } from './kart'
 
@@ -183,8 +190,11 @@ function IstisnaKart({
   onCikis: (plaka: string) => void
   onSil?: () => void
 }) {
+  const navigate = useNavigate()
   const { data: fotoUrl } = useFotoUrl(i.foto_path)
   const ac = useIstisnaBiletAc()
+  const acSaatli = useIstisnaBiletAcSaatli()
+  const mesgul = ac.isPending || acSaatli.isPending
   const cozuldu = i.cozuldu_at !== null
   const e = eylemler(i)
 
@@ -192,6 +202,12 @@ function IstisnaKart({
   const [hata, setHata] = useState<string | null>(null)
   const [ayrinti, setAyrinti] = useState(false)
   const [onay, setOnay] = useState(false)
+  // 072: tek kapı "no open ticket at exit" — the entry time starts EMPTY and
+  // must be typed (owner 2026-11-18), with a reason.
+  const [saatYerel, setSaatYerel] = useState('')
+  const [sebep, setSebep] = useState('')
+  const [saatHata, setSaatHata] = useState<{ alan: 'giris' | 'sebep'; metin: string } | null>(null)
+  const [saatOnay, setSaatOnay] = useState<{ iso: string; sebep: string } | null>(null)
 
   // Both timestamps are kept precisely so this lag is visible. A camera that
   // buffered through an outage shows up here as hours, and a camera whose
@@ -205,6 +221,31 @@ function IstisnaKart({
     if (!plakaGecerli(plaka) || ac.isPending) return
     setHata(null)
     setOnay(true)
+  }
+
+  function saatliSor() {
+    if (!plakaGecerli(plaka) || mesgul) return
+    setHata(null)
+    const s = kartGirisSaati(saatYerel, sebep, new Date())
+    if (s.hata !== null) {
+      setSaatHata({ alan: s.alan, metin: s.hata })
+      return
+    }
+    setSaatOnay({ iso: s.girisISO, sebep: s.sebep })
+  }
+
+  function saatliAc() {
+    if (!saatOnay) return
+    void acSaatli
+      .mutateAsync({ id: i.id, plaka, girisISO: saatOnay.iso, sebep: saatOnay.sebep })
+      .then((s) => {
+        setSaatOnay(null)
+        onAcildi(s)
+      })
+      .catch((err) => {
+        setSaatOnay(null)
+        setHata(rpcErrorText(err, 'Giriş açılamadı.'))
+      })
   }
 
   function girisAc() {
@@ -266,7 +307,7 @@ function IstisnaKart({
             <button
               type="button"
               onClick={onKapat}
-              disabled={ac.isPending}
+              disabled={mesgul}
               aria-label="Kaydı kapat"
               className="-my-2 -mr-2 flex size-11 shrink-0 items-center justify-center rounded-chip text-ink active:bg-field disabled:opacity-40"
             >
@@ -278,7 +319,7 @@ function IstisnaKart({
     >
       {ayrinti && <p className="text-label text-soft">{aciklama(i)}</p>}
 
-      {e.girisAc ? (
+      {e.girisAc || e.girisAcSaatli ? (
         <PlakaInput
           value={plaka}
           onChange={(v) => {
@@ -288,7 +329,7 @@ function IstisnaKart({
           hideLabel
           placeholder="Plakayı yazın"
           error={hata}
-          onEnter={girisSor}
+          onEnter={e.girisAc ? girisSor : saatliSor}
         />
       ) : (
         <p className="text-center text-title font-semibold tracking-[0.08em] text-ink tnum">
@@ -296,13 +337,35 @@ function IstisnaKart({
         </p>
       )}
 
-      {elleGirmeUyarisi(i) && (
-        <p className="rounded-field bg-warn-soft px-3 py-2 text-label font-medium text-warn">
-          Kameradan geldi — elle girmeyin, kendiliğinden düzelebilir.
-        </p>
+      {e.girisAcSaatli && (
+        <section className="space-y-3">
+          {/* Araç Girişi's field, as is (Giris.tsx): no min/max, dark picker. */}
+          <Input
+            label="Giriş tarihi ve saati"
+            type="datetime-local"
+            className="tnum dark:[color-scheme:dark]"
+            value={saatYerel}
+            onChange={(ev) => {
+              setSaatYerel(ev.target.value)
+              setSaatHata(null)
+            }}
+            error={saatHata?.alan === 'giris' ? saatHata.metin : null}
+          />
+          <Input
+            label="Sebep"
+            value={sebep}
+            onChange={(ev) => {
+              setSebep(ev.target.value)
+              setSaatHata(null)
+            }}
+            maxLength={200}
+            placeholder="Araç girmiş, kamera çıkış sandı"
+            error={saatHata?.alan === 'sebep' ? saatHata.metin : null}
+          />
+        </section>
       )}
 
-      {(e.girisAc || e.cikis) && (
+      {(e.girisAc || e.girisAcSaatli || e.cikis || e.bileteGit) && (
         <div className="flex items-center gap-2">
           {e.girisAc && (
             <Button
@@ -314,8 +377,23 @@ function IstisnaKart({
               Giriş aç
             </Button>
           )}
+          {e.girisAcSaatli && (
+            <Button
+              className="flex-1"
+              loading={acSaatli.isPending}
+              disabled={!plakaGecerli(plaka)}
+              onClick={saatliSor}
+            >
+              Giriş aç
+            </Button>
+          )}
+          {e.bileteGit && (
+            <Button className="flex-1" onClick={() => navigate(`/gise/bilet/${e.bileteGit}`)}>
+              Bilete git
+            </Button>
+          )}
           {e.cikis && (
-            <Button variant="secondary" className="flex-1" disabled={ac.isPending} onClick={() => onCikis(plaka)}>
+            <Button variant="secondary" className="flex-1" disabled={mesgul} onClick={() => onCikis(plaka)}>
               Çıkış
             </Button>
           )}
@@ -330,6 +408,22 @@ function IstisnaKart({
         confirmLabel="Giriş aç"
         loading={ac.isPending}
         onConfirm={girisAc}
+      />
+
+      <ConfirmDialog
+        open={saatOnay !== null}
+        onOpenChange={(o) => {
+          if (!o) setSaatOnay(null)
+        }}
+        title="Giriş açılsın mı?"
+        description={
+          saatOnay
+            ? `${formatPlaka(plaka)} için giriş bileti açılacak. Giriş saati: ${formatTam(saatOnay.iso)}.`
+            : ''
+        }
+        confirmLabel="Giriş aç"
+        loading={acSaatli.isPending}
+        onConfirm={saatliAc}
       />
     </PlakaKontrol>
   )

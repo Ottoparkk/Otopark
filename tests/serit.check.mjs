@@ -19,6 +19,10 @@ import {
   fotoYuklemeTamam,
   hamFotosuz,
   hareketIpucu,
+  KAMERA_KAPALI,
+  kalpBilgisi,
+  kapaliCevabi,
+  kartYazilamadiDurumu,
   kameraFotoYolu,
   kameraGirisiKarari,
   kameraOkumaLogu,
@@ -27,6 +31,7 @@ import {
   okumaHatasiKaydedilir,
   okumaSiniriKarari,
   okunamadiKaydedilir,
+  reddedilenCevabi,
   rpcHataDurumu,
   seritKarari,
   sonGonderimMi,
@@ -478,14 +483,14 @@ esit(
 )
 
 // Kaynağa bakış: depoya TEK yerden, sabit kovaya, üzerine yazmadan yüklenir;
-// bağlama TEK yerden yapılır ve beş karar yolunun hepsinde çağrılır
-// (okunamadı, okuma hatası, tek kapı, giriş, çıkış).
+// bağlama TEK yerden yapılır ve altı karar yolunun hepsinde çağrılır
+// (okunamadı, okuma hatası, tek kapı, giriş, çıkış; 071: reddedilen araç kartı).
 const yuklemeler = [...webhook.matchAll(/\.storage\s*\.from\(\s*([A-Z_]+)\s*\)\s*\.upload\(([^)]*)\)/g)]
 esit('webhook: depoya tek yerden erişilir', (webhook.match(/\.storage\b/g) ?? []).length, 1)
 esit('webhook: yükleme kova sabitiyle', yuklemeler.map((m) => m[1]), ['KANIT_FOTO_KOVA'])
 esit('webhook: üzerine yazmaz (upsert: false)', yuklemeler.map((m) => /upsert:\s*false/.test(m[2])), [true])
 esit('webhook: kamera_foto_bagla tek yerden', (webhook.match(/'kamera_foto_bagla'/g) ?? []).length, 1)
-esit('webhook: fotoğraf beş karar yolunda bağlanır', (webhook.match(/await kanitFotosunuBagla\(/g) ?? []).length, 5)
+esit('webhook: fotoğraf altı karar yolunda bağlanır', (webhook.match(/await kanitFotosunuBagla\(/g) ?? []).length, 6)
 
 // --- Köprü 1.3.0: plakayı köprü okur; emin değilse "okunamadı" der ----------
 // Köprü artık fotoğrafı okutmaz (foto_base64 göndermez), plakayı kendi okur.
@@ -577,6 +582,98 @@ esit('webhook: ipucu ham gövdeden yardımcıyla okunur', webhook.includes('hare
 const sema = /const OlaySchema = z\.object\(\{([\s\S]*?)\n\}\)/.exec(webhook)
 esit('webhook: şema bulundu', Boolean(sema), true)
 esit('webhook: ipucu şemada değil (kötü değer 400 olmasın)', sema ? sema[1].includes('hareket') : true, false)
+
+// --- 070: kalp atışındaki sayılar ---------------------------------------------
+// Köprü 1.4.3 kalbe {"kalp": {...}} koyar. Yalnızca düz bir nesne kalp bilgisidir;
+// süzme (hangi anahtar, hangi tür) Postgres'te (kamera_kalp_bilgi). Eski köprünün
+// boş gövdesi kalp bilgisi DEĞİLDİR — eskisi gibi 400 alır, damga yine basılmıştır.
+esit('kalp: nesne', kalpBilgisi({ kalp: { surum: '1.4.3', fps: 8.6 } }), { surum: '1.4.3', fps: 8.6 })
+esit('kalp: boş nesne de kalptir', kalpBilgisi({ kalp: {} }), {})
+esit('kalp: eski köprünün boş gövdesi', kalpBilgisi({}), null)
+esit('kalp: dizi değil', kalpBilgisi({ kalp: [1, 2] }), null)
+esit('kalp: metin değil', kalpBilgisi({ kalp: 'x' }), null)
+esit('kalp: null', kalpBilgisi({ kalp: null }), null)
+esit('kalp: gövde nesne değil', kalpBilgisi(null), null)
+esit('kalp: gövde dizi', kalpBilgisi([{ kalp: {} }]), null)
+esit('kalp: plakalı olay kalp sayılmaz', kalpBilgisi({ kalp: {}, plaka: '34ABC12' }), null)
+esit('kalp: zamanlı olay kalp sayılmaz', kalpBilgisi({ kalp: {}, zaman: '2026-11-18T10:00:00Z' }), null)
+const kalpYeri = webhook.indexOf("rpc('kamera_kalp_bilgi'")
+esit('webhook: kalp bilgisi yazılır', kalpYeri > 0, true)
+esit('webhook: kalp bilgisi damgadan sonra', kalpYeri > webhook.indexOf("rpc('kamera_kalp')"), true)
+esit('webhook: kalp bilgisi hız sınırından önce', kalpYeri < webhook.indexOf('hız sınırı aşıldı'), true)
+esit('webhook: deneme isteği kalp bilgisi yazmaz', /if \(!deneme\) \{[\s\S]{0,400}?rpc\('kamera_kalp_bilgi'/.test(webhook), true)
+esit('webhook: kalp bilgisi cihaz kimliğiyle', /rpc\('kamera_kalp_bilgi', \{\s*p_cihaz_id: cihazId \?\? null,\s*p_bilgi: kalp,?\s*\}\)/.test(webhook), true)
+
+// --- 071: sunucunun reddettiği araç kart olur --------------------------------
+// 409 sınıfı ret (P0001, 22xxx, 23xxx) artık köprüye 409 olarak gitmez: kart
+// yazılır, 200 + karar ISTISNA döner — eski köprüler de aracı teslim sayar.
+// Geçici hata (503) eskisi gibi yeniden denenir.
+esit('ret: cevap', reddedilenCevabi('i-1'), {
+  ok: true, karar: 'ISTISNA', sebep: 'REDDEDILDI', bilet_id: null, islem_id: 'i-1', istisna: true,
+})
+for (const rpc of ['kamera_tek_kapi', 'bilet_ac', 'kamera_cikis_bildir']) {
+  esit(`webhook: ${rpc} reddi karta yazılır`,
+    webhook.includes(`if (error) return reddiKartla(admin, '${rpc}', error, `), true)
+  esit(`webhook: ${rpc} reddi artık doğrudan 409 değil`,
+    webhook.includes(`if (error) return rpcHatasi('${rpc}', error)`), false)
+}
+const kartla = /async function reddiKartla\([\s\S]*?\n\}/.exec(webhook)?.[0] ?? ''
+esit('webhook: reddiKartla var', kartla.length > 0, true)
+esit('webhook: yalnızca 409 sınıfı kart olur', /if \(rpcHataDurumu\(error\.code\) !== 409\) return rpcHatasi\(rpc, error\)/.test(kartla), true)
+esit('webhook: kart kamera_reddedildi ile yazılır', kartla.includes("admin.rpc('kamera_reddedildi'"), true)
+esit('webhook: ret cümlesi karta gider', kartla.includes('p_sebep: error.message'), true)
+esit('webhook: kart yazılamazsa geçici hata yeniden denenir', kartla.includes('json({ hata: GECICI_HATA }, 503)'), true)
+esit('webhook: kart yazılınca 200', kartla.includes('json(reddedilenCevabi(k.islemId), 200)'), true)
+esit('webhook: okunamadı kaydının reddi kart olmaz (kendisi kart)',
+  webhook.includes("if (olay.koprudenOkunamadi) return rpcHatasi('kamera_okunamadi', okErr)"), true)
+
+// --- 073: kamera girişi kapalıyken araç ATILIR (sahibin kararı 20.11) ----------
+// Kalp atışı (boş {} — 1.4.2; {"kalp":…} — 1.4.3) ve kurulum denemesi eskisi gibi
+// 403 alır: her köprü "KAMERA GİRİŞİ KAPALI" satırını yazmaya devam eder. Araç
+// olayı 410 alır: her köprü 401/403/429 dışındaki 4xx'i kesin sayar ve aracı
+// bırakır; 410, 1.4.2'nin "yeniden kabul" listesinde (400, 409, 413, 422, 429)
+// olmadığı için her atılan araçta yanıltıcı "kabul edildi" satırı da çıkmaz.
+const KAPALI_403_C = { durum: 403, govde: { hata: 'Kamera girişi kapalı.' } }
+const KAPALI_410_C = { durum: 410, govde: { hata: 'Kamera girişi kapalı.', kod: 'KAMERA_KAPALI' } }
+esit('kapalı: kod sabiti', KAMERA_KAPALI, 'KAMERA_KAPALI')
+esit('kapalı: deneme → 403', kapaliCevabi(true, { islem_id: 'i-1' }), KAPALI_403_C)
+esit('kapalı: 1.4.2 boş kalp {} → 403', kapaliCevabi(false, {}), KAPALI_403_C)
+esit('kapalı: 1.4.3 kalp → 403', kapaliCevabi(false, { kalp: { surum: '1.4.3' } }), KAPALI_403_C)
+esit('kapalı: boş gövde → 403', kapaliCevabi(false, null), KAPALI_403_C)
+esit('kapalı: plakalı araç → 410',
+  kapaliCevabi(false, { islem_id: 'i-1', yon: 'ORTAK', plaka: '34ABC12', zaman: '2026-11-20T10:00:00Z' }),
+  KAPALI_410_C)
+esit('kapalı: okunamadı aracı → 410', kapaliCevabi(false, { islem_id: 'i-2', okunamadi: true }), KAPALI_410_C)
+esit('kapalı: JSON olmayan gövde (eski fotoğraflı) → 410', kapaliCevabi(false, undefined), KAPALI_410_C)
+esit('kapalı: dizi gövde kalp değil → 410', kapaliCevabi(false, [{}]), KAPALI_410_C)
+
+// Ayar okunamadıysa (503) damga basılmaz ve kapalı kararı verilmez; okunduysa
+// damga kapalı kararından ÖNCE basılır (kapalı kamera "yaşıyor" görünür, sahte
+// "haber yok" gelmez). Kalp bilgisi kapalıyken de yazılır, cevabı 403'tür.
+const kapaliYeri = webhook.indexOf('kapaliCevabi(')
+esit('webhook: kapalı kararı yardımcıyla', kapaliYeri > 0, true)
+esit('webhook: okuma hatası damgadan önce döner',
+  webhook.indexOf('giris.durum === 503') > 0 && webhook.indexOf('giris.durum === 503') < webhook.indexOf("rpc('kamera_kalp')"), true)
+esit('webhook: damga kapalı kararından önce', webhook.indexOf("rpc('kamera_kalp')") < kapaliYeri, true)
+esit('webhook: cihaz damgası da kapalı kararından önce', webhook.indexOf("rpc('kamera_kalp_cihaz'") < kapaliYeri, true)
+esit('webhook: kalp bilgisi kapalı kararından önce', kalpYeri > 0 && kalpYeri < kapaliYeri, true)
+esit('webhook: kapalıyken kalp cevabı 403, açıkken 200',
+  webhook.includes("giris.ok ? json({ kalp: true }, 200) : json({ hata: giris.hata }, giris.durum)"), true)
+esit('webhook: kapalı kararı hız sınırından önce', kapaliYeri < webhook.indexOf('hız sınırı aşıldı'), true)
+
+// 071'den önce dağıtılan webhook (kamera_reddedildi yok) her reddedilen aracı
+// 503'le sonsuza dek yeniden denetiyordu — sıralı kutuda arkadaki HER araç
+// bekliyordu. İşlev yoksa 071 öncesi gibi asıl 409 döner (araç bırakılır).
+esit('kart: P0001 → asıl 409', kartYazilamadiDurumu('P0001'), 409)
+esit('kart: 23505 → asıl 409', kartYazilamadiDurumu('23505'), 409)
+esit('kart: işlev yok (PostgREST PGRST202) → asıl 409', kartYazilamadiDurumu('PGRST202'), 409)
+esit('kart: işlev yok (Postgres 42883) → asıl 409', kartYazilamadiDurumu('42883'), 409)
+esit('kart: zaman aşımı → 503', kartYazilamadiDurumu('57014'), 503)
+esit('kart: başka PostgREST hatası → 503', kartYazilamadiDurumu('PGRST116'), 503)
+esit('kart: boş kod (ağ) → 503', kartYazilamadiDurumu(''), 503)
+esit('kart: kod yok → 503', kartYazilamadiDurumu(undefined), 503)
+esit('webhook: kart hatası yardımcıyla karar verir',
+  kartla.includes('if (kartYazilamadiDurumu(kartErr.code) === 409) return rpcHatasi(rpc, error)'), true)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 process.exit(kalan === 0 ? 0 : 1)

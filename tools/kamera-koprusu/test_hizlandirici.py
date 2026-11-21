@@ -91,6 +91,17 @@ def test_ayarlar():
     assert a["arac11_esik"] is None and len(u) == 3, (a, u)
 
 
+def test_motosiklet_esigi_ayari():
+    # 1.4.3 (sahibin kararı 20.11): ARAC11_MOTO_ESIK — boş = profilin 0.60'ı;
+    # sahada geri almak için 0.30 (doğum eşiği) yazılır.
+    assert "ARAC11_MOTO_ESIK" in plaka.AYAR_ADLARI
+    assert _ayar()["arac11_moto_esik"] is None
+    a, u = plaka.calisma_ayarlari({"ARAC11_MOTO_ESIK": "0.3"})
+    assert u == [] and a["arac11_moto_esik"] == 0.3, (a, u)
+    a, u = plaka.calisma_ayarlari({"ARAC11_MOTO_ESIK": "2"})
+    assert a["arac11_moto_esik"] is None and len(u) == 1, (a, u)
+
+
 def test_arac_profili():
     # 2026-11-13: YOLO11s 640 gece fotoğraflarıyla ölçüldü (25/25 araç, boş
     # şerit / insan / el arabasında 0 yanlış alarm) → "otomatik" YOLO11s.

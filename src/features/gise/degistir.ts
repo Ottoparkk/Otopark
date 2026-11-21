@@ -190,6 +190,30 @@ export function girisSaatiSonucu(
   if (yerel === null || yerel === istanbulYerel(now)) {
     return { hata: null, girisISO: null, sebep: null }
   }
+  return yazilanSaat(yerel, sebep, now)
+}
+
+/**
+ * Tek kapı "Çıkışta açık bilet bulunamadı" card → Giriş aç (072, owner
+ * 2026-11-18). The field starts EMPTY and must be typed: there is no "now" —
+ * neither the card's time nor now prices this car right. Same limits as
+ * Araç Girişi; istisna_bilet_ac_saatli re-checks all of it.
+ */
+export function kartGirisSaati(
+  yerel: string | null,
+  sebep: string,
+  now: Date,
+): { hata: string; alan: 'giris' | 'sebep' } | { hata: null; girisISO: string; sebep: string } {
+  if (yerel === null || yerel === '') return { hata: 'Giriş saatini yazın.', alan: 'giris' }
+  return yazilanSaat(yerel, sebep, now)
+}
+
+/** A typed entry time and its reason, checked like bilet_giris_duzelt (046). */
+function yazilanSaat(
+  yerel: string,
+  sebep: string,
+  now: Date,
+): { hata: string; alan: 'giris' | 'sebep' } | { hata: null; girisISO: string; sebep: string } {
   const girisISO = yereldenISO(yerel)
   if (girisISO === null) return { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' }
   const t = new Date(girisISO).getTime()

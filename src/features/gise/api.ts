@@ -34,6 +34,25 @@ import type {
 
 /* ============================================================== queries === */
 
+/**
+ * The camera's state for the Gişe banner (070): one of TAMAM / HABER_YOK / REDDEDILIYOR /
+ * KUYRUK_TAKILDI / IZLEME_KAPANDI, readable by Yönetici and Personel.
+ * A failed read shows no banner (see kameraSeridi): before 070 is run the
+ * function does not exist, and a missing banner beats a false one.
+ */
+export function useKameraDurumOzet() {
+  return useQuery({
+    queryKey: ['kamera_durum_ozet'],
+    queryFn: async (): Promise<string | null> => {
+      const { data, error } = await supabase.rpc('kamera_durum_ozet')
+      if (error) throw error
+      return ((data as { durum?: unknown } | null)?.durum as string | undefined) ?? null
+    },
+    refetchInterval: 60_000,
+    retry: 1,
+  })
+}
+
 export function useAyarlar() {
   return useQuery({
     queryKey: ['ayarlar'],

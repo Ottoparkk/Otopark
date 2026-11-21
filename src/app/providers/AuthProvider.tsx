@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
+import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import type { Profile } from '../../lib/types'
 
@@ -39,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
   const [profilHatasi, setProfilHatasi] = useState(false)
+  const queryClient = useQueryClient()
 
   /**
    * Monotonic id of the newest profile request. Any response that is not the
@@ -110,6 +112,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         kullaniciRef.current = null
         setProfile(null)
         setProfilHatasi(false)
+        // Drop every cached query: the next person to sign in on this phone
+        // (a Personel after a Yönetici) must not see the last user's screens
+        // from cache, even for the moment before a refetch.
+        queryClient.clear()
         return
       }
 
@@ -137,7 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true
       sub.subscription.unsubscribe()
     }
-  }, [loadProfile])
+  }, [loadProfile, queryClient])
 
   const refreshProfile = useCallback(async () => {
     if (session) await loadProfile(session.user.id)

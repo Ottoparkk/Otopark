@@ -4,7 +4,8 @@ import { BrandPanel, OranCubugu, ScreenHeader } from '../../components/ui/primit
 import { DolulukRozeti, VardiyaUyarisi, dolulukYuzde } from './components'
 import { GirisBolumu } from './Giris'
 import { AracListesi, Tahsilat } from './Cikis'
-import { useAcikBiletler, useGunlukOzet } from './api'
+import { useAcikBiletler, useGunlukOzet, useKameraDurumOzet } from './api'
+import { kameraSeridi } from './kameraSeridi'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { DonemSecici, MenuKart, useDonem } from '../yonetim/components'
@@ -17,6 +18,7 @@ import {
   IconArti,
   IconKamera,
   IconTik,
+  IconUyari,
   IconYer,
 } from '../../components/ui/icons'
 import type { AcikBilet } from '../../lib/types'
@@ -154,6 +156,9 @@ export default function Gise() {
 
       <div className="space-y-4 px-5">
         <VardiyaUyarisi />
+        {/* Owner 2026-11-18: the camera strip is the Yönetici's only; 070's
+            kamera_durum_ozet refuses Personel too. */}
+        {yonetici && <KameraSeridi />}
         {ozet && (
           <BrandPanel>
             <div className="flex items-end justify-between gap-3">
@@ -302,6 +307,24 @@ export default function Gise() {
 
       <GirisFab onClick={() => navigate('/gise/giris')} />
     </div>
+  )
+}
+
+/**
+ * Camera trouble, for the Yönetici at the gate (070; owner 2026-11-17 said all
+ * staff, changed 2026-11-18 to the Yönetici only). Says only what kind of
+ * trouble — the details are on Kamera Kurulumu.
+ */
+function KameraSeridi() {
+  const { data } = useKameraDurumOzet()
+  const serit = kameraSeridi(data)
+  if (!serit) return null
+  const renk = serit.ton === 'danger' ? 'bg-danger-soft text-danger' : 'bg-warn-soft text-warn'
+  return (
+    <p role="status" className={`flex items-center gap-3 rounded-card px-4 py-3 ${renk}`}>
+      <IconUyari size={20} className="shrink-0" />
+      <span className="flex-1 text-body font-medium">{serit.metin}</span>
+    </p>
   )
 }
 

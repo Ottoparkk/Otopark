@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import type { KarneGun } from './karne'
 import type {
   KameraCihaz,
   KameraKod,
@@ -397,6 +398,46 @@ export function useKameralar(aralikMs = 60_000) {
     // enough for that; the screen asks for a shorter interval only while a
     // setup is in progress and someone is waiting to see it land.
     refetchInterval: aralikMs,
+  })
+}
+
+/**
+ * The camera scorecard (070, Yönetici only): one row per Istanbul day, today
+ * first, counted from tickets, cards and the audit log — past days included,
+ * so before/after a bridge update can be compared.
+ */
+export function useKameraKarne(gun: number) {
+  return useQuery({
+    queryKey: ['kamera_karne', gun],
+    queryFn: async (): Promise<KarneGun[]> => {
+      const { data, error } = await supabase.rpc('kamera_karne', { p_gun: gun })
+      if (error) throw error
+      return (data ?? []) as KarneGun[]
+    },
+    staleTime: 5 * 60_000,
+  })
+}
+
+/** Each bridge's last heartbeat numbers (070). RLS: Yönetici only. */
+export interface KameraSaglik {
+  kaynak: string
+  cihaz_id: string | null
+  bilgi: Record<string, unknown>
+  zaman: string
+}
+
+export function useKameraSaglik() {
+  return useQuery({
+    queryKey: ['kamera_saglik'],
+    queryFn: async (): Promise<KameraSaglik[]> => {
+      const { data, error } = await supabase
+        .from('kamera_saglik')
+        .select('kaynak,cihaz_id,bilgi,zaman')
+        .order('kaynak')
+      if (error) throw error
+      return (data ?? []) as KameraSaglik[]
+    },
+    refetchInterval: 60_000,
   })
 }
 

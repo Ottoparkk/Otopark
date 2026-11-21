@@ -302,6 +302,53 @@ def test_kutulari_coz11_nms_esik_ve_kesilen_kose():
     assert [round(k.skor, 3) for k in kutular] == [0.6], kutular
 
 
+def test_kutular_sinifi_tasir():
+    # 1.4.3 (2026-11-20): el arabası iten kişi 19.11'de 5 kez "Çözülmemiş
+    # kayıt" oldu (tek kare / kapıda kayboldu, 0.37-0.52); 17:38 kartının
+    # fotoğrafı YOLO11s'te motosiklet 0.50, otomobil 0.01. Sınıf kutuyla
+    # gelmeli ki karar ve kayıt satırı onu bilsin. Kutunun sınıfı, araç
+    # puanını veren (en yüksek) araç sınıfıdır — COCO numarasıyla.
+    assert arac.MOTOSIKLET == 3
+    assert arac.SINIF_ADLARI == {2: "otomobil", 3: "motosiklet", 5: "otobüs", 7: "kamyon"}
+    assert arac.AracKutu(0, 0, 1, 1, 0.5).sinif == -1        # eski 5 alanlı kurulum: bilinmiyor
+    i8 = 52 * 5 + 3                                           # r=0.5 → (0, 56, 136, 120)
+    h = _ham((i8, 3, 1.0, 0.9, (0.5, 0.5, np.log(10), np.log(4))),          # motosiklet
+             (52 * 40 + 40, 7, 1.0, 0.6, (0.5, 0.5, 0.0, 0.0)),            # kamyon
+             (52 * 20 + 20, 5, 1.0, 0.7, (0.5, 0.5, 0.0, 0.0)))            # otobüs …
+    h[0, 52 * 20 + 20, 5 + 2] = 0.4                           # … otomobil 0.4 aynı satırda
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, None)
+    assert [(round(k.skor, 3), k.sinif) for k in kutular] == [(0.9, 3), (0.7, 5), (0.6, 7)], kutular
+    # Kesilen köşe kutuyu düşürünce sınıflar kaymaz (aynı süzgeç).
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, (0, 50, 200, 100))
+    assert [(round(k.skor, 3), k.sinif) for k in kutular] == [(0.7, 5), (0.6, 7)], kutular
+    # YOLO11 çıktısı: aynı kural.
+    d = (0.5, 0.0, 0.0)
+    h = _ham11((10, 3, 0.5, (34, 44, 68, 32)),                # → (0, 56, 136, 120) motosiklet
+               (300, 2, 0.8, (330, 330, 20, 20)))             # başka yerde otomobil
+    h[0, 4 + 2, 10] = 0.01                                    # 17:38 kartı: otomobil 0.01
+    kutular, _ = arac.kutulari_coz(h, d, 800, 600, None, profil=arac.YOLO11S)
+    assert [(round(k.skor, 3), k.sinif) for k in kutular] == [(0.8, 2), (0.5, 3)], kutular
+    kutular, _ = arac.kutulari_coz(h, d, 800, 600, (0, 50, 200, 100), profil=arac.YOLO11S)
+    assert [(round(k.skor, 3), k.sinif) for k in kutular] == [(0.8, 2)], kutular
+
+
+def test_motosiklet_esigi_profilde_ve_ayarda():
+    # 1.4.3 (sahibin kararı 20.11): YOLO11s'te yönü bilinmeyen plakasız kapı
+    # olayı puanını motosikletten alıyorsa 0.60 ister. tiny'de kural yok.
+    t, y = arac.YOLOX_TINY, arac.YOLO11S
+    assert t.moto_esik is None and t.moto_anahtari is None, t
+    assert (y.moto_esik, y.moto_anahtari) == (0.60, "arac11_moto_esik"), y
+    b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), _ayar(), plaka.MODEL_DIZINI,
+                        profil=arac.YOLO11S)
+    assert b.moto_esik == 0.60, b.moto_esik
+    b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), dict(_ayar(), arac11_moto_esik=0.30),
+                        plaka.MODEL_DIZINI, profil=arac.YOLO11S)
+    assert b.moto_esik == 0.30, b.moto_esik                 # sahada geri alma: 0.30
+    b = arac.AracBulucu(_SahteOturum(_ham()), dict(_ayar(), arac11_moto_esik=0.5),
+                        plaka.MODEL_DIZINI)
+    assert b.moto_esik is None, b.moto_esik                 # tiny: ayar dokunmaz
+
+
 def test_bulucu11_kendi_on_islemini_ve_esik_anahtarini_kullanir():
     # Bulucu profilin ön işlemini kullanmalı (RGB /255, ≤ 1) — YOLOX'unkiyle
     # (0-255) beslenen YOLO11 hata vermez, yalnızca zayıf görür.

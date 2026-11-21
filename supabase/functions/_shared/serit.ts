@@ -196,6 +196,43 @@ export function hareketIpucu(govde: Record<string, unknown>): HareketIpucu | nul
 }
 
 /**
+ * The answer when the server REFUSED a camera car and the webhook wrote a
+ * REDDEDILDI card for it instead (071). 200 like every other card outcome,
+ * so every bridge — old ones too — counts the car as delivered; `karar` and
+ * `sebep` show in the bridge's log.
+ */
+export function reddedilenCevabi(islemId: string) {
+  return {
+    ok: true,
+    karar: 'ISTISNA',
+    sebep: 'REDDEDILDI',
+    bilet_id: null,
+    islem_id: islemId,
+    istisna: true,
+  }
+}
+
+/**
+ * The heartbeat's numbers (070, bridge 1.4.3): `{"kalp": {...}}`.
+ *
+ * Only a plain object under `kalp` counts, and only in a body that is not a
+ * car event (no plate, no time) — a car is never swallowed as a heartbeat.
+ * Which keys are kept, and their types and lengths, is decided in Postgres
+ * (kamera_kalp_bilgi); this only finds the object. An older bridge's empty
+ * body is not a heartbeat body and keeps its old 400 (its stamp was already
+ * written).
+ */
+function duzNesne(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+export function kalpBilgisi(govde: unknown): Record<string, unknown> | null {
+  if (!duzNesne(govde) || !duzNesne(govde.kalp)) return null
+  if (govde.plaka != null || govde.zaman != null) return null
+  return govde.kalp
+}
+
+/**
  * Is this the bridge's LAST attempt for the event (`x-kamera-son-gonderim`,
  * bridge 1.2.1+)? Exactly "1", like `x-kamera-deneme`.
  *
@@ -262,6 +299,21 @@ export function rpcHataDurumu(kod: string | null | undefined): 409 | 503 {
   return /^(P0001|2[23][0-9A-Z]{3})$/.test(kod ?? '') ? 409 : 503
 }
 
+/**
+ * Writing the REDDEDILDI card (kamera_reddedildi, 071) failed: answer the
+ * original refusal (409, the car is dropped as before 071) or retry (503)?
+ *
+ * A missing function — the webhook deployed before 071 was run — is PGRST202
+ * from PostgREST or 42883 from Postgres. That will not fix itself on a retry,
+ * and a 503 made the bridge retry the car forever while every car queued
+ * behind it waited. So it is 409, like a refusal; everything else as
+ * rpcHataDurumu.
+ */
+export function kartYazilamadiDurumu(kod: string | null | undefined): 409 | 503 {
+  if (kod === 'PGRST202' || kod === '42883') return 409
+  return rpcHataDurumu(kod)
+}
+
 export type KameraGirisiKarari<T> =
   | { ok: true; ayar: T }
   | { ok: false; durum: 403 | 503; hata: string }
@@ -285,6 +337,42 @@ export function kameraGirisiKarari<T extends { kamera_aktif?: unknown }>(
   if (hata) return { ok: false, durum: 503, hata: GECICI_HATA }
   if (!ayar?.kamera_aktif) return { ok: false, durum: 403, hata: 'Kamera girişi kapalı.' }
   return { ok: true, ayar }
+}
+
+/** `kod` of the 410 a car event gets while camera input is off (073). */
+export const KAMERA_KAPALI = 'KAMERA_KAPALI'
+
+/**
+ * The answer while camera input is switched off (073; owner, 2026-11-20: the
+ * cars the camera sees then are THROWN AWAY — the owner switched it off on
+ * purpose and staff enter cars by hand).
+ *
+ *   403  a heartbeat (empty body, `{}` from bridge 1.4.2, `{"kalp":…}` from
+ *        1.4.3) and the installer's trial (`x-kamera-deneme`). Every bridge
+ *        keeps the car-free request and shows KAMERA GİRİŞİ KAPALI, as before.
+ *   410  a car event. Every bridge treats a 4xx other than 401/403/429 as
+ *        final and drops the car — before 073 it got 403, was KEPT, and
+ *        flooded in hours later when input was switched back on. 410 is not
+ *        in bridge 1.4.2's "accepted again" list (400, 409, 413, 422, 429), so
+ *        no misleading "accepted again" line is logged per dropped car.
+ *
+ * `govde`: null for an empty body, the parsed value for JSON, undefined for
+ * anything else (an old bridge's multipart photo upload is a car).
+ */
+export function kapaliCevabi(
+  deneme: boolean,
+  govde: unknown,
+): { durum: 403 | 410; govde: { hata: string; kod?: string } } {
+  const hata = 'Kamera girişi kapalı.'
+  const aracsiz =
+    govde === null ||
+    (duzNesne(govde) &&
+      govde.islem_id == null &&
+      govde.plaka == null &&
+      govde.zaman == null &&
+      govde.okunamadi == null)
+  if (deneme || aracsiz) return { durum: 403, govde: { hata } }
+  return { durum: 410, govde: { hata, kod: KAMERA_KAPALI } }
 }
 
 export type CihazKimligi =

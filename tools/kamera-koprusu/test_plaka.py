@@ -583,6 +583,71 @@ def test_oylama_tahmin_kaydi():
     assert k.eminler == [] and k.belirsiz.tahmin == "35AEU362" and abs(k.belirsiz.guven - 0.80) < 1e-9
 
 
+# 1.4.3 (sahibin kararı 19.11): kenara / kırpma alanının kenarına değen (kesik)
+# plaka okunur ama YALNIZCA son çare tahmindir — kart tahminsiz kalmasın.
+# Sahada 19.11 14:53: 35DEA869 alanın gri köşesine 1 px yakındı, okuyucu
+# 0.997 / 0.998 okurdu; kesik sayıldı, kart tahminsiz gitti. Kesik okuma asla
+# oy değildir (yarım plakanın "35DEA86" gibi geçerli görünme riski) ve emin
+# kararlara (birleşik rakipleri dahil) hiç karışmaz.
+
+def test_oylama_kesik_tahmin_son_care():
+    o = _oylama()
+    o.kutu(_z(1), 1); o.kesik_tahmin("35DEA869", 0.997)
+    o.kutu(_z(2), 2); o.kesik_tahmin("35DEA869", 0.99); o.kesik_tahmin("35DEA86", 0.999)
+    k = o.karar()
+    assert k.eminler == [] and k.belirsiz is not None, k
+    assert k.belirsiz.tahmin == "35DEA869" and abs(k.belirsiz.guven - 0.997) < 1e-9, k
+    assert k.belirsiz.zaman == _z(1), k
+
+
+def test_oylama_kesik_tahmin_asla_emin_olmaz():
+    o = _oylama()
+    for g in range(1, 8):
+        o.kutu(_z(g), g); o.kesik_tahmin("35DEA869", 1.0)
+    k = o.karar()
+    assert k.eminler == [] and k.belirsiz.tahmin == "35DEA869", k
+    o = _birlesik()
+    for g in range(1, 8):
+        o.kutu(_z(g), g); o.kesik_tahmin("35DEA869", 1.0)
+    assert o.karar().eminler == []
+
+
+def test_oylama_kesik_tahmin_tam_okumanin_gerisinde():
+    # Tam kutunun tahmini ya da belirsiz oyu varsa kesik okuma kullanılmaz.
+    o = _oylama()
+    o.kutu(_z(1), 1); o.tahmin("35AEU362", 0.60)
+    o.kutu(_z(2), 2); o.kesik_tahmin("35DEA869", 1.0); o.kesik_tahmin("35DEA869", 1.0)
+    assert o.karar().belirsiz.tahmin == "35AEU362"
+    o = _oylama()
+    o.kutu(_z(1), 1); o.okuma("35AEU362", 0.96, _z(1), 1)
+    o.kutu(_z(2), 2); o.kesik_tahmin("35DEA869", 1.0)
+    assert o.karar().belirsiz.tahmin == "35AEU362"
+    # Emin plaka varken kesik okuma ikinci araç (belirsiz) da sayılmaz.
+    o = _oylama()
+    for g in (1, 2):
+        o.kutu(_z(g), g); o.okuma("34ABC123", 0.99, _z(g), g)
+    o.kutu(_z(3), 3); o.kesik_tahmin("06KZ4581", 1.0); o.kesik_tahmin("06KZ4581", 1.0)
+    k = o.karar()
+    assert [e.metin for e in k.eminler] == ["34ABC123"] and k.belirsiz is None, k
+
+
+def test_oylama_kesik_tahmin_tek_karede_kart_yok():
+    # m_kutu kuralı aynen: tek kutulu kare personele gitmez.
+    o = _oylama()
+    o.kutu(_z(1), 1); o.kesik_tahmin("35DEA869", 1.0)
+    assert o.karar().belirsiz is None
+
+
+def test_birlesik_kesik_okumayi_rakip_saymaz():
+    # Kesik okuma emin kararlara karışmaz: birleşik karar aynen 1.4.2'deki gibi.
+    o = _birlesik()
+    _yarim(o, "35CKM57", [1, 2, 3])
+    o.kesik_tahmin("35CKM5", 0.99)
+    o.kesik_tahmin("35CKM51", 0.99)
+    k = o.karar()
+    assert [(e.metin, e.birlesik) for e in k.eminler] == [("35CKM57", True)], k
+
+
 # ------------------------------------------- 1.4.1: çok karede birleştirme --
 # Sahada 2026-11-10: kart fotoğraflarının 3'ünde doğru plaka okundu ama iki
 # kırpıntıdan biri %95'in altındaydı (ör. 35CKM57 0.94 / 0.53) → personele.

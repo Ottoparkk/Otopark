@@ -132,7 +132,11 @@ approach, touching the picture edge):
   nothing; no ticket → Çözülmemiş kayıt `ICERIDE_BILETSIZ` with a "Giriş aç"
   button (entry time = when it was seen inside). Never a staff card for an
   unsure / missing plate, never on a GIRIS / CIKIS lane (there the server
-  would open / close a ticket); the 60 s same-plate rule applies.
+  would open / close a ticket); the 60 s same-plate rule applies — except
+  (1.4.3, owner 18.11) a plate sent as `CIKTI` does not block it: if the
+  camera closed that ticket and the car is then seen inside within the exit
+  window, the server opens a `CIKMAMIS_OLABILIR` card that leads staff to
+  the ticket's "Araç çıkmadı" (migration 072).
 - **Entered unseen, found standing at the gate (1.4.2, A4)** — site 11.11
   19:08: the finder missed an entering car in the gate area and first found
   it STANDING just past it; a standing birth is not an entry (a car parked by
@@ -565,7 +569,10 @@ kapatıyor:
   kalır, internet dönünce sırayla (en az 3 sn arayla) gider ve ancak o zaman
   silinir (`giden.py`). Bu, sahibin 2026-10-31 "çevrimdışı tampon yok"
   kararını **2026-11-06'da sahibin kendisi değiştirmesidir** — yalnızca
-  kamera köprüsü için, yalnızca gönderilene kadar. Kamera yoksa önce `KAMERA
+  kamera köprüsü için, yalnızca gönderilene kadar. Sunucunun reddettiği
+  araç (şerit uyuşmazlığı, bozuk gövde) diskte SAKLANMAZ — yalnızca günlük
+  satırı ve kalp atışındaki `reddedilen` sayısı kalır (sahip 2026-11-18:
+  30 günlük `reddedilen` klasörü istenmedi). Kamera yoksa önce `KAMERA
   YOK` söylenir.
 - **plaka okuyucu çalışıyor mu** (1.3.0) — modeller açılamazsa köprü DÜŞMEZ:
   her araç-boyutlu geçiş fotoğrafıyla personele gider (araç kaybolmaz ama
@@ -850,8 +857,12 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `HIZLANDIRICI` | `GPU` | 1.4.2: run the three models on the Intel GPU (OpenVINO). The GPU self-test runs **without** a CPU fallback, so a broken GPU can't pass it on the CPU and be reported as "GPU". If the GPU is missing or fails its self-test the bridge starts on the CPU set (1.4.1: onnxruntime + YOLOX-tiny). While running, a GPU error is retried **3 times**; only then that model moves to the CPU and the same frame is measured there. **Every 30 s** while anything is on the CPU, a short background job opens a fresh GPU connection, self-tests all three models and hands them back (log: `grafik işlemcisi geri geldi`). If the GPU stays lost for **10 min**, the bridge restarts itself at a quiet moment (no car being tracked) — at most once an hour (`grafik işlemcisi için köprü yeniden başlatılıyor`). `--durum` warns after 1 h on the CPU. `CPU` = always 1.4.1's set, no retries. |
 | `ARAC_MODEL` | `otomatik` | 1.4.2: the vehicle model on the GPU — `yolo11s`, `tiny`, or `otomatik` (= YOLO11s 640 since 2026-11-13; a profile still marked as a placeholder would fall back to tiny). The CPU set is always tiny. |
 | `ARAC11_BUL_ESIK` / `ARAC11_GECIS_ESIK` | empty | 1.4.2: YOLO11s's own limits. Empty = the values in `arac.YOLO11S` (0.30 / 0.60, measured on night photos 2026-11-13). `ARAC_BUL_ESIK` / `ARAC_GECIS_ESIK` stay tiny's. |
+| `ARAC11_MOTO_ESIK` | empty | 1.4.3 (owner, 20.11): YOLO11s only. A plateless car seen only briefly at the gate (tek kare / kapıda kayboldu) whose best box scored as a **motorcycle** needs this score to become a staff card. Empty = 0.60 (`arac.YOLO11S.moto_esik`). Cars, buses, trucks and GİRDİ / ÇIKTI keep 0.30. Why: on 19.11 a person pushing a hand truck made 5 cards at 0.37–0.52 (one card photo: motorcycle 0.50); the owner's scooter photos scored 0.77–0.92. A track the rule drops leaves its log line with the class, e.g. `plakasız … (araç 0.49 motosiklet)`; find them with `Select-String motosiklet`. To switch the rule off on site: `0.30`, then Yeniden başlat. tiny has no such rule. |
 | `PLAKA_TAM` | `1` | 1.3.4: read the plate from the full-resolution crop (found on the shrunk one). `0` = 1.3.3. |
 | `PLAKA_BIRLESIK` | `1` | 1.4.1: a plate read the same in ≥ 3 different views (both crops agree, each ≥ 0.50, one ≥ 0.90, no near-text in the track) is sure. `0` = only the single-frame 95 % rule. Tracking only. |
+| `PARCA_EMME` | `0` | 1.4.3 (1a): a car's edge piece (tail, front corner) that became its own track is counted as part of the real car's entry/exit (`takip.Emici`): same edge, its span inside the car's, seen just after the exit or just before the entry (≤ 2 s), moving the same way, no other sure plate. `0` = log only: every event is still sent, the log says `aynı aracın parçası sayılırdı` and the heartbeat counts it. `1` = the piece is not sent (`sayıldı`). Turn on only after the owner has checked the trial week against the clips. Tracking only. |
+| `KLIP` | `0` | 1.4.3 (1d, owner's choice 17.11): `1` records a short video of every direction-unknown event (TEK_KARE, KAPIDA_KAYBOLDU, ESKI_GIRDI — including sure plates sent without a direction, and edge pieces counted as part of a car): the crop, about 5 frames/s, from 5 s before the car was first seen (at most 60 s back) to 5 s after the event, with the Istanbul time in the corner. Files go to `C:\ProgramData\Otopark\klipler\`, named `2026-11-18_22-26-05_iz368_KAPIDA_KAYBOLDU_ab12cd34.avi` (time, track, event, the first 8 characters of the sent `islem_id` — the same as the log's `gönderildi -> ab12cd34`; `gonderimyok` if nothing was sent, `emildi` if the piece was absorbed). The plate is never in the name or the log, but it is visible in the video: the clips stay on this computer only, are never sent, and are deleted after 7 days (oldest first above 2 GB; nothing is written while the disk has less than 5 GB free) — a deliberate exception, chosen by the owner, to the outbox's "only until sent" rule. Clips still waiting when the bridge stops are lost. Open them with VLC. Uses about 30–65 MB of RAM (busier pictures take more) and ~15 ms of CPU per second. Tracking only. |
+| `PARK_GORUNUR` | `0` | 1.4.3 (owner 19.11): `1` lets the two models see the WHOLE crop rectangle on tracking frames, including what is outside the blue crop area (`KIRPMA_ALAN`); everything else stays masked as today — the motion trigger, the stored photo, clips and the 1.3.4 fallback rule (`TAKIP=0`, or tracking switched off). Why: a car that drove through a grey part vanished and came back as a new track, and its plate was "cut" at the grey edge (the half-seen plates of 18–19.11). Events come only from tracks whose bottom-centre point has been in the blue area or the yellow gate; a track that never was gives no event, no `iz kararsız bitti` line, and asks for model frames only while it is clearly moving. The 1.4.1 speed rule and the 1.4.2 A4 rule apply only to tracks born in that zone (a parked car outside that switches its lights on at night is never "came through the gate"). A plate inside the blue is no longer cut at the blue edge (only the crop rectangle's edges cut); a plate further outside is read only inside a moving track's predicted box (widened 25 %) — a parked car's plate outside is never read. The tracker also follows the unmasked picture, so a car's views and stillness outside the blue count; whether a new model frame is needed is still decided on the masked picture. Polygon only: with the old rectangle crop the log says `PARK_GORUNUR=1 yalnızca kırpma alanıyla … kapalı` and nothing changes. Known limits: a car seen only outside the blue is grey in its photo; an exiting car parked outside the blue is looked at only every 2 s until it moves into the blue. Turn on after a `--plaka` check on site; compare the `· N model karesi` count on the `çalışıyor` line before and after. Tracking only. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
 | `ARAC_BUL` | `1` | `0` switches the vehicle finder (1.3.1) off: every decision is 1.3.0's. |
 | `ARAC_BUL_ESIK` | `0.35` | A stopped plateless thing counts as a vehicle at this score. Bake-off: cars 0.40–0.94, people ≤ 0.27. |
@@ -875,6 +886,7 @@ python test_arac.py             # araç bulucu (arac.py), 30 test
 python test_hizlandirici.py     # grafik işlemcisi + işlemciye geri dönüş (1.4.2), 25 test
 python test_takip.py            # araç izleme, kapı kuralları (takip.py), 80 test
 python test_giden.py            # gönderim kutusu (giden.py), 14 test
+python test_klip.py             # klip kaydedici (klip.py), 20 test
 python test_mutasyon.py         # 192 kural tek tek bozulur; her biri yakalanmalı
 ```
 
@@ -934,7 +946,16 @@ hiçbir şey üretmez), `ayni_plaka_60sn`. `kuyruk` 1.3.0'da yeni bir hatayı
 yakaladı: plakalı araç gidip şerit boşalınca bu "plakasız bir şey durdu"
 sanılıp personele yazılıyordu — artık geçişin arka plan karesi de okunuyor.
 
-`test_okuma.py` kararları tek tek tutar: kesik plaka okunmaz, kesilen köşedeki
+**Kesik plaka yalnızca tahmindir (1.4.3, sahibin kararı 19.11).** Kenara, kırpma
+alanının kenarına ya da kesilen köşeye değen plaka hâlâ ASLA emin okunmaz ve
+oya girmez: plakanın bir kısmı grinin altındaysa yarısı geçerli bir plaka gibi
+görünebilir (35DEA86). Ama okunur ve izde başka hiçbir okuma yoksa kartın
+tahmini olur — personel fotoğrafla doğrular. Sahada 19.11 14:53: 35DEA869 gri
+köşeye 1 px yakındı (okuyucu 0.997 / 0.998 okurdu), kart tahminsiz gitti.
+Asıl çare alanı çizmek: kırpma alanının kenarı araçların geçtiği yoldan
+uzakta olsun; park yerlerini dışarıda bırakmak için köşe ekleyin (en çok 8).
+
+`test_okuma.py` kararları tek tek tutar: kesik plaka oy almaz (yalnızca son çare tahmin), kesilen köşedeki
 kutu düşer, iki kırpıntı kuralı, oylama, ayrılış, 60 sn, bozuk okuyucu,
 kayıtta plaka yok. `test_plaka.py` ön işlemi ve kutu eşlemeyi yukarı akıştan
 (open-image-models 0.5.1, fast-plate-ocr 1.1.0) ölçülmüş değerlere göre, Türk plaka kuralının
@@ -1073,6 +1094,31 @@ hâlâ kabul edilir. Sihirbaz `KIRPMA_ALAN` ve `KAPI_ALANI`'nı HER ZAMAN yazar
 (yoksa `""`), alan çizildiyse `KIRPMA` / `KIRPMA_HARIC`'i boşaltır; `TAKIP`'e
 dokunmaz. Sayfa gerçek tarayıcıda sahadaki görüntüyle denendi (köşe tıklama,
 yapışma, son köşeyi sil, kaydet → sunucu iki alanı da sakladı).
+
+**Köşe düzeltme, saha önerisi, kayıtlı alanlar (1.4.3).** Çizdikten sonra
+baştan çizmek gerekmez: köşeyi **sürükleyin** (taşınır, aynı %3 yapışmasıyla),
+çizginin üstüne **tıklayın** (araya köşe eklenir, en çok 8), köşeye **sağ
+tıklayın** (silinir; 3'ten az köşe kalırsa alan yeniden açılır). Öteki alanın
+köşesine tıklamak o alana geçer. Köşeler numaralıdır. **Öneriyi yükle**,
+`kirpma_sunucu.SAHA_ONERISI`'ni (karenin oranı olarak; her çözünürlüğe uyar)
+çizer: 19.11 sahası, bugünkü zum. Mavi alan 14:53 plakasının kesildiği sol
+üst köşeyi açar, sağı kamyonun altına kadar açık, sol altı Mercedes yerini
+dışarıda bırakır; sarı kapı alanı alt kenarda drenaj kanalında biter, bir araç
+boyu derin (18.11 19:44 / 19:57 araçları kanalın sağında kayboldu — öneride
+kapının dışında kalırlar, yön bilinir). Zum değişirse öneri yalnızca
+başlangıçtır. **Kayıtlı alanları yükle**, Yeniden kur'da bugünkü
+`KIRPMA_ALAN` / `KAPI_ALANI`'yı çizer (yoksa düğme görünmez; bozuk metin ya da
+karenin dışına taşan köşe yüklenmez). İkisi de çizili alanın üstüne yazmadan
+önce sorar. Kaydetme değişmedi: Python (`_alan_coz`) yine esastır. Tarayıcıda
+denendi (sürükle, araya ekle, sağ tıkla sil, 3'ün altına inince açılma, iki
+yükleme düğmesi, kaydet → sunucu düzeltilmiş köşeyi sakladı).
+
+**Park görünür (1.4.3, `PARK_GORUNUR`).** Park etmiş araçları mavinin
+DIŞINDA bırakmak hâlâ doğrudur: dışarıdaki araç olay vermez, plakası okunmaz,
+fotoğrafta gri kalır. Anahtar açıkken değişen tek şey: boşken mavinin dışından
+geçen bir araç artık griye girince kaybolmaz ve plakası kenarda kesilmez —
+modeller dışarıyı da görür, olay kapıdan / maviden giren izden çıkar. Kapalıyken
+(varsayılan) her şey bugünkü gibidir.
 
 Eşikler **seçilen kutunun içinde** ölçülür (hariç alan griye boyanmış olarak): köprü hareketi kırpılmış görüntüde
 ölçtüğü için tüm kareden çıkarılan eşik başka bir sinyalden çıkarılmış olurdu.

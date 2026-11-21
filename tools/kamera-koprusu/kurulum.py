@@ -546,14 +546,20 @@ def port_sor() -> int:
 
 # -------------------------------------------------------------- 3. kırpma ---
 
-def kirpma_ve_esikler(rtsp: str) -> dict:
+def kayitli_alanlar(ayar: dict) -> tuple[str, str]:
+    """1.4.3: yeniden kurulumda eski ayarın (KIRPMA_ALAN, KAPI_ALANI) metinleri."""
+    return str(ayar.get("KIRPMA_ALAN") or ""), str(ayar.get("KAPI_ALANI") or "")
+
+
+def kirpma_ve_esikler(rtsp: str, mevcut: tuple | None = None) -> dict:
     import kirpma_sunucu
 
     baslik(3, "Kırpma alanı")
     print("  Tarayıcı açılıyor. İzlenecek alanın köşelerini tıklayın (park etmiş")
     print("  araçları dışarıda bırakın), sonra kapının önünü 'Kapı alanı' olarak")
-    print("  çizin ve 'Kaydet' deyin.")
-    secim = kirpma_sunucu.kirpma_sec(rtsp)
+    print("  çizin ve 'Kaydet' deyin. 'Öneriyi yükle' sahanın önerilen alanlarını,")
+    print("  'Kayıtlı alanları yükle' bugünkü alanları çizer; köşeleri sürükleyin.")
+    secim = kirpma_sunucu.kirpma_sec(rtsp, mevcut=mevcut)
     kutu, haric, olcumler = secim[:3]
     # 1.4.0: çokgen alan ve kapı alanı (eski 3 değerli dönüşte ikisi de yok).
     alan, kapi = (secim[3], secim[4]) if len(secim) > 3 else (None, None)
@@ -1384,7 +1390,7 @@ def kurulumu_tamamla(ayar: dict, eski: EskiKopru) -> int:
 
     rtsp, _ = kamera_bilgisi()
     ayar["RTSP_URL"] = rtsp
-    ayar.update(kirpma_ve_esikler(rtsp))
+    ayar.update(kirpma_ve_esikler(rtsp, mevcut=kayitli_alanlar(ayar)))
 
     baslik(5, "Kurulum")
     yol = ayari_yaz(ayar)

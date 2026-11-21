@@ -26,16 +26,29 @@ const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
     'Kamera bu aracı tek kapıdan GİRERKEN gördü ama plakasının eski bir açık bileti var; araç önceki çıkışında görülmemiş olabilir. Eski bileti kontrol edin: araç çıkıp yeniden girdiyse eski bileti Çıkış ekranından kapatın ve yeni girişi elle açın; araç hiç çıkmadıysa kaydı çözüldü olarak işaretleyin.',
   ICERIDE_BILETSIZ:
     'Otoparkın içinde hareket eden bu aracın plakası okundu ama açık bileti yok. Kamera bu aracın biletini yakın zamanda çıkış diye kapattıysa (Çıktı listesinde, ödeme bekliyor) yeni giriş açmayın; o bilette "Araç çıkmadı"yı kullanın. Öyle değilse ve araç içerideyse girişini açın — giriş saati aracın içeride görüldüğü an olur; bileti varsa ya da araç çıktıysa kaydı çözüldü olarak işaretleyin.',
+  // 071: before, the bridge dropped this car with only a line in its log.
+  REDDEDILDI:
+    'Kamera bu aracı gördü ama sunucu kaydı kabul etmedi; bilet açılmadı ya da kapanmadı. Araç içerideyse ve bileti yoksa girişini elle açın (Gişe, Giriş); çıkan bir araçsa Çıkış ekranından işlem yapın. Aynı sebep tekrar ediyorsa Yöneticiye haber verin.',
+  // 072 (owner 2026-11-18): the camera closed this ticket as an exit, then saw
+  // the same plate inside within minutes. The card leads to that ticket.
+  CIKMAMIS_OLABILIR:
+    'Kamera bu aracın biletini çıkış diye kapattı, ama birkaç dakika sonra araç otoparkın içinde görüldü. Araç gerçekten çıkmadıysa bilete gidip "Araç çıkmadı"yı kullanın. Araç çıktıysa kaydı çözüldü olarak işaretleyin.',
 }
 
 // The last sentence matches the entrance text's "Zaten bileti varsa…": a later
 // photo of the same car is a new event, opens its ticket and leaves this row
-// open (see KENDILIGINDEN_COZULMEZ below).
+// open.
 const OKUNAMADI_TEK_KAPI =
   'Tek kapıda bir araç görüldü ama plakası okunamadı; girdiği mi çıktığı mı bilinmiyor. İçeride bileti olmayan bir araç varsa girişini elle açın; çıkan bir araçsa kaydı çözüldü olarak işaretleyin. Kamera plakayı başka bir karede okumuş olabilir: aracın zaten bileti varsa kaydı çözüldü olarak işaretleyin.'
 
 export function aciklama(i: Istisna): string {
-  return i.tur === 'OKUNAMADI' && i.yon === 'ORTAK' ? OKUNAMADI_TEK_KAPI : TUR_ACIKLAMA[i.tur]
+  if (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK') return OKUNAMADI_TEK_KAPI
+  // 071: the status line cuts the server's sentence to one line; here it is whole.
+  const ret = i.tur === 'REDDEDILDI' && i.ham_yanit ? i.ham_yanit.ret_sebebi : null
+  if (typeof ret === 'string' && ret.trim()) {
+    return TUR_ACIKLAMA.REDDEDILDI + ' Sunucunun cevabı: ' + ret.trim()
+  }
+  return TUR_ACIKLAMA[i.tur]
 }
 
 /**
@@ -65,6 +78,16 @@ const KISA: Record<IstisnaTur, string> = {
   OKUNAMADI: 'Plaka tam olarak okunamadı',
   GIRISTE_ACIK_BILET: 'Girerken görüldü — eski açık bileti var',
   ICERIDE_BILETSIZ: 'İçeride, bileti yok',
+  REDDEDILDI: 'Sunucu kaydı reddetti',
+  CIKMAMIS_OLABILIR: 'Çıktı sayıldı ama içeride görüldü',
+}
+
+/** The refusal sentence on a REDDEDILDI row (071), cut to fit one line. */
+function retSebebi(i: Istisna): string | null {
+  const s = i.tur === 'REDDEDILDI' && i.ham_yanit ? i.ham_yanit.ret_sebebi : null
+  if (typeof s !== 'string' || !s.trim()) return null
+  const t = s.trim()
+  return t.length > 80 ? t.slice(0, 79) + '…' : t
 }
 
 /** The card's single status line. */
@@ -72,6 +95,8 @@ export function kisaDurum(i: Istisna): string {
   if (i.tur === 'OKUNAMADI' && okumaBilgisi(i).servisHatasi) {
     return 'Plaka okuma servisi çalışmıyordu'
   }
+  const ret = retSebebi(i)
+  if (ret) return 'Sunucu reddetti: ' + ret
   return KISA[i.tur]
 }
 
@@ -84,6 +109,17 @@ export function baslangicPlakasi(i: Istisna): string {
   return i.plaka ?? okumaBilgisi(i).tahmin ?? ''
 }
 
+/** Buttons on a card. */
+export type Eylemler = {
+  girisAc: boolean
+  cikis: boolean
+  kapat: boolean
+  /** 072: Giriş aç with a typed entry time and a reason (tek kapı ACIK_BILET_YOK). */
+  girisAcSaatli: boolean
+  /** 072: the ticket to open ("Araç çıkmadı" lives there), or null. */
+  bileteGit: string | null
+}
+
 /**
  * Buttons on an open row. "Giriş aç" for an unreadable plate and, since 056,
  * a car seen inside with no ticket — the kinds istisna_bilet_ac accepts.
@@ -91,43 +127,27 @@ export function baslangicPlakasi(i: Istisna): string {
  * single-gate read, or an unreadable plate on the single gate (that car may
  * have been leaving) — plus, since 056, a car seen entering whose OLD ticket
  * is still open (close that one from the exit screen). A resolved row has none.
+ *
+ * 072 (owner 2026-11-18): on the single gate a camera "exit with no open
+ * ticket" may really have been a car coming in — "Giriş aç" there asks for
+ * the entry time (typed, never the card's time) and a reason
+ * (istisna_bilet_ac_saatli). A CIKMAMIS_OLABILIR card leads to its ticket.
  */
-export function eylemler(i: Istisna): { girisAc: boolean; cikis: boolean; kapat: boolean } {
-  if (i.cozuldu_at !== null) return { girisAc: false, cikis: false, kapat: false }
+export function eylemler(i: Istisna): Eylemler {
+  if (i.cozuldu_at !== null) {
+    return { girisAc: false, cikis: false, kapat: false, girisAcSaatli: false, bileteGit: null }
+  }
   return {
     girisAc: i.tur === 'OKUNAMADI' || i.tur === 'ICERIDE_BILETSIZ',
     cikis:
-      (i.tur !== 'GELECEK' && i.yon === 'CIKIS') ||
+      (i.tur !== 'GELECEK' && i.tur !== 'CIKMAMIS_OLABILIR' && i.yon === 'CIKIS') ||
       i.tur === 'YON_BELIRSIZ' ||
       (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK') ||
-      i.tur === 'GIRISTE_ACIK_BILET',
+      i.tur === 'GIRISTE_ACIK_BILET' ||
+      // 071: on the single gate the refused car may have been leaving.
+      (i.tur === 'REDDEDILDI' && i.yon === 'ORTAK'),
     kapat: true,
+    girisAcSaatli: i.tur === 'ACIK_BILET_YOK' && i.yon === 'ORTAK' && i.kaynak === 'KAMERA',
+    bileteGit: i.tur === 'CIKMAMIS_OLABILIR' ? (i.aday_bilet_ids?.[0] ?? null) : null,
   }
-}
-
-/**
- * Exceptions a person has to act on. The camera deliberately declined to act,
- * so the "do not enter it by hand" note would be exactly the wrong advice for
- * these. An unreadable plate is one: the bridge does not retry a 422 it
- * receives, and a failed read is only recorded on its last attempt. The car
- * CAN be read later, but rarely and not in a way worth waiting for:
- *   - if the 422 reply is lost, the bridge retries the same event within
- *     about two minutes; on the single gate 041 then closes this row (or adds
- *     the plate), on the entrance lane the retry opens the ticket and 045's
- *     trigger closes this row — either way nobody is notified, since the
- *     notification waits 3 minutes and goes only for rows still open;
- *   - a later photo of the same car is a new event: it opens the ticket and
- *     leaves this row open.
- */
-const KENDILIGINDEN_COZULMEZ: ReadonlySet<IstisnaTur> = new Set([
-  'YON_BELIRSIZ',
-  'OKUNAMADI',
-  // 056: the camera deliberately left these to a person.
-  'GIRISTE_ACIK_BILET',
-  'ICERIDE_BILETSIZ',
-])
-
-/** The one-line "camera may still fix this — don't enter it by hand" warning. */
-export function elleGirmeUyarisi(i: Istisna): boolean {
-  return i.kaynak === 'KAMERA' && i.cozuldu_at === null && !KENDILIGINDEN_COZULMEZ.has(i.tur)
 }

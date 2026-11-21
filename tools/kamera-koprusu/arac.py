@@ -46,6 +46,9 @@ class AracKutu(NamedTuple):
     x2: float
     y2: float
     skor: float
+    # 1.4.3 (2026-11-20): puanı veren araç sınıfı (COCO numarası: 2/3/5/7);
+    # -1 = bilinmiyor (eski 5 alanlı kurulumlar, tahmin edilen kutular).
+    sinif: int = -1
 
 MODEL = plaka.ModelDosyasi(
     "yolox_tiny.onnx",
@@ -66,6 +69,9 @@ DOLGU = 114
 # COCO: 2 otomobil, 3 motosiklet, 5 otobüs, 7 kamyon. 0 insan (yalnızca kayıt için).
 ARAC_SINIFLARI = (2, 3, 5, 7)
 INSAN = 0
+# 1.4.3 (2026-11-20): kayıt satırında ve motosiklet eşiğinde (Profil.moto_esik).
+MOTOSIKLET = 3
+SINIF_ADLARI = {2: "otomobil", 3: "motosiklet", 5: "otobüs", 7: "kamyon"}
 # Kutusunun yarısından fazlası kesilen köşede (park etmiş araçlar) kalan aday
 # sayılmaz. Plakadan (%20) gevşek: araç büyük, kesilen köşenin yanından geçen
 # bir aracın kutusu oraya biraz taşabilir.
@@ -129,6 +135,15 @@ def coz(ham: np.ndarray, r: float, en: int, boy: int):
     return kutular, arac, insan
 
 
+_SINIF_DIZI = np.array(ARAC_SINIFLARI)
+
+
+def sinif(ham: np.ndarray) -> np.ndarray:
+    """1.4.3: YOLOX satırlarının araç sınıfı (puanı veren; `coz` sırasıyla)."""
+    p = np.asarray(ham, dtype=np.float32).reshape(-1, 85)
+    return _SINIF_DIZI[p[:, [5 + s for s in ARAC_SINIFLARI]].argmax(axis=1)]
+
+
 # ------------------------------------------------------ YOLO11 (1.4.2) ---
 # Ultralytics YOLO11 dışa aktarımı: girdi ORTALANMIŞ letterbox, RGB, /255
 # (plaka bulucunun letterbox'ı birebir aynı — tek kod yolu); çıktı [1, 84, N]:
@@ -162,6 +177,12 @@ def coz11(ham: np.ndarray, donus: tuple[float, float, float], en: int, boy: int)
     return kutular, arac, insan
 
 
+def sinif11(ham: np.ndarray) -> np.ndarray:
+    """1.4.3: YOLO11 satırlarının araç sınıfı (puanı veren; `coz11` sırasıyla)."""
+    p = np.asarray(ham, dtype=np.float32)[0].T
+    return _SINIF_DIZI[p[:, [4 + s for s in ARAC_SINIFLARI]].argmax(axis=1)]
+
+
 def _haric_orani(kutular: np.ndarray, haric) -> np.ndarray:
     """
     plaka.haric_orani'nin vektör hâli: kutunun kesilen köşelerin BİRLEŞİMİNDE
@@ -177,15 +198,21 @@ def _haric_orani(kutular: np.ndarray, haric) -> np.ndarray:
         return np.where(alan > 0, kesilen / alan, 0.0)
 
 
-def _haricsiz(kutular: np.ndarray, arac: np.ndarray, insan: np.ndarray, haric):
-    """Kutusunun yarısından fazlası kesilen köşelerde kalan adayları atar."""
+def _tutulan(kutular: np.ndarray, haric) -> np.ndarray | None:
+    """Kesilen köşelerde kalmayan adayların maskesi; None = hepsi kalır."""
     if isinstance(haric, plaka.AlanMaskesi):
         # 1.4.0: kırpma ALANI (çokgen) — "kesilen köşe" yerine alanın dışı.
-        tut = haric.oranlar(kutular) <= HARIC_DUSUR
-        return kutular[tut], arac[tut], insan[tut]
+        return haric.oranlar(kutular) <= HARIC_DUSUR
     if not plaka.haric_listesi(haric):
+        return None
+    return _haric_orani(kutular, haric) <= HARIC_DUSUR
+
+
+def _haricsiz(kutular: np.ndarray, arac: np.ndarray, insan: np.ndarray, haric):
+    """Kutusunun yarısından fazlası kesilen köşelerde kalan adayları atar."""
+    tut = _tutulan(kutular, haric)
+    if tut is None:
         return kutular, arac, insan
-    tut = _haric_orani(kutular, haric) <= HARIC_DUSUR
     return kutular[tut], arac[tut], insan[tut]
 
 
@@ -217,14 +244,20 @@ def kutulari_coz(ham: np.ndarray, r, en: int, boy: int, haric,
     (araç kutuları — puanı ≥ alt, aynı aracın kopyaları birleşmiş (NMS),
     puana göre azalan; en yüksek insan puanı). Kesilen köşedekiler hariç.
     """
-    kutular, arac, insan = _haricsiz(*(profil or YOLOX_TINY).coz(ham, r, en, boy), haric)
+    p = profil or YOLOX_TINY
+    kutular, arac, insan = p.coz(ham, r, en, boy)
+    siniflar = p.sinif(ham)                  # 1.4.3: aynı satır sırası, aynı süzgeç
+    tut = _tutulan(kutular, haric)
+    if tut is not None:
+        kutular, arac, insan, siniflar = kutular[tut], arac[tut], insan[tut], siniflar[tut]
     i = float(insan.max()) if insan.size else 0.0
     sec = np.nonzero(arac >= alt)[0]
     if sec.size == 0:
         return [], max(i, 0.0)
     xywh = [[float(k[0]), float(k[1]), float(k[2] - k[0]), float(k[3] - k[1])] for k in kutular[sec]]
     kalan = np.array(cv2.dnn.NMSBoxes(xywh, [float(x) for x in arac[sec]], alt, NMS_ORTUSME)).reshape(-1)
-    sonuc = [AracKutu(*(float(v) for v in kutular[sec[j]]), float(arac[sec[j]])) for j in kalan]
+    sonuc = [AracKutu(*(float(v) for v in kutular[sec[j]]), float(arac[sec[j]]),
+                      int(siniflar[sec[j]])) for j in kalan]
     return sorted(sonuc, key=lambda k: -k.skor), max(i, 0.0)
 
 
@@ -246,6 +279,13 @@ class Profil(NamedTuple):
     esik_anahtari: str   # calisma_ayarlari'nda üstüne yazan anahtar
     gecis_anahtari: str
     yer_tutucu: bool     # True: eşikler ölçülmedi, sahada açılmaz
+    sinif: Callable = sinif          # 1.4.3: ham → satır başına araç sınıfı
+    # 1.4.3 (sahibin kararı 20.11): yönü bilinmeyen plakasız kapı olayı
+    # (TEK_KARE / KAPIDA_KAYBOLDU) puanını MOTOSİKLETTEN alıyorsa bu eşiği
+    # ister. None = kural yok. Neden: 19.11'de el arabası iten kişi 5 kart
+    # oldu (0.37-0.52); sahibinin skuter fotoğrafları 0.77-0.92.
+    moto_esik: float | None = None
+    moto_anahtari: str | None = None
 
 
 YOLOX_TINY = Profil("YOLOX-tiny", MODEL, GIRDI, on_isle, coz, ALTIN_ARAC, 0.35, 0.60,
@@ -271,6 +311,12 @@ YOLOX_TINY = Profil("YOLOX-tiny", MODEL, GIRDI, on_isle, coz, ALTIN_ARAC, 0.35, 
 # araç puanı gerçek bir araçtandı; kişiye araç kutusu yok. 3 el arabası
 # (fıçı / kasa): YOLO11s 0.00-0.01, tiny 0.53 / 0.78 / 0.66 (tiny yanlış
 # alarm veriyordu). → ölçülmüş, "otomatik"in seçtiği model (sahibin kararı).
+#
+# Sahada 19.11 (1.4.2, canlı): el arabası İTEN kişi 5 "Çözülmemiş kayıt"
+# oldu — hepsi tek kare / kapıda kayboldu, 1-5 görünüm, plakasız, 0.37-0.52
+# (fotoğraflardaki 0.00-0.01'den farklı: canlı karede kişi + araba birlikte).
+# 17:38 kartının fotoğrafı motosiklet 0.50, otomobil 0.01. → 1.4.3 moto_esik
+# (sahibin kararı 20.11): o olaylarda motosiklet sınıfı 0.60 ister.
 GIRDI11 = 640
 
 
@@ -289,7 +335,8 @@ YOLO11S = Profil(
     # resmi 416 × 312 — 640'a büyütülünce puan düşük, öz sınama yalnızca
     # kaymayı arar. GPU (f16) 0.496.
     GIRDI11, on_isle11_640, coz11, 0.49103, 0.30, 0.60,
-    "arac11_esik", "arac11_gecis_esik", False)
+    "arac11_esik", "arac11_gecis_esik", False,
+    sinif=sinif11, moto_esik=0.60, moto_anahtari="arac11_moto_esik")
 
 
 # ------------------------------------------------------------------ bulucu ---
@@ -328,6 +375,8 @@ class AracBulucu:
         self._girdi = oturum.get_inputs()[0].name
         self.esik = self._esik(profil.esik_anahtari, profil.esik)
         self.gecis_esik = self._esik(profil.gecis_anahtari, profil.gecis_esik)
+        self.moto_esik = (None if profil.moto_esik is None
+                          else self._esik(profil.moto_anahtari, profil.moto_esik))
 
     def _esik(self, anahtar: str, varsayilan: float) -> float:
         v = self._ayar.get(anahtar)

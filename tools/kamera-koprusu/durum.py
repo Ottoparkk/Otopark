@@ -232,6 +232,8 @@ def plaka_durumu(satirlar: list[str]) -> tuple[str | None, bool]:
     her aracı insana bırakır: sağlık kırmızıdır.
     """
     for satir in reversed(satirlar):
+        if gunluk.OKUYUCU_DONDU_ISARETI in satir:              # 1.4.3
+            return "hazır (yeniden çalışıyor)", False
         if gunluk.OKUYUCU_BOZUK_ISARETI in satir:
             sebep = satir.split(gunluk.OKUYUCU_BOZUK_ISARETI, 1)[1].lstrip(": ").strip()
             sebep = sebep.split(" — ")[0].strip()
@@ -252,6 +254,8 @@ def arac_durumu(satirlar: list[str]) -> str | None:
     kaybolmaz, sağlık kırmızı OLMAZ — ama yaya yine kayıt açabilir.
     """
     for satir in reversed(satirlar):
+        if gunluk.ARAC_DONDU_ISARETI in satir:                 # 1.4.3
+            return "hazır (yeniden çalışıyor)"
         if gunluk.ARAC_BOZUK_ISARETI in satir:
             sebep = satir.split(gunluk.ARAC_BOZUK_ISARETI, 1)[1].lstrip(": ").strip()
             sebep = sebep.split(" — ")[0].strip()

@@ -81,6 +81,10 @@ SERIT_SECENEKLERI = "GIRIS / CIKIS / ORTAK (tek kapı: giriş ve çıkış aynı
 RED_ISARETI = "sunucu kimliği reddetti"          # 401: kamera kaldırıldı / devre dışı
 KAPALI_ISARETI = "sunucu kamera girişini kapalı bildirdi"   # 403: ayar kapalı
 KABUL_ISARETI = "sunucu kimliği yeniden kabul etti"
+# 410 + KAMERA_KAPALI (sahip kararı 20.11): kamera girişi kapalıyken görülen araç
+# ATILDI, kuyrukta beklemez. Ret SAYILMAZ; `durum` kapalılığı kalbin 403'ünden
+# (KAPALI_ISARETI) bilir.
+KAMERA_KAPALI_ATILDI_ISARETI = "kamera girişi kapalı — araç atıldı"
 # 409 + SERIT_UYUSMAZ: kamera uygulamada ÖBÜR şeride eşleştirilmiş.
 SERIT_ISARETI = "sunucu şeridi reddetti"
 # Kamera tarafı: köprü çalışıyor ve kayıt yazıyor ama görüntü alamıyor.
@@ -133,12 +137,16 @@ GIDEN_BOZUK_ISARETI = "gönderim kutusunda bozuk kayıt"
 # ("[i]"): yaya, gölge, kadraja giren bir şey — sayılır, gönderilmez.
 PLAKASIZ_ISARETI = "hareket — plaka görülmedi"
 OKUYUCU_BOZUK_ISARETI = "plaka okuyucu çalışmıyor"
+# 1.4.3: çalışırken bozulan okuyucu / bulucu bir süre sonra yeniden denenir;
+# tutarsa bu satır yazılır (durum: SON söz, sağlık yeniden yeşil).
+OKUYUCU_DONDU_ISARETI = "plaka okuyucu yeniden çalışıyor"
 PLAKA_HAZIR_ISARETI = "plaka okuyucu hazır"
 PLAKA_KAPALI_ISARETI = "plaka okuyucu kapalı"
 # 1.3.1: araç bulucu (arac.py). Çalışmıyorsa köprü 1.3.0 kuralıyla sürer
 # (duran plakasız her şey personele) — araç kaybolmaz, sağlık kırmızı olmaz.
 ARAC_HAZIR_ISARETI = "araç bulucu hazır"
 ARAC_BOZUK_ISARETI = "araç bulucu çalışmıyor"
+ARAC_DONDU_ISARETI = "araç bulucu yeniden çalışıyor"
 ARAC_KAPALI_ISARETI = "araç bulucu kapalı"
 # 1.4.2: modeller hangi kümede çalışıyor ("GPU · YOLO11s" / "CPU · YOLOX-tiny").
 # Grafik işlemcisi kullanılamazsa ya da çalışırken bozulursa köprü DÜŞMEZ:
@@ -185,12 +193,25 @@ TEK_KARE_ISARETI = "araç tek karede görüldü — personele"
 KAPIDA_KAYBOLDU_ISARETI = "araç kapı alanında kayboldu — yönü bilinmiyor — personele"
 # 1.4.2 (A2): olay vermeden biten her araç izi bir satır (sessiz kayıp görünsün).
 KARARSIZ_ISARETI = "iz kararsız bitti"
+# 1.4.3 (1a): yönü bilinmeyen parça, kararı verilmiş gerçek izin (aynı araç)
+# parçası bulundu. Yalnızca kayıt kipinde (PARCA_EMME=0) olay yine gönderilir.
+EMILIRDI_ISARETI = "aynı aracın parçası sayılırdı"
+EMILDI_ISARETI = "aynı aracın parçası sayıldı"
+# 1.4.3 (1d): yönü bilinmeyen olayın klibi diske yazıldı (KLIP=1). Adında
+# plaka YOK: İstanbul saati, iz, olay, islem_id'nin ilk 8'i.
+KLIP_ISARETI = "klip yazıldı"
 # 1.4.2 (B6): tek kapıda içeride gezen, plakası emin okunan araç "içeride"
 # ipucuyla sunucuya soruldu (bileti yoksa sunucu çözülmemiş kayıt açar).
 ICERIDE_SORULDU_ISARETI = "içeride görülen araç sunucuya soruldu"
 # 1.4.1: plaka tek karede %95'e ulaşmadı ama en az üç farklı görünümde AYNI
 # okundu (çok karede birleştirme, PLAKA_BIRLESIK) — denetim için kayda yazılır.
 BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"
+# 1.4.3 (sahibin kararı 17.11): tek kapıda yönü bilinmeyen olayın emin plakası
+# kart değil PLAKA olarak gitti (sunucu bilet durumundan karar verir).
+YON_BILINMIYOR_ISARETI = "yönü bilinmiyor — emin plaka gönderildi"
+
+# 1.4.3: kalp atışında sunucuya giden sürüm. paketle.SURUM ile aynı (test_kurulum).
+KOPRU_SURUMU = "1.4.3"
 YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
 KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).

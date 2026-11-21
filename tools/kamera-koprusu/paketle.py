@@ -41,7 +41,12 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.2"   # 1.4.2: araç bulucu YOLO11s 640, grafik işlemcisinde (OpenVINO; olmazsa
+SURUM = "1.4.3"   # 1.4.3: tek kapıda yönü bilinmeyen emin plaka gönderilir; tahmin emin
+                  #        plakayı engellemez; bozulan model yeniden denenir, izleme geri
+                  #        açılır; kutu kameradan önce gönderir; canlı kamerada zaman
+                  #        aşımı; kalp atışı sayılar taşır (sunucu 070, eskisi 400 der)
+                  #        — gunluk.KOPRU_SURUMU ile AYNI olmalı (test_kurulum)
+                  # 1.4.2: araç bulucu YOLO11s 640, grafik işlemcisinde (OpenVINO; olmazsa
                   #        işlemci); yerel kıpırtı model karesi ister; sessiz son yok
                   #        (KAPIDA_KAYBOLDU personele, KARARSIZ kayıtta); tek karede araç
                   #        doğum eşiğiyle (komşu korumalı); yön ipucu + otopark içi soru
@@ -85,7 +90,7 @@ SURUM = "1.4.2"   # 1.4.2: araç bulucu YOLO11s 640, grafik işlemcisinde (OpenV
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "plaka", "okuma", "giden", "arac", "takip", "hizlandirici", "video"]
+            "plaka", "okuma", "giden", "arac", "takip", "hizlandirici", "video", "klip"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 # 1.4.2: openvino_telemetry de — OpenVINO onsuz çalışır, köprü bir şey göndermez.

@@ -234,6 +234,37 @@ def test_yon_ipucu_kutuda_korunur():
     assert giden_ler == [ipuclu, _olay(5)], giden_ler
 
 
+def test_acilista_yarim_yazim_temizlenir():
+    # 1.4.3 (kontrol 20.11): yazım sırasında çöken köprü `.json.tmp` bırakır
+    # (os.replace'ten önce). Hiçbir şey onu okumaz ve hiç kalkmazdı. Açılışta
+    # YALNIZCA kutunun kendi adındaki `.json.tmp` kalkar (aynı şeritte tek
+    # köprü çalışır — IgnoreNew — açılışta yarıda yazım yoktur). `.bozuk`
+    # kanıt olarak kalır; başka her dosya da.
+    d = _klasor()
+    with open(os.path.join(d, "000000000004-a.json"), "w", encoding="utf-8") as f:
+        json.dump(_olay(4), f)
+    yarim = "000000000005-b.json.tmp"
+    kalanlar = ["000000000003-c.json.bozuk", "notlar.tmp", "000000000006-d.json.tmp.eski", "x.json.tmp"]
+    for ad in [yarim, *kalanlar]:
+        with open(os.path.join(d, ad), "w", encoding="utf-8") as f:
+            f.write("{\"yar")
+    kayit = _Kayit()
+    k = giden.Giden(d, kayit=kayit)
+    adlar = set(os.listdir(d))
+    assert yarim not in adlar, adlar
+    assert adlar == {"000000000004-a.json", *kalanlar}, adlar
+    assert any(yarim in s for s in kayit.satirlar), kayit.satirlar
+    assert k.sayi() == 1 and k.ilk()[1] == _olay(4)
+    assert os.path.basename(k.yaz(_olay(7))).startswith("000000000005-")
+
+
+def test_acilista_yarim_yazim_yoksa_sessiz():
+    d = _klasor()
+    kayit = _Kayit()
+    giden.Giden(d, kayit=kayit)
+    assert kayit.satirlar == []
+
+
 if __name__ == "__main__":
     # Bu çalıştırmanın geçici dosyaları tek klasörde toplanır ve SİLİNMEZ
     # (sahibin kuralı: hiçbir betik bir şey silmez); yolu sonunda yazılır.

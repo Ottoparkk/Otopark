@@ -21,6 +21,51 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 
+# 1.4.3 (sahibin isteği 19.11): sahanın önerilen alanları, karenin ORANI
+# olarak (her çözünürlüğe ölçeklenir). Kırpma sayfasındaki "Öneriyi yükle"
+# bunları çizer; sahibi köşeleri sürükleyip düzeltir. 19.11 16:53 görüntüsüne
+# göre — zoom DEĞİŞİRSE yalnızca başlangıç noktasıdır, köşeler yeniden
+# ayarlanmalı. Neden böyle (sahada):
+#   · Mavi 1 ve 8: sol üst kenar dışarı alındı — 19.11 14:53'te plaka bugünkü
+#     alanın gri köşesine 1 px yakındı, kesik sayıldı, hiç okunmadı. Kenar
+#     soldaki park yerinin (siyah Mercedes) önünden geçer.
+#   · Mavi 3 ve 4: sağ taraf kamyonun altından açıldı — 18.11 19:44 / 19:57
+#     araçları sağa dönerken gri kenarda kayboldu ("kapıda kayboldu").
+#   · Mavi 2 ve 3 (sahibin çizgisi, 21.11, 20.11 19:50 karesi): sağ üst kenar
+#     drenaj kanalı boyunca — sağındaki park şeridi dışarıda.
+#   · Sarı: sokaktan girişin olduğu alt kenar, drenaj kanalının SOLU, en az
+#     bir araç boyu derin (geç bulunan giren araç yine kapıda doğsun). Kanalın
+#     sağı park yeri: oraya dönen araç kapının dışına geçmiş olur, yönü bilinir.
+SAHA_ONERISI = {
+    "alan": [(0.457, 0.3011), (0.651, 0.3011), (0.745, 0.4633), (1.0, 0.5766),
+             (1.0, 1.0), (0.0, 1.0), (0.0, 0.7379), (0.2228, 0.5228)],
+    "kapi": [(0.0, 0.6169), (0.746, 0.7379), (0.7027, 1.0), (0.0, 1.0)],
+}
+
+
+def oneri_pikselleri(m: str, en: int, boy: int) -> list[list[int]]:
+    """SAHA_ONERISI[m] ('alan' / 'kapi') → bu karenin pikselleri (sayfa da aynısını yapar)."""
+    return [[round(fx * en), round(fy * boy)] for fx, fy in SAHA_ONERISI[m]]
+
+
+def mevcut_coz(alan_metni, kapi_metni) -> dict:
+    """
+    Ayardaki KIRPMA_ALAN / KAPI_ALANI → sayfanın "Kayıtlı alanları yükle"
+    verisi. Boş ya da bozuk metin None olur: yeniden kurulum asla çökmez.
+    Karenin dışına taşan köşeyi (çözünürlük değişmiş) sayfa ayrıca reddeder.
+    """
+    import plaka
+
+    def coz(metin):
+        try:
+            n = plaka.cokgen_metinden(metin)
+        except (ValueError, TypeError):
+            return None
+        return None if n is None else [[x, y] for x, y in n]
+
+    return {"alan": coz(alan_metni), "kapi": coz(kapi_metni)}
+
+
 SAYFA = """<!doctype html>
 <html lang="tr"><head><meta charset="utf-8">
 <title>Otopark — Kırpma Alanı</title>
@@ -78,6 +123,16 @@ gelmezse kameranın açık ve bu bilgisayarla aynı ağda olduğunu kontrol edin
   <button class="mod" id="geriAl">Son köşeyi sil</button>
   <button class="mod" id="alanSil">Alanı sil</button>
 </div>
+<div>
+  <button class="mod" id="oneri">Öneriyi yükle</button>
+  <button class="mod" id="kayitli">Kayıtlı alanları yükle</button>
+</div>
+
+<div class="ipuc">Çizdikten sonra da düzeltebilirsiniz: köşeyi
+<b>sürükleyin</b> (taşınır), çizginin üstüne tıklayın (araya köşe eklenir, en
+çok 8), köşeye <b>sağ tıklayın</b> (silinir). <b>Öneriyi yükle</b> sahanın
+önerilen alanlarını, <b>Kayıtlı alanları yükle</b> bugün kullanılan alanları
+çizer — köşeleri numaralıdır.</div>
 
 <div class="ipuc kapi"><b>Kapı alanı</b>: kapının önü — araçların girip
 çıktığı yer. Resmin kenarına kadar çizin, içine en az bir araç boyu girsin;
@@ -99,6 +154,9 @@ const t=document.getElementById('t'),c=t.getContext('2d');
 // (kirpma_sunucu._alan_coz → plaka.cokgen_coz) esastır; buradaki yapıştırma
 // ve denetim yalnızca görüntü için aynı hesaptır.
 const COKGEN_EN_COK=8,YAPIS=0.03;
+// 1.4.3: saha önerisi (karenin oranı) ve yeniden kurulumda kayıtlı alanlar (piksel).
+const ONERI=__ONERI__;
+const KAYITLI=__MEVCUT__;
 let img=new Image(),mod='alan',kaynak=[0,0];
 const cizim={alan:{n:[],kapali:false},kapi:{n:[],kapali:false}};
 
@@ -161,7 +219,14 @@ function boya(){
     }
     c.strokeStyle=renk;c.lineWidth=lw;c.setLineDash(z.kapali?[]:[lw*4,lw*3]);
     yol(z.n,z.kapali);c.stroke();c.setLineDash([]);
-    c.fillStyle=renk;z.n.forEach(p=>{c.beginPath();c.arc(p[0],p[1],r,0,7);c.fill();});
+    // 1.4.3: numaralı köşeler (önerinin çizimiyle aynı sıra).
+    const rk=Math.max(r,img.width/110);
+    c.font='700 '+Math.round(rk*1.25)+'px system-ui,sans-serif';
+    c.textAlign='center';c.textBaseline='middle';
+    z.n.forEach((p,i)=>{
+      c.fillStyle=renk;c.beginPath();c.arc(p[0],p[1],rk,0,7);c.fill();
+      c.fillStyle='#0f1013';c.fillText(String(i+1),p[0],p[1]+rk*0.08);
+    });
   });
 }
 function yenile(){
@@ -180,19 +245,95 @@ function nokta(e){
   return [Math.round((e.clientX-r.left)*(t.width/r.width)),
           Math.round((e.clientY-r.top)*(t.height/r.height))];
 }
+// 1.4.3 (sahibin isteği 19.11): çizilmiş köşeler sonradan da seçilir. Önceden
+// yalnızca "Son köşeyi sil" vardı: 2. köşeyi düzeltmek için 3.-8. silinirdi.
+//   · köşeyi sürükle: taşınır (yapışma ve geçerlilik aynen)
+//   · çizginin üstüne tıkla: araya köşe eklenir (en çok 8), sürüklenir
+//   · köşeye sağ tıkla: silinir (3'ten aza inerse alan yeniden açılır)
+// Öbür alanın köşesine dokunmak o alana geçer.
+let suruk=null;
+function yakinlik(){return Math.max(12,img.width/60);}
+function koseBul(p){
+  const r=yakinlik();
+  for(const m of [mod,mod==='alan'?'kapi':'alan']){
+    const n=cizim[m].n;
+    for(let i=n.length-1;i>=0;i--)if(Math.hypot(p[0]-n[i][0],p[1]-n[i][1])<=r)return {m:m,i:i};
+  }
+  return null;
+}
+function parcaUzaklik(p,a,b){
+  const dx=b[0]-a[0],dy=b[1]-a[1],L=dx*dx+dy*dy;
+  const u=L?Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/L)):0;
+  return Math.hypot(p[0]-(a[0]+u*dx),p[1]-(a[1]+u*dy));
+}
+function cizgiBul(p){
+  const z=cizim[mod],n=z.n,k=n.length,r=yakinlik();
+  const son=z.kapali?k:k-1;
+  for(let i=0;i<son;i++)if(parcaUzaklik(p,n[i],n[(i+1)%k])<=r)return i;
+  return -1;
+}
+t.addEventListener('contextmenu',e=>e.preventDefault());
 t.addEventListener('pointerdown',e=>{
   if(!img.width)return;
-  const z=cizim[mod];if(z.kapali)return;
-  const p=yapistir(nokta(e),mod);
-  // İlk köşeye (yakınına) tıklamak alanı kapatır.
-  if(z.n.length>=3){
-    const q=z.n[0],yakin=Math.max(12,img.width/60);
-    if(Math.hypot(p[0]-q[0],p[1]-q[1])<=yakin){z.kapali=true;boya();guncelle();return;}
+  const ham=nokta(e),kose=koseBul(ham);
+  if(kose){
+    if(kose.m!==mod)modSec(kose.m);
+    const z=cizim[mod];
+    if(e.button===2){
+      z.n.splice(kose.i,1);if(z.n.length<3)z.kapali=false;
+      boya();guncelle();return;
+    }
+    if(e.button!==0)return;
+    // İlk köşeye (yakınına) tıklamak açık alanı kapatır.
+    if(!z.kapali&&kose.i===0&&z.n.length>=3){z.kapali=true;boya();guncelle();return;}
+    suruk=kose;t.setPointerCapture(e.pointerId);return;
   }
+  if(e.button!==0)return;
+  const z=cizim[mod],p=yapistir(ham,mod),ci=cizgiBul(ham);
+  if(ci>=0){
+    if(z.n.length>=COKGEN_EN_COK){
+      document.getElementById('ipuc').textContent=
+        'En çok 8 köşe olur — araya köşe eklemek için önce bir köşeye sağ tıklayıp silin.';
+      return;
+    }
+    z.n.splice(ci+1,0,p);suruk={m:mod,i:ci+1};t.setPointerCapture(e.pointerId);
+    boya();guncelle();return;
+  }
+  if(z.kapali)return;
   z.n.push(p);
   if(z.n.length>=COKGEN_EN_COK)z.kapali=true;
   boya();guncelle();
 });
+t.addEventListener('pointermove',e=>{
+  if(!img.width)return;
+  const ham=nokta(e);
+  if(suruk){cizim[suruk.m].n[suruk.i]=yapistir(ham,suruk.m);boya();guncelle();return;}
+  t.style.cursor=koseBul(ham)?'grab':cizgiBul(ham)>=0?'copy':'crosshair';
+});
+function birak(){suruk=null;}
+t.addEventListener('pointerup',birak);
+t.addEventListener('pointercancel',birak);
+// 1.4.3: hazır alanlar. Öneri karenin oranıdır (her çözünürlüğe uyar);
+// kayıtlı alan pikseldir — kareye sığmıyorsa (çözünürlük değişmiş) yüklenmez.
+function yukle(veri,oranli,ad){
+  const ip=document.getElementById('ipuc');
+  if(!img.width){ip.textContent='Önce kameradan görüntü gelmeli — birkaç saniye bekleyin.';return;}
+  const W=kaynak[0],H=kaynak[1];
+  const sekil=m=>veri[m]?veri[m].map(p=>oranli?[Math.round(p[0]*W),Math.round(p[1]*H)]:[p[0],p[1]]):null;
+  const alan=sekil('alan'),kapi=sekil('kapi');
+  if([alan,kapi].some(n=>n&&n.some(p=>p[0]<0||p[1]<0||p[0]>W||p[1]>H))){
+    ip.textContent='Kayıtlı alanlar bu görüntüye sığmıyor (kameranın çözünürlüğü değişmiş olabilir) — yeniden çizin.';
+    return;
+  }
+  if((cizim.alan.n.length||cizim.kapi.n.length)&&!confirm('Çizili alanlar '+ad+' ile değiştirilsin mi?'))return;
+  cizim.alan={n:alan||[],kapali:!!alan};
+  cizim.kapi={n:kapi||[],kapali:!!kapi};
+  mod='alan';boya();guncelle();
+}
+document.getElementById('oneri').onclick=()=>yukle(ONERI,true,'öneri');
+const kayitliDugme=document.getElementById('kayitli');
+if(KAYITLI)kayitliDugme.onclick=()=>yukle(KAYITLI,false,'kayıtlı alanlar');
+else kayitliDugme.style.display='none';
 function modSec(m){mod=m;guncelle();}
 function geriAl(){const z=cizim[mod];if(z.kapali)z.kapali=false;else z.n.pop();boya();guncelle();}
 function alanSil(){const z=cizim[mod];z.n=[];z.kapali=false;boya();guncelle();}
@@ -511,7 +652,7 @@ def _alan_coz(veri: dict, en: int | None, boy: int | None):
     return True, alan, kapi
 
 
-def sunucu_baslat(d: _Durum, port: int = 0):
+def sunucu_baslat(d: _Durum, port: int = 0, mevcut: dict | None = None):
     """
     Yerel sayfayı sunan sunucuyu kurar (başlatmaz). Döndürür:
     (sunucu, sonuc, bitti, belirtec).
@@ -534,7 +675,11 @@ def sunucu_baslat(d: _Durum, port: int = 0):
     belirtec = secrets.token_urlsafe(32)
     sonuc: dict = {}
     bitti = threading.Event()
-    sayfa = SAYFA.replace("__BELIRTEC__", belirtec).encode("utf-8")
+    # 1.4.3: saha önerisi ve (yeniden kurulumda) kayıtlı alanlar sayfaya gömülür.
+    kayitli = mevcut if mevcut and (mevcut.get("alan") or mevcut.get("kapi")) else None
+    sayfa = (SAYFA.replace("__BELIRTEC__", belirtec)
+             .replace("__ONERI__", json.dumps(SAHA_ONERISI))
+             .replace("__MEVCUT__", json.dumps(kayitli))).encode("utf-8")
 
     class Isleyici(BaseHTTPRequestHandler):
         def log_message(self, *a):      # konsolu istek günlüğüyle doldurma
@@ -653,7 +798,7 @@ def sunucu_baslat(d: _Durum, port: int = 0):
     return sunucu, sonuc, bitti, belirtec
 
 
-def kirpma_sec(rtsp: str, port: int = 0) -> tuple:
+def kirpma_sec(rtsp: str, port: int = 0, mevcut: tuple | None = None) -> tuple:
     """
     Tarayıcıyı açar, kullanıcı alanı çizene kadar bekler.
 
@@ -667,7 +812,9 @@ def kirpma_sec(rtsp: str, port: int = 0) -> tuple:
     d = _Durum()
     threading.Thread(target=_okuyucu, args=(rtsp, d), daemon=True).start()
 
-    sunucu, sonuc, bitti, _ = sunucu_baslat(d, port)
+    # 1.4.3: mevcut = ayardaki (KIRPMA_ALAN, KAPI_ALANI) metinleri — yeniden
+    # kurulumda sayfa onları "Kayıtlı alanları yükle" ile düzenlemeye açar.
+    sunucu, sonuc, bitti, _ = sunucu_baslat(d, port, mevcut_coz(*mevcut) if mevcut else None)
     threading.Thread(target=sunucu.serve_forever, daemon=True).start()
 
     adres = f"http://127.0.0.1:{sunucu.server_address[1]}/"

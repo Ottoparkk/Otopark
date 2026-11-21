@@ -95,8 +95,30 @@ class Giden:
             os.makedirs(klasor, exist_ok=True)
         except OSError:
             pass                      # yaz() hatayı söyler; burada köprü düşmesin
+        self._yarim_yazimlari_kaldir()
         adlar = _dosyalar(klasor)
         self._sira = int(_AD.match(adlar[-1]).group(1)) + 1 if adlar else 1
+
+    def _yarim_yazimlari_kaldir(self) -> None:
+        """
+        1.4.3 (kontrol 20.11): yaz() sırasında çöken köprünün bıraktığı
+        `.json.tmp` (os.replace'ten önce). Hiçbir şey onu okumaz; araç ya hiç
+        yazılmamıştır ya da kaydı zaten tamdır. YALNIZCA kutunun kendi adındaki
+        `.json.tmp` kalkar: aynı şeritte tek köprü çalışır (IgnoreNew), açılışta
+        yarıda yazım yoktur. `.bozuk` kanıt olarak kalır; başka her dosya da.
+        """
+        try:
+            adlar = os.listdir(self.klasor)
+        except OSError:
+            return
+        for ad in sorted(adlar):
+            if not (ad.endswith(".tmp") and _AD.match(ad[:-4])):
+                continue
+            try:
+                os.remove(os.path.join(self.klasor, ad))
+                self._kayit(f"[i] Gönderilecek araçlar: yarım kalmış yazım kaldırıldı ({ad})")
+            except OSError:
+                pass                  # kalırsa zararsız: hiçbir şey okumaz
 
     # ------------------------------------------------------------- yazım ---
 

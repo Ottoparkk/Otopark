@@ -1906,8 +1906,8 @@ v_beklenen := array[
   'bildirim_yonetici_turu', 'bilet_ac', 'biletler_immutable_guard',
   'foto_temizlik_hata', 'foto_temizlik_listesi',
   'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_foto_bagla',
-  'kamera_kalp', 'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
-  'kamera_okuma_siniri', 'kamera_okunamadi', 'kamera_tek_kapi'];
+  'kamera_kalp', 'kamera_kalp_bilgi', 'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
+  'kamera_okuma_siniri', 'kamera_okunamadi', 'kamera_reddedildi', 'kamera_tek_kapi'];
 
 if exists (select 1 from unnest(v_liste) x where x <> all(v_beklenen)) then
   raise exception 'FAIL 41b: service_role fazladan fonksiyon çağırabiliyor: %',
@@ -3635,6 +3635,9 @@ perform pg_temp.logout();
 --     kamerası ölünce HİÇBİR uyarı çıkmıyordu.
 delete from public.notifications where tur = 'KAMERA';
 select kamera_kalp_esik_dk into v_n from public.otopark_ayarlari where id = 1;
+-- 073: kamera girişi kapalıyken "haber yok" uyarısı yok. Bu bölüm AÇIK kamerayı
+-- sınar; canlı ayar ne olursa olsun açılır (geri alınır).
+update public.otopark_ayarlari set kamera_aktif = true where id = 1;
 
 -- İki kamera: biri ölü, biri canlı. Yalnızca ölü olan uyarı üretmeli.
 update public.kamera_cihazlari
@@ -9138,6 +9141,871 @@ if v_json ->> 'karar' is distinct from 'CIKIS' or (v_json ->> 'bilet_id')::uuid 
 end if;
 
 raise notice 'PASS 86: giriş süresi 2 dakika (alt sınır 2), elle yazılan ve kameranın açtığı bilette aynı';
+
+-- 87  Tek kapı: tahmin kartı, aracı sonra okunup işlenince kendiliğinden kapanır (069)
+-- =====================================================================
+-- Sahada 17.11 (35 CJE 033): köprü aynı aracın bir parçasını emin olmadan
+-- okudu (tahmin kartı), sonra aracı emin okudu. Köprü 1.4.3'te tahmin emin
+-- plakayı artık engellemez; emin okuma bileti açar ya da kapatır. Kural
+-- (069): o karar GIRIS ya da CIKIS ise, son giriş süresi (Girişten sonra)
+-- içindeki, tahmini plakayla BİREBİR aynı, çözülmemiş, plakasız tek kapı
+-- OKUNAMADI kartı sistemce kapanır (041'in notuyla, cozuldu_by boş).
+-- Bir karakter uzak tahmin, eski kart, insanın çözdüğü kart DOKUNULMAZ.
+perform pg_temp.logout();
+update public.otopark_ayarlari
+   set tek_kapi_giris_yoksay_dk = 2, kamera_gecikme_limiti_dk = 720
+ where id = 1;
+if exists (select 1 from public.biletler b,
+                  unnest(array['ZZ87AA101', 'ZZ87BB102', 'ZZ87CC103', 'ZZ87DD104',
+                               'ZZ87EE105', 'ZZ87FF106', 'ZZ87GG107']) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 87: fixture — ZZ87 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- (a) Birebir tahmin + emin okuma → GIRIS: kart kapanır.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '30 seconds',
+                               'ZZ87AA101', 0.6, null) into v_id;
+select public.kamera_tek_kapi('ZZ87AA101', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 87a: emin okuma bilet açmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                  and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ87AA101 → GIRIS (YENI_ARAC)') then
+  raise exception 'FAIL 87a: birebir tahmin kartı kendiliğinden kapanmadı';
+end if;
+
+-- (b) Bir karakter uzak tahmin: belki başka araç — kart AÇIK kalır.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '30 seconds',
+                               'ZZ87BB1O2', 0.6, null) into v_id;
+select public.kamera_tek_kapi('ZZ87BB102', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 87b: emin okuma bilet açmadı (%)', v_json;
+end if;
+if exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 87b: bir karakter uzak tahmin kartı kapandı';
+end if;
+
+-- (c) Eski kart (giriş süresinden önce): başka ziyaret — AÇIK kalır.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '10 minutes',
+                               'ZZ87CC103', 0.6, null) into v_id;
+select public.kamera_tek_kapi('ZZ87CC103', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' then
+  raise exception 'FAIL 87c: emin okuma bilet açmadı (%)', v_json;
+end if;
+if exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 87c: 10 dakika önceki tahmin kartı kapandı';
+end if;
+
+-- (d) İnsanın çözdüğü kart: kararı ve notu ezilmez.
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '30 seconds',
+                               'ZZ87DD104', 0.6, null) into v_id;
+perform pg_temp.logout();
+v_ts := now() - interval '5 seconds';
+update public.istisnalar
+   set cozuldu_by = u_yonetici, cozuldu_at = v_ts, cozum_notu = 'ZZ87 elle'
+ where id = v_id;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ87DD104', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_by = u_yonetici and cozuldu_at = v_ts
+                  and cozum_notu = 'ZZ87 elle') then
+  raise exception 'FAIL 87d: insanın çözdüğü kart değişti';
+end if;
+
+-- (e) Çıkış da: açık bileti olan araç, tahmin kartı, sonra emin "çıktı".
+v_ts := now() - interval '10 minutes';
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, giris_kaynak, created_at)
+values (gen_random_uuid(), 'ZZ87EE105', v_ts, v_tarife_yeni, 'ACIK', 'MOBIL', v_ts)
+returning id into v_bilet;
+perform pg_temp.kamera();
+select public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '20 seconds',
+                               'ZZ87EE105', 0.6, null) into v_id;
+select public.kamera_tek_kapi('ZZ87EE105', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet then
+  raise exception 'FAIL 87e: emin "çıktı" bileti kapatmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                  and cozum_notu = 'Kamera yeniden denedi ve okudu: ZZ87EE105 → CIKIS (ACIK_BILET)') then
+  raise exception 'FAIL 87e: çıkışta birebir tahmin kartı kendiliğinden kapanmadı';
+end if;
+
+-- (f) 1c: "yön bilinmiyor" işaretli emin plaka bileti açarsa denetim kaydı
+--     yazılır (karne sayar); işaretsiz olay yazmaz; karar değişmez.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ87FF106', gen_random_uuid(), now(), null,
+                              '{"yon_bilinmiyor": true}'::jsonb) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'YENI_ARAC' then
+  raise exception 'FAIL 87f: yönü bilinmeyen emin plaka bilet açmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'kamera_yon_bilinmiyor' and tablo = 'biletler'
+                  and row_id = (v_json ->> 'bilet_id')::uuid
+                  and detay ->> 'karar' = 'GIRIS') then
+  raise exception 'FAIL 87f: yönü bilinmeyen olay denetim kaydına yazılmadı';
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ87GG107', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if exists (select 1 from public.audit_log
+            where action = 'kamera_yon_bilinmiyor'
+              and row_id = (v_json ->> 'bilet_id')::uuid) then
+  raise exception 'FAIL 87f: işaretsiz olay da yön bilinmiyor diye yazıldı';
+end if;
+
+raise notice 'PASS 87: tahmin kartı, aynı plaka emin okunup bilet açılınca / kapanınca kendiliğinden kapanır; yönü bilinmeyen emin plaka denetim kaydında';
+
+
+-- 88  Kamera sağlığı: kalpteki sayılar, personel şeridi, Yönetici karnesi (070)
+-- =====================================================================
+-- Plan 2026-11-17 adım 2 (sahibin onayı). Köprü 1.4.3 kalp atışına sayılar
+-- koyar (sürüm, kare/sn, kuyruk, en eski bekleyen, izleme…); webhook bunları
+-- kamera_kalp_bilgi ile yazar (yalnızca service_role — PASS 41 listesinde).
+-- kamera_durum_ozet: yalnızca Yönetici okur (sahip 2026-11-18: şerit
+-- Yöneticiye; önce bütün personeldi), yalnızca TAMAM / HABER_YOK /
+-- REDDEDILIYOR / KUYRUK_TAKILDI / IZLEME_KAPANDI; Personel, PENDING ve anon
+-- hiçbir şey.
+-- kamera_karne:
+-- yalnızca Yönetici, Istanbul günü başına. Testler canlı veritabanında koşar:
+-- sağlık durumu test içinde kurulur (geri alınır), sayılar fark olarak okunur.
+
+-- (a) Yetkiler.
+foreach v_txt in array array['public.kamera_durum_ozet()', 'public.kamera_karne(integer)'] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute')
+     or not has_function_privilege('authenticated', v_txt, 'execute') then
+    raise exception 'FAIL 88a: % yetkileri yanlış', v_txt;
+  end if;
+end loop;
+if has_function_privilege('anon', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute')
+   or has_function_privilege('authenticated', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute')
+   or not has_function_privilege('service_role', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute') then
+  raise exception 'FAIL 88a: kamera_kalp_bilgi yalnızca service_role olmalı';
+end if;
+
+-- (b) Kalp bilgisi: tanınan anahtarlar, doğru türde, sınırlı uzunlukta
+--     saklanır; gerisi atılır. JWT taşıyan çağıran reddedilir.
+perform pg_temp.logout();
+-- 073: kapalı kamera KAPALI döner ve uyarı üretmez; bu bölüm AÇIK kamerayı sınar.
+update public.otopark_ayarlari set kamera_aktif = true, kamera_kalp_atisi = now(), kamera_kalp_esik_dk = 15 where id = 1;
+update public.kamera_cihazlari set son_gorulme = now() where aktif and son_gorulme is not null;
+-- Canlı eşleştirilmiş kameraların kalp bilgisi bu testin durumunu bozmasın
+-- (taze bilgi yalnızca test kaynağından; geri alınır).
+update public.kamera_saglik set zaman = now() - interval '1 day' where kaynak <> 'genel';
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null, jsonb_build_object(
+  'surum', '1.4.3', 'fps', 8.6, 'kuyruk', 0, 'kuyruk_en_eski_sn', 0, 'takip', 'acik',
+  'bilinmeyen', 'x', 'kume', repeat('k', 500)));
+perform pg_temp.logout();
+select bilgi into v_json from public.kamera_saglik where kaynak = 'genel';
+if v_json ->> 'surum' is distinct from '1.4.3' or (v_json ->> 'fps')::numeric <> 8.6
+   or v_json ? 'bilinmeyen' or v_json ? 'kume' then
+  raise exception 'FAIL 88b: kalp bilgisi süzülmeden saklandı (%)', v_json;
+end if;
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.kamera_kalp_bilgi(null, '{}'::jsonb);
+  raise exception 'FAIL 88b: oturumlu kullanıcı kalp bilgisi yazabildi';
+exception when insufficient_privilege then null;
+end;
+perform pg_temp.logout();
+
+-- (c) Yönetici şeridi: TAMAM; kuyruk 5 dakikadır takılı → KUYRUK_TAKILDI;
+--     izleme kapandı → IZLEME_KAPANDI; haber yok en önce gelir.
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'TAMAM' then
+  raise exception 'FAIL 88c: sağlıklı kamera TAMAM değil (%)', v_json;
+end if;
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null, '{"kuyruk": 4, "kuyruk_en_eski_sn": 600, "takip": "acik"}');
+perform pg_temp.logout();
+-- Yönetici uyarısı (test Yöneticisi dahil herkese) bir kez; saat dolmadan
+-- gelen ikinci kalp yenisini yazmaz.
+if not exists (select 1 from public.notifications
+                where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=kuyruk'
+                  and profile_id = u_yonetici)
+   and not exists (select 1 from public.notifications          -- canlı: son saatte zaten vardı
+                    where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=kuyruk'
+                      and created_at < now() and created_at > now() - interval '60 minutes') then
+  raise exception 'FAIL 88c: takılı kuyruk Yöneticiye bildirilmedi';
+end if;
+select count(*) into v_n from public.notifications
+ where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=kuyruk';
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null, '{"kuyruk": 5, "kuyruk_en_eski_sn": 900, "takip": "acik"}');
+perform pg_temp.logout();
+if (select count(*) from public.notifications
+     where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=kuyruk') <> v_n then
+  raise exception 'FAIL 88c: takılı kuyruk uyarısı saat dolmadan tekrarlandı';
+end if;
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'KUYRUK_TAKILDI' then
+  raise exception 'FAIL 88c: takılı kuyruk görünmedi (%)', v_json;
+end if;
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null, '{"kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi"}');
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'IZLEME_KAPANDI' then
+  raise exception 'FAIL 88c: kapanan izleme görünmedi (%)', v_json;
+end if;
+-- Köprü son bir saatte araç attı (şerit uyuşmazlığı, bozuk gövde): kuyruktan
+-- ve izlemeden önce gelir, Yönetici uyarılır.
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null, '{"kuyruk": 4, "kuyruk_en_eski_sn": 600, "takip": "kapandi", "reddedilen": 2}');
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'REDDEDILIYOR' then
+  raise exception 'FAIL 88c: reddedilen araç görünmedi (%)', v_json;
+end if;
+if not exists (select 1 from public.notifications
+                where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=ret'
+                  and profile_id = u_yonetici)
+   and not exists (select 1 from public.notifications
+                    where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=ret'
+                      and created_at < now() and created_at > now() - interval '60 minutes') then
+  raise exception 'FAIL 88c: reddedilen araç Yöneticiye bildirilmedi';
+end if;
+update public.otopark_ayarlari set kamera_kalp_atisi = now() - interval '1 hour' where id = 1;
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'HABER_YOK' then
+  raise exception 'FAIL 88c: susan köprü HABER_YOK değil (%)', v_json;
+end if;
+update public.otopark_ayarlari set kamera_kalp_atisi = now() where id = 1;
+
+-- (d) PENDING (rolsüz) kullanıcı hiçbir şey okuyamaz; karne yalnızca Yönetici.
+perform pg_temp.login(u_pending);
+begin
+  perform public.kamera_durum_ozet();
+  raise exception 'FAIL 88d: PENDING kullanıcı kamera durumunu okudu';
+exception when insufficient_privilege then null;
+end;
+if exists (select 1 from public.kamera_saglik) then
+  raise exception 'FAIL 88d: PENDING kullanıcı kamera_saglik satırı gördü';
+end if;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+begin
+  perform public.kamera_durum_ozet();
+  raise exception 'FAIL 88d: Personel kamera durumunu okudu (şerit yalnızca Yöneticinin)';
+exception when insufficient_privilege then null;
+end;
+begin
+  perform public.kamera_karne(7);
+  raise exception 'FAIL 88d: Personel karneyi okudu';
+exception when insufficient_privilege then null;
+end;
+if exists (select 1 from public.kamera_saglik) then
+  raise exception 'FAIL 88d: Personel kamera_saglik satırı gördü';
+end if;
+perform pg_temp.logout();
+
+-- (e) Karne: bugünün kamera girişi ve kartı sayılır (fark olarak).
+perform pg_temp.login(u_yonetici);
+select public.kamera_karne(7) into v_json;
+perform pg_temp.logout();
+if jsonb_array_length(v_json) <> 7
+   or v_json -> 0 ->> 'gun' is distinct from to_char(now() at time zone 'Europe/Istanbul', 'YYYY-MM-DD') then
+  raise exception 'FAIL 88e: karne 7 gün, bugün başta değil (%)', v_json -> 0;
+end if;
+v_n := (v_json -> 0 ->> 'kamera_giris')::integer;
+v_bilet := null;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ88KRN01', gen_random_uuid(), now()) into v_json;
+perform public.kamera_okunamadi('ORTAK', gen_random_uuid(), now(), null, null, null);
+perform pg_temp.logout();
+perform pg_temp.login(u_yonetici);
+select public.kamera_karne(7) into v_json2;
+perform pg_temp.logout();
+if (v_json2 -> 0 ->> 'kamera_giris')::integer <> v_n + 1 then
+  raise exception 'FAIL 88e: kamera girişi karnede sayılmadı (%)', v_json2 -> 0;
+end if;
+if (v_json2 -> 0 ->> 'kart_plakasiz')::integer < 1 or (v_json2 -> 0 -> 'kart_tur' ->> 'OKUNAMADI')::integer < 1 then
+  raise exception 'FAIL 88e: plakasız kart karnede yok (%)', v_json2 -> 0;
+end if;
+begin
+  perform pg_temp.login(u_yonetici);
+  perform public.kamera_karne(0);
+  raise exception 'FAIL 88e: 0 günlük karne kabul edildi';
+exception when raise_exception then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+raise notice 'PASS 88: kalp sayıları süzülüp saklanır; Yönetici şeridi (Personel okuyamaz) TAMAM / HABER_YOK / REDDEDILIYOR / KUYRUK_TAKILDI / IZLEME_KAPANDI; karne yalnızca Yönetici';
+
+
+-- 89  Sunucunun reddettiği kamera aracı kart olur (071)
+-- =====================================================================
+-- Plan 2026-11-17 adım 3 (sahibin cevabı: reddedilen araç personel kartı
+-- olur). Eskiden bilet_ac / kamera_cikis_bildir / kamera_tek_kapi bir kamera
+-- aracını reddedince webhook 409 dönüyor, köprü aracı siliyordu: geriye
+-- yalnızca köprü günlüğünde bir satır kalıyordu. Artık webhook
+-- kamera_reddedildi ile REDDEDILDI kartı yazar ve 200 döner. Yalnızca
+-- service_role (PASS 41 listesinde). Aynı sebep saatte bir kez bildirilir:
+-- eksik bir tarife her araçta telefonları çaldırmasın.
+
+-- (a) Yetkiler.
+if has_function_privilege('anon', 'public.kamera_reddedildi(text, uuid, timestamptz, text, text, jsonb)', 'execute')
+   or has_function_privilege('authenticated', 'public.kamera_reddedildi(text, uuid, timestamptz, text, text, jsonb)', 'execute')
+   or not has_function_privilege('service_role', 'public.kamera_reddedildi(text, uuid, timestamptz, text, text, jsonb)', 'execute') then
+  raise exception 'FAIL 89a: kamera_reddedildi yalnızca service_role olmalı';
+end if;
+
+-- (b) Kart: tür, şerit, düzeltilmiş plaka, ret cümlesi, ham gövde korunur.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_reddedildi('GIRIS', v_islem, now(), 'zz89 aa101', 'PASS 89 deneme: sebep A',
+                                '{"x": 1}'::jsonb) into v_bilet;
+perform pg_temp.logout();
+if not exists (select 1 from public.istisnalar i
+                where i.id = v_bilet and i.tur::text = 'REDDEDILDI' and i.yon = 'GIRIS'
+                  and i.plaka = 'ZZ89AA101' and i.kaynak = 'KAMERA' and i.islem_id = v_islem
+                  and i.ham_yanit ->> 'ret_sebebi' = 'PASS 89 deneme: sebep A'
+                  and i.ham_yanit ->> 'x' = '1' and i.cozuldu_at is null) then
+  raise exception 'FAIL 89b: reddedilen araç kartı yanlış yazıldı';
+end if;
+
+-- (c) Aynı olay yeniden gelirse ikinci kart yok, aynı kimlik döner.
+perform pg_temp.kamera();
+select public.kamera_reddedildi('GIRIS', v_islem, now(), 'ZZ89AA101', 'PASS 89 deneme: sebep A', null) into v_txt;
+perform pg_temp.logout();
+if v_txt::uuid is distinct from v_bilet
+   or (select count(*) from public.istisnalar where islem_id = v_islem) <> 1 then
+  raise exception 'FAIL 89c: aynı olay ikinci kart yazdı';
+end if;
+
+-- (d) Bildirim: ilk araç herkese (ISTISNA personel türü); aynı sebeple saat
+--     dolmadan gelen ikinci araç kart olur ama yeni bildirim yazmaz; başka
+--     sebep yine bildirilir. Bildirim alacak kimse yoksa (canlıda tercih
+--     kapalı) sayı kontrolü atlanır.
+select count(*) into v_n from public.profiles p
+ where p.rol is not null and p.durum = 'ACTIVE'
+   and coalesce(p.notif_prefs ->> 'ISTISNA', 'true') <> 'false';
+if v_n > 0 and not exists (select 1 from public.notifications
+                            where tur = 'ISTISNA' and govde like '%ZZ89AA101%') then
+  raise exception 'FAIL 89d: reddedilen araç bildirilmedi';
+end if;
+perform pg_temp.kamera();
+perform public.kamera_reddedildi('CIKIS', gen_random_uuid(), now(), 'ZZ89BB102', 'PASS 89 deneme: sebep A', null);
+perform public.kamera_reddedildi('ORTAK', gen_random_uuid(), now(), 'ZZ89CC103', 'PASS 89 deneme: sebep B', null);
+perform pg_temp.logout();
+if (select count(*) from public.istisnalar where plaka in ('ZZ89BB102', 'ZZ89CC103')
+      and tur::text = 'REDDEDILDI') <> 2 then
+  raise exception 'FAIL 89d: ikinci ve üçüncü reddedilen araç kart olmadı';
+end if;
+if exists (select 1 from public.notifications where tur = 'ISTISNA' and govde like '%ZZ89BB102%') then
+  raise exception 'FAIL 89d: aynı sebep saat dolmadan yeniden bildirildi';
+end if;
+if v_n > 0 and not exists (select 1 from public.notifications
+                            where tur = 'ISTISNA' and govde like '%ZZ89CC103%') then
+  raise exception 'FAIL 89d: başka sebep bildirilmedi';
+end if;
+
+-- (e) Plakasız ret de kart olur; tanınmayan şerit ve islem_id'siz çağrı reddedilir.
+perform pg_temp.kamera();
+select public.kamera_reddedildi('GIRIS', gen_random_uuid(), now(), '', 'PASS 89 deneme: sebep C', null) into v_txt;
+perform pg_temp.logout();
+if not exists (select 1 from public.istisnalar where id = v_txt::uuid and plaka is null) then
+  raise exception 'FAIL 89e: plakasız ret kart olmadı';
+end if;
+begin
+  perform pg_temp.kamera();
+  perform public.kamera_reddedildi('SAG', gen_random_uuid(), now(), 'ZZ89DD104', 'x', null);
+  raise exception 'FAIL 89e: tanınmayan şerit kabul edildi';
+exception when raise_exception then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform pg_temp.kamera();   -- üstteki blok geri alınınca rol de geri döndü
+  perform public.kamera_reddedildi('GIRIS', null, now(), 'ZZ89DD104', 'x', null);
+  raise exception 'FAIL 89e: islem_id olmadan kabul edildi';
+exception when raise_exception then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- (f) Oturumlu kullanıcı yazamaz; personel kartı görür, PENDING görmez.
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.kamera_reddedildi('GIRIS', gen_random_uuid(), now(), 'ZZ89EE105', 'x', null);
+  raise exception 'FAIL 89f: oturumlu kullanıcı kart yazabildi';
+exception when insufficient_privilege then null;
+end;
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.istisnalar where id = v_bilet) then
+  raise exception 'FAIL 89f: personel reddedilen araç kartını görmüyor';
+end if;
+perform pg_temp.logout();
+perform pg_temp.login(u_pending);
+if exists (select 1 from public.istisnalar where id = v_bilet) then
+  raise exception 'FAIL 89f: PENDING kullanıcı kartı gördü';
+end if;
+perform pg_temp.logout();
+
+raise notice 'PASS 89: sunucunun reddettiği kamera aracı REDDEDILDI kartı olur; aynı sebep saatte bir bildirilir; yalnızca service_role';
+
+
+-- =====================================================================
+-- 90  Tek kapı: kameranın çıkış diye kapattığı araç içeride görülürse kart (072)
+--     Sahip 2026-11-18: kamera bileti ÇIKIŞ diye kapattıktan sonra çıkış
+--     süresi içinde (5 dk) aynı plaka (birebir) otoparkın İÇİNDE görülürse
+--     CIKMAMIS_OLABILIR kartı yazılır; kart o bileti taşır (aday_bilet_ids)
+--     ve personeli "Araç çıkmadı"ya götürür. Personelin kapattığı bilet,
+--     kapanıştan önceki görülme, pencere dışı ve bir karakter uzak okuma
+--     eskisi gibi. Bilet yeniden açılınca kart kendiliğinden kapanır.
+--     now() bu transaction'da sabit: olay saatleri geri çekilerek kurulur.
+-- =====================================================================
+perform pg_temp.logout();
+
+-- (a) Yeni tür ve kartı kapatan tetik; tetik işlevi hiçbir role açık değil.
+if not exists (select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
+                where t.typname = 'istisna_tur' and e.enumlabel = 'CIKMAMIS_OLABILIR') then
+  raise exception 'FAIL 90a: istisna_tur CIKMAMIS_OLABILIR yok — 072 çalıştırılmadı';
+end if;
+if not exists (select 1 from pg_trigger
+                where tgname = 'cikmamis_kart_kapat_tg' and tgrelid = 'public.biletler'::regclass) then
+  raise exception 'FAIL 90a: cikmamis_kart_kapat_tg tetiği yok';
+end if;
+foreach v_txt in array array['anon', 'authenticated', 'service_role'] loop
+  if has_function_privilege(v_txt, 'public.cikmamis_kart_kapat()', 'execute') then
+    raise exception 'FAIL 90a: cikmamis_kart_kapat % rolüne açık', v_txt;
+  end if;
+end loop;
+
+-- (b) Kamera girişi (30 dk önce) ve kamera çıkışı (2 dk önce).
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA101', gen_random_uuid(), now() - interval '30 minutes') into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_bilet is null then
+  raise exception 'FAIL 90b: hazırlık girişi açılmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA101', gen_random_uuid(), now() - interval '2 minutes',
+                              null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS'
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI'
+                                                 and cikis_kaynak::text = 'KAMERA') then
+  raise exception 'FAIL 90b: hazırlık — kamera çıkışı kapatmadı (%)', v_json;
+end if;
+
+-- (c) Kapanıştan ÖNCE içeride görülmesi sinyal değil: eskisi gibi YENI_CIKIS.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA101', gen_random_uuid(), now() - interval '3 minutes',
+                              null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS'
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ90AA101') then
+  raise exception 'FAIL 90c: kapanıştan önceki görülme kart açtı (%)', v_json;
+end if;
+
+-- (d) Kapanıştan SONRA, pencere içinde içeride: kart, bileti taşır; bilet
+--     kapalı kalır (kart yalnızca insana söyler).
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA101', v_islem, now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'CIKMAMIS_OLABILIR' then
+  raise exception 'FAIL 90d: kameranın kapattığı araç içeride görülünce kart açılmadı (%)', v_json;
+end if;
+select id into v_id from public.istisnalar
+ where islem_id = v_islem and tur::text = 'CIKMAMIS_OLABILIR' and yon = 'ORTAK'
+   and kaynak::text = 'KAMERA' and plaka = 'ZZ90AA101' and aday_bilet_ids = array[v_bilet]
+   and cozuldu_at is null;
+if v_id is null then
+  raise exception 'FAIL 90d: CIKMAMIS_OLABILIR kartı bileti taşımıyor';
+end if;
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI') then
+  raise exception 'FAIL 90d: kart bileti değiştirdi';
+end if;
+
+-- (e) Aynı araç yeniden görüldü: ikinci kart yok.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA101', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'CIKMAMIS_KAYITLI'
+   or (select count(*) from public.istisnalar where plaka = 'ZZ90AA101') <> 1 then
+  raise exception 'FAIL 90e: ikinci CIKMAMIS_OLABILIR kartı açıldı (%)', v_json;
+end if;
+
+-- (f) Bir karakter uzak okuma: eskisi gibi YENI_CIKIS_BENZER, kart yok.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90AA102', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS_BENZER'
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ90AA102') then
+  raise exception 'FAIL 90f: benzer okuma kart açtı (%)', v_json;
+end if;
+
+-- (g) Pencere dışı (kamera 10 dk önce kapattı): CIKMAMIS kartı yok; eskisi
+--     gibi içeride bileti olmayan araç.
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90BB202', gen_random_uuid(), now() - interval '40 minutes') into v_json;
+perform pg_temp.logout();
+v_bilet2 := (v_json ->> 'bilet_id')::uuid;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90BB202', gen_random_uuid(), now() - interval '10 minutes',
+                              null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' then
+  raise exception 'FAIL 90g: hazırlık — kamera çıkışı kapatmadı (%)', v_json;
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90BB202', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
+   or exists (select 1 from public.istisnalar
+               where plaka = 'ZZ90BB202' and tur::text = 'CIKMAMIS_OLABILIR') then
+  raise exception 'FAIL 90g: pencere dışında CIKMAMIS_OLABILIR kartı açıldı (%)', v_json;
+end if;
+
+-- (h) Personelin kapattığı bilet: ödeyip çıkan araç — eskisi gibi yok say.
+perform pg_temp.login(u_yonetici);
+if public.acik_vardiyam() is null then
+  perform public.vardiya_ac(0);
+end if;
+select public.bilet_ac('ZZ90CC303', gen_random_uuid()) into v_id2;
+perform public.bilet_kapat(v_id2, 'NAKIT', null, null, null, 'MOBIL');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_id2 and durum = 'KAPALI'
+                                              and cikis_kaynak::text = 'MOBIL') then
+  raise exception 'FAIL 90h: hazırlık — personel kapanışı yapılamadı';
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ90CC303', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS'
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ90CC303') then
+  raise exception 'FAIL 90h: personelin kapattığı bilet için kart açıldı (%)', v_json;
+end if;
+
+-- (i) Personel kartı görür, PENDING görmez.
+perform pg_temp.login(u_personel);
+if not exists (select 1 from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 90i: personel CIKMAMIS_OLABILIR kartını görmüyor';
+end if;
+perform pg_temp.logout();
+perform pg_temp.login(u_pending);
+if exists (select 1 from public.istisnalar where id = v_id) then
+  raise exception 'FAIL 90i: PENDING kullanıcı kartı gördü';
+end if;
+perform pg_temp.logout();
+
+-- (j) "Araç çıkmadı" (bilet_kamera_geri_ac): bilet açılır, kart kendiliğinden
+--     kapanır — açanın adıyla.
+perform pg_temp.login(u_yonetici);
+perform public.bilet_kamera_geri_ac(v_bilet);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 90j: hazırlık — bilet geri açılmadı';
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_at is not null and cozuldu_by = u_yonetici
+                  and cozum_notu like '%Araç çıkmadı%') then
+  raise exception 'FAIL 90j: bilet geri açılınca CIKMAMIS_OLABILIR kartı kapanmadı';
+end if;
+
+raise notice 'PASS 90: kameranın çıkış diye kapattığı araç 5 dk içinde içeride görülürse bileti taşıyan tek kart; personel kapanışı, önceki görülme, pencere dışı ve benzer okuma eskisi gibi; bilet geri açılınca kart kapanır';
+
+-- =====================================================================
+-- 91  Tek kapı "Çıkışta açık bilet bulunamadı" → Giriş aç, yazılan saatle (072)
+--     Sahip 2026-11-17/18: tek kapıda açık bileti olmayan "çıkan" araç
+--     aslında girmiş olabilir. Personel kamera kartından giriş açar; giriş
+--     saatini YAZAR (kart saati ücreti yanlış hesaplar) ve sebep zorunlu —
+--     bilet_giris_duzelt (046) gibi: ileri saat yok, bir yıldan eski yok,
+--     denetim kaydı ve Yönetici bildirimi. Yalnızca tek kapı (ORTAK) kamera
+--     kartı; çıkış şeridi, başka tür ve elle yazılmış kart reddedilir.
+-- =====================================================================
+perform pg_temp.logout();
+
+-- (a) Yetkiler.
+v_txt := 'public.istisna_bilet_ac_saatli(uuid, text, timestamptz, text)';
+if to_regprocedure(v_txt) is null then
+  raise exception 'FAIL 91a: istisna_bilet_ac_saatli yok — 072 çalıştırılmadı';
+end if;
+if has_function_privilege('anon', v_txt, 'execute')
+   or has_function_privilege('service_role', v_txt, 'execute')
+   or not has_function_privilege('authenticated', v_txt, 'execute') then
+  raise exception 'FAIL 91a: istisna_bilet_ac_saatli yetkileri yanlış';
+end if;
+
+-- (b) Hazırlık: tek kapıda çıkan, açık bileti olmayan araç → kart.
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ91KM101', v_islem, now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+select id into v_id from public.istisnalar
+ where islem_id = v_islem and tur::text = 'ACIK_BILET_YOK' and yon = 'ORTAK' and cozuldu_at is null;
+if v_id is null then
+  raise exception 'FAIL 91b: hazırlık — ACIK_BILET_YOK (tek kapı) kartı yazılmadı (%)', v_json;
+end if;
+
+-- (c) Saat ya da sebep eksik / yanlış: reddedilir, bilet açılmaz, kart açık kalır.
+foreach v_txt2 in array array['sebep', 'ileri', 'eski', 'bos'] loop
+  perform pg_temp.login(u_personel);
+  begin
+    perform public.istisna_bilet_ac_saatli(
+      v_id, 'ZZ91KM101',
+      case v_txt2 when 'ileri' then now() + interval '1 hour'
+                  when 'eski'  then now() - interval '2 years'
+                  when 'bos'   then null
+                  else now() - interval '2 hours' end,
+      case v_txt2 when 'sebep' then '   ' else 'Araç girmiş, kamera çıkış sandı' end);
+    raise exception 'FAIL 91c: % kabul edildi', v_txt2;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if (v_txt2 = 'sebep' and sqlerrm not like '%Sebep zorunludur%')
+       or (v_txt2 = 'ileri' and sqlerrm not like '%ileri bir zaman%')
+       or (v_txt2 = 'eski' and sqlerrm not like '%bir yıldan eski%')
+       or (v_txt2 = 'bos' and sqlerrm not like '%Giriş saati boş%') then
+      raise exception 'FAIL 91c: % için yanlış ret sebebi: %', v_txt2, sqlerrm;
+    end if;
+  end;
+  perform pg_temp.logout();
+end loop;
+if exists (select 1 from public.biletler where plaka = 'ZZ91KM101')
+   or not exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is null) then
+  raise exception 'FAIL 91c: reddedilen deneme iz bıraktı';
+end if;
+
+-- (d) PENDING kullanıcı açamaz.
+perform pg_temp.login(u_pending);
+begin
+  perform public.istisna_bilet_ac_saatli(v_id, 'ZZ91KM101', now() - interval '2 hours', 'x');
+  raise exception 'FAIL 91d: PENDING kullanıcı giriş açtı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- (e) Personel: yazılan saatle bilet açılır, kart kapanır, sebep denetimde.
+v_ts := date_trunc('minute', now()) - interval '2 hours';
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac_saatli(v_id, 'ZZ91KM101', v_ts, '  Araç girmiş, kamera çıkış sandı ')
+  into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if (v_json ->> 'zaten_vardi')::boolean is distinct from false
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and plaka = 'ZZ91KM101' and durum = 'ACIK'
+                     and giris_at = v_ts and islem_id = v_islem
+                     and giris_kaynak::text = 'MOBIL') then
+  raise exception 'FAIL 91e: yazılan saatle giriş açılmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_by = u_personel and cozuldu_at is not null) then
+  raise exception 'FAIL 91e: kart kapanmadı';
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'bilet_giris_duzeltildi' and row_id = v_bilet
+                  and detay ->> 'sebep' = 'Araç girmiş, kamera çıkış sandı')
+   or not exists (select 1 from public.audit_log
+                   where action = 'istisna_bilet_acildi' and row_id = v_bilet) then
+  raise exception 'FAIL 91e: denetim kaydı eksik';
+end if;
+
+-- (f) Aynı karta ikinci dokunuş: aynı bilet, ikinci bilet yok.
+perform pg_temp.login(u_personel);
+select public.istisna_bilet_ac_saatli(v_id, 'ZZ91KM101', v_ts, 'x') into v_json;
+perform pg_temp.logout();
+if (v_json ->> 'zaten_vardi')::boolean is distinct from true
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet
+   or (select count(*) from public.biletler where plaka = 'ZZ91KM101') <> 1 then
+  raise exception 'FAIL 91f: ikinci dokunuş ikinci bilet açtı (%)', v_json;
+end if;
+
+-- (g) Başka kartlardan açılmaz: çıkış şeridi, başka tür, elle yazılmış kart.
+v_id2 := public.istisna_yaz('ACIK_BILET_YOK', 'CIKIS', 'ZZ91BB202', 'KAMERA', gen_random_uuid(),
+                            null, null, now());
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac_saatli(v_id2, 'ZZ91BB202', now() - interval '1 hour', 'x');
+  raise exception 'FAIL 91g: çıkış şeridi kartından giriş açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Bu kayıttan giriş açılamaz%' then
+    raise exception 'FAIL 91g: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+v_id2 := public.istisna_yaz('ICERIDE_BILETSIZ', 'ORTAK', 'ZZ91CC303', 'KAMERA', gen_random_uuid(),
+                            null, null, now());
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac_saatli(v_id2, 'ZZ91CC303', now() - interval '1 hour', 'x');
+  raise exception 'FAIL 91g: başka türden kartla saatli giriş açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Bu kayıttan giriş açılamaz%' then
+    raise exception 'FAIL 91g: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+v_id2 := public.istisna_yaz('ACIK_BILET_YOK', 'ORTAK', 'ZZ91DD404', 'MOBIL', gen_random_uuid(),
+                            null, null, now());
+perform pg_temp.login(u_personel);
+begin
+  perform public.istisna_bilet_ac_saatli(v_id2, 'ZZ91DD404', now() - interval '1 hour', 'x');
+  raise exception 'FAIL 91g: elle yazılmış karttan giriş açıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Bu kayıttan giriş açılamaz%' then
+    raise exception 'FAIL 91g: yanlış ret sebebi: %', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.biletler where plaka in ('ZZ91BB202', 'ZZ91CC303', 'ZZ91DD404')) then
+  raise exception 'FAIL 91g: reddedilen kart bilet açtı';
+end if;
+
+raise notice 'PASS 91: tek kapı "açık bilet yok" kamera kartından giriş, personelin yazdığı saat ve zorunlu sebeple; ileri / çok eski / boş saat ve sebepsiz reddedilir; başka kartlardan açılmaz';
+
+-- =====================================================================
+-- 92  Kamera girişi kapalıyken sahte uyarı yok; cron geçmişi temizlenir;
+--     iki dizin, bir kopya dizin gider (073)
+--     Sahip 2026-11-20: kamera girişi Ayarlar'dan kapatıldığında kameranın
+--     gördüğü araçlar ATILIR (webhook 410 döner; bu SQL'de değil,
+--     tests/serit.check.mjs sınar). Kapalı kamera bilerek kapatılmıştır:
+--     "haber yok", "kuyruk takıldı", "reddediyor" uyarıları ve şeritleri
+--     yanlış alarmdır. Şerit KAPALI der. Durum test içinde kurulur ve
+--     geri alınır; canlı ayar okunur, varsayılmaz.
+-- =====================================================================
+perform pg_temp.logout();
+select kamera_aktif into v_bool from public.otopark_ayarlari where id = 1;
+
+-- (a) Şerit: kapalıyken KAPALI ve HER ŞEYDEN önce (susan köprü dahil);
+--     açılınca eski kural (burada HABER_YOK).
+update public.otopark_ayarlari
+   set kamera_aktif = false, kamera_kalp_atisi = now() - interval '1 hour', kamera_kalp_esik_dk = 15
+ where id = 1;
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'KAPALI' then
+  raise exception 'FAIL 92a: kapalı kamera KAPALI değil (%)', v_json;
+end if;
+update public.otopark_ayarlari set kamera_aktif = true where id = 1;
+perform pg_temp.login(u_yonetici);
+select public.kamera_durum_ozet() into v_json;
+perform pg_temp.logout();
+if v_json ->> 'durum' is distinct from 'HABER_YOK' then
+  raise exception 'FAIL 92a: açılan kamera eski kurala dönmedi (%)', v_json;
+end if;
+
+-- (b) Nöbetçi: susan köprü ve susan eşleştirilmiş kameralar; kapalıyken HİÇ
+--     KAMERA uyarısı yok, açıkken genel uyarı gelir.
+delete from public.notifications where tur = 'KAMERA';
+update public.kamera_cihazlari
+   set son_gorulme = now() - interval '1 day', durum_at = now() - interval '1 day'
+ where aktif and son_gorulme is not null;
+update public.otopark_ayarlari set kamera_aktif = false where id = 1;
+perform public.run_kamera_kontrol();
+if exists (select 1 from public.notifications where tur = 'KAMERA') then
+  raise exception 'FAIL 92b: kapalı kamera için "haber yok" uyarısı yazıldı';
+end if;
+update public.otopark_ayarlari set kamera_aktif = true where id = 1;
+perform public.run_kamera_kontrol();
+if not exists (select 1 from public.notifications
+                where tur = 'KAMERA' and link = '/yonetim/kameralar' and profile_id = u_yonetici) then
+  raise exception 'FAIL 92b: açık ve susan köprü için uyarı yazılmadı';
+end if;
+
+-- (c) Kalp bilgisi kapalıyken saklanır ama uyarı üretmez (kuyruk, ret, izleme).
+delete from public.notifications where tur = 'KAMERA';
+update public.otopark_ayarlari set kamera_aktif = false, kamera_kalp_atisi = now() where id = 1;
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null,
+  '{"kuyruk": 4, "kuyruk_en_eski_sn": 600, "reddedilen": 2, "takip": "kapandi"}');
+perform pg_temp.logout();
+if exists (select 1 from public.notifications where tur = 'KAMERA') then
+  raise exception 'FAIL 92c: kapalı kameranın kalbi uyarı üretti';
+end if;
+if (select (bilgi ->> 'kuyruk_en_eski_sn')::numeric from public.kamera_saglik where kaynak = 'genel')
+     is distinct from 600 then
+  raise exception 'FAIL 92c: kapalı kameranın kalp bilgisi saklanmadı';
+end if;
+update public.otopark_ayarlari set kamera_aktif = true where id = 1;
+perform pg_temp.kamera();
+perform public.kamera_kalp_bilgi(null,
+  '{"kuyruk": 4, "kuyruk_en_eski_sn": 600, "reddedilen": 2, "takip": "kapandi"}');
+perform pg_temp.logout();
+if not exists (select 1 from public.notifications
+                where tur = 'KAMERA' and link = '/yonetim/kameralar?saglik=kuyruk' and profile_id = u_yonetici) then
+  raise exception 'FAIL 92c: açık kameranın takılı kuyruğu bildirilmedi';
+end if;
+update public.otopark_ayarlari set kamera_aktif = v_bool where id = 1;
+
+-- (d) cron.job_run_details her gün temizlenir (7 günden eskisi). Supabase
+--     bunu kendisi yapmaz; dakikalık iş günde ~1.440 satır ekler.
+select command into v_txt from cron.job where jobname = 'otopark-cron-temizlik';
+if v_txt is null then
+  raise exception 'FAIL 92d: otopark-cron-temizlik işi yok — 073 çalıştırılmadı';
+end if;
+if position('delete from cron.job_run_details' in lower(v_txt)) = 0
+   or position('7 days' in v_txt) = 0 then
+  raise exception 'FAIL 92d: temizlik işinin komutu beklenen değil (%)', v_txt;
+end if;
+
+-- (e) En sık çalışan iki sorgunun dizini var; 067'nin kopya dizini gitti
+--     (001'deki biletler_kapali_ix aynısıdır ve kalır).
+if not exists (select 1 from pg_indexes where schemaname = 'public'
+                and indexname = 'biletler_kamera_created_ix') then
+  raise exception 'FAIL 92e: biletler_kamera_created_ix yok';
+end if;
+if not exists (select 1 from pg_indexes where schemaname = 'public'
+                and indexname = 'notifications_tur_link_ix') then
+  raise exception 'FAIL 92e: notifications_tur_link_ix yok';
+end if;
+if exists (select 1 from pg_indexes where schemaname = 'public'
+            and indexname = 'biletler_kapali_cikis_ix') then
+  raise exception 'FAIL 92e: kopya dizin biletler_kapali_cikis_ix duruyor';
+end if;
+if not exists (select 1 from pg_indexes where schemaname = 'public'
+                and indexname = 'biletler_kapali_ix') then
+  raise exception 'FAIL 92e: biletler_kapali_ix (asıl dizin) yok';
+end if;
+
+-- (f) Yetkiler değişmedi (create or replace yetkiyi korur; yine de sınanır).
+if has_function_privilege('anon', 'public.kamera_durum_ozet()', 'execute')
+   or has_function_privilege('service_role', 'public.kamera_durum_ozet()', 'execute')
+   or not has_function_privilege('authenticated', 'public.kamera_durum_ozet()', 'execute') then
+  raise exception 'FAIL 92f: kamera_durum_ozet yetkileri değişti';
+end if;
+if has_function_privilege('anon', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute')
+   or has_function_privilege('authenticated', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute')
+   or not has_function_privilege('service_role', 'public.kamera_kalp_bilgi(uuid, jsonb)', 'execute') then
+  raise exception 'FAIL 92f: kamera_kalp_bilgi yetkileri değişti';
+end if;
+if has_function_privilege('anon', 'public.run_kamera_kontrol()', 'execute')
+   or has_function_privilege('authenticated', 'public.run_kamera_kontrol()', 'execute') then
+  raise exception 'FAIL 92f: run_kamera_kontrol dışarı açıldı';
+end if;
+
+raise notice 'PASS 92: kamera girişi kapalıyken şerit KAPALI, "haber yok" / kuyruk / ret uyarısı yok, kalp bilgisi saklanır; açılınca eski kural; cron geçmişi günlük temizlenir; iki dizin var, kopya dizin yok';
 
 perform pg_temp.logout();
 raise notice '';

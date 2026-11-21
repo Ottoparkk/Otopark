@@ -1444,6 +1444,86 @@ def test_durum_serit_uyusmazligi_saglikli_degil() -> None:
     assert ok is True, cikti
 
 
+def test_kamera_kapaliyken_arac_atilir() -> None:
+    """
+    Sahip kararı 20.11: uygulamada kamera girişi KAPALIYKEN görülen araç
+    ATILIR, kuyrukta beklemez. Sunucu araca 410 + KAMERA_KAPALI der; köprü
+    tek bir açık satır yazar ve giden.RED döner. Ret SAYILMAZ: kalp atışının
+    `reddedilen` sayısı artsaydı Gişe "sunucu reddediyor" diye yanlış uyarırdı.
+    Gövdesiz düz bir 410 ise sıradan 4xx gibi reddedilir ve sayılır.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+    _kopru_yuklu()
+    import giden
+    import gunluk
+    import kopru
+
+    class Y:
+        def __init__(self, kod, metin):
+            self.status_code, self.text = kod, metin
+
+    cevaplar = [Y(410, '{"kod":"KAMERA_KAPALI","hata":"Kamera girişi kapalı."}'),
+                Y(410, '{"hata":"Gitti."}')]
+    eski_post = kopru.requests.post
+    eski_liste = list(kopru._reddedilenler)
+    kopru.requests.post = lambda *a, **k: cevaplar.pop(0)
+    kopru._reddedilenler.clear()
+    yakala = _io.StringIO()
+    try:
+        with redirect_stdout(yakala):
+            atilan = kopru.gonder_olay({"islem_id": "abcd1234-0000", "yon": "GIRIS"})
+            c1 = yakala.getvalue()
+            sayi1 = kopru.son_saat_reddedilen(time.monotonic())
+            duz = kopru.gonder_olay({"islem_id": "ef567890-0000", "yon": "GIRIS"})
+            c2 = yakala.getvalue()[len(c1):]
+            sayi2 = kopru.son_saat_reddedilen(time.monotonic())
+    finally:
+        kopru.requests.post = eski_post
+        kopru._reddedilenler[:] = eski_liste
+    assert atilan == giden.RED, (atilan, c1)
+    assert f"[!] {gunluk.KAMERA_KAPALI_ATILDI_ISARETI} (abcd1234)" in c1, c1
+    assert c1.count("\n") == 1, c1                       # tek satır
+    assert "[!] reddedildi" not in c1, c1
+    assert sayi1 == 0, sayi1                             # _reddedildi_say çağrılmadı
+    assert duz == giden.RED, (duz, c2)
+    assert "[!] reddedildi 410 (ef567890)" in c2, c2
+    assert gunluk.KAMERA_KAPALI_ATILDI_ISARETI not in c2, c2
+    assert sayi2 == 1, sayi2
+
+
+def test_kamera_kapali_410_kabul_sayilmaz() -> None:
+    """
+    Kamera kapalıyken araca gelen 410, kimliğin "yeniden kabul edildiği"
+    anlamına GELMEZ: 403'ten sonra KABUL satırı yazılmamalı, yoksa `durum`
+    KAMERA GİRİŞİ KAPALI demeyi bırakırdı.
+    """
+    import gunluk
+    _, cikti = _kopru_calistir(
+        "kopru.ret_kaydet(403)\n"
+        "kopru.ret_kaydet(410, '{\"kod\":\"KAMERA_KAPALI\",\"hata\":\"Kamera girişi kapalı.\"}')\n"
+        "kopru.ret_kaydet(410, '{\"hata\":\"x\"}')\n")
+    assert gunluk.KAPALI_ISARETI in cikti, cikti
+    assert gunluk.KABUL_ISARETI not in cikti, cikti
+
+
+def test_durum_kamera_kapaliyken_atilan_ret_sayilmaz() -> None:
+    """Kapalıyken atılan araçlar: durum KAMERA GİRİŞİ KAPALI der, ret saymaz."""
+    import gunluk
+    bugun = time.strftime("%d.%m")
+    ok, cikti = _durum_senaryosu([
+        f"{bugun} 09:00:00  [i] ——— köprü başladı (GIRIS) — pid 1 ———",
+        f"{bugun} 09:00:01  [!] {gunluk.KAPALI_ISARETI} (403)",
+        f"{bugun} 09:02:00  [!] {gunluk.KAMERA_KAPALI_ATILDI_ISARETI} (abcd1234)",
+        f"{bugun} 09:03:00  [!] {gunluk.KAMERA_KAPALI_ATILDI_ISARETI} (ef567890)",
+    ])
+    assert ok is False, cikti
+    assert "KAMERA GİRİŞİ KAPALI" in cikti, cikti
+    assert "0 reddedilme" in cikti, cikti
+    assert "KİMLİK REDDEDİLDİ" not in cikti and "ŞERİT" not in cikti, cikti
+    assert "İNTERNET YOK" not in cikti, cikti
+
+
 def test_baglanti_denemesi_kalp_atisi_saymaz() -> None:
     """
     Sihirbazın bağlantı testi ve kayıtlı-kimlik yoklaması `x-kamera-deneme`
@@ -2174,6 +2254,135 @@ def test_kirpma_sunucusu_alan_ve_kapi() -> None:
         sunucu.server_close()
 
 
+# 1.4.3 (sahibin isteği 19.11): kırpma sayfasında saha önerisi ve kayıtlı
+# alanlar hazır yüklenir; köşeler sürüklenir / araya eklenir / silinir.
+# Saha kanıtı karenin oranı olarak (19.11 16:53 ekran görüntüsünden):
+_PLAKA_1453 = (0.251, 0.5457, 0.3179, 0.5954)          # 14:53 kesik sayılan plaka
+_BUGUNKU_ALAN = [(0.476, 0.3011), (0.6479, 0.3011), (1.0, 0.8401), (1.0, 1.0),
+                 (0, 1.0), (0, 0.8185)]                # kart fotoğraflarından tahmini
+_KAYBOLAN_ARACLAR = {"19:44": (0.7574, 0.8535), "19:57": (0.765, 0.7984)}   # alt orta nokta
+# Sahibin 21.11 çizgisi (20.11 19:50 karesi): mavinin sağ üst kenarı drenaj
+# kanalı boyunca, (0.659, 0.314) → (0.745, 0.463). Sağındaki park şeridi dışarıda,
+# solundaki şerit içeride.
+_KANAL_SAGI_DISARI = {"üst": (0.68, 0.33), "kanal sağı": (0.76, 0.44)}
+_KANAL_SOLU_ICERI = {"üst": (0.63, 0.33), "orta": (0.70, 0.44)}
+
+
+def _onerili_kayit(en=2560, boy=1440):
+    """SAHA_ONERISI'ni bu kareye ölçekleyip /kaydet'ten geçirir: (kod, sonuc)."""
+    import numpy as np
+    ks, d, sunucu, sonuc, bitti, belirtec = _kirpma_sunucusu()
+    d.kare = np.zeros((boy, en, 3), np.uint8)
+    try:
+        govde = {m: ks.oneri_pikselleri(m, en, boy) for m in ("alan", "kapi")}
+        kod, _ = _istek(sunucu.server_address[1], "/kaydet", json.dumps(govde).encode(),
+                        {"X-Otopark-Belirtec": belirtec})
+        return kod, dict(sonuc)
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+
+
+def _kirpikta_tam_mi(alan, kutu_oran, en=2560, boy=1440) -> bool:
+    """Plaka kutusu (karenin oranı) bu kırpma alanında kesik sayılmaz mı?"""
+    import plaka
+    x0, y0, w, h = plaka.cokgen_kutusu(alan)
+    m = plaka.AlanMaskesi.cokgenden([(x - x0, y - y0) for x, y in alan], w, h)
+    k = plaka.Kutu(kutu_oran[0] * en - x0, kutu_oran[1] * boy - y0,
+                   kutu_oran[2] * en - x0, kutu_oran[3] * boy - y0, 0.9)
+    return plaka.tam_mi(k, w, h, m)
+
+
+def _icinde(cokgen, nokta) -> bool:
+    import cv2
+    import numpy as np
+    return cv2.pointPolygonTest(np.array(cokgen, np.float32), tuple(map(float, nokta)), False) > 0
+
+
+def test_saha_onerisi_gecerli_ve_sahadaki_hatalari_onler() -> None:
+    import kirpma_sunucu as ks
+    assert len(ks.SAHA_ONERISI["alan"]) == 8 and len(ks.SAHA_ONERISI["kapi"]) == 4, ks.SAHA_ONERISI
+    for en, boy in ((2560, 1440), (1920, 1080), (1280, 720)):
+        kod, s = _onerili_kayit(en, boy)
+        assert kod == 200 and s["alan"] is not None and s["kapi"] is not None, (en, boy, kod)
+    kod, s = _onerili_kayit()
+    alan, kapi = s["alan"], s["kapi"]
+    # 14:53: bugünkü alanda plaka kenara değiyordu (kesik); önerilen alanda payıyla içeride.
+    bugun = [(round(x * 2560), round(y * 1440)) for x, y in _BUGUNKU_ALAN]
+    assert not _kirpikta_tam_mi(bugun, _PLAKA_1453), "saha kanıtı: bugün kesikti"
+    assert _kirpikta_tam_mi(alan, _PLAKA_1453), "öneri 14:53 plakasını yine kesiyor"
+    # 18.11 19:44 / 19:57: kanalın sağında kaybolan araçlar — öneride kapı alanının
+    # DIŞINDA ama kırpmanın içinde (yönü bilinir).
+    for ad, (fx, fy) in _KAYBOLAN_ARACLAR.items():
+        p = (fx * 2560, fy * 1440)
+        assert _icinde(alan, p) and not _icinde(kapi, p), ad
+    # 21.11: sağ üst kenar sahibin çizdiği kanal çizgisinde.
+    for ad, (fx, fy) in _KANAL_SAGI_DISARI.items():
+        assert not _icinde(alan, (fx * 2560, fy * 1440)), f"kanalın sağı içeride: {ad}"
+    for ad, (fx, fy) in _KANAL_SOLU_ICERI.items():
+        assert _icinde(alan, (fx * 2560, fy * 1440)), f"şerit dışarıda: {ad}"
+    # Kapı alanı alt kenara oturur (araç sokaktan alttan girer, kanalın solundan).
+    assert sum(1 for _x, y in kapi if y == 1440) == 2, kapi
+    assert max(x for x, _y in kapi) < 0.8 * 2560, kapi
+
+
+def test_kayitli_alanlar_cozulur() -> None:
+    import kirpma_sunucu as ks
+    assert ks.mevcut_coz("0,0;100,0;100,100", "0,50;100,50;100,100") == {
+        "alan": [[0, 0], [100, 0], [100, 100]], "kapi": [[0, 50], [100, 50], [100, 100]]}
+    # Bozuk ya da boş metin sayfaya gitmez, çökmez.
+    assert ks.mevcut_coz("x,y;1", "") == {"alan": None, "kapi": None}
+    assert ks.mevcut_coz(None, "0,0;10,0") == {"alan": None, "kapi": None}
+    assert ks.mevcut_coz("", "0,50;100,50;100,100")["kapi"] == [[0, 50], [100, 50], [100, 100]]
+
+
+def test_kirpma_sayfasi_oneri_kayitli_ve_duzenleme() -> None:
+    import kirpma_sunucu as ks
+    d = ks._Durum()
+    sunucu, *_ = ks.sunucu_baslat(d, mevcut=ks.mevcut_coz("10,20;300,20;300,200", ""))
+    import threading
+    threading.Thread(target=sunucu.serve_forever, daemon=True).start()
+    try:
+        kod, sayfa = _istek(sunucu.server_address[1], "/")
+        metin = sayfa.decode("utf-8")
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+    assert kod == 200
+    for parca in ("Öneriyi yükle", "Kayıtlı alanları yükle", "sürükleyin", "sağ tıklayın",
+                  json.dumps(ks.SAHA_ONERISI), '"alan": [[10, 20], [300, 20], [300, 200]]'):
+        assert parca in metin, parca
+    assert "__ONERI__" not in metin and "__MEVCUT__" not in metin
+    # Kayıtlı alan yoksa sayfa yine açılır (null).
+    sunucu, *_ = ks.sunucu_baslat(ks._Durum())
+    threading.Thread(target=sunucu.serve_forever, daemon=True).start()
+    try:
+        _, sayfa = _istek(sunucu.server_address[1], "/")
+    finally:
+        sunucu.shutdown()
+        sunucu.server_close()
+    assert "const KAYITLI=null" in sayfa.decode("utf-8")
+
+
+def test_kirpma_ve_esikler_kayitli_alanlari_iletir() -> None:
+    import io as _io
+    from contextlib import redirect_stdout
+    import kirpma_sunucu
+    import kurulum
+    gelen = {}
+    eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
+    kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: (gelen.__setitem__("m", mevcut), None, [])
+    kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
+    try:
+        with redirect_stdout(_io.StringIO()):
+            kurulum.kirpma_ve_esikler("rtsp://x/1", mevcut=("1,1;9,1;9,9", "1,5;9,5;9,9"))
+    finally:
+        kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner = eski
+    assert gelen["m"] == ("1,1;9,1;9,9", "1,5;9,5;9,9"), gelen
+    assert kurulum.kayitli_alanlar({"KIRPMA_ALAN": "a", "KAPI_ALANI": "b", "X": 1}) == ("a", "b")
+    assert kurulum.kayitli_alanlar({}) == ("", "")
+
+
 def test_kirpma_alani_esikleri_alanin_icinde_olcer() -> None:
     """Kaydedilen alanın DIŞINDAKİ hareket eşik ölçümüne girmez (köprü orayı griye boyar)."""
     import numpy as np
@@ -2747,7 +2956,7 @@ def test_tum_kare_eski_kirpmayi_temizler() -> None:
     import kurulum
 
     eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
-    kirpma_sunucu.kirpma_sec = lambda rtsp: (None, None, [])
+    kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: (None, None, [])
     kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
     try:
         with redirect_stdout(_io.StringIO()):
@@ -2777,7 +2986,7 @@ def test_haric_alan_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
     eski = (kirpma_sunucu.kirpma_sec, kirpma_sunucu.esik_oner)
     kirpma_sunucu.esik_oner = lambda olcum: (2.0, 6.0)
     try:
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), (10, 20, 200, 150), [])
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((10, 20, 600, 400), (10, 20, 200, 150), [])
         yakala = _io.StringIO()
         with redirect_stdout(yakala):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
@@ -2786,17 +2995,17 @@ def test_haric_alan_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> None:
         assert "10,20,200,150" in yakala.getvalue(), yakala.getvalue()
 
         # 1.3.3: birden çok alan ";" ile yazılır; tek alan eskisiyle aynı metin.
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400),
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((10, 20, 600, 400),
                                                  ((10, 20, 200, 150), (300, 50, 100, 80)), [])
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
         assert yeni["KIRPMA_HARIC"] == "10,20,200,150;300,50,100,80", yeni
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), ((10, 20, 200, 150),), [])
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((10, 20, 600, 400), ((10, 20, 200, 150),), [])
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
         assert yeni["KIRPMA_HARIC"] == "10,20,200,150", yeni
 
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), None, [])
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((10, 20, 600, 400), None, [])
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
         ayar = {**_KAYITLI, "KIRPMA_HARIC": "10,20,200,150"}
@@ -2828,7 +3037,7 @@ def test_kirpma_alani_ve_kapi_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> No
     onceki = {**_KAYITLI, "KIRPMA_HARIC": "10,20,200,150", "KIRPMA_ALAN": "1,1;50,1;1,50",
               "KAPI_ALANI": "1,1;50,1;1,50", "TAKIP": "0"}
     try:
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((100, 100, 1800, 800), None, [], alan, kapi)
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((100, 100, 1800, 800), None, [], alan, kapi)
         yakala = _io.StringIO()
         with redirect_stdout(yakala):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
@@ -2842,14 +3051,14 @@ def test_kirpma_alani_ve_kapi_ayara_yazilir_ve_yeniden_kurulumda_silinir() -> No
         assert ayar["TAKIP"] == "0" and ayar["KIRPMA"] == "" and ayar["KIRPMA_HARIC"] == ""
 
         # Tüm kare + kapı: kırpma yok, kapı yazılır.
-        kirpma_sunucu.kirpma_sec = lambda rtsp: (None, None, [], None, kapi)
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: (None, None, [], None, kapi)
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
         assert yeni["KIRPMA_ALAN"] == "" and yeni["KIRPMA"] == "", yeni
         assert yeni["KAPI_ALANI"] == "100,600;700,600;700,900;100,900", yeni
 
         # Eski 3 değerli dönüş: alanlar AÇIKÇA boş (eskileri silinir).
-        kirpma_sunucu.kirpma_sec = lambda rtsp: ((10, 20, 600, 400), None, [])
+        kirpma_sunucu.kirpma_sec = lambda rtsp, mevcut=None: ((10, 20, 600, 400), None, [])
         with redirect_stdout(_io.StringIO()):
             yeni = kurulum.kirpma_ve_esikler("rtsp://x/1")
         ayar = {**onceki, **yeni}
@@ -2977,6 +3186,199 @@ def test_kirpma_sayfasi_tcp_ile_baglanir() -> None:
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = eski_ortam
     assert gorulen == ["rtsp_transport;tcp"], gorulen
 
+
+def test_canli_kamera_acma_ve_okuma_zaman_asimi() -> None:
+    """
+    1.4.3: köprünün canlı kamerası da açma ve okuma zaman aşımıyla kurulur
+    (kurulumun yoklaması gibi, kesif._kare_alinabiliyor_mu). OpenCV bunları
+    yalnızca yakalama KURULURKEN alır; yoksa takılan bir akışta read() FFmpeg'in
+    varsayılanı kadar bekler. Değerler köprünün sabitleridir.
+    """
+    import cv2
+    _kopru_yuklu()
+    import kopru
+
+    gorulen: list[tuple] = []
+
+    class Sahte:
+        def set(self, *a):
+            return True
+
+    def yakala(*a, **k):
+        gorulen.append(a)
+        return Sahte()
+
+    eski_vc = kopru.cv2.VideoCapture
+    kopru.cv2.VideoCapture = yakala
+    try:
+        kopru.kamera_baglan("rtsp://1.2.3.4/x")
+    finally:
+        kopru.cv2.VideoCapture = eski_vc
+    assert len(gorulen) == 1, gorulen
+    a = gorulen[0]
+    assert a[0] == "rtsp://1.2.3.4/x" and a[1] == cv2.CAP_FFMPEG, a
+    p = dict(zip(a[2][::2], a[2][1::2]))
+    assert p == {cv2.CAP_PROP_OPEN_TIMEOUT_MSEC: kopru.KAMERA_ACMA_MS,
+                 cv2.CAP_PROP_READ_TIMEOUT_MSEC: kopru.KAMERA_OKUMA_MS}, p
+    assert 5000 <= kopru.KAMERA_OKUMA_MS <= 15000 and 5000 <= kopru.KAMERA_ACMA_MS <= 15000
+
+
+
+def test_kalp_bilgisi_sayilari() -> None:
+    """
+    1.4.3 (plan adım 2): kalp atışı boş POST değil, sayılar taşır — sürüm,
+    izleme karesi/sn, kuyruk ve en eski bekleyenin yaşı, son saatte reddedilen,
+    izleme açık / kapalı / kapandı, model kümesi, saat farkı. Sunucu
+    (kamera_kalp_bilgi, 070) anahtarları süzer; burada yalnızca tanıdığı
+    anahtarlar, doğru türde. Bilinmeyen değer YAZILMAZ (0 değil).
+    """
+    from datetime import datetime, timezone
+    _kopru_yuklu()
+    import kopru
+    import gunluk
+    import paketle
+    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.3", (gunluk.KOPRU_SURUMU, paketle.SURUM)
+    simdi = datetime(2026, 11, 18, 10, 10, tzinfo=timezone.utc)
+    b = kopru.kalp_bilgisi(model_kare=43, sure_sn=5.0, izleme=True, istendi=True,
+                           kume="GPU · YOLO11s", kuyruk=(2, "2026-11-18T10:00:00+00:00"),
+                           simdi=simdi, reddedilen=1, saat_farki=-2.44)
+    assert b == {"surum": "1.4.3", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
+                 "takip": "acik", "kume": "GPU · YOLO11s", "reddedilen": 1,
+                 "saat_farki_sn": -2.4}, b
+    # İzleme çalışırken kapandı: kare sayısı anlamsız, gönderilmez.
+    b = kopru.kalp_bilgisi(model_kare=0, sure_sn=5.0, izleme=False, istendi=True,
+                           kume="CPU · YOLOX-tiny", kuyruk=(0, None), simdi=simdi,
+                           reddedilen=0, saat_farki=None)
+    assert b == {"surum": "1.4.3", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
+                 "kume": "CPU · YOLOX-tiny", "reddedilen": 0}, b
+    # Ayarla kapalı (TAKIP=0), ilk kalp (süre yok), bozuk zaman, uzun küme adı.
+    b = kopru.kalp_bilgisi(model_kare=5, sure_sn=0.0, izleme=False, istendi=False,
+                           kume="x" * 60, kuyruk=(1, "bozuk"), simdi=simdi,
+                           reddedilen=0, saat_farki=0.0)
+    assert b["takip"] == "kapali" and "fps" not in b, b
+    assert b["kuyruk"] == 1 and b["kuyruk_en_eski_sn"] == 0, b
+    assert len(b["kume"]) == 40 and b["saat_farki_sn"] == 0.0, b
+    # 1.4.3 (1a): son saatte parça sayıları (sayılırdı, sayıldı) — yalnızca izlemede.
+    b = kopru.kalp_bilgisi(model_kare=43, sure_sn=5.0, izleme=True, istendi=True,
+                           kume="GPU · YOLO11s", kuyruk=(0, None), simdi=simdi,
+                           reddedilen=0, saat_farki=None, parca=(3, 0))
+    assert b["emilirdi"] == 3 and b["emildi"] == 0, b
+    b = kopru.kalp_bilgisi(model_kare=0, sure_sn=5.0, izleme=False, istendi=True,
+                           kume="GPU · YOLO11s", kuyruk=(0, None), simdi=simdi,
+                           reddedilen=0, saat_farki=None, parca=(3, 1))
+    assert "emilirdi" not in b and "emildi" not in b, b
+
+
+def test_parca_emme_ayari() -> None:
+    """1.4.3 (1a): PARCA_EMME varsayılan 0 (yalnızca kayıt); 1 açar; bozuk değer 0."""
+    import plaka
+    eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
+    try:
+        assert "PARCA_EMME" in plaka.AYAR_ADLARI
+        assert plaka.calisma_ayarlari()[0]["parca_emme"] is False
+        os.environ["PARCA_EMME"] = "1"
+        assert plaka.calisma_ayarlari()[0]["parca_emme"] is True
+        os.environ["PARCA_EMME"] = "evet"
+        ayar, uyari = plaka.calisma_ayarlari()
+        assert ayar["parca_emme"] is False and uyari, (ayar, uyari)
+    finally:
+        os.environ.pop("PARCA_EMME", None)
+        for k, v in eski.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_klip_ayari() -> None:
+    """1.4.3 (1d): KLIP varsayılan 0 (kayıt yok); 1 açar; bozuk değer 0 + uyarı."""
+    import plaka
+    eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
+    try:
+        assert "KLIP" in plaka.AYAR_ADLARI
+        assert plaka.calisma_ayarlari()[0]["klip"] is False
+        os.environ["KLIP"] = "1"
+        assert plaka.calisma_ayarlari()[0]["klip"] is True
+        os.environ["KLIP"] = "evet"
+        ayar, uyari = plaka.calisma_ayarlari()
+        assert ayar["klip"] is False and uyari, (ayar, uyari)
+        # kopru.json'dan da (kurulum sonrası sahibin açtığı yol).
+        os.environ.pop("KLIP", None)
+        assert plaka.calisma_ayarlari({"KLIP": "1"})[0]["klip"] is True
+    finally:
+        os.environ.pop("KLIP", None)
+        for k, v in eski.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_park_gorunur_ayari() -> None:
+    """1.4.3 (sahip 19.11): PARK_GORUNUR varsayılan 0 (bugünkü gibi); 1 açar; bozuk 0 + uyarı."""
+    import plaka
+    eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
+    try:
+        assert "PARK_GORUNUR" in plaka.AYAR_ADLARI
+        assert plaka.calisma_ayarlari()[0]["park_gorunur"] is False
+        os.environ["PARK_GORUNUR"] = "1"
+        assert plaka.calisma_ayarlari()[0]["park_gorunur"] is True
+        os.environ["PARK_GORUNUR"] = "evet"
+        ayar, uyari = plaka.calisma_ayarlari()
+        assert ayar["park_gorunur"] is False and uyari, (ayar, uyari)
+        os.environ.pop("PARK_GORUNUR", None)
+        assert plaka.calisma_ayarlari({"PARK_GORUNUR": "1"})[0]["park_gorunur"] is True
+    finally:
+        os.environ.pop("PARK_GORUNUR", None)
+        for k, v in eski.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_kalp_govdesi_ve_reddedilen_sayaci() -> None:
+    """
+    kalp(bilgi) {"kalp": bilgi} gönderir (eski sunucu 400 der, köprü bunu
+    beklenen sayar); bilgisiz çağrı eskisi gibi boş gövde. Kesin ret alan
+    (giden.RED) her araç bir saat sayılır — 071'den sonra kalan kayıp yolu
+    (şerit uyuşmazlığı, bozuk gövde) Gişe şeridinde görünsün.
+    """
+    _kopru_yuklu()
+    import kopru
+    import giden
+
+    gorulen: list = []
+
+    class Yanit:
+        def __init__(self, kod, text=""):
+            self.status_code = kod
+            self.text = text
+            self.headers = {}
+
+    cevap = {"kod": 200, "text": '{"kalp":true}'}
+
+    def post(url, json=None, headers=None, timeout=None):
+        gorulen.append(json)
+        return Yanit(cevap["kod"], cevap["text"])
+
+    eski_post = kopru.requests.post
+    eski_liste = list(kopru._reddedilenler)
+    kopru.requests.post = post
+    try:
+        kopru.kalp({"surum": "1.4.3"})
+        kopru.kalp()
+        assert gorulen == [{"kalp": {"surum": "1.4.3"}}, {}], gorulen
+
+        kopru._reddedilenler.clear()
+        cevap.update(kod=409, text='{"hata":"x","kod":"SERIT_UYUSMAZ"}')
+        assert kopru.gonder_olay({"islem_id": "a"}) == giden.RED
+        cevap.update(kod=400, text='{"hata":"Geçersiz gövde."}')
+        assert kopru.gonder_olay({"islem_id": "b"}) == giden.RED
+        cevap.update(kod=503, text="")
+        assert kopru.gonder_olay({"islem_id": "c"}) == giden.TEKRAR
+        cevap.update(kod=200, text='{"ok":true,"karar":"ISTISNA","sebep":"REDDEDILDI"}')
+        assert kopru.gonder_olay({"islem_id": "d"}) == giden.TAMAM
+        simdi = time.monotonic()
+        assert kopru.son_saat_reddedilen(simdi) == 2
+        assert kopru.son_saat_reddedilen(simdi + 3601) == 0
+    finally:
+        kopru.requests.post = eski_post
+        kopru._reddedilenler[:] = eski_liste
 
 def test_elle_rtsp_adresi_dogrulanir() -> None:
     """
@@ -3776,11 +4178,13 @@ def _main_eski_kopru(kamera: BaseException | None = None, olustur_ok: bool = Tru
         bagimliliklar_tamam=lambda: True,
         yonetici_mi=lambda: True,
         mevcut_kimlik_sor=lambda: {"WEBHOOK_URL": "https://p/functions/v1/kamera-webhook",
-                                   "KAMERA_SECRET": "x" * 64, "YON": "ORTAK"},
+                                   "KAMERA_SECRET": "x" * 64, "YON": "ORTAK",
+                                   "KIRPMA_ALAN": "1,1;9,1;9,9", "KAPI_ALANI": "1,5;9,5;9,9"},
         kimligi_sakla=lambda a: "",
         baglanti_testi=lambda a: True,
         kamera_bilgisi=kamera_adimi,
-        kirpma_ve_esikler=lambda r: {"KIRPMA": ""},
+        kirpma_ve_esikler=lambda r, mevcut=None: (
+            setattr(_main_eski_kopru, "mevcut", mevcut), {"KIRPMA": ""})[1],
         ayari_yaz=lambda a: r"C:\ProgramData\Otopark\kopru-ortak.json",
         guc_ayarlari=lambda: None,
         program_klasorunu_kisitla=lambda: None,
@@ -3801,6 +4205,14 @@ def _main_eski_kopru(kamera: BaseException | None = None, olustur_ok: bool = Tru
         for ad, deger in eski.items():
             setattr(kurulum, ad, deger)
     return sonuc, olaylar, yakala.getvalue()
+
+
+def test_yeniden_kurulum_kayitli_alanlari_sayfaya_verir() -> None:
+    """1.4.3: Yeniden kur, bugünkü KIRPMA_ALAN / KAPI_ALANI'yı kırpma sayfasına taşır."""
+    _main_eski_kopru.mevcut = None
+    sonuc, _olaylar, cikti = _main_eski_kopru()
+    assert sonuc == 0, cikti
+    assert _main_eski_kopru.mevcut == ("1,1;9,1;9,9", "1,5;9,5;9,9"), _main_eski_kopru.mevcut
 
 
 def test_yeniden_kurulum_eski_kopruyu_duraklatir() -> None:
@@ -4014,6 +4426,10 @@ def test_durum_plaka_okuyucu_satiri() -> None:
     assert "çalışmıyor" in m and "model dosyası bulunamadı" in m and bozuk is True, m
     m, bozuk = durum.plaka_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.PLAKA_KAPALI_ISARETI} (PLAKA_BUL=0)"])
     assert "kapalı" in m and bozuk is True, m
+    # 1.4.3: bozulan okuyucu yeniden denenip döndüyse SON söz o: sağlık yeşil.
+    m, bozuk = durum.plaka_durumu([bas, f"{bugun} 09:00:01  [!] {gunluk.OKUYUCU_BOZUK_ISARETI}: x",
+                                   f"{bugun} 09:01:01  [i] {gunluk.OKUYUCU_DONDU_ISARETI}"])
+    assert "hazır" in m and "yeniden" in m and bozuk is False, m
 
     calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
     ok, cikti = _durum_senaryosu([bas, f"{bugun} 09:00:01  [!] {gunluk.OKUYUCU_BOZUK_ISARETI}: x",
@@ -4177,6 +4593,11 @@ def test_kararsiz_iz_satiri() -> None:
     assert "plaka görüldü" in s and "34ABC123" not in s and "yer otopark" in s, s
     iz.gecis.arac_max = None
     assert "araç —" in kopru.kararsiz_satiri(iz, "otopark")
+    # 1.4.3: puanın ardında en iyi kutunun sınıfı; bilinmiyorsa bugünkü metin.
+    iz.gecis.arac_max, iz.gecis.arac_sinif = 0.47, 3
+    assert "araç 0.47 motosiklet," in kopru.kararsiz_satiri(iz, "kapı")
+    iz.gecis.arac_sinif = -1
+    assert "araç 0.47," in kopru.kararsiz_satiri(iz, "kapı")
     assert takip.Takipci.kararsiz_al  # izcinin kayıt notları
 
 
@@ -4219,6 +4640,9 @@ def test_durum_arac_bulucu_satiri() -> None:
     assert "çalışmıyor" in m and "yolox_tiny.onnx" in m and "1.3.0" in m, m
     m = durum.arac_durumu([bas, f"{bugun} 09:00:01  [i] {gunluk.ARAC_KAPALI_ISARETI} (ARAC_BUL=0)"])
     assert "kapalı" in m, m
+    # 1.4.3: yeniden denenip dönen bulucu.
+    m = durum.arac_durumu([bas, bozuk, f"{bugun} 09:01:01  [i] {gunluk.ARAC_DONDU_ISARETI}"])
+    assert "hazır" in m and "yeniden" in m, m
 
     calisiyor = f"{bugun} 09:05:00  [i] çalışıyor — 900 kare, 0 gönderim"
     plaka_hazir = f"{bugun} 09:00:01  [i] {gunluk.PLAKA_HAZIR_ISARETI} (1)"
@@ -4822,14 +5246,11 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
 
         def kutular(self, kirpik, haric):
             # Beyaz blok = araç (izleme testi); yoksa kareyi kaplayan tek kutu.
-            m = kirpik.min(axis=2) >= 250
-            if m.any():
-                ys, xs = np.nonzero(m)
-                k = arac.AracKutu(float(xs.min()), float(ys.min()), float(xs.max() + 1),
-                                  float(ys.max() + 1), 0.9)
-            else:
-                k = arac.AracKutu(10.0, 10.0, 300.0, 200.0, 0.9)
-            return [k], 0.05
+            # 1.4.3: her ayrı blok ayrı araç (park görünür testi iki araç çizer).
+            bloklar = _bloklar(kirpik)
+            if bloklar:
+                return [arac.AracKutu(x1, y1, x2, y2, 0.9) for x1, y1, x2, y2 in bloklar], 0.05
+            return [arac.AracKutu(10.0, 10.0, 300.0, 200.0, 0.9)], 0.05
 
     def arac_yukle(ayar, dizin=None, profil=None, hiz=None):
         if arac_hata:
@@ -4842,33 +5263,47 @@ def _plaka_kipi(okumalar, kutular=None, ayar_ek=None, yukle_hata=False, arac_hat
     K = plaka.Kutu
     orta = K(600, 300, 800, 345, 0.9)
 
+    def _bloklar(kirpik):
+        import cv2
+        m = (kirpik.min(axis=2) >= 250).astype(np.uint8)
+        n, _, st, _ = cv2.connectedComponentsWithStats(m)
+        return [(float(st[i, 0]), float(st[i, 1]), float(st[i, 0] + st[i, 2]),
+                 float(st[i, 1] + st[i, 3])) for i in range(1, n)]
+
     class SahtePlakaci:
         def bul(self, kirpik):
             if yol_ is not None:
                 # İzleme testi: plaka beyaz bloğun (aracın) alt ortasında.
-                m = kirpik.min(axis=2) >= 250
-                if not m.any():
-                    return []
-                ys, xs = np.nonzero(m)
-                x1, x2, y2 = float(xs.min()), float(xs.max() + 1), float(ys.max() + 1)
-                w = x2 - x1
-                return [K(x1 + 0.35 * w, y2 - 50, x1 + 0.65 * w, y2 - 25, 0.9)]
+                return [K(x1 + 0.35 * (x2 - x1), y2 - 50, x1 + 0.65 * (x2 - x1), y2 - 25, 0.9)
+                        for x1, _, x2, y2 in _bloklar(kirpik)]
             return list(kutular if kutular is not None else [orta])
 
         def oku_cift(self, kirpik, k):
+            if yol_ is not None:
+                # 1.4.3: plakanın ortasındaki piksel: 255 okunur, 254 park
+                # aracının plakası, 253 bu karede okunamaz (bulanık).
+                v = int(kirpik[int((k.y1 + k.y2) / 2), int((k.x1 + k.x2) / 2)].min())
+                if v == 254:
+                    return [("35PARK99", 0.99), ("35PARK99", 0.99)]
+                if v != 255:
+                    return []
             return list(okumalar)
 
     yol_ = ayar_ek.pop("_yol", None) if ayar_ek else None
+    park_ = ayar_ek.pop("_park", ()) if ayar_ek else ()
     sayac = [0]
 
     class SahteKamera:
         def read(self):
             f = np.full((720, 1600, 3), 90, np.uint8)
             if yol_ is not None:
-                # Aracın (beyaz blok) kare kare konumu (tam kare pikseli).
-                x, y = yol_[min(sayac[0], len(yol_) - 1)]
+                # Aracın (beyaz blok) kare kare konumu (tam kare pikseli);
+                # üçüncü değer bloğun parlaklığı (okuyucu ona bakar).
+                x, y, *d = yol_[min(sayac[0], len(yol_) - 1)]
                 sayac[0] += 1
-                f[max(0, y):min(720, y + 200), max(0, x):min(1600, x + 300)] = 255
+                f[max(0, y):min(720, y + 200), max(0, x):min(1600, x + 300)] = d[0] if d else 255
+                for x, y in park_:                     # 1.4.3: park etmiş araç (254)
+                    f[y:y + 200, x:x + 300] = 254
             return True, f
 
         def release(self):
@@ -4976,6 +5411,71 @@ def test_plaka_kipi_izleme_ve_kirpma_alani() -> None:
     # Bozuk kapı alanı: kamera açılmadan 1.
     kod, c, acildi = _plaka_kipi([], ayar_ek={"KAPI_ALANI": "0,0;1,1"})
     assert kod == 1 and "KAPI_ALANI" in c and acildi == [], c
+
+
+# 1.4.3 PARK_GORUNUR: kırpma alanı sağ altı dışarıda bırakır (park yeri).
+PG_ALAN = "0,0;1600,0;1600,250;900,250;900,720;0,720"
+PG_ALAN_N = ((0, 0), (1600, 0), (1600, 250), (900, 250), (900, 720), (0, 720))
+
+
+def test_acik_kirpik() -> None:
+    """1.4.3: modellerin kırpıntısı — maskeli olanla aynı boyutta, gri yok, kameranın karesinin kopyası."""
+    import numpy as np
+    _kopru_yuklu()
+    import kopru
+    frame = np.random.default_rng(7).integers(0, 256, (720, 1600, 3), dtype=np.uint8)
+    kutu = (0, 0, 1600, 720)
+    maskeli = kopru.olcekle(kopru.kirp_maskeli(frame, kutu, None, PG_ALAN_N))
+    acik, tam = kopru.acik_kirpik(frame, kutu, True)
+    assert acik.shape == maskeli.shape, (acik.shape, maskeli.shape)
+    assert np.array_equal(acik, kopru.olcekle(kopru.kirp(frame, kutu)))
+    assert not np.array_equal(acik, maskeli), "maskeli olanla aynı olmamalı (alanın dışı gerçek)"
+    assert np.array_equal(tam, kopru.kirp(frame, kutu))
+    assert not np.shares_memory(acik, frame) and not np.shares_memory(tam, frame)
+    acik2, tam2 = kopru.acik_kirpik(frame, kutu, False)
+    assert tam2 is None and np.array_equal(acik2, acik)
+    # Küçültülmeyen kırpıntı da (olcekle aynı diziyi döner) kopya olmalı.
+    kucuk = frame[:400, :600].copy()
+    acik3, _ = kopru.acik_kirpik(kucuk, (10, 10, 200, 100), False)
+    assert np.array_equal(acik3, kopru.kirp(kucuk, (10, 10, 200, 100)))
+    assert not np.shares_memory(acik3, kucuk)
+
+
+def test_izci_alani() -> None:
+    """1.4.3: izcinin alanı yalnızca anahtar açık ve çokgen varken (kırpıntının pikselinde)."""
+    import numpy as np
+    _kopru_yuklu()
+    import kopru
+    fs, kutu, ks = (720, 1600, 3), (0, 0, 1600, 720), (705, 1568, 3)
+    assert kopru.izci_alani(False, fs, kutu, PG_ALAN_N, ks) is None
+    assert kopru.izci_alani(True, fs, kutu, None, ks) is None
+    r = kopru.izci_alani(True, fs, kutu, PG_ALAN_N, ks)
+    assert r is not None and np.allclose(r, kopru._alan_kirpintida(fs, kutu, PG_ALAN_N, ks)), r
+
+
+def test_plaka_kipi_park_gorunur() -> None:
+    """
+    1.4.3 (sahip 19.11): PARK_GORUNUR=1 ile `--plaka` köprü gibi — modeller
+    alanın dışını görür, yürüyen aracın plakası orada da okunur; alanın
+    dışında park etmiş aracınki hiç okunmaz. Araç plakası yalnızca bütün
+    gövdesi alanın dışındayken okunabilir (255); başka yerde bulanık (253).
+    """
+    yol = ([(-2000, -2000)] * 3 + [(50, 520, 253)] * 2
+           + [(50 + 38 * i, 520 - 11 * i, 253) for i in range(1, 21)]          # → (810, 300)
+           # Bütün gövdesi alanın dışında (x ≥ 900) yürürken okunabilir.
+           + [(810 + 30 * i, 300 - 5 * i, 255 if i >= 3 else 253) for i in range(1, 11)]
+           + [(1110, 250, 255)] * 30)
+    ortak = {"KIRPMA": "", "KIRPMA_ALAN": PG_ALAN,
+             "KAPI_ALANI": "0,400;500,400;600,720;0,720", "_park": [(1250, 480)]}
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.99)],
+                            ayar_ek={**ortak, "PARK_GORUNUR": "1", "_yol": list(yol)})
+    assert "Park görünür" in c, c
+    assert "ARAÇ GİRDİ" in c and "34ABC123 gönderilirdi" in c, c
+    assert "35PARK99" not in c, c
+    # Kapalı (bugün): araç alanın dışına girince gri; plakası hiç okunmaz, park aracı hiç görünmez.
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.99)],
+                            ayar_ek={**ortak, "_yol": list(yol)})
+    assert "Park görünür" not in c and "35PARK99" not in c and "34ABC123" not in c, c
 
 
 def test_plaka_kipi_arac_bulucu_yoksa_surer() -> None:

@@ -132,7 +132,8 @@ AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK"
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
                "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP",
                "PLAKA_BIRLESIK", "HIZLANDIRICI", "ARAC_MODEL", "ARAC11_BUL_ESIK",
-               "ARAC11_GECIS_ESIK")
+               "ARAC11_GECIS_ESIK", "PARCA_EMME", "KLIP", "PARK_GORUNUR",
+               "ARAC11_MOTO_ESIK")
 
 
 def _oran(alt_dahil: bool):
@@ -178,6 +179,24 @@ _KURALLAR = (
     # YOLO11s'in eşikleri (puan ölçeği YOLOX'tan farklı). Boş = profilin değeri.
     ("ARAC11_BUL_ESIK", "arac11_esik", None, float, lambda v: 0 < v < 1),
     ("ARAC11_GECIS_ESIK", "arac11_gecis_esik", None, float, lambda v: 0 < v < 1),
+    # 1.4.3 (sahibin kararı 20.11): yönü bilinmeyen plakasız kapı olayı puanını
+    # motosikletten alıyorsa gereken puan (arac.YOLO11S.moto_esik, 0.60). Boş =
+    # profilin değeri; 0.30 (doğum eşiği) = kural kapalı (sahada geri alma).
+    ("ARAC11_MOTO_ESIK", "arac11_moto_esik", None, float, lambda v: 0 < v < 1),
+    # 1.4.3 (1a): kenardaki parça aynı aracın kararına sayılır mı (takip.Emici).
+    # 0 = yalnızca kayıt ("sayılırdı", kart yine gider) — deneme haftası; sahip
+    # klipleri görünce 1.
+    ("PARCA_EMME", "parca_emme", False, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
+    # 1.4.3 (1d, sahibin kararı 17.11): yönü bilinmeyen olayın klibi (klip.py) —
+    # yalnızca bu bilgisayarda, 7 gün. Varsayılan KAPALI.
+    ("KLIP", "klip", False, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
+    # 1.4.3 (sahip 19.11): modeller kırpma alanının DIŞINI da görür (izleme
+    # karelerinde); olay yalnızca alana/kapıya girmiş izden çıkar. Hareket,
+    # fotoğraf, klip ve 1.3.4 geçiş kuralı maskeli kalır. Yalnızca çokgenle
+    # çalışır. Varsayılan KAPALI: sahip sahada denedikten sonra açar.
+    ("PARK_GORUNUR", "park_gorunur", False, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
 )
 
 
@@ -640,6 +659,8 @@ class Oylama:
         self._tahmin_sayi: dict[str, int] = {}
         self._yarim: dict[str, dict] = {}      # 1.4.1: metin → {gorunum, tepe, zaman, sira}
         self._gorulen: set[str] = set()        # 1.4.1: izde okunan HER metin (iki kırpıntı)
+        self._kesik: dict[str, float] = {}     # 1.4.3: kesik kutunun okuması (son çare tahmin)
+        self._kesik_sayi: dict[str, int] = {}
         self._sira = 0
 
     def kutu(self, zaman, gorunum) -> None:
@@ -662,6 +683,16 @@ class Oylama:
         self._tahminler[metin] = max(self._tahminler.get(metin, 0.0), enk)
         self._tahmin_sayi[metin] = self._tahmin_sayi.get(metin, 0) + 1
 
+    def kesik_tahmin(self, metin: str, enk: float) -> None:
+        """
+        1.4.3 (sahibin kararı 19.11): kenara değen (kesik) kutunun okuması.
+        Yarım plaka geçerli görünebilir ("35DEA86"): ASLA oy, yarım oy ya da
+        birleşik rakibi değildir — yalnızca başka hiçbir okuma yoksa kartın
+        tahmini (personel fotoğrafla doğrular).
+        """
+        self._kesik[metin] = max(self._kesik.get(metin, 0.0), enk)
+        self._kesik_sayi[metin] = self._kesik_sayi.get(metin, 0) + 1
+
     def gorulen(self, metinler) -> None:
         """1.4.1: bu karede okunan metinler (iki kırpıntı da) — birleşik kararda rakip."""
         self._gorulen.update(m for m in metinler if m)
@@ -679,6 +710,12 @@ class Oylama:
                                       "sira": self._sira}
         y["gorunum"].add(gorunum)
         y["tepe"] = max(y["tepe"], tepe)
+
+    def gorunum_sayisi(self, metin: str) -> int:
+        """1.4.3: metnin oy aldığı görünüm sayısı (tam ve yarım oy birlikte)."""
+        tam = self._okumalar.get(metin)
+        yarim = self._yarim.get(metin)
+        return len((tam["gorunum"] if tam else set()) | (yarim["gorunum"] if yarim else set()))
 
     def _sira_al(self, metin: str) -> int:
         kayit = self._okumalar.get(metin) or self._yarim.get(metin)
@@ -766,6 +803,9 @@ class Oylama:
             elif self._tahminler:
                 m = max(self._tahminler, key=lambda t: (self._tahmin_sayi[t], self._tahminler[t]))
                 belirsiz = Belirsiz(m, self._tahminler[m], self._ilk_kutu)
+            elif self._kesik:                                  # 1.4.3: son çare
+                m = max(self._kesik, key=lambda t: (self._kesik_sayi[t], self._kesik[t]))
+                belirsiz = Belirsiz(m, self._kesik[m], self._ilk_kutu)
             else:
                 belirsiz = Belirsiz(None, None, self._ilk_kutu)
         return Karar(eminler, belirsiz, self._kutulu)

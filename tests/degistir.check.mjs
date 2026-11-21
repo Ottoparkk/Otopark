@@ -21,6 +21,7 @@ import {
   degistirBaslangic,
   degisiklikler,
   girisSaatiSonucu,
+  kartGirisSaati,
 } from '../src/features/gise/degistir.ts'
 
 let gecen = 0
@@ -216,6 +217,37 @@ esit('olmayan gün',
   { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' })
 esit('hata önceliği: saat, sonra sebep',
   girisSaatiSonucu('2030-01-01T00:00', '', NOW).alan, 'giris')
+
+// ---------------------------------------------------------------------------
+// Tek kapı "Çıkışta açık bilet bulunamadı" kartında Giriş aç (072, sahip
+// 2026-11-18): saat alanı BOŞ başlar ve yazılması zorunludur ("şimdi" yok —
+// kart saati de şimdi de ücreti yanlış hesaplar); sebep zorunlu. Sınırlar
+// Araç Girişi ile aynı.
+esit('kart: saat yazılmadı',
+  kartGirisSaati(null, 'x', NOW), { hata: 'Giriş saatini yazın.', alan: 'giris' })
+esit('kart: boş alan',
+  kartGirisSaati('', 'x', NOW), { hata: 'Giriş saatini yazın.', alan: 'giris' })
+esit('kart: 3 saat önce + sebep',
+  kartGirisSaati('2026-11-02T11:00', '  Araç girmiş, kamera çıkış sandı ', NOW),
+  { hata: null, girisISO: '2026-11-02T08:00:00.000Z', sebep: 'Araç girmiş, kamera çıkış sandı' })
+esit('kart: şu anki dakika da yazılmış saattir (sebep yine zorunlu)',
+  kartGirisSaati('2026-11-02T14:00', 'az önce girdi', NOW),
+  { hata: null, girisISO: '2026-11-02T11:00:00.000Z', sebep: 'az önce girdi' })
+esit('kart: şu anki dakika, sebep yok',
+  kartGirisSaati('2026-11-02T14:00', ' ', NOW),
+  { hata: 'Sebep yazın — denetim kaydına geçer.', alan: 'sebep' })
+esit('kart: sebep boş',
+  kartGirisSaati('2026-11-02T11:00', '', NOW),
+  { hata: 'Sebep yazın — denetim kaydına geçer.', alan: 'sebep' })
+esit('kart: bir dakika ileri',
+  kartGirisSaati('2026-11-02T14:01', 'x', NOW),
+  { hata: 'Giriş saati ileri bir zaman olamaz.', alan: 'giris' })
+esit('kart: bir yıldan eski',
+  kartGirisSaati('2025-11-02T13:59', 'x', NOW),
+  { hata: 'Giriş saati bir yıldan eski olamaz.', alan: 'giris' })
+esit('kart: olmayan gün',
+  kartGirisSaati('2026-02-30T10:00', 'x', NOW),
+  { hata: 'Geçerli bir tarih ve saat girin.', alan: 'giris' })
 
 console.log(`${gecen} geçti, ${kalan} kaldı (TZ=${process.env.TZ ?? 'sistem'})`)
 if (kalan > 0) process.exit(1)

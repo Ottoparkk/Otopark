@@ -21,11 +21,15 @@ import {
   useKameraKodDurum,
   useKameraKodIptal,
   useKameraKodUret,
+  useKameraKarne,
   useKameraKodlar,
+  useKameraSaglik,
   useKameralar,
+  type KameraSaglik,
 } from './api'
+import { karneOzeti, kameraPayi, saglikParcalari, type KarneGun } from './karne'
 import { SUPABASE_URL } from '../../lib/supabase'
-import { formatGoreceli } from '../../lib/dates'
+import { formatGoreceli, formatTarihKisa } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { metniIndir, panoyaKopyala } from '../../lib/pano'
 import {
@@ -112,6 +116,9 @@ export default function Kameralar() {
   const kaldir = useKameraKaldir()
   const durum = useKameraDurum()
   const eskiUnut = useKameraEskiKopruUnut()
+  const saglik = useKameraSaglik()
+  const saglikOf = (kaynak: string) =>
+    (saglik.data ?? []).find((s) => s.kaynak === kaynak) ?? null
 
   const [silinecek, setSilinecek] = useState<KameraCihaz | null>(null)
   const [silHata, setSilHata] = useState<string | null>(null)
@@ -326,6 +333,8 @@ export default function Kameralar() {
                       </p>
                     )}
 
+                  <SaglikSatiri s={saglikOf(k.id)} />
+
                   <div className="mt-3 flex items-center gap-2">
                     <Button
                       size="md"
@@ -358,6 +367,8 @@ export default function Kameralar() {
             </ul>
           </ListeDurumu>
         </Card>
+
+        <KarneKarti />
 
         {(kodlar.data ?? []).length > 0 && (
           <Card className="space-y-4">
@@ -407,6 +418,7 @@ export default function Kameralar() {
                 <p className="mt-1.5 text-label text-faint">
                   Kodsuz, ortak anahtarla kurulmuş köprü · {formatGoreceli(eskiKalp)}
                 </p>
+                <SaglikSatiri s={saglikOf('genel')} />
               </div>
               <div className="shrink-0">
                 {eskiCanli ? (
@@ -650,5 +662,97 @@ export default function Kameralar() {
         onConfirm={() => void eskiKopruUnut()}
       />
     </div>
+  )
+}
+
+/**
+ * The bridge's last heartbeat numbers under its row (070). Bridges before
+ * 1.4.3 send none, and then nothing is shown.
+ */
+function SaglikSatiri({ s }: { s: KameraSaglik | null }) {
+  const parcalar = saglikParcalari(s?.bilgi)
+  if (parcalar.length === 0) return null
+  const sorun =
+    s?.bilgi.takip === 'kapandi' ||
+    (typeof s?.bilgi.reddedilen === 'number' && s.bilgi.reddedilen > 0) ||
+    (typeof s?.bilgi.kuyruk_en_eski_sn === 'number' && s.bilgi.kuyruk_en_eski_sn >= 300)
+  return (
+    <p className={`mt-2 text-label ${sorun ? 'text-warn' : 'text-faint'}`}>
+      {parcalar.join(' · ')}
+    </p>
+  )
+}
+
+/** Two weeks: the last seven days against the seven before (plan 2026-11-17). */
+const KARNE_GUN = 14
+
+function OzetSatiri({ baslik, gunler }: { baslik: string; gunler: KarneGun[] }) {
+  const o = karneOzeti(gunler)
+  return (
+    <div className="min-w-0 flex-1 rounded-field bg-field px-3.5 py-3">
+      <p className="text-label text-faint">{baslik}</p>
+      <p className="mt-1 text-body font-medium text-ink tnum">
+        {o.kameraGirisPayi === null ? '—' : `%${o.kameraGirisPayi}`}
+        <span className="text-label font-normal text-faint"> kamera girişi</span>
+      </p>
+      <p className="text-label text-soft tnum">
+        {o.kart} kart · {o.kartPlakasiz} plakasız
+      </p>
+    </div>
+  )
+}
+
+/**
+ * The camera scorecard (070): how much of the gate the camera handled, and
+ * how many cards it left for people, per Istanbul day. Counted from tickets,
+ * cards and the audit log, so days before a bridge update count too.
+ */
+function KarneKarti() {
+  const karne = useKameraKarne(KARNE_GUN)
+  const gunler = karne.data ?? []
+  return (
+    <Card className="space-y-4">
+      <p className="text-label font-medium tracking-wide text-faint uppercase">Kamera karnesi</p>
+      <ListeDurumu
+        pending={karne.isPending}
+        error={karne.error}
+        onRetry={() => void karne.refetch()}
+        empty={gunler.length === 0}
+        bos={<p className="text-label text-faint">Henüz veri yok.</p>}
+      >
+        <div className="flex gap-2.5">
+          <OzetSatiri baslik="Son 7 gün" gunler={gunler.slice(0, 7)} />
+          <OzetSatiri baslik="Önceki 7 gün" gunler={gunler.slice(7, 14)} />
+        </div>
+        <ul className="divide-y divide-border">
+          {gunler.map((g) => {
+            const giris = g.kamera_giris + g.elle_giris
+            const cikis = g.kamera_cikis + g.elle_cikis
+            const gp = kameraPayi(g.kamera_giris, g.elle_giris)
+            const cp = kameraPayi(g.kamera_cikis, g.elle_cikis)
+            const ekler = [
+              g.geri_acilan > 0 ? `${g.geri_acilan} geri açıldı` : null,
+              g.yon_bilinmiyor > 0 ? `${g.yon_bilinmiyor} yönü bilinmeden` : null,
+            ].filter(Boolean)
+            return (
+              <li key={g.gun} className="py-2.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-body font-medium text-ink tnum">{formatTarihKisa(g.gun)}</p>
+                  <p className="text-label text-soft tnum">
+                    {g.kart} kart{g.kart_plakasiz > 0 ? ` (${g.kart_plakasiz} plakasız)` : ''}
+                  </p>
+                </div>
+                <p className="mt-0.5 text-label text-faint tnum">
+                  Giriş {giris}
+                  {gp !== null ? ` (%${gp} kamera)` : ''} · Çıkış {cikis}
+                  {cp !== null ? ` (%${cp} kamera)` : ''}
+                  {ekler.length > 0 ? ' · ' + ekler.join(' · ') : ''}
+                </p>
+              </li>
+            )
+          })}
+        </ul>
+      </ListeDurumu>
+    </Card>
   )
 }

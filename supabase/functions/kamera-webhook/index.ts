@@ -16,8 +16,9 @@
  *
  * WHAT IT CANNOT DO — by construction, not by promise:
  *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_tek_kapi,
- *   kamera_okuma_bagla, kamera_kalp, kamera_kalp_cihaz, kamera_okunamadi,
- *   kamera_okuma_hatasi, kamera_okuma_siniri and kamera_foto_bagla. There is
+ *   kamera_okuma_bagla, kamera_kalp, kamera_kalp_cihaz, kamera_kalp_bilgi,
+ *   kamera_okunamadi, kamera_okuma_hatasi, kamera_okuma_siniri and
+ *   kamera_foto_bagla. There is
  *   no path to tariffs, users, the kasa or subscriptions. And it can never
  *   take money: since 054 an exact-plate exit closes the ticket UNPAID (no
  *   tahsilat row, "Ödeme topla" on Gişe); a human collects, Onay approves.
@@ -61,14 +62,18 @@ import {
   fotoYuklemeTamam,
   hamFotosuz,
   hareketIpucu,
+  kalpBilgisi,
   kameraFotoYolu,
   kameraGirisiKarari,
   kameraOkumaLogu,
   kanitFotoCoz,
+  kapaliCevabi,
+  kartYazilamadiDurumu,
   koprudenOkunamadi,
   okumaHatasiKaydedilir,
   okumaSiniriKarari,
   okunamadiKaydedilir,
+  reddedilenCevabi,
   rpcHataDurumu,
   seritKarari,
   sonGonderimMi,
@@ -494,6 +499,50 @@ function rpcHatasi(rpc: string, error: { code?: string | null; message: string }
   return json({ hata: GECICI_HATA }, 503)
 }
 
+/**
+ * 071: a REFUSED camera car (the 409 class above) is no longer dropped by the
+ * bridge with only a log line left. It becomes a REDDEDILDI card — plate, the
+ * refusal sentence, the photo — and the bridge gets 200 + `karar: ISTISNA`,
+ * like every other card outcome (reddedilenCevabi). A temporary error stays
+ * 503 and is retried exactly as before. If the card itself cannot be written:
+ * a temporary failure answers 503 (the bridge retries; same islem_id, the
+ * refusing RPC and the card are both replay-safe), a refusal of the card
+ * answers the original 409.
+ */
+async function reddiKartla(
+  admin: SupabaseClient,
+  rpc: string,
+  error: { code?: string | null; message: string },
+  k: {
+    yon: string
+    islemId: string
+    zaman: string
+    plaka: string
+    ham: Record<string, unknown>
+    kanit: Uint8Array | null
+  },
+): Promise<Response> {
+  if (rpcHataDurumu(error.code) !== 409) return rpcHatasi(rpc, error)
+  console.error(`${rpc} reddetti, kart yazılıyor:`, error.message)
+  const { data: kartId, error: kartErr } = await admin.rpc('kamera_reddedildi', {
+    p_yon: k.yon,
+    p_islem_id: k.islemId,
+    p_zaman: k.zaman,
+    p_plaka: k.plaka,
+    p_sebep: error.message,
+    p_ham: k.ham,
+  })
+  if (kartErr) {
+    console.error(`kamera_reddedildi başarısız (${kartErr.code || 'kod yok'}):`, kartErr.message)
+    // A missing kamera_reddedildi (webhook deployed before 071) is a 409 too:
+    // a 503 would retry this car forever and hold every car behind it.
+    if (kartYazilamadiDurumu(kartErr.code) === 409) return rpcHatasi(rpc, error)
+    return json({ hata: GECICI_HATA }, 503)
+  }
+  if (kartId) await kanitFotosunuBagla(admin, k.kanit, k.islemId, null, k.zaman)
+  return json(reddedilenCevabi(k.islemId), 200)
+}
+
 /* -------------------------------------------------------------------- main */
 
 Deno.serve(async (req: Request) => {
@@ -536,19 +585,18 @@ Deno.serve(async (req: Request) => {
       .eq('id', 1)
       .single()
     const giris = kameraGirisiKarari(okunan.data, okunan.error)
-    if (!giris.ok) {
-      if (giris.durum === 503) {
-        console.error(
-          `kamera-webhook: ayarlar okunamadı (${okunan.error?.code || 'kod yok'}):`,
-          okunan.error?.message,
-        )
-      }
+    if (!giris.ok && giris.durum === 503) {
+      console.error(
+        `kamera-webhook: ayarlar okunamadı (${okunan.error?.code || 'kod yok'}):`,
+        okunan.error?.message,
+      )
       return json({ hata: giris.hata }, giris.durum)
     }
-    const ayar = giris.ayar
 
     // The heartbeat is bumped for any AUTHENTICATED request, even one that
-    // ends as an exception — "the camera is alive" and "the event was usable"
+    // ends as an exception — and (073) even while camera input is switched
+    // off: a switched-off camera is alive, and an unstamped one raised a
+    // false "haber yok" alert every hour — "the camera is alive" and "the event was usable"
     // are different facts, and the watchdog only cares about the first.
     //
     // A paired camera stamps ITS OWN row and nothing else; an env-secret
@@ -573,6 +621,51 @@ Deno.serve(async (req: Request) => {
     } else {
       await admin.rpc('kamera_kalp')
     }
+
+    // 070: bridge 1.4.3 puts its numbers into the heartbeat (`{"kalp": {...}}`:
+    // version, fps, queue depth and oldest age, tracking on/off …). They are
+    // stored for the health page and the staff banner; Postgres filters the
+    // keys. Answered before the flood guard — a heartbeat opens no ticket.
+    // A failed write is logged, not retried: the next heartbeat replaces it.
+    // 073: stored while camera input is off too (the health page shows it);
+    // the answer is then the 403 every bridge reads as "switched off".
+    //
+    // The body is parsed once: null when empty, the value when JSON,
+    // undefined otherwise (an old bridge's multipart photo upload).
+    let govde: unknown = undefined
+    if (raw.length === 0) {
+      govde = null
+    } else {
+      try {
+        govde = JSON.parse(new TextDecoder().decode(raw))
+      } catch {
+        /* not JSON: an event parser below answers it */
+      }
+    }
+    if (!deneme) {
+      let kalp: Record<string, unknown> | null = null
+      if ((req.headers.get('content-type') ?? '').toLowerCase().includes('application/json')) {
+        kalp = kalpBilgisi(govde)
+      }
+      if (kalp) {
+        const { error: kalpErr } = await admin.rpc('kamera_kalp_bilgi', {
+          p_cihaz_id: cihazId ?? null,
+          p_bilgi: kalp,
+        })
+        if (kalpErr) {
+          console.error(`kamera-webhook: kalp bilgisi yazılamadı (${kalpErr.code || 'kod yok'}):`, kalpErr.message)
+        }
+        return giris.ok ? json({ kalp: true }, 200) : json({ hata: giris.hata }, giris.durum)
+      }
+    }
+
+    // 073: camera input switched off — the car is dropped (410), a heartbeat
+    // or the installer's trial keeps its 403 (see kapaliCevabi).
+    if (!giris.ok) {
+      const kapali = kapaliCevabi(deneme, govde)
+      return json(kapali.govde, kapali.durum)
+    }
+    const ayar = giris.ayar
 
     // Cheap flood guard on the tickets the webhook can create. It does NOT
     // limit the paid reads — that cap sits right before the read, below.
@@ -863,7 +956,7 @@ Deno.serve(async (req: Request) => {
         // 056: the bridge's direction hint; null = today's decision.
         p_hareket: olay.hareket,
       })
-      if (error) return rpcHatasi('kamera_tek_kapi', error)
+      if (error) return reddiKartla(admin, 'kamera_tek_kapi', error, { yon, islemId, zaman: olay.zaman, plaka, ham: olay.ham, kanit: olay.kanit })
       // An answer that is not one of the four decisions is OUR fault, not a
       // decision: say 500 so the bridge retries (same islem_id, replay-safe)
       // instead of 200, which would tell it the car has been dealt with.
@@ -919,7 +1012,7 @@ Deno.serve(async (req: Request) => {
         p_park_yeri_id: null,
         p_ham_yanit: olay.ham,
       })
-      if (error) return rpcHatasi('bilet_ac', error)
+      if (error) return reddiKartla(admin, 'bilet_ac', error, { yon, islemId, zaman: olay.zaman, plaka, ham: olay.ham, kanit: olay.kanit })
       // Flag a shaky read on the ticket. THIS is the path that needs it:
       // on a phone an operator looked at the plate and confirmed it, here
       // nobody did. Deliberately after the ticket exists and deliberately
@@ -947,7 +1040,7 @@ Deno.serve(async (req: Request) => {
       p_foto: null,
       p_ham: olay.ham,
     })
-    if (error) return rpcHatasi('kamera_cikis_bildir', error)
+    if (error) return reddiKartla(admin, 'kamera_cikis_bildir', error, { yon, islemId, zaman: olay.zaman, plaka, ham: olay.ham, kanit: olay.kanit })
     // On the ticket this exit closed (bilet + time, 054), or on the exception (042).
     await kanitFotosunuBagla(admin, olay.kanit, islemId, data ?? null, olay.zaman)
     return json({ ok: true, bilet_id: data, islem_id: islemId, istisna: data === null }, 200)

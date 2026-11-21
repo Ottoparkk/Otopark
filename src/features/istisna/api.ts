@@ -25,7 +25,9 @@ export function useIstisnalar(sadeceAcik: boolean) {
       if (error) throw error
       return data as Istisna[]
     },
-    refetchInterval: 60_000,
+    // 1.4.3 plan (owner, 2026-11-17): a new camera card shows within ~15 s
+    // while this screen is open (was 60 s). Paused while the tab is hidden.
+    refetchInterval: 15_000,
   })
 }
 
@@ -94,6 +96,45 @@ export function useIstisnaBiletAc() {
     onSettled: () => {
       // Settled, not success: on a refusal the row may still have changed
       // under us (another tap, a camera retry) and the list must show it.
+      void qc.invalidateQueries({ queryKey: ['istisnalar'] })
+      void qc.invalidateQueries({ queryKey: ['istisna_sayisi'] })
+      giseYenile()
+    },
+  })
+}
+
+/**
+ * Tek kapı "Çıkışta açık bilet bulunamadı" camera card → Giriş aç with the
+ * entry time staff typed and a reason (072, owner 2026-11-18). The server
+ * re-checks the time and the reason (bilet_giris_duzelt, 046), writes the
+ * audit and tells the Yönetici. No automatic retry, same as above.
+ */
+export function useIstisnaBiletAcSaatli() {
+  const qc = useQueryClient()
+  const giseYenile = useGiseInvalidate()
+  return useMutation({
+    retry: false,
+    mutationFn: async ({
+      id,
+      plaka,
+      girisISO,
+      sebep,
+    }: {
+      id: string
+      plaka: string
+      girisISO: string
+      sebep: string
+    }) => {
+      const { data, error } = await supabase.rpc('istisna_bilet_ac_saatli', {
+        p_id: id,
+        p_plaka: plaka,
+        p_giris_at: girisISO,
+        p_sebep: sebep,
+      })
+      if (error) throw error
+      return data as IstisnaBiletSonuc
+    },
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: ['istisnalar'] })
       void qc.invalidateQueries({ queryKey: ['istisna_sayisi'] })
       giseYenile()
