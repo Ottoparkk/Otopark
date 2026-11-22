@@ -88,6 +88,12 @@ BOS_SINIR = 0.10
 # "yeni araç" sanılmasın. Kararın eşikleri (0.35 / 0.60) ayrıca uygulanır.
 KUTU_ALT = 0.10
 NMS_ORTUSME = 0.45
+# 1.4.4 (sahada 21.11 16:30, 35 ALN 793): bulucu aracın bütün kutusunun İÇİNDE
+# bir parça kutusu da verdi; küçük kutu büyüğün içindeyken IoU düşük kalır, NMS
+# ikisini de tuttu ve izci aynı araçtan iki iz kurdu (bir bilet + bir plakasız
+# kart). Küçük kutunun en az bu payı büyüğün içindeyse aynı araçtır — ölçü
+# kesişim ÷ KÜÇÜĞÜN alanı (SAHI'nin "IOS"u). Motosiklet hiç birleşmez.
+ICERME_ESIGI = 0.80
 
 
 # ------------------------------------------------------------- ön işlem ---
@@ -237,6 +243,35 @@ def ortusme(a, b) -> float:
     return kesisim / birlesim if birlesim > 0 and kesisim > 0 else 0.0
 
 
+def _kutu_alani(k) -> float:
+    return max(0.0, k[2] - k[0]) * max(0.0, k[3] - k[1])
+
+
+def icerenleri_birlestir(kutular: list[AracKutu]) -> list[AracKutu]:
+    """
+    1.4.4: başka bir kutunun içinde kalan kutu (aracın bir parçası) o kutuya
+    katılır — büyükten küçüğe; küçük kutunun alanının en az ICERME_ESIGI'si
+    büyüğün içindeyse. Kalan kutu büyüğün YERİDİR (araç oradadır); puanı
+    ikisinin yükseği, sınıfı o puanı verenin. Motosiklet ne katılır ne katar:
+    arabanın önünden geçen motosiklet kaybolmasın. Puana göre azalan döner.
+    """
+    kalan: list[AracKutu] = []
+    for k in sorted(kutular, key=lambda b: -_kutu_alani(b)):
+        alan = _kutu_alani(k)
+        for i, c in enumerate(kalan):
+            if MOTOSIKLET in (k.sinif, c.sinif) or alan <= 0:
+                continue
+            kesisim = (max(0.0, min(k.x2, c.x2) - max(k.x1, c.x1))
+                       * max(0.0, min(k.y2, c.y2) - max(k.y1, c.y1)))
+            if kesisim / alan >= ICERME_ESIGI:
+                if k.skor > c.skor:
+                    kalan[i] = c._replace(skor=k.skor, sinif=k.sinif)
+                break
+        else:
+            kalan.append(k)
+    return sorted(kalan, key=lambda b: -b.skor)
+
+
 def kutulari_coz(ham: np.ndarray, r, en: int, boy: int, haric,
                  alt: float = KUTU_ALT,
                  profil: "Profil | None" = None) -> tuple[list[AracKutu], float]:
@@ -258,7 +293,7 @@ def kutulari_coz(ham: np.ndarray, r, en: int, boy: int, haric,
     kalan = np.array(cv2.dnn.NMSBoxes(xywh, [float(x) for x in arac[sec]], alt, NMS_ORTUSME)).reshape(-1)
     sonuc = [AracKutu(*(float(v) for v in kutular[sec[j]]), float(arac[sec[j]]),
                       int(siniflar[sec[j]])) for j in kalan]
-    return sorted(sonuc, key=lambda k: -k.skor), max(i, 0.0)
+    return icerenleri_birlestir(sonuc), max(i, 0.0)          # 1.4.4: kutu içinde kutu
 
 
 # ---------------------------------------------------------------- profiller ---
@@ -317,6 +352,9 @@ YOLOX_TINY = Profil("YOLOX-tiny", MODEL, GIRDI, on_isle, coz, ALTIN_ARAC, 0.35, 
 # (fotoğraflardaki 0.00-0.01'den farklı: canlı karede kişi + araba birlikte).
 # 17:38 kartının fotoğrafı motosiklet 0.50, otomobil 0.01. → 1.4.3 moto_esik
 # (sahibin kararı 20.11): o olaylarda motosiklet sınıfı 0.60 ister.
+# 1.4.4 (sahibin kararı 21.11): 21.11 18:00:34 / 18:11:24 iki el arabası
+# "araç girdi, kapıda görülmedi" kartı oldu (motosiklet 0.61 / 0.56) → eşik
+# 0.70 ve HER plakasız olayda (GİRDİ / ÇIKTI dahil; okuma.iz_arac_esigi).
 GIRDI11 = 640
 
 
@@ -336,7 +374,7 @@ YOLO11S = Profil(
     # kaymayı arar. GPU (f16) 0.496.
     GIRDI11, on_isle11_640, coz11, 0.49103, 0.30, 0.60,
     "arac11_esik", "arac11_gecis_esik", False,
-    sinif=sinif11, moto_esik=0.60, moto_anahtari="arac11_moto_esik")
+    sinif=sinif11, moto_esik=0.70, moto_anahtari="arac11_moto_esik")
 
 
 # ------------------------------------------------------------------ bulucu ---

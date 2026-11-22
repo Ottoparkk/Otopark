@@ -92,7 +92,8 @@ def test_ayarlar():
 
 
 def test_motosiklet_esigi_ayari():
-    # 1.4.3 (sahibin kararı 20.11): ARAC11_MOTO_ESIK — boş = profilin 0.60'ı;
+    # 1.4.3 (sahibin kararı 20.11): ARAC11_MOTO_ESIK — boş = profilin değeri
+    # (1.4.4: 0.70);
     # sahada geri almak için 0.30 (doğum eşiği) yazılır.
     assert "ARAC11_MOTO_ESIK" in plaka.AYAR_ADLARI
     assert _ayar()["arac11_moto_esik"] is None

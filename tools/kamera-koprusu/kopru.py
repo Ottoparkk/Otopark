@@ -883,6 +883,7 @@ def kalp_bilgisi(*, model_kare: int, sure_sn: float, izleme: bool, istendi: bool
     if saat_farki is not None:
         b["saat_farki_sn"] = round(float(saat_farki), 1)
     # 1.4.3 (1a): son saatte aynı aracın parçası sayılırdı / sayıldı (izlemede).
+    # 1.4.5 A (Gecitci): emilirdi hep 0; emildi = gönderilmeyen kart.
     if izleme and parca is not None:
         b["emilirdi"], b["emildi"] = int(parca[0]), int(parca[1])
     return b
@@ -1330,7 +1331,8 @@ def olay_arac_esigi(olay: takip.Olay, bulucu) -> float:
     """
     Plakası görülmeyen izin personele gitmesi için gereken araç puanı —
     canlı döngü ve `--plaka` ikisi de buradan. 1.4.3: izin en iyi kutusunun
-    sınıfı ve bulucunun motosiklet eşiği (YOLO11s 0.60, tiny'de yok).
+    sınıfı ve bulucunun motosiklet eşiği (YOLO11s 0.70 — 1.4.4, her plakasız
+    olayda; tiny'de yok).
     """
     return okuma.iz_arac_esigi(olay.tur, bulucu.esik, bulucu.gecis_esik,
                                komsu=olay.iz.dogumda_komsu,
@@ -1440,6 +1442,10 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
         # çizildiğini görmek için: "ARAÇ GİRDİ / ÇIKTI" satırları.
         print(f"  Araç izleme: kapı alanı {'var' if kapi else 'yok'} — araç girip "
               "durunca / kapıda kaybolunca '→' satırı yazılır.")
+        # 1.4.5: köprüdeki üç anahtar (kopru-ortak.json).
+        print("  1.4.5: " + ", ".join(
+            f"{ad}={int(bool(p_ayar[k]))}" for ad, k in
+            (("TEK_KARAR", "tek_karar"), ("IZ_ONAY", "iz_onay"), ("BYTE_ESLES", "byte_esles"))))
     # 1.4.3 (PARK_GORUNUR): köprü gibi — yalnızca kırpma alanıyla.
     park_gorunur = bool(p_ayar["park_gorunur"]) and alan is not None
     if p_ayar["park_gorunur"] and alan is None:
@@ -1454,15 +1460,26 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     olay_sayisi = {k: 0 for k in olay_adi}
     izci: takip.Takipci | None = None
 
+    def olay_karari(olay: takip.Olay, simdi: float) -> list:
+        """Köprünün kararı (gönderimler) — köprüdeki gibi, IZ_ONAY'la."""
+        gon, _ = okuma.iz_karari(olay.iz.gecis, olay_zamani=olay.zaman,
+                                 son_gonderilen=[], simdi=simdi,
+                                 arac_gecis_esik=olay_arac_esigi(olay, bulucu),
+                                 personele=okuma.iz_personele(olay.tur),
+                                 tek_kapi=tek_kapi,
+                                 plaka_sart=p_ayar["iz_onay"] and olay.tur == "TEK_KARE")
+        return gon
+
+    def olay_kart_mi(olay: takip.Olay, simdi: float) -> bool:
+        """1.4.5 A: olay şimdi gönderilse personele kart mı olurdu."""
+        return olay.tur in OLAY_ADLARI and any(
+            g.tur != "PLAKA" for g in olay_karari(olay, simdi))
+
     def olay_goster(olay: takip.Olay, simdi: float) -> bool:
         """Bir izleme olayının '→' satırı; döndürdüğü: bir şey gönderilirdi mi."""
         ek, gonderilirdi = "", False
         if olay.tur in OLAY_ADLARI:
-            gon, _ = okuma.iz_karari(olay.iz.gecis, olay_zamani=olay.zaman,
-                                     son_gonderilen=[], simdi=simdi,
-                                     arac_gecis_esik=olay_arac_esigi(olay, bulucu),
-                                     personele=okuma.iz_personele(olay.tur),
-                                     tek_kapi=tek_kapi)
+            gon = olay_karari(olay, simdi)
             gonderilirdi = bool(gon)
             if not gon:
                 ek = ": gönderilmezdi"
@@ -1476,10 +1493,11 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
               f"(iz {olay.iz.id}{kapida}){ek}", flush=True)
         return gonderilirdi
 
-    # 1.4.3 (1a): köprüdeki gibi (PARCA_EMME): sahadaki kaydı oynatınca
-    # "aynı aracın parçası sayılırdı" satırları da görünür.
-    emici = takip.Emici(
-        gonder=olay_goster, eminler=okuma.emin_plakalar, emer=p_ayar["parca_emme"],
+    # 1.4.5 A: köprüdeki gibi (TEK_KARAR): sahadaki kaydı oynatınca "aynı
+    # aracın parçası sayıldı" satırları da görünür, kart satırı bir kez.
+    gecitci = takip.Gecitci(
+        gonder=olay_goster, kart_mi=olay_kart_mi, plakalar=okuma.iz_plakalari,
+        acik=p_ayar["tek_karar"],
         yaz=lambda x: print(f"  {time.strftime('%H:%M:%S')}  → {x.removeprefix('[i] ')}",
                             flush=True))
     durgun_esik = DURGUN_ESIGI
@@ -1528,7 +1546,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 haric_k = alan_maskesi(frame.shape, kutu, alan, kirpik.shape)
             if bulucu is not None and (izci is None or (izci.en, izci.boy) != kirpik.shape[1::-1]):
                 if izci is not None:
-                    emici.birak(time.monotonic())
+                    gecitci.birak(time.monotonic())
                 izci = takip.Takipci(
                     kirpik.shape[1], kirpik.shape[0],
                     None if kapi is None else kapi_kirpikta(frame.shape, kutu, kapi, kirpik.shape),
@@ -1537,7 +1555,8 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                                                    plaka.Oylama(tek_esik=p_ayar["tek_esik"],
                                                                 birlesik=p_ayar["birlesik"])),
                     yaz=okuma.plakalari_yaz,
-                    alan=izci_alani(park_gorunur, frame.shape, kutu, alan, kirpik.shape))
+                    alan=izci_alani(park_gorunur, frame.shape, kutu, alan, kirpik.shape),
+                    byte_esles=p_ayar["byte_esles"])
             # 1.4.3 (PARK_GORUNUR): modeller maskesiz kırpıntıyı görür; alanın
             # kenarı plakayı kesmez; dışarıdaki plaka yalnızca yürüyen izin
             # kutusunda okunur. İzci (fotoğraf) maskeli kırpıntıyı alır.
@@ -1598,6 +1617,8 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 except Exception as e:  # noqa: BLE001 — köprüde de plaka okumayı durdurmaz
                     print(f"  ! Araç bulucu hata verdi: {type(e).__name__}: {e}")
                     bulucu = None
+                    if izci is not None:
+                        gecitci.birak(time.monotonic())      # 1.4.5 A: bekleyen kaybolmasın
                     izci = None
                 else:
                     ms_a = (time.perf_counter() - t1) * 1000
@@ -1617,7 +1638,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
                 olaylar = izci.guncelle(o) + izci.zaman_gecti(simdi)
                 for olay in olaylar:
                     olay_sayisi[olay.tur] += 1
-                emici.al(izci, olaylar, simdi)
+                gecitci.al(izci, olaylar, simdi)
                 for z, yer in izci.kararsiz_al():          # 1.4.2 (A2)
                     print(f"  {time.strftime('%H:%M:%S')}  → "
                           f"{kararsiz_satiri(z, yer).removeprefix('[i] ')}", flush=True)
@@ -1639,7 +1660,7 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
     finally:
         cap.release()
     if izci is not None and bulucu is not None:
-        emici.birak(time.monotonic())             # PARCA_EMME=1: bekleyen satırı yazılır
+        gecitci.birak(time.monotonic())           # 1.4.5 A: bekleyen kart satırı yazılır
 
     print()
     if not kareler:
@@ -1664,10 +1685,10 @@ def plaka_testi(ayar_yolu: str, sure_sn: float = PLAKA_TEST_SN, *, ara_sn: float
               f"{olay_sayisi['ICERIDE']} otopark içi hareket, {olay_sayisi['ESKI_GIRDI']} "
               f"açılışta kapıdaki, {olay_sayisi['KAPISIZ']} kapısız, "
               f"{olay_sayisi['GERI_DONDU']} geri dönen, {olay_sayisi['TEK_KARE']} tek karede.")
-        sayilirdi, sayildi = emici.son_saat(time.monotonic())
-        print(f"  Parça emme (PARCA_EMME={int(emici.emer)}): "
-              + (f"{sayildi} parça aynı araca sayıldı." if emici.emer
-                 else f"{sayilirdi} parça aynı araca sayılırdı (kartları yine gönderilirdi)."))
+        _, sayildi = gecitci.son_saat(time.monotonic())
+        print(f"  Tek karar (TEK_KARAR={int(gecitci.acik)}): "
+              + (f"{sayildi} kart aynı geçişin parçası sayıldı (gönderilmezdi)."
+                 if gecitci.acik else "kapalı — her izin kartı ayrı gönderilirdi."))
     if karsilastirma:
         print(f"  Emin okuma: tam çözünürlükte {emin_tam_kare} kare, küçültülmüşte "
               f"{emin_kucuk_kare} kare. (Köprü tam çözünürlüğü kullanır; PLAKA_TAM=0 "
@@ -1788,15 +1809,16 @@ def main() -> None:
               flush=True)
     # 1.4.3 (PARK_GORUNUR, sahip 19.11): izleme karelerinde modeller kırpma
     # alanının DIŞINI da görür (Frigate: maske nesneyi kaybettirir); olay
-    # yalnızca alana / kapıya girmiş izden. Hareket, fotoğraf, klip ve 1.3.4
-    # geçiş kuralı maskeli kalır. Yalnızca çokgenle.
+    # yalnızca alana / kapıya girmiş izden. 1.4.5 (sahip 22.11): fotoğraf ve
+    # klip de maskesiz (alanın dışındaki araç gri katmanın arkasında kalmasın);
+    # hareket ve 1.3.4 geçiş kuralı maskeli kalır. Yalnızca çokgenle.
     park_gorunur = bool(p_ayar["park_gorunur"]) and alan is not None
     if p_ayar["park_gorunur"] and alan is None:
         print("[!] PARK_GORUNUR=1 yalnızca kırpma alanıyla (KIRPMA_ALAN) çalışır — kapalı",
               flush=True)
     elif park_gorunur and izleme_istendi:        # TAKIP=0: 1.3.4 kuralı maskeli kalır
         print("[i] park görünür (PARK_GORUNUR=1) — modeller kırpma alanının dışını da görür; "
-              "olay yalnızca alana girmiş araçtan, fotoğraf yine maskeli", flush=True)
+              "olay yalnızca alana girmiş araçtan; fotoğraf ve klip de maskesiz", flush=True)
     global _isci, _giden
     isci = okuma.Isci(plakaci, haric=None, oku_esik=p_ayar["oku_esik"], sebep=sebep,
                       arac=bulucu)
@@ -1914,7 +1936,8 @@ def main() -> None:
                                            plaka.Oylama(tek_esik=p_ayar["tek_esik"],
                                                         birlesik=p_ayar["birlesik"])),
             yaz=okuma.plakalari_yaz,
-            alan=izci_alani(park_gorunur, frame_sekli, kutu, alan, kirpik_sekli))
+            alan=izci_alani(park_gorunur, frame_sekli, kutu, alan, kirpik_sekli),
+            byte_esles=p_ayar["byte_esles"])        # 1.4.5 C
 
     olay_adlari, yalniz_kayit = OLAY_ADLARI, YALNIZ_KAYIT
 
@@ -1924,12 +1947,37 @@ def main() -> None:
             for z, yer in izci.kararsiz_al():
                 print(kararsiz_satiri(z, yer), flush=True)
 
+    def yonune_ters(olay: takip.Olay) -> bool:
+        """Şeridin yönü: giriş şeridi çıkışı, çıkış şeridi girişi göndermez
+        (tek kapıda ORTAK ikisini de gönderir; yönü sunucu bilet durumundan bilir)."""
+        return (YON == "GIRIS" and olay.tur == "CIKTI") or (
+            YON == "CIKIS" and olay.tur in ("GIRDI", "ESKI_GIRDI"))
+
+    def iz_karari(olay: takip.Olay, simdi: float):
+        """
+        Olayın kararı (okuma.iz_karari) — yan etkisiz: hem gönderirken hem
+        1.4.5 A'nın "kart mı olurdu" sorusunda. 1.4.5 B (IZ_ONAY): tek karede
+        görülen aracın kartı ancak plakası okunduysa.
+        """
+        return okuma.iz_karari(
+            olay.iz.gecis, olay_zamani=olay.zaman, son_gonderilen=son_gonderilen, simdi=simdi,
+            arac_gecis_esik=olay_arac_esigi(olay, bulucu),
+            personele=okuma.iz_personele(olay.tur), tek_kapi=YON == "ORTAK",
+            plaka_sart=p_ayar["iz_onay"] and olay.tur == "TEK_KARE")
+
+    def iz_kart_mi(olay: takip.Olay, simdi: float) -> bool:
+        """1.4.5 A: olay ŞİMDİ gönderilse personele kart mı olurdu (Gecitci bekletir)."""
+        if olay.tur in yalniz_kayit or yonune_ters(olay):
+            return False
+        gonderimler, _ = iz_karari(olay, simdi)
+        return any(g.tur != "PLAKA" for g in gonderimler)
+
     def iz_gonder(olay: takip.Olay, simdi: float) -> bool:
         """
         1.4.0: izcinin bir olayı → karar (okuma.iz_karari) → gönderim kutusu.
         1.4.3 (1a): döndürdüğü "ele alındı" — bir şey gönderildi ya da bilerek
-        gönderilmedi (şeridin yönü, 60 sn kuralı). Emici yalnızca ele alınmış
-        GİRDİ / ÇIKTI'ya parça sayar.
+        gönderilmedi (şeridin yönü, 60 sn kuralı). 1.4.5 A: Gecitci ele
+        alınmış kararı aynı geçişin bekleyen kartlarına karşı hatırlar.
         """
         nonlocal son_gonderilen
         if olay.tur in yalniz_kayit:
@@ -1938,16 +1986,10 @@ def main() -> None:
                 iceride_sor(olay, simdi)
             return False
         adi = olay_adlari[olay.tur]
-        # Şeridin yönü: giriş şeridi çıkışı, çıkış şeridi girişi göndermez
-        # (tek kapıda ORTAK ikisini de gönderir; yönü sunucu bilet durumundan bilir).
-        if (YON == "GIRIS" and olay.tur == "CIKTI") or (
-                YON == "CIKIS" and olay.tur in ("GIRDI", "ESKI_GIRDI")):
+        if yonune_ters(olay):
             print(f"[i] {adi} — {gunluk.YON_DISI_ISARETI} (iz {olay.iz.id})", flush=True)
             return True
-        gonderimler, satirlar = okuma.iz_karari(
-            olay.iz.gecis, olay_zamani=olay.zaman, son_gonderilen=son_gonderilen, simdi=simdi,
-            arac_gecis_esik=olay_arac_esigi(olay, bulucu),
-            personele=okuma.iz_personele(olay.tur), tek_kapi=YON == "ORTAK")
+        gonderimler, satirlar = iz_karari(olay, simdi)
         plaka_sayisi = sum(1 for g in gonderimler if g.tur == "PLAKA")
         personel = len(gonderimler) - plaka_sayisi
         ozet = (f"{plaka_sayisi} plaka" if plaka_sayisi else "") + \
@@ -1968,7 +2010,12 @@ def main() -> None:
                 kimlikler.append(kimlik)
             son_gonderilen.append(okuma.gonderim_kaydi(g, simdi))
         son_gonderilen = [k for k in son_gonderilen if simdi - k[1] <= okuma.YAKIN_SN]
-        if olay.tur in takip.YONSUZ_OLAYLAR:           # 1.4.3 (1d): yönü bilinmeyen olay
+        # 1.4.3 (1d): yönü bilinmeyen olay; 1.4.4 (sahibin kararı 21.11): HER
+        # personel kartı — kapıdan girdiği / çıktığı izlenen plakasız araç da
+        # (bir olay en çok bir gönderim: iz_karari) — ve HER çıkış, plakası
+        # okunup bileti kapatan da (gece çıkışları kliplerden denetlensin).
+        if (olay.tur in takip.YONSUZ_OLAYLAR or olay.tur == "CIKTI"
+                or any(g.tur != "PLAKA" for g in gonderimler)):
             klip_iste(olay, simdi, kimlikler[0] if kimlikler else None)
         return bool(gonderimler) or any(gunluk.AYRILIS_ISARETI in s for s in satirlar)
 
@@ -1976,8 +2023,9 @@ def main() -> None:
                   gercek: takip.Olay | None = None) -> None:
         """
         1.4.3 (1d): olayın klibi (KLIP=1; kapalıysa hiçbir şey). Araç ilk
-        görülmeden 5 sn önce .. olaydan 5 sn sonra. `gercek`: parça emildi
-        (gönderilmedi) — klip iki izin erken doğanından başlar.
+        görülmeden 5 sn önce .. olaydan 5 sn sonra. `gercek`: 1.4.5 A — kart
+        aynı geçişin parçası sayıldı (gönderilmedi); klip iki izin erken
+        doğanından başlar.
         """
         if klipci is None:
             return
@@ -2013,8 +2061,6 @@ def main() -> None:
             son_gonderilen.append(okuma.gonderim_kaydi(g, simdi))
         son_gonderilen = [k for k in son_gonderilen if simdi - k[1] <= okuma.YAKIN_SN]
 
-    # 1.4.3 (1a): yönü bilinmeyen kenar parçası → aynı aracın kararı (takip.Emici).
-    # PARCA_EMME=0 (varsayılan): yalnızca kayıt — her olay bugünkü gibi gider.
     # 1.4.3 (1d, sahibin kararı 17.11): yönü bilinmeyen olayın klibi — KLIP=1,
     # yalnızca bu bilgisayarda, 7 gün. Kapalıyken ne nesne ne klasör ne iş.
     klipci = None
@@ -2022,12 +2068,19 @@ def main() -> None:
         klipci = klip.Klipci(klip.klip_klasoru(), yaz=lambda s: print(s, flush=True))
         print(f"[i] klip kaydı açık (KLIP=1) — {klipci.klasor}, {klip.KLIP_GUN} gün",
               flush=True)
-    emici = takip.Emici(gonder=iz_gonder, eminler=okuma.emin_plakalar,
-                        yaz=lambda s: print(s, flush=True), emer=p_ayar["parca_emme"],
-                        sayinca=lambda p, r, m: klip_iste(p, m, None, gercek=r))
+    # 1.4.5 A (TEK_KARAR, sahibin kararı 22.11): bir geçiş = bir karar — aynı
+    # aracın ikinci izinin kartı gönderilmez (takip.Gecitci); klibi yazılır.
+    gecitci = takip.Gecitci(gonder=iz_gonder, kart_mi=iz_kart_mi,
+                            plakalar=okuma.iz_plakalari, yaz=lambda s: print(s, flush=True),
+                            acik=p_ayar["tek_karar"],
+                            birakinca=lambda p, r, m: klip_iste(p, m, None, gercek=r))
     if izleme_istendi:
-        print(f"[i] parça emme {'açık' if emici.emer else 'yalnızca kayıtta'} "
-              f"(PARCA_EMME={int(emici.emer)})", flush=True)
+        print(f"[i] tek karar {'açık' if gecitci.acik else 'kapalı'} "
+              f"(TEK_KARAR={int(gecitci.acik)})", flush=True)
+        print(f"[i] iz onayı {'açık' if p_ayar['iz_onay'] else 'kapalı'} "
+              f"(IZ_ONAY={int(bool(p_ayar['iz_onay']))})", flush=True)
+        print(f"[i] ByteTrack eşleme {'açık' if p_ayar['byte_esles'] else 'kapalı'} "
+              f"(BYTE_ESLES={int(bool(p_ayar['byte_esles']))})", flush=True)
 
     kopuk = False
     bekleme = YENIDEN_BAGLAN_SN
@@ -2086,9 +2139,9 @@ def main() -> None:
             if izleme and izci is not None:
                 # 1.4.0: kapıdan çıkmış, kararı bekleyen araç girdi sayılır;
                 # öteki izler bırakılır (dönüşte ısınma: kimse "girdi" sayılmaz).
-                emici.birak(time.monotonic())          # 1.4.3 (1a): bekleyen hemen gider
-                for olay in izci.kopma(time.monotonic()):
-                    iz_gonder(olay, time.monotonic())
+                m = time.monotonic()                   # 1.4.5 A: kopmanın olayları da
+                gecitci.al(izci, izci.kopma(m), m)     # aynı katmandan; bekleyen hemen
+                gecitci.birak(m)
                 kararsizlari_yaz()
             if klipci is not None:
                 klipci.bosalt(time.monotonic())        # 1.4.3 (1d): eldeki karelerle
@@ -2124,7 +2177,7 @@ def main() -> None:
                     kuyruk=giden.ozet(_giden.klasor) if _giden is not None else (0, None),
                     simdi=datetime.now(timezone.utc),
                     reddedilen=son_saat_reddedilen(simdi), saat_farki=_saat_farki,
-                    parca=emici.son_saat(simdi))
+                    parca=gecitci.son_saat(simdi))
                 kalp_isi = threading.Thread(target=kalp, args=(bilgi,), daemon=True)
                 kalp_isi.start()
             son_kalp = simdi
@@ -2139,8 +2192,12 @@ def main() -> None:
 
         maskeli = kirp_maskeli(frame, kutu, haric, alan)
         kirpik = olcekle(maskeli)
-        if klipci is not None:
-            klipci.kare(kirpik, simdi, zaman)          # 1.4.3 (1d): saniyede ~5, bellekte
+        if klipci is not None:                         # 1.4.3 (1d): saniyede ~5, bellekte
+            # 1.4.5 (PARK_GORUNUR): klip maskesiz — yalnızca klip bu kareyi
+            # tutacaksa hazırlanır (her kamera karesinde değil).
+            klipci.kare(olcekle(kirp(frame, kutu))
+                        if park_gorunur and klipci.kare_gerek(simdi) else kirpik,
+                        simdi, zaman)
         # 1.3.4: kırpıntı küçültüldüyse plaka TAM çözünürlükten okunur (sahada
         # 2124 → 1568 px; kare plakanın küçük harfleri emin okunamıyordu).
         tam_var = plaka_tam and maskeli.shape[:2] != kirpik.shape[:2]
@@ -2178,9 +2235,8 @@ def main() -> None:
         if izleme and isci.arac_esikleri() is None:
             # Bulucu ya da okuyucu çalışırken bozuldu: TEK YÖN, 1.3.4 kuralına dönülür.
             if izci is not None:
-                emici.birak(simdi)
-                for olay in izci.kopma(simdi):
-                    iz_gonder(olay, simdi)
+                gecitci.al(izci, izci.kopma(simdi), simdi)
+                gecitci.birak(simdi)
                 kararsizlari_yaz()
             izci = None
             izleme = False
@@ -2188,9 +2244,8 @@ def main() -> None:
         if izleme:
             if izci is None or izci_sekli != kirpik.shape:
                 if izci is not None:          # kamera çözünürlüğü değişti
-                    emici.birak(simdi)
-                    for olay in izci.kopma(simdi):
-                        iz_gonder(olay, simdi)
+                    gecitci.al(izci, izci.kopma(simdi), simdi)
+                    gecitci.birak(simdi)
                     kararsizlari_yaz()
                 izci, izci_sekli = izci_kur(frame.shape, kirpik.shape), kirpik.shape
             # 1.4.2: grafik işlemcisi bozulup bulucu tiny'ye geçtiyse doğum
@@ -2200,8 +2255,8 @@ def main() -> None:
                 if o.no <= son_biten:
                     continue                  # bayat (kopmadan önceki) kare
                 son_biten = o.no
-                emici.al(izci, izci.guncelle(o), simdi)
-            emici.al(izci, izci.zaman_gecti(simdi), simdi)
+                gecitci.al(izci, izci.guncelle(o), simdi)
+            gecitci.al(izci, izci.zaman_gecti(simdi), simdi)
             kararsizlari_yaz()
             if d >= DURGUN_ESIGI:
                 son_kipirti = simdi
@@ -2214,7 +2269,7 @@ def main() -> None:
             if istek and isci.ikisi_bos():
                 kare_no += 1
                 if park_gorunur:
-                    # 1.4.3: modeller maskesiz kırpıntıyı görür; kirpik (fotoğraf) maskeli.
+                    # 1.4.3: modeller maskesiz kırpıntıyı görür; 1.4.5: fotoğraf da.
                     acik, acik_tam = acik_kirpik(frame, kutu, tam_var)
                     isci.ver(okuma.Is(None, kirpik.copy(), zaman, 0, tam=acik_tam, acik=acik,
                                       kare=okuma.KareIsi(kare_no, simdi, gri,

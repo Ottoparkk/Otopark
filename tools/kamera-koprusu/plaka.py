@@ -132,8 +132,8 @@ AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK"
                "PLAKA_IPLIK", "PLAKA_BEKLE_SN",
                "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP",
                "PLAKA_BIRLESIK", "HIZLANDIRICI", "ARAC_MODEL", "ARAC11_BUL_ESIK",
-               "ARAC11_GECIS_ESIK", "PARCA_EMME", "KLIP", "PARK_GORUNUR",
-               "ARAC11_MOTO_ESIK")
+               "ARAC11_GECIS_ESIK", "KLIP", "PARK_GORUNUR",
+               "ARAC11_MOTO_ESIK", "TEK_KARAR", "IZ_ONAY", "BYTE_ESLES")
 
 
 def _oran(alt_dahil: bool):
@@ -180,13 +180,21 @@ _KURALLAR = (
     ("ARAC11_BUL_ESIK", "arac11_esik", None, float, lambda v: 0 < v < 1),
     ("ARAC11_GECIS_ESIK", "arac11_gecis_esik", None, float, lambda v: 0 < v < 1),
     # 1.4.3 (sahibin kararı 20.11): yönü bilinmeyen plakasız kapı olayı puanını
-    # motosikletten alıyorsa gereken puan (arac.YOLO11S.moto_esik, 0.60). Boş =
-    # profilin değeri; 0.30 (doğum eşiği) = kural kapalı (sahada geri alma).
+    # motosikletten alıyorsa gereken puan. 1.4.4 (21.11): her plakasız olayda,
+    # arac.YOLO11S.moto_esik 0.70. Boş = profilin değeri; 0.30 (doğum eşiği) =
+    # kural kapalı (sahada geri alma).
     ("ARAC11_MOTO_ESIK", "arac11_moto_esik", None, float, lambda v: 0 < v < 1),
-    # 1.4.3 (1a): kenardaki parça aynı aracın kararına sayılır mı (takip.Emici).
-    # 0 = yalnızca kayıt ("sayılırdı", kart yine gider) — deneme haftası; sahip
-    # klipleri görünce 1.
-    ("PARCA_EMME", "parca_emme", False, lambda s: {"1": True, "0": False}[s.strip()],
+    # 1.4.5 (sahibin kararları 22.11) — üçü de varsayılan AÇIK; sahada bir
+    # parça sorun çıkarırsa kopru-ortak.json'a "0" yazılıp yeniden başlatılır.
+    # A: bir geçiş = bir karar (takip.Gecitci; 1.4.3'ün PARCA_EMME'si bunun
+    # yerine geçti). Aynı araca ait ikinci izin kartı gönderilmez.
+    ("TEK_KARAR", "tek_karar", True, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
+    # B: yalnızca tek karede görülen aracın kartı ancak plakası okunduysa.
+    ("IZ_ONAY", "iz_onay", True, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
+    # C: araç izcisinde ByteTrack eşleştirmesi (esles.py: Kalman + en iyi atama).
+    ("BYTE_ESLES", "byte_esles", True, lambda s: {"1": True, "0": False}[s.strip()],
      lambda v: True),
     # 1.4.3 (1d, sahibin kararı 17.11): yönü bilinmeyen olayın klibi (klip.py) —
     # yalnızca bu bilgisayarda, 7 gün. Varsayılan KAPALI.

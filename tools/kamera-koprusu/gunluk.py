@@ -188,14 +188,16 @@ KAPIDA_GORULMEDI_ISARETI = "kapıda görülmedi"
 # 1.4.1: kapıda yalnızca BİR karede görülen hareketli araç — yönü bilinmez,
 # plakası okunsa bile personele (Çözülmemiş kayıt) gider.
 TEK_KARE_ISARETI = "araç tek karede görüldü — personele"
+# 1.4.5 B (IZ_ONAY, sahibin kararı 22.11): tek karede görülen aracın plakası
+# hiç okunmadı — kart AÇILMAZ (sahada çoğu bir aracın parçasıydı); klip kalır.
+TEK_KARE_ONAYSIZ_ISARETI = "tek karede görüldü, plaka okunmadı — kart açılmadı"
 # 1.4.2 (A2): kapı alanında kaybolan, hiç otoparkta görülmemiş, kararsız araç
 # (sahada 11.11 beş araç böyle iz bırakmadan kayboldu) — yönü bilinmez.
 KAPIDA_KAYBOLDU_ISARETI = "araç kapı alanında kayboldu — yönü bilinmiyor — personele"
 # 1.4.2 (A2): olay vermeden biten her araç izi bir satır (sessiz kayıp görünsün).
 KARARSIZ_ISARETI = "iz kararsız bitti"
-# 1.4.3 (1a): yönü bilinmeyen parça, kararı verilmiş gerçek izin (aynı araç)
-# parçası bulundu. Yalnızca kayıt kipinde (PARCA_EMME=0) olay yine gönderilir.
-EMILIRDI_ISARETI = "aynı aracın parçası sayılırdı"
+# 1.4.5 A (TEK_KARAR): kart olacak iz, aynı geçişin başka bir kararının
+# (aynı aracın) parçası sayıldı — kart gönderilmedi, klibi yazılır.
 EMILDI_ISARETI = "aynı aracın parçası sayıldı"
 # 1.4.3 (1d): yönü bilinmeyen olayın klibi diske yazıldı (KLIP=1). Adında
 # plaka YOK: İstanbul saati, iz, olay, islem_id'nin ilk 8'i.
@@ -211,7 +213,7 @@ BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"
 YON_BILINMIYOR_ISARETI = "yönü bilinmiyor — emin plaka gönderildi"
 
 # 1.4.3: kalp atışında sunucuya giden sürüm. paketle.SURUM ile aynı (test_kurulum).
-KOPRU_SURUMU = "1.4.3"
+KOPRU_SURUMU = "1.4.5"
 YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
 KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).

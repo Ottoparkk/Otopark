@@ -54,7 +54,9 @@ KLIP_BOS_EN_AZ_BAYT = 5 * 1024 ** 3
 TEMIZLIK_SN = 3600.0
 
 ISTANBUL = timezone(timedelta(hours=3))          # Türkiye 2016'dan beri UTC+3
-OLAY_ADLARI = ("TEK_KARE", "KAPIDA_KAYBOLDU", "ESKI_GIRDI")
+# 1.4.4: her personel kartının klibi (kapıdan girdiği / çıktığı izlenen
+# plakasız araç da) — gönderilebilen her olay, kopru.OLAY_ADLARI ile aynı.
+OLAY_ADLARI = ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ", "TEK_KARE", "KAPIDA_KAYBOLDU")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -191,8 +193,13 @@ class Klipci:
     def tampon_monolari(self) -> list[float]:
         return [m for m, _, _ in self._tampon]
 
+    def kare_gerek(self, mono: float) -> bool:
+        """Bu anki kare tutulacak mı (durumu değiştirmez). 1.4.5: köprü
+        maskesiz kırpıntıyı yalnızca o zaman hazırlar."""
+        return mono - self._son_tutulan >= KLIP_ARALIK_SN - 1e-6
+
     def kare(self, kirpik: np.ndarray, mono: float, zaman: datetime) -> None:
-        if mono - self._son_tutulan >= KLIP_ARALIK_SN - 1e-6:
+        if self.kare_gerek(mono):
             self._son_tutulan = mono
             try:
                 h, w = kirpik.shape[:2]

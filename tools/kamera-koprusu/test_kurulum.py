@@ -3237,19 +3237,19 @@ def test_kalp_bilgisi_sayilari() -> None:
     import kopru
     import gunluk
     import paketle
-    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.3", (gunluk.KOPRU_SURUMU, paketle.SURUM)
+    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.5", (gunluk.KOPRU_SURUMU, paketle.SURUM)
     simdi = datetime(2026, 11, 18, 10, 10, tzinfo=timezone.utc)
     b = kopru.kalp_bilgisi(model_kare=43, sure_sn=5.0, izleme=True, istendi=True,
                            kume="GPU · YOLO11s", kuyruk=(2, "2026-11-18T10:00:00+00:00"),
                            simdi=simdi, reddedilen=1, saat_farki=-2.44)
-    assert b == {"surum": "1.4.3", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
+    assert b == {"surum": "1.4.5", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
                  "takip": "acik", "kume": "GPU · YOLO11s", "reddedilen": 1,
                  "saat_farki_sn": -2.4}, b
     # İzleme çalışırken kapandı: kare sayısı anlamsız, gönderilmez.
     b = kopru.kalp_bilgisi(model_kare=0, sure_sn=5.0, izleme=False, istendi=True,
                            kume="CPU · YOLOX-tiny", kuyruk=(0, None), simdi=simdi,
                            reddedilen=0, saat_farki=None)
-    assert b == {"surum": "1.4.3", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
+    assert b == {"surum": "1.4.5", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
                  "kume": "CPU · YOLOX-tiny", "reddedilen": 0}, b
     # Ayarla kapalı (TAKIP=0), ilk kalp (süre yok), bozuk zaman, uzun küme adı.
     b = kopru.kalp_bilgisi(model_kare=5, sure_sn=0.0, izleme=False, istendi=False,
@@ -3269,23 +3269,49 @@ def test_kalp_bilgisi_sayilari() -> None:
     assert "emilirdi" not in b and "emildi" not in b, b
 
 
-def test_parca_emme_ayari() -> None:
-    """1.4.3 (1a): PARCA_EMME varsayılan 0 (yalnızca kayıt); 1 açar; bozuk değer 0."""
+def _acik_varsayilan_ayar(ad: str, anahtar: str) -> None:
+    """1.4.5: varsayılan AÇIK anahtar — 0 kapatır; bozuk değer açık + uyarı; json'dan da."""
     import plaka
     eski = {k: os.environ.pop(k, None) for k in plaka.AYAR_ADLARI}
     try:
-        assert "PARCA_EMME" in plaka.AYAR_ADLARI
-        assert plaka.calisma_ayarlari()[0]["parca_emme"] is False
-        os.environ["PARCA_EMME"] = "1"
-        assert plaka.calisma_ayarlari()[0]["parca_emme"] is True
-        os.environ["PARCA_EMME"] = "evet"
+        assert ad in plaka.AYAR_ADLARI
+        assert plaka.calisma_ayarlari()[0][anahtar] is True
+        os.environ[ad] = "0"
+        assert plaka.calisma_ayarlari()[0][anahtar] is False
+        os.environ[ad] = "1"
+        assert plaka.calisma_ayarlari()[0][anahtar] is True
+        os.environ[ad] = "hayir"
         ayar, uyari = plaka.calisma_ayarlari()
-        assert ayar["parca_emme"] is False and uyari, (ayar, uyari)
+        assert ayar[anahtar] is True and uyari, (ayar, uyari)
+        os.environ.pop(ad, None)
+        assert plaka.calisma_ayarlari({ad: "0"})[0][anahtar] is False
     finally:
-        os.environ.pop("PARCA_EMME", None)
+        os.environ.pop(ad, None)
         for k, v in eski.items():
             if v is not None:
                 os.environ[k] = v
+
+
+def test_tek_karar_ayari() -> None:
+    """1.4.5 A (sahibin kararı 22.11): bir geçiş = bir karar. Varsayılan AÇIK."""
+    _acik_varsayilan_ayar("TEK_KARAR", "tek_karar")
+
+
+def test_iz_onay_ayari() -> None:
+    """1.4.5 B: tek karede görülen plakasız araç kart olmaz. Varsayılan AÇIK."""
+    _acik_varsayilan_ayar("IZ_ONAY", "iz_onay")
+
+
+def test_byte_esles_ayari() -> None:
+    """1.4.5 C: ByteTrack eşleştirmesi (araç izcisi). Varsayılan AÇIK."""
+    _acik_varsayilan_ayar("BYTE_ESLES", "byte_esles")
+
+
+def test_parca_emme_ayari_kalkti() -> None:
+    """1.4.5: PARCA_EMME (1.4.3 Emici) TEK_KARAR'a dönüştü — ad tanınmaz, okunmaz."""
+    import plaka
+    assert "PARCA_EMME" not in plaka.AYAR_ADLARI
+    assert "parca_emme" not in plaka.calisma_ayarlari()[0]
 
 
 def test_klip_ayari() -> None:
@@ -5408,6 +5434,17 @@ def test_plaka_kipi_izleme_ve_kirpma_alani() -> None:
     assert "Araç izleme: kapı alanı var" in c, c
     assert "ARAÇ GİRDİ" in c and "34ABC123 gönderilirdi" in c, c
     assert "İzleme: 1 giriş, 0 çıkış" in c, c
+    # 1.4.5: köprünün üç anahtarı burada da (varsayılan açık) ve özet satırı.
+    assert "1.4.5: TEK_KARAR=1, IZ_ONAY=1, BYTE_ESLES=1" in c, c
+    assert "Tek karar (TEK_KARAR=1): 0 kart aynı geçişin parçası sayıldı" in c, c
+    kod, c, _ = _plaka_kipi([("34ABC123", 0.99), ("34ABC123", 0.99)], ayar_ek={
+        "KIRPMA": "", "KIRPMA_ALAN": "0,0;1600,0;1600,720;0,720",
+        "KAPI_ALANI": "0,400;500,400;600,720;0,720", "_yol": yol,
+        "TEK_KARAR": "0", "IZ_ONAY": "0", "BYTE_ESLES": "0"})
+    assert kod == 0, c
+    assert "1.4.5: TEK_KARAR=0, IZ_ONAY=0, BYTE_ESLES=0" in c, c
+    assert "ARAÇ GİRDİ" in c and "34ABC123 gönderilirdi" in c, c
+    assert "Tek karar (TEK_KARAR=0): kapalı" in c, c
     # Bozuk kapı alanı: kamera açılmadan 1.
     kod, c, acildi = _plaka_kipi([], ayar_ek={"KAPI_ALANI": "0,0;1,1"})
     assert kod == 1 and "KAPI_ALANI" in c and acildi == [], c

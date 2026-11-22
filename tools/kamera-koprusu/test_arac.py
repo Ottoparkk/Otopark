@@ -332,15 +332,88 @@ def test_kutular_sinifi_tasir():
     assert [(round(k.skor, 3), k.sinif) for k in kutular] == [(0.8, 2)], kutular
 
 
+# ---------------------------------------- 1.4.4: kutu içinde kutu (21.11) ---
+#
+# Sahada 21.11 16:30: AYNI araç (35 ALN 793) iki iz oldu — biri bilet, öteki
+# plakasız "araç girdi" kartı (ikisi aynı saniyede kapıdan geçti, aynı karede
+# durdu). Bulucu aracın bütün kutusunun İÇİNDE bir parça kutusu (aracın bir
+# kısmı) da veriyordu: küçük kutu büyüğün içindeyken IoU düşük kalır, NMS
+# (0.45) ve izcinin kopya kuralı (0.50) ikisini de tutar. Ölçü: kesişim ÷
+# KÜÇÜK kutunun alanı (SAHI'nin "IOS" ölçüsü).
+
+def _k11(x1, y1, x2, y2):
+    """Kırpıntı pikselindeki kutu → YOLO11 girdisi (r=1, dolgu yok: aynı piksel)."""
+    return ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1)
+
+
+_D1 = (1.0, 0.0, 0.0)
+
+
+def _kutular11(*adaylar):
+    h = _ham11(*[(i, s, p, _k11(*k)) for i, (s, p, k) in enumerate(adaylar, start=10)])
+    kutular, _ = arac.kutulari_coz(h, _D1, 800, 600, None, profil=arac.YOLO11S)
+    return [(tuple(round(v) for v in k[:4]), round(k.skor, 3), k.sinif) for k in kutular]
+
+
+def test_icindeki_parca_kutusu_ayni_arac():
+    # 16:30'un biçimi: bütün araç + içinde ön yarısı. IoU 0.25 (< 0.45): bugün
+    # İKİ kutu. Kalan: BÜYÜK kutunun yeri (araç oradadır), en yüksek puan ve
+    # o puanı veren kutunun sınıfı.
+    butun, parca = (100, 100, 500, 400), (100, 250, 300, 400)
+    assert arac.ortusme(arac.AracKutu(*butun, 0.9), arac.AracKutu(*parca, 0.9)) < arac.NMS_ORTUSME
+    assert _kutular11((2, 0.9, butun), (2, 0.6, parca)) == [(butun, 0.9, 2)]
+    assert _kutular11((2, 0.6, butun), (7, 0.95, parca)) == [(butun, 0.95, 7)]
+    # İki parça birden: yine tek kutu.
+    assert _kutular11((2, 0.9, butun), (2, 0.5, parca),
+                      (2, 0.4, (300, 100, 500, 250))) == [(butun, 0.9, 2)]
+
+
+def test_icerme_esigi_yuzde_seksen():
+    # Küçük kutunun %80'i büyüğün içinde → aynı araç; %79.5 → iki araç.
+    assert arac.ICERME_ESIGI == 0.80
+    kucuk = (100, 100, 300, 300)                       # alan 40 000
+    assert _kutular11((2, 0.9, (140, 0, 600, 400)), (2, 0.5, kucuk)) == \
+        [((140, 0, 600, 400), 0.9, 2)]                 # kesişim 160 × 200 = %80
+    assert len(_kutular11((2, 0.9, (141, 0, 600, 400)), (2, 0.5, kucuk))) == 2   # %79.5
+
+
+def test_iki_ayri_arac_birlesmez():
+    # Yan yana iki araç; arkadan yapışık gelen (~%60'ı içeride) araç: iki kutu.
+    assert len(_kutular11((2, 0.9, (100, 100, 300, 300)), (2, 0.8, (310, 100, 510, 300)))) == 2
+    assert len(_kutular11((2, 0.9, (100, 100, 500, 400)), (2, 0.8, (300, 220, 600, 420)))) == 2
+
+
+def test_motosiklet_arabanin_icinde_birlesmez():
+    # Arabanın önünden geçen motosiklet arabanın kutusunun içinde kalabilir:
+    # birleşseydi motosiklet kaybolurdu. İki yönde de (motosiklet içeride /
+    # dışarıda) birleştirme yok.
+    araba, moto = (100, 100, 500, 400), (200, 200, 300, 380)
+    assert sorted(_kutular11((2, 0.9, araba), (3, 0.7, moto))) == \
+        sorted([(araba, 0.9, 2), (moto, 0.7, 3)])
+    assert len(_kutular11((3, 0.9, araba), (2, 0.7, moto))) == 2
+
+
+def test_icindeki_kutu_yoloxta_da_birlesir():
+    # YOLOX-tiny (GPU bozulunca yedek) aynı yoldan geçer.
+    i8 = 52 * 5 + 3                      # r=0.5 → (0, 56, 136, 120)
+    i8p = 52 * 6 + 3                     # aynı yerin içinde küçük kutu
+    h = _ham((i8, 2, 1.0, 0.9, (0.5, 0.5, np.log(10), np.log(4))),
+             (i8p, 2, 1.0, 0.5, (0.5, -0.5, np.log(4), np.log(2))))
+    kutular, _ = arac.kutulari_coz(h, 0.5, 800, 600, None)
+    assert [round(k.skor, 3) for k in kutular] == [0.9], kutular
+    assert np.allclose(kutular[0][:4], (0, 56, 136, 120)), kutular[0]
+
+
 def test_motosiklet_esigi_profilde_ve_ayarda():
     # 1.4.3 (sahibin kararı 20.11): YOLO11s'te yönü bilinmeyen plakasız kapı
     # olayı puanını motosikletten alıyorsa 0.60 ister. tiny'de kural yok.
+    # 1.4.4 (sahibin kararı 21.11, el arabaları 0.61 / 0.56): 0.70.
     t, y = arac.YOLOX_TINY, arac.YOLO11S
     assert t.moto_esik is None and t.moto_anahtari is None, t
-    assert (y.moto_esik, y.moto_anahtari) == (0.60, "arac11_moto_esik"), y
+    assert (y.moto_esik, y.moto_anahtari) == (0.70, "arac11_moto_esik"), y
     b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), _ayar(), plaka.MODEL_DIZINI,
                         profil=arac.YOLO11S)
-    assert b.moto_esik == 0.60, b.moto_esik
+    assert b.moto_esik == 0.70, b.moto_esik
     b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), dict(_ayar(), arac11_moto_esik=0.30),
                         plaka.MODEL_DIZINI, profil=arac.YOLO11S)
     assert b.moto_esik == 0.30, b.moto_esik                 # sahada geri alma: 0.30

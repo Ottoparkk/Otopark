@@ -42,12 +42,18 @@ import cv2
 import numpy as np
 
 import arac
+import esles
 import gunluk
 import plaka
 
 # ---------------------------------------------------------------- sabitler ---
 
 ESLES_IOU = 0.30          # tahmin edilen kutuyla bu kadar örtüşen kutu aynı araç
+# 1.4.5 C (BYTE_ESLES, sahibin kararı 22.11): araç izcisi ByteTrack gibi eşler —
+# önce yüksek puanlı kutular (≥ doğum eşiği), sonra düşükler yalnızca artan
+# izlere; her turda EN İYİ bire bir atama (açgözlü değil) ve Kalman tahmini.
+# Köprü kopru-ortak.json'daki BYTE_ESLES'i verir; bu, verilmezse.
+BYTE_ESLES = True
 MERKEZ_KAT = 0.6          # örtüşmeyen: merkez ≤ köşegen × bu ve alan oranı ALAN_ORAN içinde
 ALAN_ORAN = (0.5, 2.0)
 KOPYA_IOU = 0.5           # eşleşmiş bir kutuyla bu kadar örtüşen aday yeni iz açmaz
@@ -84,15 +90,17 @@ PLAKA_ALAN_ORAN = (0.33, 3.0)
 PLAKA_PAY = (0.05, 0.25)  # plaka → araç: önce %5, bulunamazsa %25 genişletilmiş kutu
 PLAKA_ALT = 0.4           # plaka merkezi kutunun alt %60'ındaysa öncelikli
 BELIRSIZ_ORAN = 1.3       # iki aday alan oranı bundan küçükse: hangisi bilinmez
-# 1.4.3 (1a): tut ve em (Emici). Değerler benim seçimim, sahada ayarlanır —
-# kayıt satırı aralığı yazar.
-EMME_SN = 2.0             # parça, gerçek izin son görülmesinden en çok bu kadar sonra (kuyruk)
-                          # ya da ilk görülmesinden en çok bu kadar önce (baş) görüldü
-EMME_KENAR_SN = 5.0       # aynı kenardaki iki kutunun en büyük zaman farkı
-EMME_PAY = 0.15           # parçanın kenar boyu açıklığı, gerçek izinkinin bu payıyla içinde
-TUTMA_EN_COK_SN = 40.0    # parça, eşleşebilecek canlı izin kararını en çok bu kadar bekler
-EMME_HAFIZA_SN = 60.0     # kararı verilmiş (ele alınmış) GİRDİ / ÇIKTI izi bu kadar hatırlanır
-KENAR_KUTU_SAYI = 30      # izin kenara değen ilk ve son bu kadar kutusu saklanır
+# 1.4.5 A: bir geçiş = bir karar (Gecitci; 1.4.3'ün Emici'sinin yerine).
+# Değerler benim seçimim (sahibin kararı yalnızca kuraldır), sahada ayarlanır.
+TUTMA_EN_COK_SN = 40.0    # kart adayı, aynı geçişteki kararsız izi en çok bu kadar bekler
+EMME_HAFIZA_SN = 60.0     # ele alınmış karar bu kadar hatırlanır
+GECIT_ICERME = 0.5        # aynı karede: küçük kutunun en az bu payı büyüğün içinde …
+GECIT_COGUNLUK = 0.5      # … ikisinin birlikte görüldüğü karelerin en az bu payında
+GECIT_ARA_SN = 2.0        # baş / kuyruk: biri kaybolduktan en çok bu kadar sonra öteki doğdu
+GECIT_YER_PAY = 0.25      # baş / kuyruk: küçüğün merkezi büyüğün bu kadar genişletilmişinde
+GECIT_YURUME = 0.02       # bu kadardan (kutu köşegeni payı) az kayan kutu "yürümüyor"
+GECMIS_ILK = 40           # izin ilk bu kadar kutusu (mono, kutu) saklanır …
+GECMIS_SON = 120          # … ve son bu kadar (ayni_gecis'in "aynı karede" bakışı)
 YONSUZ_OLAYLAR = ("TEK_KARE", "KAPIDA_KAYBOLDU", "ESKI_GIRDI")
 YONLU_OLAYLAR = ("GIRDI", "CIKTI")
 
@@ -191,6 +199,9 @@ class Iz:
         self.koken = koken                   # kapi | yard | eski
         self.kapidan_dogdu = kapidan
         self.gecmis: deque = deque()         # (mono, kutu, gri)
+        # 1.4.5 C: Kalman süzgeci (BYTE_ESLES) ve son güncellendiği an.
+        self.kf: esles.Kalman | None = None
+        self.kf_mono: float | None = None
         self.duruyor = False
         self.durma_bas: float | None = None
         self.uyarildi = False
@@ -228,17 +239,25 @@ class Iz:
         # 1.4.2 (A3): doğduğunda yanında (bir araç köşegeni, TAHMIN_SN içinde
         # görülmüş) başka bir araç izi vardı — kenardan çıkan aracın kuyruğu olabilir.
         self.dogumda_komsu = False
-        # 1.4.3 (1a): kırpıntının kenarına değen kutular (an, kutu, kenarlar) —
-        # ilk KENAR_KUTU_SAYI ve son KENAR_KUTU_SAYI (Emici "aynı araç mı" bakar).
-        self.kenar_ilk: list = []
-        self.kenar_sonra: deque = deque(maxlen=KENAR_KUTU_SAYI)
+        # 1.4.5 A: kutu geçmişi (an, kutu) — ilk GECMIS_ILK ve son GECMIS_SON
+        # (Gecitci "aynı geçiş mi" bakar: aynı karelerde iç içe mi, baş / kuyruk mu).
+        self.kutular_ilk: list = []
+        self.kutular_son: deque = deque(maxlen=GECMIS_SON)
         # 1.4.3 (PARK_GORUNUR): çapası kırpma alanına ya da kapıya girdi mi
         # (alanda) / orada mı doğdu (dogum_alanda). Alan yoksa her yer alandır.
         self.alanda = True
         self.dogum_alanda = True
 
-    def kenar_kutulari(self) -> list:
-        return self.kenar_ilk + list(self.kenar_sonra)
+    def kutu_ekle(self, mono: float, kutu) -> None:
+        """1.4.5 A: bu izin bir ölçülen karedeki kutusu (geçmişe)."""
+        if len(self.kutular_ilk) < GECMIS_ILK:
+            self.kutular_ilk.append((mono, kutu))
+        else:
+            self.kutular_son.append((mono, kutu))
+
+    def kutu_gecmisi(self) -> list:
+        """(mono, kutu) — zaman sırasıyla, tekrarsız (ilk ve son kutular)."""
+        return self.kutular_ilk + list(self.kutular_son)
 
     def tahmin(self, mono: float):
         dt = mono - self.son_mono
@@ -292,7 +311,7 @@ class Takipci:
 
     def __init__(self, en: int, boy: int, kapi=None, *, yeni_gecis, yaz,
                  dogum_esik: float = 0.35, durgun_esik: float = 2.0,
-                 kaynak: str = "arac", alan=None):
+                 kaynak: str = "arac", alan=None, byte_esles: bool | None = None):
         self.en, self.boy = int(en), int(boy)
         self.kapi = None if kapi is None else np.asarray(kapi, dtype=np.float32).reshape(-1, 1, 2)
         # 1.4.3 (PARK_GORUNUR): kırpma alanının köşeleri aynı pikselde. None =
@@ -302,6 +321,8 @@ class Takipci:
         self.dogum_esik = float(dogum_esik)
         self.durgun_esik = float(durgun_esik)
         self.kaynak = kaynak
+        # 1.4.5 C: yalnızca araç izcisi (plaka izcisi bugünkü gibi).
+        self.byte_esles = (BYTE_ESLES if byte_esles is None else bool(byte_esles))             and kaynak == "arac"
         self.izler: list[Iz] = []
         self.park: list[tuple] = []
         self._no = 0
@@ -330,7 +351,7 @@ class Takipci:
         self._giris_payi_taban = 0.02 * kosegen
         self._plakaci = None if kaynak == "plaka" else Takipci(
             en, boy, kapi, yeni_gecis=yeni_gecis, yaz=yaz, dogum_esik=dogum_esik,
-            durgun_esik=durgun_esik, kaynak="plaka", alan=alan)
+            durgun_esik=durgun_esik, kaynak="plaka", alan=alan, byte_esles=False)
 
     # ------------------------------------------------------------ geometri --
 
@@ -358,19 +379,6 @@ class Takipci:
     def _kenarda(self, k) -> bool:
         return (k[0] <= KENAR_PX or k[1] <= KENAR_PX or k[2] >= self.en - KENAR_PX
                 or k[3] >= self.boy - KENAR_PX)
-
-    def _kenarlari(self, k) -> frozenset:
-        """1.4.3 (1a): kutunun değdiği kırpıntı kenarları (_kenarda ile aynı pay)."""
-        e = set()
-        if k[0] <= KENAR_PX:
-            e.add("sol")
-        if k[2] >= self.en - KENAR_PX:
-            e.add("sag")
-        if k[1] <= KENAR_PX:
-            e.add("ust")
-        if k[3] >= self.boy - KENAR_PX:
-            e.add("alt")
-        return frozenset(e)
 
     def _kenara_gidiyor(self, iz: Iz) -> bool:
         """Kayıptan önce resmin kenarına değiyordu ya da en yakın kenara gidiyordu."""
@@ -470,21 +478,24 @@ class Takipci:
         canli = self._canli()
         tahmin = {id(z): z.tahmin(o.mono) for z in canli}
         adaylar = [a for a in araclar if a.skor >= arac.KUTU_ALT]
-        ciftler = []
-        for z in canli:
-            for j, a in enumerate(adaylar):
-                i = arac.ortusme(tahmin[id(z)], a)
-                if i >= ESLES_IOU:
-                    ciftler.append((i, z, j))
-        ciftler.sort(key=lambda c: -c[0])
         eslesen: list[tuple[Iz, object]] = []
         kullanilan_iz, kullanilan = set(), set()
-        for _, z, j in ciftler:
-            if id(z) in kullanilan_iz or j in kullanilan:
-                continue
-            eslesen.append((z, adaylar[j]))
-            kullanilan_iz.add(id(z))
-            kullanilan.add(j)
+        if self.byte_esles:
+            self._byte_turlari(o, canli, adaylar, tahmin, eslesen, kullanilan_iz, kullanilan)
+        else:
+            ciftler = []
+            for z in canli:
+                for j, a in enumerate(adaylar):
+                    i = arac.ortusme(tahmin[id(z)], a)
+                    if i >= ESLES_IOU:
+                        ciftler.append((i, z, j))
+            ciftler.sort(key=lambda c: -c[0])
+            for _, z, j in ciftler:
+                if id(z) in kullanilan_iz or j in kullanilan:
+                    continue
+                eslesen.append((z, adaylar[j]))
+                kullanilan_iz.add(id(z))
+                kullanilan.add(j)
         # İkinci tur: örtüşmeyen (hızlı) araçlar merkez uzaklığıyla.
         plaka_mi = self.kaynak == "plaka"
         kat = PLAKA_MERKEZ_KAT if plaka_mi else MERKEZ_KAT
@@ -514,6 +525,44 @@ class Takipci:
             kullanilan.add(j)
         kalan = [a for j, a in enumerate(adaylar) if j not in kullanilan]
         return eslesen, kalan
+
+    def _byte_turlari(self, o: Olcum, canli: list, adaylar: list, tahmin: dict,
+                      eslesen: list, kullanilan_iz: set, kullanilan: set) -> None:
+        """
+        1.4.5 C (BYTE_ESLES): ByteTrack'in iki turu. Önce doğum eşiğini geçen
+        kutular, sonra düşük puanlılar yalnızca artan izlere — aracın içindeki
+        düşük puanlı parça kutusu izi gerçek kutudan çalmasın (çalarsa gerçek
+        kutu ikinci iz doğurur). İki turda da örtüşme ≥ ESLES_IOU şart (bugünkü
+        gibi) ve atama EN İYİ toplamla (açgözlü değil). Örtüşme izin üç
+        tahmininden en iyisiyle: hız tahmini, Kalman tahmini (en çok
+        TAHMIN_SN ileri), son kutu. Duran iz yalnızca kendi yeriyle (bugünkü
+        gibi). Birinci turda maliyet puanla harmanlanır (ByteTrack fuse_score).
+        """
+        def ortusme(z: Iz, a) -> float:
+            kutular = [tahmin[id(z)]]
+            if not z.duruyor:
+                kutular.append(z.kutu)
+                if z.kf is not None:
+                    kutular.append(z.kf.tahmin(o.mono - z.kf_mono, en_cok=TAHMIN_SN))
+            return max(arac.ortusme(k, a) for k in kutular)
+
+        for yuksek in (True, False):
+            izler = [z for z in canli if id(z) not in kullanilan_iz]
+            js = [j for j, a in enumerate(adaylar)
+                  if j not in kullanilan and (a.skor >= self.dogum_esik) == yuksek]
+            if not izler or not js:
+                continue
+            maliyet = np.full((len(izler), len(js)), np.inf)
+            for r, z in enumerate(izler):
+                for c, j in enumerate(js):
+                    i = ortusme(z, adaylar[j])
+                    if i >= ESLES_IOU:
+                        maliyet[r, c] = 1.0 - i * (adaylar[j].skor if yuksek else 1.0)
+            ciftler, _, _ = esles.atama(maliyet, 1.0)
+            for r, c in ciftler:
+                eslesen.append((izler[r], adaylar[js[c]]))
+                kullanilan_iz.add(id(izler[r]))
+                kullanilan.add(js[c])
 
     def _dogur(self, o: Olcum, a, bu_karede: set) -> Iz | None:
         """Eşleşmeyen kutu: dikiş, park belleği, ya da yeni iz."""
@@ -715,13 +764,13 @@ class Takipci:
         elif not sentetik:
             z.plaka_kilit = False
         z.kenar_son.append(self._kenarda(a))
-        kenarlar = self._kenarlari(a)
-        if kenarlar:
-            kayit = (o.mono, a, kenarlar)
-            if len(z.kenar_ilk) < KENAR_KUTU_SAYI:
-                z.kenar_ilk.append(kayit)
+        z.kutu_ekle(o.mono, a)                  # 1.4.5 A: Gecitci'nin kutu geçmişi
+        if self.byte_esles and not sentetik:    # 1.4.5 C: yalnızca gövdenin kutusu
+            if z.kf is None or o.mono - z.kf_mono > TAHMIN_SN:
+                z.kf = esles.Kalman(a)          # yeni iz ya da uzun aradan sonra
             else:
-                z.kenar_sonra.append(kayit)
+                z.kf.guncelle(a, o.mono - z.kf_mono)
+            z.kf_mono = o.mono
         # Görünüm: aracın PİKSELLERİ değişti ve çapası kaydı (yalnızca kutu
         # titremesi yeni görünüm değildir — iki görünüm kuralı delinmesin).
         capa = self._capa(a)
@@ -1166,163 +1215,293 @@ class Takipci:
             self._plakaci.yeniden_baglandi()
 
 
-# ------------------------------------------- 1.4.3 (1a): tut ve em (Emici) ---
+# ------------------------------ 1.4.5 A: bir geçiş = bir karar (Gecitci) ---
 
-_DISA = {"sol": (-1.0, 0.0), "sag": (1.0, 0.0), "ust": (0.0, -1.0), "alt": (0.0, 1.0)}
-_PARCA_ADI = {"TEK_KARE": "tek kare", "KAPIDA_KAYBOLDU": "kapıda kayboldu",
-              "ESKI_GIRDI": "açılışta kapıdaydı"}
-_KARAR_ADI = {"GIRDI": "girdi", "CIKTI": "çıktı"}
+_OLAY_ADI = {"TEK_KARE": "tek kare", "KAPIDA_KAYBOLDU": "kapıda kayboldu",
+             "ESKI_GIRDI": "açılışta kapıdaydı", "GIRDI": "girdi", "CIKTI": "çıktı"}
 SAAT_SN = 3600.0
 
 
-def _aciklik(k, kenar: str) -> tuple[float, float]:
-    """Kutunun o kenar boyunca açıklığı (alt / üst: x; sol / sağ: y)."""
-    return (k[0], k[2]) if kenar in ("ust", "alt") else (k[1], k[3])
+def _yonu(tur: str | None) -> str | None:
+    """Olayın bilinen yönü (GIRDI / CIKTI); yönü bilinmeyen olay ya da canlı iz: None."""
+    return tur if tur in YONLU_OLAYLAR else None
 
 
-class Emici:
+def _icerme(a, b) -> float:
+    """Kesişim ÷ KÜÇÜK kutunun alanı (1.4.4'ün ölçüsü: küçük büyüğün içinde mi)."""
+    kucuk = min(_alan(a), _alan(b))
+    return _kesisim(a, b) / kucuk if kucuk > 0 else 0.0
+
+
+def _yurume(k1, k2):
+    """k1 → k2 merkez kayması; köşegenin GECIT_YURUME'sinden azsa None (yürümüyor)."""
+    (x1, y1), (x2, y2) = _merkez(k1), _merkez(k2)
+    d = (x2 - x1, y2 - y1)
+    if math.hypot(*d) < GECIT_YURUME * max(_kosegen(k1), _kosegen(k2)):
+        return None
+    return d
+
+
+def _ters(d1, d2) -> bool:
+    """İki yürüme ters yönde mi (ikisi de ölçülebildiyse)."""
+    return d1 is not None and d2 is not None and d1[0] * d2[0] + d1[1] * d2[1] < 0
+
+
+def _merkezi_icinde(kucuk, buyuk, pay: float) -> bool:
+    x, y = _merkez(kucuk)
+    w, h = buyuk[2] - buyuk[0], buyuk[3] - buyuk[1]
+    return (buyuk[0] - pay * w <= x <= buyuk[2] + pay * w
+            and buyuk[1] - pay * h <= y <= buyuk[3] + pay * h)
+
+
+def ayni_gecis(a: Iz, b: Iz, tur_a: str | None, tur_b: str | None) -> str | None:
     """
-    1.4.3 (1a): bir araç → bir karar. Sahada bir aracın kenardaki PARÇASI
-    (lastiği, köşesi) ayrı iz oldu ve ikinci kart açtı (16.11 iz 367/368
-    kuyruk, 17.11 iz 448/449 baş): kenarda kesik kutu, aracın kutusundan çok
-    küçük olduğu için dikilmez (DIKIS_ALAN).
+    1.4.5 A: iki araç izi AYNI geçişin (aynı aracın) parçaları olabilir mi —
+    olabilirse nedeni ("aynı karelerde" / "hemen ardından" / "hemen önünde",
+    `a`'nın `b`'ye göre yeri), değilse None. `tur_*`: izin olayı (canlı,
+    kararsız iz: None).
+      · Ters bilinen yönler (GİRDİ ↔ ÇIKTI) asla: kapıda karşılaşan iki araç.
+      · Birlikte görüldükleri karelerin en az GECIT_COGUNLUK'unda küçük kutu
+        büyüğün içinde (GECIT_ICERME) ve ters yöne yürümüyorlar: aynı araç
+        (kutu içinde kutu 21.11 16:30, aracın lastiği 18:10:39). Birlikte
+        görülüp iç içe değillerse iki ayrı şeydir (kuyruktaki iki araç).
+      · Hiç birlikte görülmediler: biri kaybolduktan en çok GECIT_ARA_SN sonra
+        öteki aynı yerde doğdu ve ters yöne yürümüyor (baş / kuyruk: 17.11
+        09:36, 16.11 22:26). Yalnızca biri yönü bilinmeyen olaysa: ardışık iki
+        yönlü olay kuyruktaki iki araçtır.
+    """
+    if a is b or a.kaynak != "arac" or b.kaynak != "arac":
+        return None
+    ya, yb = _yonu(tur_a), _yonu(tur_b)
+    if ya is not None and yb is not None and ya != yb:
+        return None
+    sa, sb = a.kutu_gecmisi(), b.kutu_gecmisi()
+    if not sa or not sb:
+        return None
+    ka, kb = dict(sa), dict(sb)
+    ortak = sorted(set(ka) & set(kb))
+    if ortak:
+        icinde = sum(1 for m in ortak if _icerme(ka[m], kb[m]) >= GECIT_ICERME)
+        if icinde < GECIT_COGUNLUK * len(ortak):
+            return None
+        if len(ortak) >= 2 and _ters(_yurume(ka[ortak[0]], ka[ortak[-1]]),
+                                     _yurume(kb[ortak[0]], kb[ortak[-1]])):
+            return None
+        return "aynı karelerde"
+    if ya is not None and yb is not None:
+        return None
+    for once, sonra, neden in ((sb, sa, "hemen ardından"), (sa, sb, "hemen önünde")):
+        if not 0 < sonra[0][0] - once[-1][0] <= GECIT_ARA_SN:
+            continue
+        k_once, k_sonra = once[-1][1], sonra[0][1]
+        if not (_merkezi_icinde(k_sonra, k_once, GECIT_YER_PAY)
+                or _merkezi_icinde(k_once, k_sonra, GECIT_YER_PAY)):
+            continue
+        d_once = _yurume(once[-2][1], once[-1][1]) if len(once) >= 2 else None
+        d_sonra = _yurume(sonra[0][1], sonra[min(len(sonra), 4) - 1][1])
+        if _ters(d_once, d_sonra):
+            continue                            # kuyrukta içeri yürüyen: arkadan gelen araç
+        return neden
+    return None
 
-    Yönü bilinmeyen olay (TEK_KARE / KAPIDA_KAYBOLDU / ESKI_GIRDI), kenara
-    değmiş bir araç izinden geldiyse bekletilir ve ele alınmış bir GİRDİ /
-    ÇIKTI izinin parçası mı diye bakılır. Aynı araç (hepsi gerekir):
-      · sıra: ÇIKTI'da parça gerçek izin son görülmesinden SONRA (kuyruk),
-        GİRDİ'de ilk görülmesinden ÖNCE (baş) görüldü, en çok EMME_SN arayla —
-        hiçbir karede ikisi birlikte görülmedi (kuyrukta iki araç iki araçtır);
-      · yer: ikisi de aynı kenara değdi (en çok EMME_KENAR_SN arayla) ve
-        parçanın o kenar boyunca açıklığı gerçek izinkinin içinde (EMME_PAY);
-      · yön: kuyruk açıkça içeri, baş açıkça dışarı yürümüyor (çıkan A'nın
-        ardından kenardan giren B'nin parçası A'nın kuyruğu sayılmaz);
-      · plaka: parçanın emin plakaları gerçek izinkilerin içinde (iki farklı
-        emin plaka asla; gerçek izde olmayan emin plaka da asla).
-    Parçanın okumaları gerçek ize KATILMAZ: iki görünüm kuralı (%95) değişmez.
 
-    `emer` kapalı (PARCA_EMME=0, varsayılan): her olay bugünkü gibi ve aynı
-    anda gönderilir; yalnızca "sayılırdı" satırı yazılır, sayılır. Açık:
-    parça gönderilmez ("sayıldı"); eşleşebilecek canlı iz varsa onun kararı
-    en çok TUTMA_EN_COK_SN beklenir, yoksa parça hemen gider. Kamera koparsa
-    (birak) bekleyen her olay hemen gider.
+def bekleyen_iz(z: Iz, mono: float) -> bool:
+    """
+    1.4.5 A: kararı hâlâ gelebilecek araç izi — aynı geçişin kart adayı onu
+    bekler: yürüyen, kapı alanında (bariyerde) duran, kapıdan geçip kararını
+    bekleyen ya da yeni doğmuş (TUTMA_EN_COK_SN) iz. Otoparkın derininde çoktan
+    durmuş araç beklenmez (kartı boşuna gecikmesin).
+    """
+    if z.kaynak != "arac" or z.durum == "bitti" or z.giris_karari or z.cikis_karari:
+        return False
+    return (not z.duruyor or z.kapida or z.gecti_mono is not None
+            or mono - z.dogum_mono < TUTMA_EN_COK_SN)
 
-    `gonder(olay, mono) -> bool`: olayı köprünün karar yoluna verir; döndürdüğü
-    "ele alındı" (gönderildi, ya da bilerek gönderilmedi: 60 sn kuralı, şeridin
-    yönü). Ele alınmamış karar (araç puanı düşük, hiçbir şey gitmedi) parçayı
-    saymaz: parça tek kanıttır. `eminler(gecis) -> set`: izin emin plakaları.
-    `yaz(satir)`: kayıt satırı (plaka YAZILMAZ). `sayinca(parca, gercek, mono)`
-    (1d, isteğe bağlı): parça GÖNDERİLMEDİ (emer açık) — köprü klibini ister;
-    yalnızca kayıt kipinde parça gönderildiği için klibi gönderim yolundan çıkar.
+
+class _Tutulan(NamedTuple):
+    olay: Olay
+    geldi: float
+
+
+class Gecitci:
+    """
+    1.4.5 A (TEK_KARAR, sahibin kararı 22.11): bir geçiş = bir karar. Sahada
+    bir aracın ikinci izi (lastik, köşe, kenar parçası, kutu içinde kutu)
+    doğru biletin yanında ikinci bir kart açıyordu; 1.4.3'ün Emici'si yalnızca
+    kenara değen, araçla aynı karede görülmeyen parçayı sayıyordu (ve sahada
+    yalnızca kayıttaydı).
+
+    Kart OLACAK araç olayı (`kart_mi`: köprünün kararı — plakasız, belirsiz ya
+    da yönü bilinmeyen) bekletilir; öteki her olay hemen gider (`gonder`).
+    Ele alınmış olay (gönderildi ya da bilerek gönderilmedi: şeridin yönü, 60
+    sn kuralı) EMME_HAFIZA_SN hatırlanır. Bekleyen kart:
+      · aynı geçişte (ayni_gecis) ele alınmış bir karar varsa GÖNDERİLMEZ —
+        kayıt satırı ve `birakinca` (klip). Parçanın plakası o kararda yoksa
+        (başka araç) düşmez;
+      · aynı geçişte kararsız canlı iz (bekleyen_iz) varsa en çok
+        TUTMA_EN_COK_SN bekler;
+      · yoksa aynı geçişin bekleyen kartları arasından YÖN BAŞINA BİR kart
+        gider (plaka tahmini olan, sonra araç puanı yüksek, sonra çok
+        görülen); yönü bilinen kart giderse yönü bilinmeyenler düşer.
+    Her bırakılışta karar yeniden sorulur: bekleyen iz bu arada emin plaka
+    kazandıysa ya da 60 sn kuralına girdiyse kart diye değil, yeni kararıyla
+    gider. Motosiklet sınıfı kart hiç bekletilmez (aracın yanından geçen gerçek
+    motosiklet olabilir; 1.4.4'ün 0.70'i zaten süzer). Kamera koparsa (birak)
+    bekleyenler aynı kuralla, beklemeden çözülür.
+
+    `acik` kapalı (TEK_KARAR=0): her olay geldiği anda gider (1.4.4 gibi).
+    `plakalar(gecis) -> set`: izin plaka metinleri (emin + tahmin; kayda yazılmaz).
     """
 
-    def __init__(self, *, gonder, eminler, yaz, emer: bool = False, sayinca=None):
-        self._gonder, self._eminler, self._yaz = gonder, eminler, yaz
-        self._sayinca = sayinca
-        self.emer = bool(emer)
-        self._tutulan: list[tuple[Olay, float]] = []
-        self._yonlu: list[tuple[Olay, float]] = []
-        self._emilirdi: list[float] = []
-        self._emildi: list[float] = []
+    def __init__(self, *, gonder, kart_mi, plakalar, yaz, acik: bool = True,
+                 birakinca=None):
+        self._gonder, self._kart_mi, self._plakalar = gonder, kart_mi, plakalar
+        self._yaz, self._birakinca = yaz, birakinca
+        self.acik = bool(acik)
+        self._tutulan: list[_Tutulan] = []
+        self._yonlu: list[tuple[Olay, float]] = []      # ele alınmış kararlar
+        self._dusen: list[float] = []
 
     def al(self, izci, olaylar: list[Olay], mono: float) -> None:
         """İzcinin olayları (boş liste de: bekleyenlere bakılır)."""
         for o in olaylar:
-            if o.tur in YONSUZ_OLAYLAR and o.iz.kaynak == "arac" and o.iz.kenar_kutulari():
-                self._tutulan.append((o, mono))
-                if not self.emer:
-                    self._gonder(o, mono)
-            elif self._gonder(o, mono) and o.tur in YONLU_OLAYLAR and o.iz.kaynak == "arac":
+            if (self.acik and o.iz.kaynak == "arac" and not self._motosiklet(o)
+                    and self._kart_mi(o, mono)):
+                self._tutulan.append(_Tutulan(o, mono))
+            elif self._gonder(o, mono):
                 self._yonlu.append((o, mono))
         self._coz(izci, mono)
 
     def birak(self, mono: float) -> None:
-        """Kamera koptu / izleme kapandı / izci yeniden kuruldu: bekleyen hemen gider."""
-        tutulan, self._tutulan = self._tutulan, []
+        """
+        Kamera koptu / izleme kapandı / izci yeniden kuruldu: bekleyen hemen
+        çözülür (izci yok: beklenecek canlı iz yok).
+        """
+        self._coz(None, mono)
         self._yonlu = []
-        if self.emer:
-            for o, _ in tutulan:
-                self._gonder(o, mono)
 
     def son_saat(self, mono: float) -> tuple[int, int]:
-        """Son bir saatte (sayılırdı, sayıldı)."""
-        self._emilirdi = [m for m in self._emilirdi if mono - m <= SAAT_SN]
-        self._emildi = [m for m in self._emildi if mono - m <= SAAT_SN]
-        return len(self._emilirdi), len(self._emildi)
+        """Son bir saatte (0, gönderilmeyen kart) — kalp atışının (emilirdi, emildi)'si."""
+        self._dusen = [m for m in self._dusen if mono - m <= SAAT_SN]
+        return 0, len(self._dusen)
+
+    # ------------------------------------------------------------ iç işler --
+
+    @staticmethod
+    def _motosiklet(o: Olay) -> bool:
+        return getattr(o.iz.gecis, "arac_sinif", None) == arac.MOTOSIKLET
 
     def _coz(self, izci, mono: float) -> None:
         self._yonlu = [(o, m) for o, m in self._yonlu if mono - m <= EMME_HAFIZA_SN]
-        canli = [] if izci is None else [
-            z for z in izci.izler
-            if z.durum != "bitti" and z.kaynak == "arac" and not (z.giris_karari or z.cikis_karari)]
         kalan = []
-        for o, geldi in self._tutulan:
-            p = o.iz
-            bulunan = None
+        for t in self._tutulan:
+            if self._kart_mi(t.olay, mono):
+                kalan.append(t)
+            elif self._gonder(t.olay, mono):              # karar değişti: yeni kararıyla
+                self._yonlu.append((t.olay, mono))
+        self._tutulan = []
+        canli = [] if izci is None else [z for z in izci.izler if bekleyen_iz(z, mono)]
+        for grup in self._gruplar(kalan):
+            grup = self._kararla_dusur(grup, mono)
+            if not grup:
+                continue
+            uyeler = {id(t.olay.iz) for t in grup}
+            if (mono - min(t.geldi for t in grup) < TUTMA_EN_COK_SN
+                    and any(id(z) not in uyeler and ayni_gecis(t.olay.iz, z, t.olay.tur, None)
+                            for t in grup for z in canli)):
+                self._tutulan.extend(grup)
+                continue
+            self._sonuclandir(grup, mono)
+
+    def _uyar(self, p: Olay, r: Olay, kapsar: bool) -> bool:
+        """
+        Plakalar aynı aracı mı söylüyor. `kapsar` (r ele alınmış karar): p'nin
+        her plakası r'de (bir karakter payıyla) olmalı. Değilse (iki kart
+        adayı): ikisinde de plaka varsa en az biri ortak olmalı.
+        """
+        pp, rr = self._plakalar(p.iz.gecis), self._plakalar(r.iz.gecis)
+
+        def yakin(x, y):
+            return x == y or plaka.bir_fark(x, y)
+        if kapsar:
+            return all(any(yakin(x, y) for y in rr) for x in pp)
+        return not pp or not rr or any(yakin(x, y) for x in pp for y in rr)
+
+    def _gruplar(self, tutulan: list[_Tutulan]) -> list[list[_Tutulan]]:
+        """Aynı geçişin bekleyen kartları (birbirine ayni_gecis ile bağlı)."""
+        ust = list(range(len(tutulan)))
+
+        def kok(i):
+            while ust[i] != i:
+                ust[i] = ust[ust[i]]
+                i = ust[i]
+            return i
+        for i, a in enumerate(tutulan):
+            for j in range(i):
+                b = tutulan[j]
+                if (ayni_gecis(a.olay.iz, b.olay.iz, a.olay.tur, b.olay.tur)
+                        and self._uyar(a.olay, b.olay, kapsar=False)):
+                    ust[kok(i)] = kok(j)
+        gruplar: dict[int, list[_Tutulan]] = {}
+        for i, t in enumerate(tutulan):
+            gruplar.setdefault(kok(i), []).append(t)
+        return list(gruplar.values())
+
+    def _kararla_dusur(self, grup: list[_Tutulan], mono: float) -> list[_Tutulan]:
+        """Aynı geçişte ele alınmış karar varsa o yöndeki (ve yönsüz) kartlar düşer."""
+        kapsayan: dict[int, tuple[Olay, str]] = {}
+        for t in grup:
             for r, _ in self._yonlu:
-                aralik = self._ayni_arac(p, r.iz, r.tur)
-                if aralik is not None:
-                    bulunan = (r, aralik)
+                neden = ayni_gecis(t.olay.iz, r.iz, t.olay.tur, r.tur)
+                if neden and self._uyar(t.olay, r, kapsar=True):
+                    kapsayan[id(t)] = (r, neden)
                     break
-            if bulunan is not None:
-                self._sayildi(o, *bulunan, mono)
+        if not kapsayan:
+            return grup
+        kalan = []
+        for t in grup:
+            y = _yonu(t.olay.tur)
+            r, neden = kapsayan.get(id(t), (None, None))
+            if r is None:
+                for r2, _ in kapsayan.values():
+                    y2 = _yonu(r2.tur)
+                    if y2 is None or y is None or y2 == y:
+                        r, neden = r2, "aynı geçişin kararı"
+                        break
+            if r is None:
+                kalan.append(t)
+            else:
+                self._dusur(t.olay, r, neden, mono)
+        return kalan
+
+    def _sira(self, t: _Tutulan):
+        g = t.olay.iz.gecis
+        return (bool(self._plakalar(g)), getattr(g, "arac_max", None) or 0.0,
+                t.olay.iz.gorulme, -t.geldi)
+
+    def _sonuclandir(self, grup: list[_Tutulan], mono: float) -> None:
+        """Yön başına BİR kart; yönü bilinen kart gidiyorsa yönsüzler düşer."""
+        kova: dict[str | None, list[_Tutulan]] = {}
+        for t in grup:
+            kova.setdefault(_yonu(t.olay.tur), []).append(t)
+        giden = [max(kova[y], key=self._sira) for y in ("GIRDI", "CIKTI") if y in kova]
+        if not giden:
+            giden = [max(kova[None], key=self._sira)]
+        giden.sort(key=lambda t: t.geldi)
+        for g in giden:
+            if self._gonder(g.olay, mono):
+                self._yonlu.append((g.olay, mono))
+        for t in grup:
+            if any(t is g for g in giden):
                 continue
-            if mono - geldi < TUTMA_EN_COK_SN and any(
-                    self._ayni_arac(p, z, None) is not None for z in canli if z is not p):
-                kalan.append((o, geldi))
-                continue
-            if self.emer:
-                self._gonder(o, mono)
-        self._tutulan = kalan
+            y = _yonu(t.olay.tur)
+            r = next((g for g in giden if _yonu(g.olay.tur) == y), giden[0])
+            self._dusur(t.olay, r.olay, "aynı geçişin kartı", mono)
 
-    def _sayildi(self, o: Olay, r: Olay, aralik: float, mono: float) -> None:
-        ne = f"iz {o.iz.id} → iz {r.iz.id} ({_KARAR_ADI[r.tur]}, {aralik:.1f} sn arayla)"
-        parca = _PARCA_ADI[o.tur]
-        if self.emer:
-            self._emildi.append(mono)
-            self._yaz(f"[i] {gunluk.EMILDI_ISARETI}: {ne} — {parca} gönderilmedi")
-            if self._sayinca is not None:
-                self._sayinca(o, r, mono)
-        else:
-            self._emilirdi.append(mono)
-            self._yaz(f"[i] {gunluk.EMILIRDI_ISARETI}: {ne} — {parca} yine gönderildi "
-                      "(PARCA_EMME=0)")
-
-    def _ayni_arac(self, p: Iz, r: Iz, tur: str | None) -> float | None:
-        """
-        Parça `p`, `r` izinin (kararı `tur`; None = canlı, henüz kararsız)
-        parçası olabilir mi: olabilirse aralık (sn), yoksa None.
-        """
-        if r is p or r.kaynak != "arac":
-            return None
-        kuyruk = p.dogum_mono - r.son_mono
-        bas = r.dogum_mono - p.son_mono
-        if tur in ("CIKTI", None) and 0 < kuyruk <= EMME_SN:
-            aralik = kuyruk
-        elif tur in ("GIRDI", None) and 0 < bas <= EMME_SN:
-            aralik = bas
-        else:
-            return None
-        if tur is not None and not self._eminler(p.gecis) <= self._eminler(r.gecis):
-            return None
-        for pm, pk, pe in p.kenar_kutulari():
-            for rm, rk, re_ in r.kenar_kutulari():
-                if abs(pm - rm) > EMME_KENAR_SN:
-                    continue
-                for kenar in pe & re_:
-                    a, b = _aciklik(pk, kenar)
-                    c, d = _aciklik(rk, kenar)
-                    pay = EMME_PAY * (d - c)
-                    if a >= c - pay and b <= d + pay and self._yon_uyar(p, kenar, tur):
-                        return aralik
-        return None
-
-    @staticmethod
-    def _yon_uyar(p: Iz, kenar: str, tur: str | None) -> bool:
-        """Kuyruk açıkça içeri, baş açıkça dışarı yürümüyor (hız ölçülmediyse 0)."""
-        if tur is None:
-            return True
-        n = _DISA[kenar]
-        disa = p.hiz[0] * n[0] + p.hiz[1] * n[1]
-        esik = 0.02 * _kosegen(p.kutu)
-        return disa >= -esik if tur == "CIKTI" else disa <= esik
+    def _dusur(self, p: Olay, r: Olay, neden: str, mono: float) -> None:
+        self._dusen.append(mono)
+        self._yaz(f"[i] {gunluk.EMILDI_ISARETI}: iz {p.iz.id} → iz {r.iz.id} "
+                  f"({_OLAY_ADI.get(r.tur, r.tur)}, {neden}) — "
+                  f"{_OLAY_ADI.get(p.tur, p.tur)} kartı gönderilmedi")
+        if self._birakinca is not None:
+            self._birakinca(p, r, mono)

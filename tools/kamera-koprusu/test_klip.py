@@ -99,6 +99,23 @@ def test_saniyede_5_kare_tutulur():
     assert 49 <= k.kare_sayisi <= 52, k.kare_sayisi
 
 
+def test_kare_gerek_tutulacak_kareyi_soyler():
+    # 1.4.5 (PARK_GORUNUR): köprü maskesiz kırpıntıyı yalnızca klip o kareyi
+    # tutacaksa hazırlar (her kamera karesinde değil). Sormak durumu değiştirmez.
+    k = _klipci(_klasor())
+    z = datetime(2026, 11, 22, 20, 0, tzinfo=timezone.utc)
+    kare = np.zeros((48, 64, 3), np.uint8)
+    assert k.kare_gerek(0.0) and k.kare_gerek(0.0)
+    k.kare(kare, 0.0, z)
+    assert not k.kare_gerek(0.1)
+    assert k.kare_gerek(klip.KLIP_ARALIK_SN)
+    for t in (0.04, 0.08, 0.12, 0.16, 0.2, 0.24):
+        once = k.kare_sayisi
+        gerek = k.kare_gerek(t)
+        k.kare(kare, t, z)
+        assert (k.kare_sayisi > once) == gerek, (t, gerek)
+
+
 def test_70_sn_den_eski_kare_atilir():
     k = _klipci(_klasor())
     _besle(k, 0.0, 100.0, adim=0.2)
@@ -200,6 +217,15 @@ def test_ad_bicimi_istanbul_saati():
         "2026-11-18_22-26-00_iz5_ESKI_GIRDI_emildi.avi"
 
 
+def test_ad_her_gonderilen_olay_adini_tasir():
+    # 1.4.4: her personel kartının klibi var — kapıdan girdiği / çıktığı
+    # izlenen plakasız araç da. Gönderilebilen her olay (kopru.OLAY_ADLARI)
+    # adında kendi adıyla görünür, "OLAY" değil.
+    for tur in ("GIRDI", "CIKTI", "ESKI_GIRDI", "KAPISIZ", "TEK_KARE", "KAPIDA_KAYBOLDU"):
+        assert klip.klip_adi(T0, 5, tur, ISLEM) == \
+            f"2026-11-18_22-26-00_iz5_{tur}_ab12cd34.avi", tur
+
+
 def test_ad_plaka_tasiyamaz():
     # Ne olay adı ne kimlik yerine plaka konabilir: yalnızca bilinen olay
     # adları ve uuid biçimindeki islem_id adın parçası olur.
@@ -208,7 +234,7 @@ def test_ad_plaka_tasiyamaz():
         ad = klip.klip_adi(T0, 7, tur, islem)
         assert "ABC" not in ad.upper(), ad
         assert re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_iz7_"
-                            r"(TEK_KARE|KAPIDA_KAYBOLDU|ESKI_GIRDI|OLAY)_"
+                            r"(GIRDI|CIKTI|KAPISIZ|TEK_KARE|KAPIDA_KAYBOLDU|ESKI_GIRDI|OLAY)_"
                             r"([0-9a-f]{8}|gonderimyok|emildi)\.avi", ad), ad
 
 

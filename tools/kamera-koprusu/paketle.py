@@ -41,7 +41,21 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.3"   # 1.4.3: tek kapıda yönü bilinmeyen emin plaka gönderilir; tahmin emin
+SURUM = "1.4.5"   # 1.4.5 (sahibin kararı 22.11, 1.4.4 kurulmadan içine katıldı):
+                  #        A TEK_KARAR — bir geçiş = bir karar: aynı aracın ikinci
+                  #        izinin kartı gönderilmez (takip.Gecitci, kayıt + klip);
+                  #        B IZ_ONAY — tek karede görülen aracın kartı ancak plaka
+                  #        okunduysa; C BYTE_ESLES — araç izcisi ByteTrack gibi
+                  #        eşler (esles.py: Kalman + en iyi atama). Üçü de
+                  #        kopru-ortak.json'da, varsayılan açık; PARCA_EMME kalktı
+                  #        PARK_GORUNUR=1: fotoğraf ve klip de maskesiz (alanın
+                  #        dışındaki araç gri katmanın arkasında kalmaz)
+                  # 1.4.4: kutu içindeki kutu (aracın parçası) aynı araç — 21.11 16:30
+                  #        ikizi (bilet + plakasız kart) biter; motosiklet eşiği 0.70,
+                  #        her plakasız olayda (el arabası); KLIP=1 her personel
+                  #        kartının ve HER çıkışın klibini tutar
+                  #        — gunluk.KOPRU_SURUMU ile AYNI olmalı (test_kurulum)
+                  # 1.4.3: tek kapıda yönü bilinmeyen emin plaka gönderilir; tahmin emin
                   #        plakayı engellemez; bozulan model yeniden denenir, izleme geri
                   #        açılır; kutu kameradan önce gönderir; canlı kamerada zaman
                   #        aşımı; kalp atışı sayılar taşır (sunucu 070, eskisi 400 der)
@@ -90,7 +104,8 @@ SURUM = "1.4.3"   # 1.4.3: tek kapıda yönü bilinmeyen emin plaka gönderilir;
 # -> kopru) ve zincirin bir halkası kaçarsa sonuç ancak SAHADA, kurulumun
 # ortasında patlayan bir .exe olur. Açıkça saymak ucuz sigorta.
 MODULLER = ["kopru", "kurulum", "durum", "kaldir", "kesif", "kirpma_sunucu", "gunluk",
-            "plaka", "okuma", "giden", "arac", "takip", "hizlandirici", "video", "klip"]
+            "plaka", "okuma", "giden", "arac", "takip", "esles", "hizlandirici", "video",
+            "klip"]
 
 # Paketi küçültür ve ilgisiz bağımlılıkların içeri sızmasını engeller.
 # 1.4.2: openvino_telemetry de — OpenVINO onsuz çalışır, köprü bir şey göndermez.

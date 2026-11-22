@@ -425,7 +425,8 @@ class Is(NamedTuple):
     kare: KareIsi | None = None
     # 1.4.3 (PARK_GORUNUR): izleme karesinin MASKESİZ kırpıntısı. Verilmişse
     # iki model bunu görür (araç bulucu alan dışını atmaz, plaka maskesiz
-    # kuralla okunur); `kirpik` maskeli kalır ve Olcum'a (fotoğrafa) o gider.
+    # kuralla okunur). 1.4.5 (sahip 22.11): Olcum'a (fotoğrafa) da bu gider —
+    # alanın dışındaki araç gri katmanın arkasında kalmasın; `kirpik` maskeli.
     # Sahibi işçi: döngü KOPYASINI verir.
     acik: np.ndarray | None = None
 
@@ -594,7 +595,8 @@ class Isci:
         is_ = e["is"]
         araclar = None if e["arac"] is None else list(e["arac"][0])
         k = is_.kare
-        self._biten.append(takip.Olcum(k.no, k.mono, is_.zaman, is_.kirpik,
+        self._biten.append(takip.Olcum(k.no, k.mono, is_.zaman,
+                                       is_.kirpik if is_.acik is None else is_.acik,
                                        k.gri if k.acik_gri is None else k.acik_gri,
                                        araclar, e["plaka"], k.gri))
 
@@ -902,6 +904,19 @@ def emin_plakalar(gecis: Gecis) -> set[str]:
         return {e.metin for e in gecis.oylama.karar().eminler}
 
 
+
+def iz_plakalari(gecis: Gecis) -> set[str]:
+    """
+    1.4.5 A: izin plaka METİNLERİ — emin okumalar ve tahmin (Gecitci'nin
+    plaka kuralı: iki iz farklı plaka okuduysa iki araçtır). Kayda yazılmaz.
+    """
+    with gecis.kilit:
+        k = gecis.oylama.karar()
+    metinler = {e.metin for e in k.eminler}
+    if k.belirsiz is not None and k.belirsiz.tahmin:
+        metinler.add(k.belirsiz.tahmin)
+    return metinler
+
 IKI_PLAKA_SATIRI = "iki plaka tek izde — iki araç karışmış olabilir, personele"
 
 
@@ -965,6 +980,9 @@ def iz_arac_esigi(tur: str, arac_esik: float, arac_gecis_esik: float,
     KAPIDA_KAYBOLDU) puanını MOTOSİKLETTEN (`sinif`, izin en iyi kutusu)
     alıyorsa en az `moto_esik` ister (YOLO11s 0.60; tiny'de None = kural yok).
     19.11'de el arabası iten kişi bu olaylarla 5 kart oldu (0.37-0.52).
+    1.4.4 (sahibin kararı 21.11): HER olay türünde — 21.11 18:00:34 / 18:11:24
+    iki el arabası "araç girdi, kapıda görülmedi" kartı oldu (motosiklet 0.61
+    / 0.56); eşik de 0.70 (YOLO11s profili).
     """
     if tur == "TEK_KARE" and komsu:
         esik = arac_gecis_esik
@@ -972,15 +990,14 @@ def iz_arac_esigi(tur: str, arac_esik: float, arac_gecis_esik: float,
         esik = arac_esik
     else:
         esik = arac_gecis_esik
-    if (moto_esik is not None and sinif == arac.MOTOSIKLET
-            and tur in ("TEK_KARE", "KAPIDA_KAYBOLDU")):
+    if moto_esik is not None and sinif == arac.MOTOSIKLET:
         esik = max(esik, moto_esik)
     return esik
 
 
 def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
               arac_gecis_esik: float, personele: bool = False, tek_kapi: bool = False,
-              iceride: bool = False) -> tuple[list[Gonderim], list[str]]:
+              iceride: bool = False, plaka_sart: bool = False) -> tuple[list[Gonderim], list[str]]:
     """
     1.4.0: BİR izin (aracın) kararı — izci "girdi / çıktı / durdu" dediğinde.
     Zaman OLAYIN anıdır (kapıdan çıktığı / son görüldüğü an), plakanın ilk
@@ -1001,6 +1018,9 @@ def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
     ve plakasız araç yine kart.
     1.4.3 `iceride` (sahibin kararı 18.11): içeride sorusu — emin plaka, az
     önce ÇIKTI ipucuyla gönderilmiş kayda takılmaz (`_yeni_gitti`).
+    1.4.5 `plaka_sart` (B, IZ_ONAY; sahibin kararı 22.11): kart ancak bir
+    plaka OKUNDUYSA (emin ya da tahmin) — plakasız ya da kutusu okunamayan
+    araç kart olmaz, kayıt satırı yazılır (köprü yalnızca TEK_KARE'de verir).
     Kayıt satırlarına plaka YAZILMAZ.
     """
     satirlar: list[str] = []
@@ -1033,15 +1053,22 @@ def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
         return [Gonderim("PLAKA", e.metin, None, None, olay_zamani,
                          en_iyi.get(e.metin, (None, foto))[1],
                          yon_bilinmiyor=personele)], satirlar
+    puan = "?" if arac_max is None else f"{arac_max:.2f}"
+    puan += sinif_eki(getattr(gecis, "arac_sinif", None))          # 1.4.3
     if k.belirsiz is not None:
         if not personele and _yeni_gitti(k.belirsiz.tahmin, son_gonderilen, simdi):
             satirlar.append(f"[i] {AYRILIS_ISARETI} (60 sn içinde aynı plaka)")
             return [], satirlar
+        if plaka_sart and k.belirsiz.tahmin is None:
+            satirlar.append(f"[i] {gunluk.TEK_KARE_ONAYSIZ_ISARETI} (plaka kutusu okunamadı, "
+                            f"araç {puan})")
+            return [], satirlar
         return [Gonderim("OKUNAMADI", None, k.belirsiz.tahmin, k.belirsiz.guven,
                          olay_zamani, foto)], satirlar
-    puan = "?" if arac_max is None else f"{arac_max:.2f}"
-    puan += sinif_eki(getattr(gecis, "arac_sinif", None))          # 1.4.3
     if arac_max is not None and arac_max >= arac_gecis_esik:
+        if plaka_sart:
+            satirlar.append(f"[i] {gunluk.TEK_KARE_ONAYSIZ_ISARETI} (araç {puan})")
+            return [], satirlar
         satirlar.append(f"[i] {PLAKASIZ_ARAC_ISARETI} — personele (araç {puan})")
         return [Gonderim("OKUNAMADI", None, None, None, olay_zamani,
                          arac_kirpik if arac_kirpik is not None else foto)], satirlar

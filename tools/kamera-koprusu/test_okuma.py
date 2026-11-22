@@ -1357,20 +1357,24 @@ def test_motosiklet_esigi_yonsuz_kapi_olayinda():
     # 17:38 kartı YOLO11s'te motosiklet 0.50. Yönü bilinmeyen plakasız kapı
     # olayı puanını MOTOSİKLETTEN alıyorsa moto_esik (0.60) ister. Sahibinin
     # skuter fotoğrafları 0.77-0.92. GİRDİ / ÇIKTI ve öteki sınıflar aynen.
+    # 1.4.4 (sahibin kararı 21.11): 21.11 18:00:34 ve 18:11:24'te iki EL
+    # ARABASI "araç girdi, kapıda görülmedi" olarak kart oldu — motosiklet
+    # 0.61 / 0.56. Eşik 0.70 ve HER olay türünde (GİRDİ / ÇIKTI dahil).
     m = arac.MOTOSIKLET
-    for tur in ("TEK_KARE", "KAPIDA_KAYBOLDU"):
-        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.60) == 0.60, tur
+    for tur in ("TEK_KARE", "KAPIDA_KAYBOLDU", "GIRDI", "CIKTI"):
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.70) == 0.70, tur
         for s in (2, 5, 7, -1, None):
-            assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=s, moto_esik=0.60) == 0.30, (tur, s)
+            assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=s, moto_esik=0.70) == 0.30, (tur, s)
         assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=None) == 0.30, tur
-        # Sahada geri alma: ARAC11_MOTO_ESIK=0.30 → bugünkü eşik.
+        # Sahada geri alma: ARAC11_MOTO_ESIK=0.30 → kural yok (araç eşiği).
         assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.30) == 0.30, tur
-    for tur in ("GIRDI", "CIKTI"):
-        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.60) == 0.30, tur
     for tur in ("KAPISIZ", "ESKI_GIRDI"):
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.70) == 0.70, tur
+        # Düşük bir moto_esik 0.60'ı indirmez.
         assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.45) == 0.60, tur
     # Komşulu tek kare zaten 0.60: düşük bir moto_esik onu indirmez.
     assert okuma.iz_arac_esigi("TEK_KARE", 0.30, 0.60, komsu=True, sinif=m, moto_esik=0.45) == 0.60
+    assert okuma.iz_arac_esigi("TEK_KARE", 0.30, 0.60, komsu=True, sinif=m, moto_esik=0.70) == 0.70
 
 
 def test_iz_karari_sinifi_kayda_yazar():
@@ -1521,6 +1525,66 @@ def test_kapida_kaybolan_arac_personele_ve_kapi_esigi():
     assert [x.tur for x in gonder] == ["OKUNAMADI"], gonder
 
 
+def test_plaka_sart_okunmayan_arac_kart_olmaz():
+    # 1.4.5 B (IZ_ONAY, sahibin kararı 22.11): YALNIZCA bir karede görülen
+    # aracın (TEK_KARE) kartı ancak bir plaka OKUNDUYSA açılır — emin plaka
+    # PLAKA olarak gider (1.4.3 kuralı), tahmin kart olur. Plaka hiç okunmadıysa
+    # (plakasız ya da kutusu okunamayan) kart açılmaz: kayıt satırı (puanı ve
+    # sınıfıyla) ve klip kalır. Sahada kartların çoğu böyle araç parçalarıydı.
+    esik = okuma.iz_arac_esigi("TEK_KARE", 0.35, 0.60)
+    # Plakasız, araç puanı eşiğin üstünde: bugün kart — plaka şartıyla kart yok.
+    g = _gecis()
+    g.arac_max, g.arac_kirpik, g.arac_sinif = 0.49, _kare(8), arac.MOTOSIKLET
+    assert [x.tur for x in _iz_karari(g, arac_gecis_esik=esik, personele=True)[0]] == ["OKUNAMADI"]
+    gonder, satir = _iz_karari(g, arac_gecis_esik=esik, personele=True, plaka_sart=True)
+    assert gonder == [], gonder
+    assert any(gunluk.TEK_KARE_ONAYSIZ_ISARETI in s and "0.49 motosiklet" in s
+               for s in satir), satir
+    # Plaka kutuları görüldü ama hiçbir şey okunmadı (tahmin yok): kart yok.
+    g = _gecis()
+    g.arac_max = 0.8
+    g.oylama.kutu(_z(2), 1)
+    g.oylama.kutu(_z(3), 2)
+    assert g.oylama.karar().belirsiz.tahmin is None
+    assert [x.tur for x in _iz_karari(g, personele=True)[0]] == ["OKUNAMADI"]
+    gonder, satir = _iz_karari(g, personele=True, plaka_sart=True)
+    assert gonder == [] and any(gunluk.TEK_KARE_ONAYSIZ_ISARETI in s for s in satir), satir
+    # Tahmin okundu: kart (tahminle) — şart karşılandı.
+    g = _gecis()
+    _oy(g, "34ABC123", [1], enk=0.96)
+    g.oylama.kutu(_z(2), 1)
+    gonder, _ = _iz_karari(g, personele=True, plaka_sart=True)
+    assert [(x.tur, x.tahmin) for x in gonder] == [("OKUNAMADI", "34ABC123")], gonder
+    # Emin plaka: tek kapıda PLAKA (yönü bilinmiyor), şeritte tahminle kart.
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    gonder, _ = _iz_karari(g, personele=True, tek_kapi=True, plaka_sart=True)
+    assert [(x.tur, x.plaka, x.yon_bilinmiyor) for x in gonder] == [
+        ("PLAKA", "34ABC123", True)], gonder
+    gonder, _ = _iz_karari(g, personele=True, tek_kapi=False, plaka_sart=True)
+    assert [(x.tur, x.tahmin) for x in gonder] == [("OKUNAMADI", "34ABC123")], gonder
+    # Zayıf plakasız araç: şartsız da gönderilmiyordu — satır bugünkü gibi.
+    g = _gecis()
+    g.arac_max = 0.2
+    gonder, satir = _iz_karari(g, arac_gecis_esik=esik, personele=True, plaka_sart=True)
+    assert gonder == [] and any(gunluk.ARAC_YOK_ISARETI in s for s in satir), satir
+
+
+
+def test_iz_plakalari_emin_ve_tahmin():
+    # 1.4.5 A: Gecitci'nin plaka kuralı izin plaka METİNLERİNE bakar — emin
+    # okumalar ve tahmin; hiç okunmadıysa boş küme (plakasız parça).
+    g = _gecis()
+    assert okuma.iz_plakalari(g) == set()
+    g.oylama.kutu(_z(2), 1)
+    assert okuma.iz_plakalari(g) == set()                  # kutu var, okuma yok
+    _oy(g, "34ABC123", [1], enk=0.96)
+    assert okuma.iz_plakalari(g) == {"34ABC123"}           # tahmin
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    assert okuma.iz_plakalari(g) == {"34ABC123"}           # emin
+    _oy(g, "35DEF456", [3, 4])
+    assert okuma.iz_plakalari(g) == {"34ABC123", "35DEF456"}
 
 # ----------------- 1.4.3 PARK_GORUNUR: modeller maskesiz kırpıntıyı görür --
 
@@ -1572,7 +1636,9 @@ def test_izleme_karesi_modeller_acik_kirpigi_gorur():
         isci.durdur()
     assert p.cagrilar == [5] and a.cagrilar == [5], (p.cagrilar, a.cagrilar)
     assert a.haricler == [None], "açık kırpıntıda araç bulucu alan dışını atmaz"
-    assert int(o.kirpik[0, 0, 0]) == 1, "fotoğraf maskeli kırpıntıdan (Olcum.kirpik)"
+    # 1.4.5 (sahip 22.11): fotoğraf da maskesiz kırpıntıdan — alanın dışındaki
+    # araç gri katmanın arkasında kalmasın.
+    assert int(o.kirpik[0, 0, 0]) == 5, "fotoğraf maskesiz kırpıntıdan (Olcum.kirpik)"
     assert len(o.araclar) == 1
     # Alan kenarındaki plaka artık kesik değil; tamamen dışarıdaki okunmaz
     # (oku_disari boş); dikdörtgenin kenarına değen yine kesik.
