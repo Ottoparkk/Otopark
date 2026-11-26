@@ -321,6 +321,12 @@ class Profil(NamedTuple):
     # oldu (0.37-0.52); sahibinin skuter fotoğrafları 0.77-0.92.
     moto_esik: float | None = None
     moto_anahtari: str | None = None
+    # 1.4.6 B (sahibin kararı 25.11): plakasız KAPI olayının (GİRDİ / ÇIKTI /
+    # KAPIDA_KAYBOLDU / komşusuz TEK_KARE) kartı bu puanı ister (motosiklet
+    # hariç: moto_esik). 23–24.11: araç olmayan kartlar 0.32–0.73, gerçek
+    # araçlar ≥ 0.84. None = kural yok (tiny'nin ölçeği farklı).
+    kart_esik: float | None = None
+    kart_anahtari: str | None = None
 
 
 YOLOX_TINY = Profil("YOLOX-tiny", MODEL, GIRDI, on_isle, coz, ALTIN_ARAC, 0.35, 0.60,
@@ -374,7 +380,8 @@ YOLO11S = Profil(
     # kaymayı arar. GPU (f16) 0.496.
     GIRDI11, on_isle11_640, coz11, 0.49103, 0.30, 0.60,
     "arac11_esik", "arac11_gecis_esik", False,
-    sinif=sinif11, moto_esik=0.70, moto_anahtari="arac11_moto_esik")
+    sinif=sinif11, moto_esik=0.70, moto_anahtari="arac11_moto_esik",
+    kart_esik=0.75, kart_anahtari="arac11_kart_esik")
 
 
 # ------------------------------------------------------------------ bulucu ---
@@ -415,6 +422,8 @@ class AracBulucu:
         self.gecis_esik = self._esik(profil.gecis_anahtari, profil.gecis_esik)
         self.moto_esik = (None if profil.moto_esik is None
                           else self._esik(profil.moto_anahtari, profil.moto_esik))
+        self.kart_esik = (None if profil.kart_esik is None
+                          else self._esik(profil.kart_anahtari, profil.kart_esik))
 
     def _esik(self, anahtar: str, varsayilan: float) -> float:
         v = self._ayar.get(anahtar)

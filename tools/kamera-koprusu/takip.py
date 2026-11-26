@@ -97,6 +97,7 @@ EMME_HAFIZA_SN = 60.0     # ele alınmış karar bu kadar hatırlanır
 GECIT_ICERME = 0.5        # aynı karede: küçük kutunun en az bu payı büyüğün içinde …
 GECIT_COGUNLUK = 0.5      # … ikisinin birlikte görüldüğü karelerin en az bu payında
 GECIT_ARA_SN = 2.0        # baş / kuyruk: biri kaybolduktan en çok bu kadar sonra öteki doğdu
+GECIT_IKIZ_SN = 25.0      # 1.4.6 C: kararın ardından bu kadar içinde doğan plakasız kapıda kaybolan
 GECIT_YER_PAY = 0.25      # baş / kuyruk: küçüğün merkezi büyüğün bu kadar genişletilmişinde
 GECIT_YURUME = 0.02       # bu kadardan (kutu köşegeni payı) az kayan kutu "yürümüyor"
 GECMIS_ILK = 40           # izin ilk bu kadar kutusu (mono, kutu) saklanır …
@@ -148,6 +149,20 @@ def _alandakiler(olaylar: list[Olay]) -> list[Olay]:
     alana girmiş izler verir). Alan yoksa her iz alandadır: hiçbir şey düşmez.
     """
     return [o for o in olaylar if o.iz.alanda]
+
+
+def _alt_olcumler(kaynak: list, secilenler: list) -> list:
+    """
+    1.4.6 L: karenin plaka ölçümlerinden bir ize düşenler — [(sıra, ölçüm)].
+    Kaynak okuma.PlakaOlcumleri ise (`olcek`, `kirpiklar`) aynı türde ve aynı
+    sırada taşınır (izin plaka kırpığı ve teşhisi); değilse düz liste.
+    """
+    if not hasattr(kaynak, "kirpiklar"):
+        return [olcum for _, olcum in secilenler]
+    alt = type(kaynak)(olcum for _, olcum in secilenler)
+    alt.olcek = getattr(kaynak, "olcek", 1.0)
+    alt.kirpiklar = [kaynak.kirpiklar[i] for i, _ in secilenler]
+    return alt
 
 
 def _merkez(k) -> tuple[float, float]:
@@ -226,6 +241,7 @@ class Iz:
         self.son_adim: tuple | None = None   # (önceki çapa, çapa, sn): son iki görülme
         self.ilk_kacirma_mono: float | None = None  # son görülmeden sonraki ilk ölçülen kare
         self.kapida_gorulmedi = False        # karar hız kuralıyla verildi (kayda yazılır)
+        self.kenarda_dondu = False           # 1.4.6 J: kenardan girip aynı kenardan döndü
         # 1.4.2 (A4): doğduğu kareden ÖNCEKİ son "açıklanmamış kapı kıpırtısı"nın anı.
         self.kapi_kipirti_once: float | None = None
         self.plaka_ofset: tuple | None = None    # araç kutusu − plaka kutusu (x1, y1, x2, y2)
@@ -436,6 +452,27 @@ class Takipci:
         geri = (a[0] - (b[0] - a[0]) / dt * g, a[1] - (b[1] - a[1]) / dt * g)
         return self._yol_kapiya_degiyor(geri, a, pay)
 
+    def _kapidan_cikti_mi(self, z: Iz, mono: float) -> bool:
+        """
+        1.4.6 (sahibin kararı 26.11): kayıp araç ya da plaka izi kapıdan resmin DIŞINA
+        çıkmış mı — otoparkta görülmüş, kapıda son görüldüğünde resmin
+        kenarına değiyordu (_son_karar'ın kapıdaki ÇIKTI kuralının kesin
+        hâli). Böyle bir ize yeni kutu DİKİLMEZ: DIKIS_SN içinde aynı yerden
+        giren BAŞKA araçtır — dikilseydi çıkış hiç verilmez, girenin plakası
+        çıkanın oylamasına yazılırdı. Kayıp sayılmamış iz (kısa örtülme),
+        kenara varmadan örtülen ya da otoparktan kapıya giderken örtülen araç
+        (yolunda yeniden görünür) ve duran iz (bariyerde) eskisi gibi dikilir.
+        Kapıdan girip geri dönen de resmin dışına çıkmıştır: kendi kararı
+        (GERI_DONDU, gönderim yok) değişmez, ardından giren yeni izdir.
+        "Kayıp" BU karede yargılanır (bu kare de kaçırma sayılır): kayip
+        işareti karenin sonunda konur — seyrek karede (yavaş bilgisayar) iz
+        hâlâ "izleniyor" görünür, giren araç ona dikilirdi. Plaka izi de
+        aynı (sahibin kararı 26.11, "Extend"): karanlık araç yalnız plakayla izlenir.
+        """
+        return (z.kacirma + 1 >= KAYIP_KARE and mono - z.son_mono >= KAYIP_SN
+                and not z.duruyor and z.disarida_bulundu
+                and self._kapida(self._capa(z.kutu)) and any(z.kenar_son))
+
     def _kapiya_gitti_mi(self, z: Iz) -> bool:
         """Kayıpta: kapıya doğru gidiyordu ve bir kare sonraki yeri kapı alanında mı."""
         if z.son_adim is None or z.ilk_kacirma_mono is None:
@@ -474,8 +511,25 @@ class Takipci:
     def _canli(self) -> list[Iz]:
         return [z for z in self.izler if z.durum == "izleniyor"]
 
+    def giris_bekliyor(self, haric: Iz | None = None) -> bool:
+        """
+        1.4.6 E2 (sahibin kararı 25.11): kapıdan giren bir aracın kararı
+        bekleniyor mu — kapıda doğmuş (ya da kapıdan geçmiş) canlı iz henüz
+        GİRDİ / ÇIKTI kararı almadı. Kapı alanından çıkıp "geçti" sayılana
+        dek birkaç kare de bekleyen sayılır. Köprü bu sırada içeride sorusunu
+        erteler (aynı aracın otopark içine kopan parçası "biletsiz" kaydı
+        açmasın). `haric`: soran iz kendini saymaz.
+        """
+        return any(z is not haric and not (z.giris_karari or z.cikis_karari)
+                   and (z.gecti_mono is not None
+                        or (z.kapidan_dogdu and z.koken in ("kapi", "eski")))
+                   for z in self._canli())
+
     def _esles(self, o: Olcum, araclar: list) -> tuple[list[tuple[Iz, object]], list]:
-        canli = self._canli()
+        # 1.4.6: bu karede kapıdan çıkmış sayılan iz (henüz "izleniyor" olsa
+        # da) eşleşmeye girmez — seyrek karede aynı yerden giren başka araç
+        # örtüşmeyle ona bağlanırdı. Eşleşmezse karenin sonunda kayıp olur.
+        canli = [z for z in self._canli() if not self._kapidan_cikti_mi(z, o.mono)]
         tahmin = {id(z): z.tahmin(o.mono) for z in canli}
         adaylar = [a for a in araclar if a.skor >= arac.KUTU_ALT]
         eslesen: list[tuple[Iz, object]] = []
@@ -577,6 +631,8 @@ class Takipci:
         for z in self.izler:
             gorunmez = z.durum in ("izleniyor", "kayip")
             if not gorunmez or id(z) in bu_karede or o.mono - z.son_mono >= DIKIS_SN:
+                continue
+            if self._kapidan_cikti_mi(z, o.mono):
                 continue
             # Görünmezken ilerlemiş olabilir: son yeri ya da HIZIYLA tahmin
             # edilen yeri (en çok DIKIS_TAHMIN_SN) — yavaş dizüstünde (az kare)
@@ -871,7 +927,7 @@ class Takipci:
         ize: dict[int, tuple[Iz, list]] = {}
         sahipsiz = []
         sahipli = []
-        for olcum in o.plakalar:
+        for sira_no, olcum in enumerate(o.plakalar):
             k = olcum[0]
             px, py = _merkez(k)
             secilen = None
@@ -894,11 +950,12 @@ class Takipci:
             if secilen is None:
                 sahipsiz.append(olcum)
             elif secilen is not False:
-                ize.setdefault(id(secilen), (secilen, []))[1].append(olcum)
+                ize.setdefault(id(secilen), (secilen, []))[1].append((sira_no, olcum))
                 sahipli.append(k)
         olaylar: list[Olay] = []
         gorulen = {id(z) for z, _ in guncellenen}
-        for z, olcumler in ize.values():
+        for z, secilenler in ize.values():
+            olcumler = _alt_olcumler(o.plakalar, secilenler)
             if self.kaynak == "arac" and len(olcumler) == 1:
                 k = olcumler[0][0]
                 if id(z) not in gorulen:
@@ -1050,6 +1107,7 @@ class Takipci:
             if z.geri_dondu:
                 olaylar.append(Olay("GERI_DONDU", z, z.son_zaman))
             elif self._kapida_kayboldu_mu(z):
+                z.kenarda_dondu = self._kenarda_dondu_mu(z)
                 olaylar.append(Olay("KAPIDA_KAYBOLDU", z, z.son_zaman))
             return
         if (ic and not z.duruyor and z.disarida_bulundu and not z.cikis_karari
@@ -1069,6 +1127,7 @@ class Takipci:
         # geldiği bilinmez) ama sessizce de düşmez: personele.
         if (ic and not z.duruyor and not z.disarida_bulundu
                 and self._kapida_kayboldu_mu(z)):
+            z.kenarda_dondu = self._kenarda_dondu_mu(z)
             olaylar.append(Olay("KAPIDA_KAYBOLDU", z, z.son_zaman))
             return
         if z.duruyor:
@@ -1126,6 +1185,32 @@ class Takipci:
         return (self.kaynak == "arac" and z.gorulme >= 2
                 and not (z.giris_karari or z.cikis_karari or z.devraldi
                          or z.gecti_mono is not None))
+
+    def _kenarlar(self, k) -> set:
+        """Kutunun değdiği resim kenarları ("sol" / "ust" / "sag" / "alt")."""
+        e = set()
+        if k[0] <= KENAR_PX:
+            e.add("sol")
+        if k[1] <= KENAR_PX:
+            e.add("ust")
+        if k[2] >= self.en - KENAR_PX:
+            e.add("sag")
+        if k[3] >= self.boy - KENAR_PX:
+            e.add("alt")
+        return e
+
+    def _kenarda_dondu_mu(self, z: Iz) -> bool:
+        """
+        1.4.6 J (sahibin kararı 25.11): kapıda kaybolan iz resmin bir kenarına
+        değerek doğdu ve AYNI kenara değerek kayboldu, çizgiyi hiç geçmedi,
+        otoparkta hiç görülmedi — kapı alanına girip dönen araç (23–24.11
+        11:14, 16:48, 05:16 polis aracı). Köprü plakasızsa kart açmaz.
+        En az iki görünüm: kenarda tek görünümlük şerit (çıkan aracın kuyruğu)
+        girip dönmedi — onu TEK_KARAR / IZ_ONAY tartar.
+        """
+        ilk = z.kutular_ilk[0][1] if z.kutular_ilk else z.dogum_kutu
+        return (z.gecti_mono is None and not z.disarida_bulundu and z.gorunum_no >= 2
+                and bool(self._kenarlar(ilk) & self._kenarlar(z.kutu)))
 
     def _parka(self, z: Iz) -> None:
         self.park.append((z.kutu, z.koken, z.kapidan_dogdu, z.giris_karari, z.cikis_karari,
@@ -1354,10 +1439,11 @@ class Gecitci:
     """
 
     def __init__(self, *, gonder, kart_mi, plakalar, yaz, acik: bool = True,
-                 birakinca=None):
+                 birakinca=None, ikiz_sn: float = None):
         self._gonder, self._kart_mi, self._plakalar = gonder, kart_mi, plakalar
         self._yaz, self._birakinca = yaz, birakinca
         self.acik = bool(acik)
+        self.ikiz_sn = GECIT_IKIZ_SN if ikiz_sn is None else float(ikiz_sn)
         self._tutulan: list[_Tutulan] = []
         self._yonlu: list[tuple[Olay, float]] = []      # ele alınmış kararlar
         self._dusen: list[float] = []
@@ -1456,6 +1542,11 @@ class Gecitci:
                 if neden and self._uyar(t.olay, r, kapsar=True):
                     kapsayan[id(t)] = (r, neden)
                     break
+        for t in grup:
+            if id(t) not in kapsayan:
+                r = self._ikiz_karari(t.olay, mono)
+                if r is not None:
+                    kapsayan[id(t)] = (r, f"{self.ikiz_sn:g} sn içinde ikiz")
         if not kapsayan:
             return grup
         kalan = []
@@ -1473,6 +1564,39 @@ class Gecitci:
             else:
                 self._dusur(t.olay, r, neden, mono)
         return kalan
+
+    def _ikiz_karari(self, p: Olay, mono: float) -> Olay | None:
+        """
+        1.4.6 C (sahibin kararı 25.11): 23–24.11'de aracın kuyruğu kararın 5–24
+        sn ardından kapıda doğup kapıda kayboldu (GECIT_ARA_SN'nin 2 sn'si
+        tutmadı). Plakası okunmamış KAPIDA_KAYBOLDU, ele alınmış bir GİRDİ /
+        ÇIKTI KARARININ (kart değil) ardından `ikiz_sn` içinde doğduysa o
+        geçişin ikizidir. Pencere kararın ELE ALINDIĞI andan sayılır (giren
+        araç park edip izlenmeye devam etse de). Baş / kuyruk kuralının yer ve
+        yön şartları aynen: parça aracın geçtiği bir yerde doğmuş olmalı
+        (kutularından birinin GECIT_YER_PAY genişletilmişinde) ve aracın o
+        uçtaki yürüyüşüne TERS yürümemeli (arkadan içeri giren başka araç).
+        0 = kural kapalı.
+        """
+        if self.ikiz_sn <= 0 or p.tur != "KAPIDA_KAYBOLDU" or self._plakalar(p.iz.gecis):
+            return None
+        sp = p.iz.kutu_gecmisi()
+        if not sp:
+            return None
+        d_p = _yurume(sp[0][1], sp[min(len(sp), 4) - 1][1])
+        for r, m in reversed(self._yonlu):
+            if (r.tur not in YONLU_OLAYLAR or r.iz is p.iz
+                    or not r.iz.dogum_mono <= p.iz.dogum_mono <= m + self.ikiz_sn):
+                continue
+            sr = r.iz.kutu_gecmisi()
+            if not sr or not any(_merkezi_icinde(sp[0][1], k, GECIT_YER_PAY) for _, k in sr):
+                continue
+            uc = (_yurume(sr[-2][1], sr[-1][1]) if r.tur == "CIKTI" and len(sr) >= 2
+                  else _yurume(sr[0][1], sr[min(len(sr), 4) - 1][1]))
+            if _ters(uc, d_p) or self._kart_mi(r, mono):
+                continue
+            return r
+        return None
 
     def _sira(self, t: _Tutulan):
         g = t.olay.iz.gecis

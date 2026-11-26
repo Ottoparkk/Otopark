@@ -525,6 +525,8 @@ export interface Istisna {
   cozuldu_at: string | null
   cozum_notu: string | null
   created_at: string
+  /** 075: closed with "Kapat" (istisna_coz). Null on rows restored from an older bin copy. */
+  kapatildi?: boolean | null
 }
 
 export interface PlakaOkumaLog {
@@ -578,6 +580,9 @@ export interface AcikBilet {
   /** 050 — a Personel's cancel request is waiting for a Yönetici. Optional:
    *  absent until the migration has run. */
   iptal_talebi?: boolean
+  /** 077 — the single-gate bridge last saw this car moving inside the yard.
+   *  Optional: absent until 077 has run. */
+  iceride_goruldu_at?: string | null
 }
 
 export interface GunlukOzet {

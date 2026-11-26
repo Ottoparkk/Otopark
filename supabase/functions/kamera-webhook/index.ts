@@ -17,7 +17,8 @@
  * WHAT IT CANNOT DO — by construction, not by promise:
  *   Its whole RPC surface is bilet_ac, kamera_cikis_bildir, kamera_tek_kapi,
  *   kamera_okuma_bagla, kamera_kalp, kamera_kalp_cihaz, kamera_kalp_bilgi,
- *   kamera_okunamadi, kamera_okuma_hatasi, kamera_okuma_siniri and
+ *   kamera_okunamadi, kamera_okuma_hatasi, kamera_okuma_siniri,
+ *   kamera_tahmin_cikis (077: only via kamera_cikis_bildir) and
  *   kamera_foto_bagla. There is
  *   no path to tariffs, users, the kasa or subscriptions. And it can never
  *   take money: since 054 an exact-plate exit closes the ticket UNPAID (no
@@ -78,6 +79,7 @@ import {
   seritKarari,
   sonGonderimMi,
   sureSinirli,
+  tahminCikisDenenir,
   tekKapiCevabi,
   tekKapiFotoGerekli,
 } from '../_shared/serit.ts'
@@ -908,6 +910,28 @@ Deno.serve(async (req: Request) => {
       if (okunamadiKaydedilir(yon, okundu, aracYok)) {
         const okIslemId =
           olay.islemId ?? (await deriveIslemId([olay.cihaz, yon, olay.zaman, tahmin]))
+        // 077 D (owner 25.11, "only if no look-alike"): a card the bridge saw
+        // LEAVE with a ≥ 0.90 guess may close that exact ticket instead —
+        // kamera_tahmin_cikis decides (exact, no look-alike, entry window
+        // over) and returns null otherwise. Null or an error → the card below,
+        // exactly as before; a retry of a closed exit returns the same ticket.
+        if (tahmin && tahminCikisDenenir(yon, olay)) {
+          const { data: tcBilet, error: tcErr } = await admin.rpc('kamera_tahmin_cikis', {
+            p_tahmin: tahmin,
+            p_guven: guven,
+            p_islem_id: okIslemId,
+            p_zaman: olay.zaman,
+            p_ham: olay.ham,
+          })
+          if (tcErr) console.error('kamera_tahmin_cikis başarısız:', tcErr.message)
+          else if (typeof tcBilet === 'string') {
+            await kanitFotosunuBagla(admin, olay.kanit, okIslemId, tcBilet, olay.zaman)
+            return json(
+              { ok: true, karar: 'CIKIS', sebep: 'TAHMIN', bilet_id: tcBilet, islem_id: okIslemId, istisna: false },
+              200,
+            )
+          }
+        }
         const { data: okId, error: okErr } = await admin.rpc('kamera_okunamadi', {
           p_yon: yon,
           p_islem_id: okIslemId,

@@ -22,6 +22,7 @@ import {
   IconYer,
 } from '../../components/ui/icons'
 import type { AcikBilet } from '../../lib/types'
+import { useGecikmeli } from '../../lib/useGecikmeli'
 
 // Lazily loaded so the spot grid, its two form modals and the confirm dialog
 // stay out of the gate's chunk — this is the screen an operator opens all
@@ -75,7 +76,15 @@ export default function Gise() {
   // 2026-11-15 — the row of its own is gone).
   const [yerlerAcik, setYerlerAcik] = useState(false)
 
-  const { data: biletler = [], isPending, error, refetch } = useAcikBiletler(sorgu)
+  // The box shows every letter at once; the server is asked when typing pauses.
+  const aranan = useGecikmeli(sorgu)
+  const {
+    data: biletler = [],
+    isPending,
+    error,
+    refetch,
+    isPlaceholderData,
+  } = useAcikBiletler(aranan)
   const { data: ozet } = useGunlukOzet()
 
   /**
@@ -302,6 +311,7 @@ export default function Gise() {
           }}
           aramaOdak={cikisAra !== null}
           cikisAralik={cikisAralik}
+          aramaSonucu={aranan.trim() !== '' && !isPlaceholderData}
         />
       </div>
 

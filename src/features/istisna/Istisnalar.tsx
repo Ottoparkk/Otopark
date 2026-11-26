@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   Button,
-  Chip,
   EmptyState,
   Input,
   ListeDurumu,
@@ -10,6 +9,7 @@ import {
   SegmentedControl,
 } from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { KimSatirlari } from '../../components/ui/KimSatirlari'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
 import {
@@ -21,31 +21,55 @@ import {
 } from './api'
 import { useKayitSil } from '../cop/api'
 import { useFotoUrl } from '../gise/api'
+import { useAdlar } from '../yonetim/api'
 import { cikisLinki } from '../gise/cikisLink'
 import { kartGirisSaati } from '../gise/degistir'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
+import { adCoz } from '../../lib/kimYapti'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatGoreceli, formatTam } from '../../lib/dates'
 import { formatSure, dakikaFarki } from '../../lib/sure'
 import { rpcErrorText } from '../../lib/errors'
-import { IconCarpi, IconCop, IconTik } from '../../components/ui/icons'
+import { IconCop, IconTik } from '../../components/ui/icons'
 import { KAMERA_YON_ETIKET, type Istisna } from '../../lib/types'
 import {
   aciklama,
   baslangicPlakasi,
   eylemler,
+  kimSatirlari,
   kisaDurum,
+  sekme as sekmesi,
+  tahminNotu,
+  type Sekme,
 } from './kart'
+
+const BOS: Record<Sekme, { title: string; hint: string }> = {
+  BEKLEYEN: {
+    title: 'Bekleyen kayıt yok',
+    hint: 'Kamera bir aracı bilete dönüştüremezse burada görünür.',
+  },
+  COZULMUS: {
+    title: 'Çözülmüş kayıt yok',
+    hint: 'Giriş açılarak ya da kameranın kendisiyle çözülen kayıtlar burada görünür.',
+  },
+  KAPATILAN: {
+    title: 'Kapatılan kayıt yok',
+    hint: '"Kapat" ile kapatılan kayıtlar burada görünür.',
+  },
+}
 
 export default function Istisnalar() {
   const navigate = useNavigate()
-  // Unlike the rest of /yonetim, this screen is open to Personel — deleting is
-  // not. The RPC refuses them either way; this stops them tapping a control
-  // that could only fail.
+  // Unlike the rest of /yonetim, this screen is open to Personel — but only
+  // its waiting list (owner 2026-11-23). RLS (075) gives Personel no resolved
+  // rows at all; the tabs are simply not drawn for them. Deleting is the
+  // Yönetici's too: the RPC refuses Personel either way.
   const yonetici = isYonetici(useAuth().profile)
-  const [sadeceAcik, setSadeceAcik] = useState(true)
-  const { data: liste = [], isPending, error, refetch } = useIstisnalar(sadeceAcik)
+  const [secilen, setSecilen] = useState<Sekme>('BEKLEYEN')
+  const sekme: Sekme = yonetici ? secilen : 'BEKLEYEN'
+  const { data: liste = [], isPending, error, refetch } = useIstisnalar(sekme)
+  const adlar = useAdlar()
   const coz = useIstisnaCoz()
   const sil = useKayitSil()
 
@@ -68,14 +92,17 @@ export default function Istisnalar() {
       <ScreenHeader title="Çözülmemiş kayıtlar" back subtitle="Bilete dönüşemeyen kamera olayları" />
 
       <div className="space-y-4 px-5">
-        <SegmentedControl
-          value={sadeceAcik ? 'ACIK' : 'TUMU'}
-          onChange={(v) => setSadeceAcik(v === 'ACIK')}
-          options={[
-            { value: 'ACIK', label: 'Bekleyen' },
-            { value: 'TUMU', label: 'Tümü' },
-          ]}
-        />
+        {yonetici && (
+          <SegmentedControl
+            value={secilen}
+            onChange={setSecilen}
+            options={[
+              { value: 'BEKLEYEN', label: 'Bekleyen' },
+              { value: 'COZULMUS', label: 'Çözülmüş' },
+              { value: 'KAPATILAN', label: 'Kapatılan' },
+            ]}
+          />
+        )}
 
         {basari && (
           <button
@@ -97,19 +124,15 @@ export default function Istisnalar() {
           error={error}
           onRetry={() => void refetch()}
           empty={liste.length === 0}
-          bos={
-            <EmptyState
-              icon={<IconTik size={44} />}
-              title={sadeceAcik ? 'Bekleyen kayıt yok' : 'Kayıt yok'}
-              hint="Kamera bir aracı bilete dönüştüremezse burada görünür."
-            />
-          }
+          bos={<EmptyState icon={<IconTik size={44} />} title={BOS[sekme].title} hint={BOS[sekme].hint} />}
         >
           <div className="space-y-3">
             {liste.map((i) => (
               <IstisnaKart
                 key={i.id}
                 istisna={i}
+                kimAdi={yonetici ? adCoz(i.cozuldu_by, adlar) : null}
+                yonetici={yonetici}
                 onAcildi={setBasari}
                 onKapat={() => {
                   setKapatHata(null)
@@ -140,7 +163,7 @@ export default function Istisnalar() {
         open={kapatilacak !== null}
         onOpenChange={() => setKapatilacak(null)}
         title="Kaydı kapat"
-        description="İşlendi olarak kapanır; kayıt silinmez, Tümü'nde kalır."
+        description="İşlendi olarak kapanır; kayıt silinmez, Yönetici Kapatılan'da görür."
         confirmLabel="Kapat"
         loading={coz.isPending}
         error={kapatHata}
@@ -160,7 +183,7 @@ export default function Istisnalar() {
         tone="danger"
         title="Kaydı sil"
         description={
-          "Kayıt tamamen kalkar (Çöp Kutusu'ndan geri alınabilir). Yalnızca işlendi demek için ✕ ile kapatın — kayıt saklanır."
+          "Kayıt tamamen kalkar (Çöp Kutusu'ndan geri alınabilir). Yalnızca işlendi demek için Kapat'a basın — kayıt saklanır."
         }
         confirmLabel="Sil"
         loading={sil.isPending}
@@ -179,12 +202,17 @@ export default function Istisnalar() {
 
 function IstisnaKart({
   istisna: i,
+  kimAdi,
+  yonetici,
   onAcildi,
   onKapat,
   onCikis,
   onSil,
 }: {
   istisna: Istisna
+  /** The resolver's name (Yönetici only; adCoz). */
+  kimAdi: string | null
+  yonetici: boolean
   onAcildi: (s: IstisnaBiletSonuc) => void
   onKapat: () => void
   onCikis: (plaka: string) => void
@@ -195,12 +223,13 @@ function IstisnaKart({
   const ac = useIstisnaBiletAc()
   const acSaatli = useIstisnaBiletAcSaatli()
   const mesgul = ac.isPending || acSaatli.isPending
-  const cozuldu = i.cozuldu_at !== null
+  const sekme = sekmesi(i)
+  const bekliyor = sekme === 'BEKLEYEN'
   const e = eylemler(i)
+  const tahmin = tahminNotu(i)
 
   const [plaka, setPlaka] = useState(() => normalizePlaka(baslangicPlakasi(i)))
   const [hata, setHata] = useState<string | null>(null)
-  const [ayrinti, setAyrinti] = useState(false)
   const [onay, setOnay] = useState(false)
   // 072: tek kapı "no open ticket at exit" — the entry time starts EMPTY and
   // must be typed (owner 2026-11-18), with a reason.
@@ -269,55 +298,26 @@ function IstisnaKart({
   return (
     <PlakaKontrol
       fotoUrl={fotoUrl}
-      durum={cozuldu ? (i.cozum_notu ?? 'Kapatıldı') : kisaDurum(i)}
-      ton={cozuldu ? 'success' : 'warn'}
-      className={cozuldu ? 'opacity-80' : ''}
+      durum={kisaDurum(i)}
+      ton={bekliyor ? 'warn' : sekme === 'COZULMUS' ? 'success' : 'neutral'}
       ust={
-        <div className="flex min-h-[28px] items-center gap-2">
-          {/* Wraps rather than truncates: with the icons beside it a long delay
-              ("· 14 sa 50 dk gecikmeli" — the billing signal) was cut off. */}
-          <p className="min-w-0 flex-1 text-label leading-snug text-faint">
-            {KAMERA_YON_ETIKET[i.yon]} · {formatGoreceli(i.kaynak_zaman ?? i.alindi_zaman)}
-            {gecikmeDk >= 2 ? ` · ${formatSure(gecikmeDk)} gecikmeli` : ''}
-          </p>
-          {cozuldu && <Chip tone="success" size="sm">Kapatıldı</Chip>}
-          <button
-            type="button"
-            onClick={() => setAyrinti((a) => !a)}
-            aria-expanded={ayrinti}
-            className="-my-2 flex min-h-[44px] shrink-0 items-center px-1 text-label font-medium text-accent"
-          >
-            {ayrinti ? 'Gizle' : 'Ayrıntı'}
-          </button>
-          {/* Two different things, each behind its own confirmation: the bin
-              DELETES the record (Yönetici, to Çöp Kutusu), the ✕ CLOSES it —
-              handled, kept, still under "Tümü". The ✕ sits at the far edge,
-              where a card's close mark is expected (owner, 2026-10-31). */}
-          {onSil && (
-            <button
-              type="button"
-              onClick={onSil}
-              aria-label="Kaydı sil"
-              className={`-my-2 flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field ${e.kapat ? '' : '-mr-2'}`}
-            >
-              <IconCop size={18} />
-            </button>
-          )}
-          {e.kapat && (
-            <button
-              type="button"
-              onClick={onKapat}
-              disabled={mesgul}
-              aria-label="Kaydı kapat"
-              className="-my-2 -mr-2 flex size-11 shrink-0 items-center justify-center rounded-chip text-ink active:bg-field disabled:opacity-40"
-            >
-              <IconCarpi size={22} />
-            </button>
-          )}
-        </div>
+        // Wraps rather than truncates: a long delay ("· 14 sa 50 dk
+        // gecikmeli") is the billing signal and must not be cut off.
+        <p className="text-label leading-snug text-faint">
+          {KAMERA_YON_ETIKET[i.yon]} · {formatGoreceli(i.kaynak_zaman ?? i.alindi_zaman)}
+          {gecikmeDk >= 2 ? ` · ${formatSure(gecikmeDk)} gecikmeli` : ''}
+        </p>
       }
     >
-      {ayrinti && <p className="text-label text-soft">{aciklama(i)}</p>}
+      {/* Owner 2026-11-23: short, the context first, always visible. */}
+      {bekliyor && (
+        <p className="text-label text-soft">
+          {tahmin ? `${tahmin} ` : ''}
+          {aciklama(i)}
+        </p>
+      )}
+
+      {!bekliyor && yonetici && <KimSatirlari satirlar={kimSatirlari(i, kimAdi)} />}
 
       {e.girisAc || e.girisAcSaatli ? (
         <PlakaInput
@@ -331,11 +331,11 @@ function IstisnaKart({
           error={hata}
           onEnter={e.girisAc ? girisSor : saatliSor}
         />
-      ) : (
+      ) : bekliyor || i.plaka ? (
         <p className="text-center text-title font-semibold tracking-[0.08em] text-ink tnum">
           {i.plaka ? formatPlaka(i.plaka) : '—'}
         </p>
-      )}
+      ) : null}
 
       {e.girisAcSaatli && (
         <section className="space-y-3">
@@ -396,6 +396,32 @@ function IstisnaKart({
             <Button variant="secondary" className="flex-1" disabled={mesgul} onClick={() => onCikis(plaka)}>
               Çıkış
             </Button>
+          )}
+        </div>
+      )}
+
+      {/* Owner 2026-11-23: "Kapat" as a text button on the left, the bin on
+          the right. Two different things, each behind its own confirmation:
+          Kapat CLOSES (kept, Yönetici sees it under Kapatılan); the bin
+          DELETES (Yönetici, to Çöp Kutusu). */}
+      {(e.kapat || onSil) && (
+        <div className="flex items-center justify-between gap-2">
+          {e.kapat ? (
+            <Button variant="secondary" disabled={mesgul} onClick={onKapat}>
+              Kapat
+            </Button>
+          ) : (
+            <span />
+          )}
+          {onSil && (
+            <button
+              type="button"
+              onClick={onSil}
+              aria-label="Kaydı sil"
+              className="-mr-2 flex size-11 shrink-0 items-center justify-center rounded-chip text-faint active:bg-field"
+            >
+              <IconCop size={18} />
+            </button>
           )}
         </div>
       )}

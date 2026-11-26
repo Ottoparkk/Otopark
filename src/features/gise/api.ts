@@ -1,4 +1,10 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import { yerleriSirala } from '../../lib/yerkodu'
 import { compressEvidence, fotoYolu } from '../../lib/image'
@@ -154,6 +160,12 @@ export function useAcikBiletler(sorgu = '') {
     // worse than a brief spinner.
     staleTime: 5_000,
     refetchInterval: 30_000,
+    // While a new search loads, the previous matches stay on screen instead
+    // of a spinner. Swapping the list for a spinner and back on every letter
+    // tore down and rebuilt every row — the main cost of typing in the search
+    // on a slow device (P2 bench). Narrowing a search only removes rows, so
+    // the old list is never a wrong answer, just a not-yet-narrowed one.
+    placeholderData: keepPreviousData,
   })
 }
 

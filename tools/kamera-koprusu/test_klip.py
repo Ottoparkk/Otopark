@@ -274,6 +274,49 @@ def test_temizlik_klasor_yoksa_sessiz():
     assert klip.temizle(os.path.join(_klasor(), "yok"), time.time()) == 0
 
 
+# ------------------------------------------- 1.4.6 L: plaka kırpığı (.jpg) ----
+
+def test_temizlik_uzantiya_gore():
+    # Plaka kırpıkları kliplerle aynı kuralla temizlenir; uzantı ayrı.
+    d = _klasor()
+    _dosya(d, "eski.jpg", 8)
+    _dosya(d, "eski.avi", 8)
+    _dosya(d, "dun.jpg", 1)
+    assert klip.temizle(d, time.time(), uzanti=".jpg") == 1
+    assert sorted(os.listdir(d)) == ["dun.jpg", "eski.avi"], os.listdir(d)
+    assert klip.temizle(d, time.time()) == 1                   # varsayılan .avi
+    assert sorted(os.listdir(d)) == ["dun.jpg"], os.listdir(d)
+
+
+def test_kirpik_adi_ve_klasoru():
+    z = datetime(2026, 11, 25, 7, 26, 5, tzinfo=timezone.utc)
+    kimlik = "ab12cd34-0000-4000-8000-000000000000"
+    assert klip.kirpik_adi(z, 7, "GIRDI", kimlik) == "2026-11-25_10-26-05_iz7_GIRDI_ab12cd34.jpg"
+    assert klip.kirpik_adi(z, 7, "34ABC123", "34ABC123") == "2026-11-25_10-26-05_iz7_OLAY_gonderimyok.jpg"
+    eski = os.environ.get("PROGRAMDATA")
+    os.environ["PROGRAMDATA"] = r"C:\PD"
+    try:
+        assert klip.kirpik_klasoru() == os.path.join(r"C:\PD", "Otopark", "plaka-kirpik")
+    finally:
+        if eski is None:
+            os.environ.pop("PROGRAMDATA", None)
+        else:
+            os.environ["PROGRAMDATA"] = eski
+
+
+def test_kirpik_yaz():
+    d = os.path.join(_klasor(), "plaka-kirpik")
+    img = _kare(200, 45, renk=120)
+    yol = klip.kirpik_yaz(d, "a.jpg", img)
+    assert yol == os.path.join(d, "a.jpg") and cv2.imread(yol).shape == (45, 200, 3)
+    assert klip.kirpik_yaz(d, "a.jpg", _kare(10, 10)) is None, "üstüne yazmaz"
+    assert cv2.imread(yol).shape == (45, 200, 3)
+    assert klip.kirpik_yaz(d, "b.jpg", img, bos_alan=lambda y: 1024) is None, "disk az"
+    assert klip.kirpik_yaz(d, "c.jpg", None) is None
+    assert klip.kirpik_yaz(d, "d.jpg", np.zeros((0, 0, 3), np.uint8)) is None, "hata yutulur"
+    assert sorted(os.listdir(d)) == ["a.jpg"], os.listdir(d)
+
+
 # ---------------------------------------------------------------- dayanıklılık
 
 def test_disk_az_ise_yazilmaz():

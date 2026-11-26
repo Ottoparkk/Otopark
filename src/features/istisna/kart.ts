@@ -1,54 +1,63 @@
-// Rules for one card on "Çözülmemiş kayıtlar": the one-line status, the plate
-// the field starts with, which buttons show, and the long explanation that now
-// sits behind "Ayrıntı". Type-only imports, so `node tests/istisna.check.mjs`
-// can run this file directly.
+// Rules for one card on "Çözülmemiş kayıtlar": the one-line status, the short
+// what-to-do line, the plate the field starts with, which buttons show, which
+// tab the card is in and who did what. Type-only imports, so
+// `node tests/istisna.check.mjs` can run this file directly.
 import type { Istisna, IstisnaTur } from '../../lib/types'
+import type { KimSatiri } from '../../lib/kimYapti'
 
-/** What the operator should actually DO — shown only under "Ayrıntı". */
+/**
+ * What to DO, in one short line (owner 2026-11-23: the detail is short, gives
+ * the context directly, and is always shown — no "Ayrıntı" tap). It names
+ * only buttons the card actually has (eylemler); `tests/istisna.check.mjs`
+ * checks every type, lane and source for that and for ≤ 100 characters.
+ * What HAPPENED is the status line above it (kisaDurum).
+ */
 const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
-  GELECEK:
-    'Olayın saati ileri tarihli olduğu için kabul edilmedi. Kameranın saati yanlış olabilir.',
-  BAYAT:
-    'Olay çok geç ulaştı; araç çoktan çıkmış olabilir, bu yüzden bilet açılmadı.',
-  ACIK_BILET_YOK:
-    'Çıkışta bu plakaya ait açık bilet bulunamadı. Plaka yanlış okunmuş ya da giriş kaydedilmemiş olabilir.',
-  COKLU_ESLESME:
-    'Çıkan aracın plakası içerideki bir ya da birkaç aracınkine benziyor (son dört karakter). Kamera bileti kendiliğinden kapatmadı; doğru aracı Çıkış ekranından seçin.',
-  YON_BELIRSIZ:
-    'Bu plaka, içerideki bir aracın plakasına bir karakter uzak. O araç çıkıyorsa Çıkış ekranından tahsil edin; yeni gelen başka bir araçsa girişini elle açın.',
-  // Entrance lane. The single gate gets its own text below: there the car may
-  // have been LEAVING, and opening an entry for it would leave a phantom
-  // ticket that blocks that plate's next real entry.
-  OKUNAMADI:
-    'Kamera bir araç gördü ama plakasını okuyamadı; bilet açılmadı. Araç içerideyse ve bileti yoksa girişini elle açın. Zaten bileti varsa kaydı çözüldü olarak işaretleyin.',
-  // 056: the bridge saw the direction, and it contradicts the ticket state.
+  GELECEK: 'Kameranın saati ileri. Yöneticiye haber verin; araç içerideyse girişini Gişe\'den açın.',
+  BAYAT: 'Geç ulaştı; araç çıkmış olabilir. İçerideyse girişini Gişe\'den açın, değilse Kapat.',
+  ACIK_BILET_YOK: 'Plaka yanlış okunmuş ya da girişi yapılmamış olabilir. Doğru bileti Çıkış\'tan bulun.',
+  COKLU_ESLESME: 'Doğru aracı Çıkış ekranından seçin.',
+  YON_BELIRSIZ: 'İçerideki benzer araç çıkıyorsa Çıkış; yeni bir araçsa girişini Gişe\'den açın.',
+  OKUNAMADI: 'Bileti yoksa plakayı yazıp Giriş aç; bileti varsa Kapat.',
   GIRISTE_ACIK_BILET:
-    'Kamera bu aracı tek kapıdan GİRERKEN gördü ama plakasının eski bir açık bileti var; araç önceki çıkışında görülmemiş olabilir. Eski bileti kontrol edin: araç çıkıp yeniden girdiyse eski bileti Çıkış ekranından kapatın ve yeni girişi elle açın; araç hiç çıkmadıysa kaydı çözüldü olarak işaretleyin.',
-  ICERIDE_BILETSIZ:
-    'Otoparkın içinde hareket eden bu aracın plakası okundu ama açık bileti yok. Kamera bu aracın biletini yakın zamanda çıkış diye kapattıysa (Çıktı listesinde, ödeme bekliyor) yeni giriş açmayın; o bilette "Araç çıkmadı"yı kullanın. Öyle değilse ve araç içerideyse girişini açın — giriş saati aracın içeride görüldüğü an olur; bileti varsa ya da araç çıktıysa kaydı çözüldü olarak işaretleyin.',
-  // 071: before, the bridge dropped this car with only a line in its log.
-  REDDEDILDI:
-    'Kamera bu aracı gördü ama sunucu kaydı kabul etmedi; bilet açılmadı ya da kapanmadı. Araç içerideyse ve bileti yoksa girişini elle açın (Gişe, Giriş); çıkan bir araçsa Çıkış ekranından işlem yapın. Aynı sebep tekrar ediyorsa Yöneticiye haber verin.',
-  // 072 (owner 2026-11-18): the camera closed this ticket as an exit, then saw
-  // the same plate inside within minutes. The card leads to that ticket.
-  CIKMAMIS_OLABILIR:
-    'Kamera bu aracın biletini çıkış diye kapattı, ama birkaç dakika sonra araç otoparkın içinde görüldü. Araç gerçekten çıkmadıysa bilete gidip "Araç çıkmadı"yı kullanın. Araç çıktıysa kaydı çözüldü olarak işaretleyin.',
+    'Eski bileti açık. Araç çıkıp geri geldiyse eskisini Çıkış\'tan kapatın; hiç çıkmadıysa Kapat.',
+  // 054: the camera may have closed this car's ticket as an exit by mistake —
+  // then the fix is "Araç çıkmadı" on that ticket, not a new entry.
+  ICERIDE_BILETSIZ: 'Kamera az önce çıkış saydıysa o bilette "Araç çıkmadı"; değilse Giriş aç.',
+  // 071: the refusal sentence is on the status line; this says what to do.
+  REDDEDILDI: 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın; değilse Kapat.',
+  CIKMAMIS_OLABILIR: 'Araç çıkmadıysa Bilete git ve "Araç çıkmadı"; çıktıysa Kapat.',
 }
 
-// The last sentence matches the entrance text's "Zaten bileti varsa…": a later
-// photo of the same car is a new event, opens its ticket and leaves this row
-// open.
+// Single gate: the car may have been LEAVING, and an entry for it would leave
+// a phantom ticket that blocks that plate's next real entry.
 const OKUNAMADI_TEK_KAPI =
-  'Tek kapıda bir araç görüldü ama plakası okunamadı; girdiği mi çıktığı mı bilinmiyor. İçeride bileti olmayan bir araç varsa girişini elle açın; çıkan bir araçsa kaydı çözüldü olarak işaretleyin. Kamera plakayı başka bir karede okumuş olabilir: aracın zaten bileti varsa kaydı çözüldü olarak işaretleyin.'
+  'Girdi mi çıktı mı bilinmiyor. Giren araçsa Giriş aç; çıkansa ya da bileti varsa Kapat.'
+// 072: a camera "exit, no open ticket" on the single gate may have been a car
+// coming in; Giriş aç then asks for the entry time and a reason.
+const ACIK_BILET_YOK_TEK_KAPI =
+  'Araç giriyorduysa giriş saatini ve sebebi yazıp Giriş aç; çıktıysa Kapat.'
+// 071: on the exit lane and the single gate the refused car may have been leaving.
+const REDDEDILDI_CIKIS = 'İçerideyse girişini Gişe\'den açın; çıkıyorsa Çıkış.'
 
 export function aciklama(i: Istisna): string {
   if (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK') return OKUNAMADI_TEK_KAPI
-  // 071: the status line cuts the server's sentence to one line; here it is whole.
-  const ret = i.tur === 'REDDEDILDI' && i.ham_yanit ? i.ham_yanit.ret_sebebi : null
-  if (typeof ret === 'string' && ret.trim()) {
-    return TUR_ACIKLAMA.REDDEDILDI + ' Sunucunun cevabı: ' + ret.trim()
-  }
+  if (eylemler(i).girisAcSaatli) return ACIK_BILET_YOK_TEK_KAPI
+  if (i.tur === 'REDDEDILDI' && i.yon !== 'GIRIS') return REDDEDILDI_CIKIS
   return TUR_ACIKLAMA[i.tur]
+}
+
+/**
+ * When the plate field starts with the camera's GUESS (an OKUNAMADI row has
+ * no plate), say so — with the confidence when there is one. Null otherwise.
+ */
+export function tahminNotu(i: Istisna): string | null {
+  if (i.cozuldu_at !== null || i.plaka) return null
+  const { tahmin, guven } = okumaBilgisi(i)
+  if (!tahmin) return null
+  return guven === null
+    ? 'Alandaki plaka kameranın tahmini.'
+    : `Alandaki plaka kameranın tahmini (%${Math.round(guven * 100)}).`
 }
 
 /**
@@ -97,6 +106,10 @@ export function kisaDurum(i: Istisna): string {
   }
   const ret = retSebebi(i)
   if (ret) return 'Sunucu reddetti: ' + ret
+  // 077 E2: the entry card's plate was read a little later inside the yard.
+  if (i.tur === 'OKUNAMADI' && i.ham_yanit?.sonradan_sebep === 'ICERIDE') {
+    return 'Girişte okunamadı — plaka içeride okundu'
+  }
   return KISA[i.tur]
 }
 
@@ -150,4 +163,36 @@ export function eylemler(i: Istisna): Eylemler {
     girisAcSaatli: i.tur === 'ACIK_BILET_YOK' && i.yon === 'ORTAK' && i.kaynak === 'KAMERA',
     bileteGit: i.tur === 'CIKMAMIS_OLABILIR' ? (i.aday_bilet_ids?.[0] ?? null) : null,
   }
+}
+
+/** The three tabs (owner 2026-11-23, 075). */
+export type Sekme = 'BEKLEYEN' | 'COZULMUS' | 'KAPATILAN'
+
+/**
+ * Which tab a row belongs to. Waiting = not resolved. Closed = resolved with
+ * "Kapat" (`kapatildi`, set only by istisna_coz). Everything else resolved —
+ * by an action (Giriş aç) or by the camera itself — is "Çözülmüş".
+ */
+export function sekme(i: Istisna): Sekme {
+  if (i.cozuldu_at === null) return 'BEKLEYEN'
+  return i.kapatildi === true ? 'KAPATILAN' : 'COZULMUS'
+}
+
+/**
+ * Who did what, for the Yönetici (063 pattern). `ad` is the resolver's name,
+ * already looked up by the caller (adCoz); a resolved row with no resolver was
+ * closed by the camera itself. An unknown person is never shown as a wrong
+ * name: "Bilinmiyor".
+ */
+export function kimSatirlari(i: Istisna, ad: string | null): KimSatiri[] {
+  const s = sekme(i)
+  if (s === 'BEKLEYEN') return []
+  const kim = i.cozuldu_by ? (ad ?? 'Bilinmiyor') : 'Kamera'
+  const satirlar: KimSatiri[] = [
+    { etiket: s === 'KAPATILAN' ? 'Kapatan' : 'Çözen', ad: kim, zaman: i.cozuldu_at },
+  ]
+  if (i.cozum_notu) {
+    satirlar.push({ etiket: s === 'KAPATILAN' ? 'Not' : 'Ne yapıldı', ad: i.cozum_notu, zaman: null })
+  }
+  return satirlar
 }

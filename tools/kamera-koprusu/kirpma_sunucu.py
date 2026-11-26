@@ -36,10 +36,22 @@ import numpy as np
 #   · Sarı: sokaktan girişin olduğu alt kenar, drenaj kanalının SOLU, en az
 #     bir araç boyu derin (geç bulunan giren araç yine kapıda doğsun). Kanalın
 #     sağı park yeri: oraya dönen araç kapının dışına geçmiş olur, yönü bilinir.
+#   · Sarı 1 ve 2 (1.4.6, sahibin kararı 26.11; 22.11–24.11 klipleri ve fotoğrafları):
+#     sol üst köşe aşağı (≈1260 / 1520 px), araya bir köşe. Sol sıraya park eden
+#     aracın kutusu önünden araç geçince ≈1190 px'e kadar kayıyor, eski sarıya
+#     giriyordu (park eden araç giriyor / çıkıyor görünüyordu). Sokaktan her
+#     gerçek giriş ≥ 1370 px'te başlar, yine sarıda doğar. Mavi değişmedi.
+#   · 1.4.6 zum (26.11, sahibin onayı, hedef 1.10×): kamera 1.0926× yaklaştı
+#     (20:15 / 20:39 anlık görüntülerinden ölçüldü, yaklaşma noktası ≈ 1328, 840
+#     px). Yukarıdaki iki alan aynı dönüşümle taşındı ve kare kenarında kırpıldı;
+#     sahne aynı kaldığından gerekçeler de aynı. 22–24.11 klip ve fotoğraf
+#     kutuları da taşınıp sınandı: giriş 6/6 sarıda doğar, çıkış 66/73 sarıda
+#     biter, park aracı sarıda 0, maviden taşan hareketli çapa %10,9 (eski
+#     zumda 6/6, 65/73, 0, %10,3). Bu oranlar ESKİ zuma artık uymaz.
 SAHA_ONERISI = {
-    "alan": [(0.457, 0.3011), (0.651, 0.3011), (0.745, 0.4633), (1.0, 0.5766),
-             (1.0, 1.0), (0.0, 1.0), (0.0, 0.7379), (0.2228, 0.5228)],
-    "kapi": [(0.0, 0.6169), (0.746, 0.7379), (0.7027, 1.0), (0.0, 1.0)],
+    "alan": [(0.4534, 0.2781), (0.6655, 0.278), (0.7684, 0.4548), (1.0, 0.5575),
+             (1.0, 1.0), (0.0, 1.0), (0.0, 0.7115), (0.1977, 0.5205)],
+    "kapi": [(0.0, 0.8398), (0.2388, 0.7612), (0.7693, 0.7552), (0.729, 1.0), (0.0, 1.0)],
 }
 
 

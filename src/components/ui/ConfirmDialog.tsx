@@ -21,6 +21,7 @@ export function ConfirmDialog({
   loading = false,
   error = null,
   tone = 'primary',
+  confirmDisabled = false,
   children,
 }: {
   open: boolean
@@ -33,6 +34,8 @@ export function ConfirmDialog({
   loading?: boolean
   error?: string | null
   tone?: 'primary' | 'danger'
+  /** The confirm stays disabled until something inside is chosen (e.g. a payment method). */
+  confirmDisabled?: boolean
   children?: ReactNode
 }) {
   return (
@@ -77,6 +80,7 @@ export function ConfirmDialog({
               block
               onClick={onConfirm}
               loading={loading}
+              disabled={confirmDisabled}
             >
               {confirmLabel}
             </Button>

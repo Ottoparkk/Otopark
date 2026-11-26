@@ -70,7 +70,8 @@ export default function BiletDetay() {
   // and simply get `undefined` while the ticket is loading.
   const aksiyon = useBiletAksiyonlari(bilet, { onSilindi: () => navigate('/gise') })
   const tahsil = useBiletTahsil()
-  const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
+  // Chosen in the "Ödeme toplansın mı?" box, never preselected (owner, 2026-11-23).
+  const [yontem, setYontem] = useState<OdemeYontemi | null>(null)
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
   const [tahsilOnay, setTahsilOnay] = useState(false)
   // 066 (owner, 2026-11-15): the car already left owing (camera / "Çıkış
@@ -211,26 +212,21 @@ export default function BiletDetay() {
               </p>
             </div>
 
-            <YontemSecici value={yontem} onChange={setYontem} />
-
             {tahsilHata && !tahsilOnay && (
               <p role="alert" className="rounded-field bg-danger-soft px-3.5 py-3 text-body text-danger">
                 {tahsilHata}
               </p>
             )}
 
-            {/* Only ASKS (owner, 2026-11-14): the payment is recorded from the
-                box below, after the amount and method are read back. */}
+            {/* Only ASKS (owner, 2026-11-14): the method is chosen in the box
+                below (owner, 2026-11-23), every time from nothing. */}
             <Button
               size="lg"
               block
               loading={tahsil.isPending}
               onClick={() => {
                 setTahsilHata(null)
-                if (!yontem) {
-                  setTahsilHata('Ödeme yöntemi seçin.')
-                  return
-                }
+                setYontem(null)
                 setTahsilOnay(true)
               }}
             >
@@ -371,6 +367,7 @@ export default function BiletDetay() {
         confirmLabel={`${formatTL(borc)} Ödeme topla`}
         loading={tahsil.isPending}
         error={tahsilHata}
+        confirmDisabled={!yontem}
         onConfirm={() => {
           if (tahsil.isPending || !yontem) return
           setTahsilHata(null)
@@ -383,7 +380,9 @@ export default function BiletDetay() {
               ),
             )
         }}
-      />
+      >
+        <YontemSecici value={yontem} onChange={setYontem} />
+      </ConfirmDialog>
 
       {/* Stays open on a refusal, so the server's Turkish reason (another
           open ticket for this plate, another shift, already paid) is read

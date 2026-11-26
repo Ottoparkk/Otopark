@@ -19,7 +19,7 @@ import { formatTam } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTel, normalizeTel, telGonderilebilir } from '../../lib/telefon'
-import { formatGoreceli } from '../../lib/dates'
+import { formatGoreceli, formatSaat } from '../../lib/dates'
 import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import {
   degisiklikler,
@@ -29,6 +29,7 @@ import {
   type DegistirTaslak,
 } from './degistir'
 import { sureMetni } from '../../lib/sure'
+import { icerideGorulduMetni } from './iceride'
 import { biletBorcu, odemeAlindi, uzunKalan } from '../../lib/bilet'
 import {
   ODEME_CHIP,
@@ -92,12 +93,14 @@ export function BiletKart({
   // Points already redeemed come off here as well, the same subtraction the
   // collect screen makes, so the row never quotes more than will be asked for.
   const netKurus = Math.max(0, bilet.ucret_kurus - bilet.indirim_kurus)
+  // 077 H: the bridge last saw this car inside the yard (null if never).
+  const gorulduMetni = icerideGorulduMetni(bilet, formatSaat)
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 active:scale-[0.99] active:brightness-[0.97]"
+      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_76px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
     >
       <IconTile tone={tone}>
         <IconAraba size={21} />
@@ -197,6 +200,11 @@ export function BiletKart({
             {olusturanAdi(bilet.giris_by, bilet.giris_kaynak, adlar)}
           </p>
         </div>
+        {/* 077 H: its own quiet line, only when the camera saw the car
+            inside — line two has no room left at 360 px and truncates first. */}
+        {gorulduMetni && (
+          <p className="mt-0.5 truncate text-label text-faint tnum">{gorulduMetni}</p>
+        )}
       </div>
 
     </button>
@@ -312,7 +320,7 @@ export function CikanKart({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 active:scale-[0.99] active:brightness-[0.97]"
+      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_76px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
     >
       <IconTile tone={toplanacak ? 'warn' : 'neutral'}>
         {toplanacak ? <IconKasa size={21} /> : <IconCikis size={21} />}

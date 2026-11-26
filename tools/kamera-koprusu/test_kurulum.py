@@ -2266,6 +2266,25 @@ _KAYBOLAN_ARACLAR = {"19:44": (0.7574, 0.8535), "19:57": (0.765, 0.7984)}   # al
 # solundaki şerit içeride.
 _KANAL_SAGI_DISARI = {"üst": (0.68, 0.33), "kanal sağı": (0.76, 0.44)}
 _KANAL_SOLU_ICERI = {"üst": (0.63, 0.33), "orta": (0.70, 0.44)}
+# 1.4.6 (sahibin kararı 26.11, 25.11 analizi, 22.11 22:51 → 24.11 18:09, bugünkü
+# zum, tam kare 2688 × 1520): sol sıraya park eden araçların (siyah CLS67
+# 23.11, mavi Tesla 24.11) kutusu, önünden araç geçince ≈1190 px'e kadar
+# kayıyordu — eski sarının içine, park eden araç giriyor / çıkıyor görünüyordu.
+# Sokaktan her gerçek giriş ≥ 1370 px'te başlar.
+_ESKI_KAPI = [(0.0, 0.6169), (0.746, 0.7379), (0.7027, 1.0), (0.0, 1.0)]   # 1.4.3–1.4.5
+_SOL_PARK_KAYMASI = {"sol kenar": (60, 1190), "CLS67 yeri": (300, 1021),
+                     "orta": (400, 1150), "Tesla yeri": (600, 1100)}
+_SOKAK_GIRISI = {"sol": (100, 1400), "orta": (600, 1400), "sağ": (1500, 1450)}
+# 1.4.6 zum (26.11, sahibin onayıyla 1.10× hedefi): iki anlık görüntüden
+# (20:15 → 20:39) ölçüldü — 1.0926×, kayma (−123.24, −77.34) px, yaklaşma
+# noktası ≈ (1328, 840). Yukarıdaki kanıtlar ESKİ zumdadır; sahne kareyle
+# birlikte büyür, öneri aynı dönüşümle taşınmış kanıta göre sınanır.
+_ZUM, _ZUM_DX, _ZUM_DY = 1.0926, -123.24 / 2688, -77.34 / 1520
+
+
+def _zumla(fx: float, fy: float) -> tuple[float, float]:
+    """Eski zumdaki kare oranı → 1.4.6 zumundaki kare oranı."""
+    return (_ZUM * fx + _ZUM_DX, _ZUM * fy + _ZUM_DY)
 
 
 def _onerili_kayit(en=2560, boy=1440):
@@ -2301,7 +2320,7 @@ def _icinde(cokgen, nokta) -> bool:
 
 def test_saha_onerisi_gecerli_ve_sahadaki_hatalari_onler() -> None:
     import kirpma_sunucu as ks
-    assert len(ks.SAHA_ONERISI["alan"]) == 8 and len(ks.SAHA_ONERISI["kapi"]) == 4, ks.SAHA_ONERISI
+    assert len(ks.SAHA_ONERISI["alan"]) == 8 and len(ks.SAHA_ONERISI["kapi"]) == 5, ks.SAHA_ONERISI
     for en, boy in ((2560, 1440), (1920, 1080), (1280, 720)):
         kod, s = _onerili_kayit(en, boy)
         assert kod == 200 and s["alan"] is not None and s["kapi"] is not None, (en, boy, kod)
@@ -2310,20 +2329,51 @@ def test_saha_onerisi_gecerli_ve_sahadaki_hatalari_onler() -> None:
     # 14:53: bugünkü alanda plaka kenara değiyordu (kesik); önerilen alanda payıyla içeride.
     bugun = [(round(x * 2560), round(y * 1440)) for x, y in _BUGUNKU_ALAN]
     assert not _kirpikta_tam_mi(bugun, _PLAKA_1453), "saha kanıtı: bugün kesikti"
-    assert _kirpikta_tam_mi(alan, _PLAKA_1453), "öneri 14:53 plakasını yine kesiyor"
+    # Kanıtın kendi tutarlılığı eski zumda; öneri yeni zumda, taşınmış kanıtla.
+    plaka_z = _zumla(*_PLAKA_1453[:2]) + _zumla(*_PLAKA_1453[2:])
+    assert _kirpikta_tam_mi(alan, plaka_z), "öneri 14:53 plakasını yine kesiyor"
     # 18.11 19:44 / 19:57: kanalın sağında kaybolan araçlar — öneride kapı alanının
     # DIŞINDA ama kırpmanın içinde (yönü bilinir).
     for ad, (fx, fy) in _KAYBOLAN_ARACLAR.items():
+        fx, fy = _zumla(fx, fy)
         p = (fx * 2560, fy * 1440)
         assert _icinde(alan, p) and not _icinde(kapi, p), ad
     # 21.11: sağ üst kenar sahibin çizdiği kanal çizgisinde.
-    for ad, (fx, fy) in _KANAL_SAGI_DISARI.items():
+    for ad, n in _KANAL_SAGI_DISARI.items():
+        fx, fy = _zumla(*n)
         assert not _icinde(alan, (fx * 2560, fy * 1440)), f"kanalın sağı içeride: {ad}"
-    for ad, (fx, fy) in _KANAL_SOLU_ICERI.items():
+    for ad, n in _KANAL_SOLU_ICERI.items():
+        fx, fy = _zumla(*n)
         assert _icinde(alan, (fx * 2560, fy * 1440)), f"şerit dışarıda: {ad}"
+    # Mavinin 2. ve 3. köşesi zumlanmış kanal çizgisinin ÜSTÜNDE (≤ 10 px).
+    # Eski zumun önerisi burada ≈ 50 px kayar: zum önerisi yeni kareye ait.
+    import math
+    (ax, ay), (bx, by) = _zumla(0.659, 0.314), _zumla(0.745, 0.463)
+    ax, bx, ay, by = ax * 2560, bx * 2560, ay * 1440, by * 1440
+    for i in (1, 2):
+        px, py = alan[i]
+        uzak = abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / math.hypot(bx - ax, by - ay)
+        assert uzak <= 10, f"mavinin {i + 1}. köşesi kanal çizgisinden {uzak:.0f} px uzak"
     # Kapı alanı alt kenara oturur (araç sokaktan alttan girer, kanalın solundan).
     assert sum(1 for _x, y in kapi if y == 1440) == 2, kapi
     assert max(x for x, _y in kapi) < 0.8 * 2560, kapi
+    # 1.4.6: sol sıradaki park aracının kayan kutusu sarının DIŞINDA (eskisinde
+    # içerideydi — saha kanıtı), sokaktan giriş yine sarının İÇİNDE.
+    eski = [(round(x * 2560), round(y * 1440)) for x, y in _ESKI_KAPI]
+    for ad, (px, py) in _SOL_PARK_KAYMASI.items():
+        assert _icinde(eski, (px / 2688 * 2560, py / 1520 * 1440)), \
+            f"saha kanıtı: eski sarıda değil: {ad}"
+        fx, fy = _zumla(px / 2688, py / 1520)
+        p = (fx * 2560, fy * 1440)
+        assert not _icinde(kapi, p), f"park aracı sarıda: {ad}"
+        if fx <= 0:
+            continue   # zumla karenin dışına çıktı ("sol kenar": x ≈ −58 px)
+        assert _icinde(alan, p), f"park aracı kırpmanın dışında: {ad}"
+    for ad, (px, py) in _SOKAK_GIRISI.items():
+        fx, fy = _zumla(px / 2688, py / 1520)
+        if fx <= 0:
+            continue   # zumla karenin dışına çıktı ("sol": x ≈ −14 px)
+        assert _icinde(kapi, (fx * 2560, fy * 1440)), f"giriş sarının dışında: {ad}"
 
 
 def test_kayitli_alanlar_cozulur() -> None:
@@ -3237,19 +3287,19 @@ def test_kalp_bilgisi_sayilari() -> None:
     import kopru
     import gunluk
     import paketle
-    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.5", (gunluk.KOPRU_SURUMU, paketle.SURUM)
+    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.6", (gunluk.KOPRU_SURUMU, paketle.SURUM)
     simdi = datetime(2026, 11, 18, 10, 10, tzinfo=timezone.utc)
     b = kopru.kalp_bilgisi(model_kare=43, sure_sn=5.0, izleme=True, istendi=True,
                            kume="GPU · YOLO11s", kuyruk=(2, "2026-11-18T10:00:00+00:00"),
                            simdi=simdi, reddedilen=1, saat_farki=-2.44)
-    assert b == {"surum": "1.4.5", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
+    assert b == {"surum": "1.4.6", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
                  "takip": "acik", "kume": "GPU · YOLO11s", "reddedilen": 1,
                  "saat_farki_sn": -2.4}, b
     # İzleme çalışırken kapandı: kare sayısı anlamsız, gönderilmez.
     b = kopru.kalp_bilgisi(model_kare=0, sure_sn=5.0, izleme=False, istendi=True,
                            kume="CPU · YOLOX-tiny", kuyruk=(0, None), simdi=simdi,
                            reddedilen=0, saat_farki=None)
-    assert b == {"surum": "1.4.5", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
+    assert b == {"surum": "1.4.6", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
                  "kume": "CPU · YOLOX-tiny", "reddedilen": 0}, b
     # Ayarla kapalı (TAKIP=0), ilk kalp (süre yok), bozuk zaman, uzun küme adı.
     b = kopru.kalp_bilgisi(model_kare=5, sure_sn=0.0, izleme=False, istendi=False,

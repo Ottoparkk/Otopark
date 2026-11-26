@@ -32,6 +32,11 @@ tools/hiz-testi/dist/
 tools/hiz-testi/dagitim/
 tools/hiz-testi/ov-onbellek/
 tools/hiz-testi/hiz-sonuc.txt
+# P2 test tezgahı raporu ve indirilen eski Chromium (yüzlerce MB).
+tools/cihaz-testi/p2-sonuc.txt
+tools/cihaz-testi/chromium/
+tools/cihaz-testi/derleme/
+tools/cihaz-testi/ekranlar/
 
 # Supabase CLI'nin yerel durumu: hangi projeye bağlı olduğunu (proje kimliği,
 # organizasyon, havuz adresi) tutar. Repoda kalırsa, projenin başka birinin

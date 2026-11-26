@@ -41,7 +41,13 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.5"   # 1.4.5 (sahibin kararı 22.11, 1.4.4 kurulmadan içine katıldı):
+SURUM = "1.4.6"   # 1.4.6 (sahibin kararları 24–26.11): 24.11 kamera tanısının
+                  #        düzeltmeleri A–L (kapı kararı ICERIDE kaydına takılmaz,
+                  #        YOLO11s kart eşiği 0.75, ikiz 25 sn, kenarda dönen iz,
+                  #        tahmin + hareket, aynı izin dönüşü, içeride sorgusu
+                  #        ertelenir, plaka teşhisi + plaka kırpığı); Öneriyi
+                  #        yükle'nin sarısı sol sıradaki park aracını dışarıda bırakır
+                  # 1.4.5 (sahibin kararı 22.11, 1.4.4 kurulmadan içine katıldı):
                   #        A TEK_KARAR — bir geçiş = bir karar: aynı aracın ikinci
                   #        izinin kartı gönderilmez (takip.Gecitci, kayıt + klip);
                   #        B IZ_ONAY — tek karede görülen aracın kartı ancak plaka

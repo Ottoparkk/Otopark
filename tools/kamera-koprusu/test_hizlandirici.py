@@ -103,6 +103,38 @@ def test_motosiklet_esigi_ayari():
     assert a["arac11_moto_esik"] is None and len(u) == 1, (a, u)
 
 
+def test_kart_esigi_ayari():
+    # 1.4.6 B (sahibin kararı 25.11): ARAC11_KART_ESIK — boş = profilin değeri
+    # (0.75); sahada geri almak için 0.30 (doğum eşiği) yazılır.
+    assert "ARAC11_KART_ESIK" in plaka.AYAR_ADLARI
+    assert _ayar()["arac11_kart_esik"] is None
+    a, u = plaka.calisma_ayarlari({"ARAC11_KART_ESIK": "0.3"})
+    assert u == [] and a["arac11_kart_esik"] == 0.3, (a, u)
+    a, u = plaka.calisma_ayarlari({"ARAC11_KART_ESIK": "2"})
+    assert a["arac11_kart_esik"] is None and len(u) == 1, (a, u)
+
+
+def test_ikiz_sn_ayari():
+    # 1.4.6 C (sahibin kararı 25.11): IKIZ_SN — varsayılan 25 sn, 0 = kapalı.
+    assert "IKIZ_SN" in plaka.AYAR_ADLARI
+    assert _ayar()["ikiz_sn"] == 25.0
+    a, u = plaka.calisma_ayarlari({"IKIZ_SN": "0"})
+    assert u == [] and a["ikiz_sn"] == 0.0, (a, u)
+    a, u = plaka.calisma_ayarlari({"IKIZ_SN": "90"})
+    assert a["ikiz_sn"] == 25.0 and len(u) == 1, (a, u)
+
+
+def test_plaka_kirpik_ayari():
+    # 1.4.6 L (sahibin kararı 25.11): kartın en iyi plaka kırpığı bu
+    # bilgisayarda saklanır — varsayılan AÇIK, 0 = kapalı.
+    assert "PLAKA_KIRPIK" in plaka.AYAR_ADLARI
+    assert _ayar()["plaka_kirpik"] is True
+    a, u = plaka.calisma_ayarlari({"PLAKA_KIRPIK": "0"})
+    assert u == [] and a["plaka_kirpik"] is False, (a, u)
+    a, u = plaka.calisma_ayarlari({"PLAKA_KIRPIK": "evet"})
+    assert a["plaka_kirpik"] is True and len(u) == 1, (a, u)
+
+
 def test_arac_profili():
     # 2026-11-13: YOLO11s 640 gece fotoğraflarıyla ölçüldü (25/25 araç, boş
     # şerit / insan / el arabasında 0 yanlış alarm) → "otomatik" YOLO11s.

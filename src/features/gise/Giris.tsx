@@ -29,6 +29,7 @@ import { formatTL } from '../../lib/money'
 import { telGonderilebilir } from '../../lib/telefon'
 import { rpcErrorText } from '../../lib/errors'
 import { IconUyari } from '../../components/ui/icons'
+import { useGecikmeli } from '../../lib/useGecikmeli'
 
 /**
  * The Giriş half of the Gişe page.
@@ -125,8 +126,21 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
   const bosSayi = (yerler ?? []).filter((d) => !d.dolu_plaka).length
   const yerKodu = (yerler ?? []).find((d) => d.id === yerGecerli)?.kod ?? null
 
-  const { data: abonman } = useAbonmanKontrol(normalize, gecerli)
-  const { data: puan } = usePuanDurumu(normalize, gecerli && Boolean(ayarlar?.puan_aktif))
+  // Asked once typing pauses, not per letter (P2 bench: two requests per
+  // letter from the 4th on). The answers are used only while they are about
+  // the plate in the field: for the quarter second after a change they
+  // describe the previous plate, and "Abonman — ücretsiz" in the confirmation
+  // must never belong to another car.
+  const kontrolPlaka = useGecikmeli(normalize)
+  const kontrolGecerli = plakaGecerli(kontrolPlaka)
+  const guncel = kontrolPlaka === normalize
+  const { data: abonmanCevap } = useAbonmanKontrol(kontrolPlaka, kontrolGecerli)
+  const { data: puanCevap } = usePuanDurumu(
+    kontrolPlaka,
+    kontrolGecerli && Boolean(ayarlar?.puan_aktif),
+  )
+  const abonman = guncel ? abonmanCevap : undefined
+  const puan = guncel ? puanCevap : undefined
 
   // Object URLs leak if they are not revoked; a gate phone stays open all day.
   useEffect(() => {

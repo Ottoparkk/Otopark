@@ -92,10 +92,11 @@ def klip_adi(zaman: datetime, iz_no: int, tur: str, islem_id: str | None,
 
 
 def temizle(klasor: str, simdi: float, *, gun: float = KLIP_GUN,
-            en_cok_bayt: int = KLIP_EN_COK_BAYT) -> int:
+            en_cok_bayt: int = KLIP_EN_COK_BAYT, uzanti: str = ".avi") -> int:
     """
-    Klip klasöründeki .avi'lerden `gun`den eskileri, sonra toplam
-    `en_cok_bayt`ı aşan en eskileri siler (başka dosyaya dokunmaz). Silinen sayı.
+    Klip klasöründeki `uzanti`lı dosyalardan (klip .avi; 1.4.6 L plaka kırpığı
+    .jpg) `gun`den eskileri, sonra toplam `en_cok_bayt`ı aşan en eskileri
+    siler (başka dosyaya dokunmaz). Silinen sayı.
     """
     try:
         adlar = os.listdir(klasor)
@@ -104,7 +105,7 @@ def temizle(klasor: str, simdi: float, *, gun: float = KLIP_GUN,
     dosyalar = []
     for ad in adlar:
         yol = os.path.join(klasor, ad)
-        if not ad.lower().endswith(".avi") or not os.path.isfile(yol):
+        if not ad.lower().endswith(uzanti) or not os.path.isfile(yol):
             continue
         try:
             st = os.stat(yol)
@@ -127,6 +128,47 @@ def temizle(klasor: str, simdi: float, *, gun: float = KLIP_GUN,
             silinen += 1
             toplam -= boyut
     return silinen
+
+
+# 1.4.6 L (sahibin kararı 25.11): her kartın en iyi plaka kırpığı — yalnızca
+# bu bilgisayarda (asla gönderilmez), kliplerle aynı gün kuralı. Ölçüm için:
+# plaka neden okunmadı (bulanık mı, küçük mü, kesik mi) gözle bakılsın.
+KIRPIK_EN_COK_BAYT = 200 * 1024 ** 2
+KIRPIK_JPEG = 92
+
+
+def kirpik_klasoru() -> str:
+    return os.path.join(
+        os.environ.get("PROGRAMDATA", os.path.expanduser("~")), "Otopark", "plaka-kirpik"
+    )
+
+
+def kirpik_adi(zaman: datetime, iz_no: int, tur: str, islem_id: str | None) -> str:
+    """Klibin adıyla aynı (`klip_adi`), uzantısı .jpg — plaka adın parçası OLAMAZ."""
+    return klip_adi(zaman, iz_no, tur, islem_id)[:-len(".avi")] + ".jpg"
+
+
+def kirpik_yaz(klasor: str, ad: str, img, *, bos_alan=None) -> str | None:
+    """
+    Kırpığı JPEG yazar; yolu döner. Var olan dosyanın üstüne yazmaz, diskte
+    KLIP_BOS_EN_AZ_BAYT'tan az yer varsa yazmaz. Hiçbir hata dışarı çıkmaz
+    (ana döngü bir kırpık yüzünden durmasın): None döner.
+    """
+    try:
+        if img is None or img.size == 0:
+            return None
+        if (bos_alan or _bos_alan)(klasor) < KLIP_BOS_EN_AZ_BAYT:
+            return None
+        os.makedirs(klasor, exist_ok=True)
+        yol = os.path.join(klasor, ad)
+        ok, veri = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, KIRPIK_JPEG])
+        if not ok:
+            return None
+        with open(yol, "xb") as f:                     # var olanın üstüne yazmaz
+            f.write(veri.tobytes())
+        return yol
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _sil(yol: str) -> int:

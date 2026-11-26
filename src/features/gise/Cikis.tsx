@@ -57,7 +57,6 @@ import {
   IconKalem,
   IconAsagi,
   IconTik,
-  IconUyari,
 } from '../../components/ui/icons'
 import {
   ODEME_DURUM_ETIKET,
@@ -66,10 +65,12 @@ import {
   type AcikBilet,
   type OdemeYontemi,
 } from '../../lib/types'
-import { kapaliBiletIslemYapabilir, onayDurumu, zatenKapandi } from '../../lib/bilet'
+import { kapaliBiletIslemYapabilir, onayDurumu, uzunKalan, zatenKapandi } from '../../lib/bilet'
+import { ICERIDE_SAYFA, icerideGorunen } from './iceride'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { ucretsizEtiket } from '../../lib/ucretsiz'
 import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
+import { useGecikmeli } from '../../lib/useGecikmeli'
 
 // Two views, no "Tümü" (owner, 2026-11-15): the list is either the cars still
 // here or the ones that left, and it opens on İçeride.
@@ -246,10 +247,13 @@ export function AracListesi({
   onSec,
   aramaOdak = false,
   cikisAralik = null,
+  aramaSonucu = false,
 }: {
   sorgu: string
   setSorgu: (v: string) => void
   biletler: AcikBilet[]
+  /** `biletler` is the server's answer to a typed search (not placeholder). */
+  aramaSonucu?: boolean
   isPending: boolean
   error: unknown
   refetch: () => void
@@ -278,10 +282,21 @@ export function AracListesi({
   const iceridiGoster = filtre === 'ICERIDE'
   const cikanGoster = filtre === 'CIKAN'
 
+  // Asked when typing pauses, not per letter (see useGecikmeli).
+  const aranan = useGecikmeli(sorgu)
+
+  // İçeride draws 25 at a time (iceride.ts) — but never cuts the answer to a
+  // typed search. `aramaSonucu` is false while the previous, unsearched list
+  // is still on screen waiting for the answer, so that one stays cut too.
+  const [icerdeAdet, setIcerdeAdet] = useState(ICERIDE_SAYFA)
+  useEffect(() => setIcerdeAdet(ICERIDE_SAYFA), [sorgu])
+  const icerde = icerideGorunen(biletler, icerdeAdet, aramaSonucu, (b) =>
+    uzunKalan(b, ayarlar?.terk_esik_saat),
+  )
   // Skipped entirely while the filter hides it — a gate phone on mobile data
   // should not pull closed tickets nobody asked to see.
   const cikanlar = useCikanBiletler({
-    sorgu,
+    sorgu: aranan,
     enabled: cikanGoster,
     // Approval is Yönetici-only (see the embed note in the query); payment is
     // not — it is a fact about the ticket, and the operator who let a car out
@@ -424,7 +439,7 @@ export function AracListesi({
                   />
                 }
               >
-                {biletler.map((b) => (
+                {icerde.gorunen.map((b) => (
                   <BiletKart
                     key={b.id}
                     bilet={b}
@@ -435,6 +450,19 @@ export function AracListesi({
                   />
                 ))}
               </ListeDurumu>
+              {/* Owner 2026-11-22: 25 at a time (iceride.ts). The button says
+                  how many wait behind it, and how many of those have stayed
+                  long — the list is newest first, so those are the oldest. */}
+              {icerde.kalan > 0 && (
+                <Button
+                  variant="secondary"
+                  block
+                  onClick={() => setIcerdeAdet((n) => n + ICERIDE_SAYFA)}
+                >
+                  Daha fazla göster ({icerde.kalan} araç daha
+                  {icerde.kalanUzun > 0 ? ` · ${icerde.kalanUzun} uzun kalan` : ''})
+                </Button>
+              )}
             </div>
           </section>
         )}
@@ -513,10 +541,10 @@ export function AracListesi({
 /**
  * The screen a car on the İçeride list opens. Same order as Bilet Detay
  * (owner, 2026-11-02): photo → plate → fee + stay → ticket facts │ müşteri →
- * Değiştir → undo. Two money-flow exceptions, both deliberate:
- *   · the payment method sits right under the fee, not at the bottom — with a
- *     photo on top, "at the bottom" would mean a scroll on every collection;
- *   · the collect buttons stay in the floating bar, always under the thumb.
+ * Değiştir → undo. The collect button stays in the floating bar, always under
+ * the thumb. The payment method is NOT on the page (owner, 2026-11-23): it is
+ * asked in the box "Tahsil Et ve Çıkış Ver" opens, with nothing preselected,
+ * and there is no "Çıkış Ver" (leave unpaid) button any more.
  */
 export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => void }) {
   const navigate = useNavigate()
@@ -541,14 +569,14 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const puanKullan = usePuanKullan()
   const puanGeriAl = usePuanGeriAl()
 
-  const [yontem, setYontem] = useState<OdemeYontemi | null>('NAKIT')
+  // Chosen in the box, never preselected (owner, 2026-11-23).
+  const [yontem, setYontem] = useState<OdemeYontemi | null>(null)
   const [hata, setHata] = useState<string | null>(null)
   const [puanModal, setPuanModal] = useState(false)
   const [puanGirdi, setPuanGirdi] = useState('')
   const [puanHata, setPuanHata] = useState<string | null>(null)
   const [degistirAcik, setDegistirAcik] = useState(false)
   const [override, setOverride] = useState<{ kurus: number; sebep: string } | null>(null)
-  const [cikisOnay, setCikisOnay] = useState(false)
   // The box in front of "Tahsil Et" / "Çıkışı Kaydet" (owner, 2026-11-14:
   // every critical action is confirmed) and in front of "puan geri al".
   const [tahsilOnay, setTahsilOnay] = useState(false)
@@ -605,33 +633,28 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
       setHata('Ücret henüz hesaplanmadı. Bir saniye bekleyip tekrar deneyin.')
       return
     }
-    if (odemeGerekli && !yontem) {
-      setHata('Ödeme yöntemi seçin.')
-      return
-    }
+    // The method is chosen in the box, every time from nothing.
+    setYontem(null)
     setTahsilOnay(true)
   }
 
-  /** `tahsil = false`: the car leaves, the money is not taken and stays owed. */
-  async function tahsilEt(tahsil: boolean) {
+  async function tahsilEt() {
     if (kapat.isPending) return
     setHata(null)
-    if (tahsil && odemeGerekli && !yontem) {
+    if (odemeGerekli && !yontem) {
       setHata('Ödeme yöntemi seçin.')
       return
     }
     try {
       const r = await kapat.mutateAsync({
         bilet_id: bilet.id,
-        // Null on an unpaid exit, and not merely unused: the server refuses a
-        // method here rather than ignoring it, because sending one means the
-        // caller does not know which of the two things it is doing.
-        odeme_yontemi: tahsil && odemeGerekli ? yontem : null,
+        // Null with nothing to pay: the server refuses a method there rather
+        // than ignoring it.
+        odeme_yontemi: odemeGerekli ? yontem : null,
         ucret_override_kurus: override?.kurus ?? null,
         sebep: override?.sebep ?? null,
-        tahsil,
+        tahsil: true,
       })
-      setCikisOnay(false)
       setTahsilOnay(false)
       // The RECEIPT shows what the server actually charged, not the preview.
       setSonuc({ tahsil: r.tahsil_kurus, ucret: r.ucret_kurus, indirim: r.indirim_kurus })
@@ -644,7 +667,6 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         // 054: the camera saw the car leave and closed the ticket unpaid
         // while this screen was open. Nothing was charged here; the money is
         // taken on the ticket's own page, so offer the way there.
-        setCikisOnay(false)
         setTahsilOnay(false)
         setKapandi(true)
         // The same server message covers a colleague's exit and a cancel,
@@ -780,9 +802,6 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           </button>
         )}
 
-        {/* ---- payment ------------------------------------------------ */}
-        {odemeGerekli && <YontemSecici value={yontem} onChange={setYontem} />}
-
         {/* ---- the ticket: facts │ müşteri ----------------------------- */}
         {tam ? (
           <BiletDetayKarti
@@ -839,7 +858,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         {/* Not while the dialog is open: it shows the same message next to
             the button that failed, and a second copy behind the overlay is
             one the operator cannot read anyway. */}
-        {hata && !cikisOnay && !tahsilOnay && (
+        {hata && !tahsilOnay && (
           <p role="alert" className="rounded-card bg-danger-soft px-4 py-3 text-body text-danger">
             {hata}
           </p>
@@ -862,74 +881,37 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           >
             {odemeGerekli ? `${formatTL(netKurus)} Tahsil Et ve Çıkış Ver` : 'Çıkışı Kaydet'}
           </Button>
-          {/* Secondary, and only when there is money to skip: letting a car
-              out unpaid is the exception, so it must not look like the twin
-              of the button beside it. Nothing to collect means there is no
-              second thing to choose. */}
-          {odemeGerekli && (
-            // Two halves side by side so the bar does not grow: "Çıkış Ver"
-            // leaves the fee OWED, "Ücretsiz" waives it with a reason (065).
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                variant="secondary"
-                size="lg"
-                block
-                disabled={kapat.isPending || ucretsiz.isPending || kapandi}
-                onClick={() => {
-                  // Cleared on open: the dialog renders `hata`, so a failure
-                  // from the collect button beside it would appear inside the
-                  // confirmation as if THIS action had already failed.
-                  setHata(null)
-                  setCikisOnay(true)
-                }}
-              >
-                Çıkış Ver
-              </Button>
-              {!abonman && (
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  block
-                  disabled={kapat.isPending || ucretsiz.isPending || kapandi}
-                  onClick={() => {
-                    setHata(null)
-                    // Points first: a fee lowered by points is not "free",
-                    // and the customer gets the points back (server says so too).
-                    if (bilet.indirim_kurus > 0) {
-                      setHata('Önce kullanılan puanı geri alın.')
-                      return
-                    }
-                    setUcretsizAcik(true)
-                  }}
-                >
-                  Ücretsiz
-                </Button>
-              )}
-            </div>
+          {/* Secondary, and only when there is money to waive: "Ücretsiz"
+              waives the fee with a reason (065). The "Çıkış Ver" (leave
+              unpaid) half beside it was removed (owner, 2026-11-23). */}
+          {odemeGerekli && !abonman && (
+            <Button
+              variant="secondary"
+              size="lg"
+              block
+              disabled={kapat.isPending || ucretsiz.isPending || kapandi}
+              onClick={() => {
+                setHata(null)
+                // Points first: a fee lowered by points is not "free",
+                // and the customer gets the points back (server says so too).
+                if (bilet.indirim_kurus > 0) {
+                  setHata('Önce kullanılan puanı geri alın.')
+                  return
+                }
+                setUcretsizAcik(true)
+              }}
+            >
+              Ücretsiz
+            </Button>
           )}
         </div>
       </FloatingBar>
 
-      {/* Confirmed, because a car physically leaving is the one step that
-          cannot be undone — the money can still be collected afterwards, the
-          vehicle cannot be brought back. */}
-      <ConfirmDialog
-        open={cikisOnay}
-        onOpenChange={setCikisOnay}
-        title="Ödeme almadan çıkış"
-        description={`${formatPlaka(bilet.plaka)} ücret alınmadan çıkacak. ${formatTL(
-          netKurus,
-        )} borç olarak kalır; parayı sonra bilet detayından tahsil edebilirsiniz.`}
-        confirmLabel="Çıkış Ver"
-        tone="danger"
-        loading={kapat.isPending}
-        error={hata}
-        onConfirm={() => void tahsilEt(false)}
-      />
-
       {/* The money, said once more before it is taken: a closed, collected
           ticket cannot be edited afterwards — only cancelled. Stays open on a
-          refusal so the server's reason is read beside the button. */}
+          refusal so the server's reason is read beside the button. The
+          payment method is chosen HERE (owner, 2026-11-23), from nothing:
+          the confirm stays disabled until one is tapped. */}
       <ConfirmDialog
         open={tahsilOnay}
         onOpenChange={setTahsilOnay}
@@ -960,8 +942,11 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         confirmLabel={odemeGerekli ? `${formatTL(netKurus)} Tahsil Et` : 'Çıkışı Kaydet'}
         loading={kapat.isPending}
         error={hata}
-        onConfirm={() => void tahsilEt(true)}
-      />
+        confirmDisabled={odemeGerekli && !yontem}
+        onConfirm={() => void tahsilEt()}
+      >
+        {odemeGerekli && <YontemSecici value={yontem} onChange={setYontem} />}
+      </ConfirmDialog>
 
       {/* ---- free exit (065; form + box shared with 066) ------------- */}
       {ucretsizAcik && (
@@ -1065,34 +1050,22 @@ function Fis({
   ucretsiz?: string | null
   onTamam: () => void
 }) {
-  // An unpaid exit is still a success — the car left — but a green tick over
-  // "₺0 tahsil edildi" would read as "nothing was owed". The number shown is
-  // the one that matters in each case: what was taken, or what is still owed.
-  const borc = sonuc.ucret - sonuc.indirim
-  const odenmedi = sonuc.tahsil === 0 && borc > 0
-
+  // Since 2026-11-23 this screen has no unpaid exit ("Çıkış Ver" removed), so
+  // the receipt is always what was taken — or a free exit.
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
-      <div
-        className={`mb-5 flex size-16 items-center justify-center rounded-chip ${
-          odenmedi ? 'bg-warn-soft text-warn' : 'bg-success-soft text-success'
-        }`}
-      >
-        {odenmedi ? <IconUyari size={34} /> : <IconTik size={34} />}
+      <div className="mb-5 flex size-16 items-center justify-center rounded-chip bg-success-soft text-success">
+        <IconTik size={34} />
       </div>
 
       <p className="text-lead font-medium tracking-wide text-soft tnum">{formatPlaka(plaka)}</p>
 
       <p className="mt-2 text-hero font-semibold text-ink tnum">
-        {formatTutar(odenmedi ? borc : sonuc.tahsil)}
+        {formatTutar(sonuc.tahsil)}
         <span className="ml-1 text-title font-medium text-faint">₺</span>
       </p>
       <p className="mt-1 text-label text-faint">
-        {ucretsiz !== null
-          ? `ücretsiz çıkış — ${ucretsiz}`
-          : odenmedi
-            ? 'tahsil edilmedi — borç olarak kaldı'
-            : 'tahsil edildi'}
+        {ucretsiz !== null ? `ücretsiz çıkış — ${ucretsiz}` : 'tahsil edildi'}
       </p>
 
       {sonuc.indirim > 0 && (

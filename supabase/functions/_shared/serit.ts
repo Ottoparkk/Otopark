@@ -196,6 +196,36 @@ export function hareketIpucu(govde: Record<string, unknown>): HareketIpucu | nul
 }
 
 /**
+ * 077 D (owner 2026-11-25, "only if no look-alike"): on the single gate, a
+ * bridge card whose car the tracker saw LEAVE (`hareket: CIKTI`) with a guess
+ * of at least this confidence is first offered to `kamera_tahmin_cikis`. It
+ * closes the ticket only when the guess has an exact open ticket, no other
+ * open ticket is one character away and the entry window has passed; null or
+ * an error → the card is written as before.
+ */
+export const TAHMIN_CIKIS_GUVEN = 0.9
+
+export function tahminCikisDenenir(
+  yon: string | null,
+  o: {
+    koprudenOkunamadi: boolean
+    koprudenTahmin: string | null
+    koprudenGuven: number | null
+    hareket: string | null
+  },
+): boolean {
+  return (
+    yon === 'ORTAK' &&
+    o.koprudenOkunamadi &&
+    o.hareket === 'CIKTI' &&
+    typeof o.koprudenTahmin === 'string' &&
+    o.koprudenTahmin.trim() !== '' &&
+    typeof o.koprudenGuven === 'number' &&
+    o.koprudenGuven >= TAHMIN_CIKIS_GUVEN
+  )
+}
+
+/**
  * The answer when the server REFUSED a camera car and the webhook wrote a
  * REDDEDILDI card for it instead (071). 200 like every other card outcome,
  * so every bridge — old ones too — counts the car as delivered; `karar` and

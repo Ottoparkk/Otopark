@@ -199,6 +199,15 @@ KARARSIZ_ISARETI = "iz kararsız bitti"
 # 1.4.5 A (TEK_KARAR): kart olacak iz, aynı geçişin başka bir kararının
 # (aynı aracın) parçası sayıldı — kart gönderilmedi, klibi yazılır.
 EMILDI_ISARETI = "aynı aracın parçası sayıldı"
+# 1.4.6 J (sahibin kararı 25.11): kenardan kapı alanına girip aynı kenardan
+# dönen plakasız araç — kart açılmaz, klibi yazılır.
+KAPIDA_DONDU_ISARETI = "kapı alanında dönüp gitti — kart açılmadı"
+# 1.4.6 K: aynı iz kapıdan girip 2 dk içinde çıktı — çıkış işaretli gider.
+AYNI_IZ_DONDU_ISARETI = "aynı iz girip çıktı — çıkış işaretli gönderildi"
+# 1.4.6 E2: kapıda kararı bekleyen araç varken içeride sorusu bekletilir.
+ICERIDE_ERTELENDI_ISARETI = "içeride sorusu ertelendi — kapıda karar bekleyen araç var"
+# 1.4.6 L: kartın en iyi plaka kırpığı bu bilgisayara yazıldı (PLAKA_KIRPIK).
+PLAKA_KIRPIK_YAZILDI_ISARETI = "plaka kırpığı yazıldı"
 # 1.4.3 (1d): yönü bilinmeyen olayın klibi diske yazıldı (KLIP=1). Adında
 # plaka YOK: İstanbul saati, iz, olay, islem_id'nin ilk 8'i.
 KLIP_ISARETI = "klip yazıldı"
@@ -213,7 +222,7 @@ BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"
 YON_BILINMIYOR_ISARETI = "yönü bilinmiyor — emin plaka gönderildi"
 
 # 1.4.3: kalp atışında sunucuya giden sürüm. paketle.SURUM ile aynı (test_kurulum).
-KOPRU_SURUMU = "1.4.5"
+KOPRU_SURUMU = "1.4.6"
 YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
 KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).

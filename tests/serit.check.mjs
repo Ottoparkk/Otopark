@@ -36,6 +36,7 @@ import {
   seritKarari,
   sonGonderimMi,
   sureSinirli,
+  tahminCikisDenenir,
   tekKapiCevabi,
   tekKapiFotoGerekli,
 } from '../supabase/functions/_shared/serit.ts'
@@ -483,14 +484,15 @@ esit(
 )
 
 // Kaynağa bakış: depoya TEK yerden, sabit kovaya, üzerine yazmadan yüklenir;
-// bağlama TEK yerden yapılır ve altı karar yolunun hepsinde çağrılır
-// (okunamadı, okuma hatası, tek kapı, giriş, çıkış; 071: reddedilen araç kartı).
+// bağlama TEK yerden yapılır ve yedi karar yolunun hepsinde çağrılır
+// (okunamadı, okuma hatası, tek kapı, giriş, çıkış; 071: reddedilen araç kartı;
+// 077: çıkış tahminiyle kapanan bilet).
 const yuklemeler = [...webhook.matchAll(/\.storage\s*\.from\(\s*([A-Z_]+)\s*\)\s*\.upload\(([^)]*)\)/g)]
 esit('webhook: depoya tek yerden erişilir', (webhook.match(/\.storage\b/g) ?? []).length, 1)
 esit('webhook: yükleme kova sabitiyle', yuklemeler.map((m) => m[1]), ['KANIT_FOTO_KOVA'])
 esit('webhook: üzerine yazmaz (upsert: false)', yuklemeler.map((m) => /upsert:\s*false/.test(m[2])), [true])
 esit('webhook: kamera_foto_bagla tek yerden', (webhook.match(/'kamera_foto_bagla'/g) ?? []).length, 1)
-esit('webhook: fotoğraf altı karar yolunda bağlanır', (webhook.match(/await kanitFotosunuBagla\(/g) ?? []).length, 6)
+esit('webhook: fotoğraf yedi karar yolunda bağlanır', (webhook.match(/await kanitFotosunuBagla\(/g) ?? []).length, 7)
 
 // --- Köprü 1.3.0: plakayı köprü okur; emin değilse "okunamadı" der ----------
 // Köprü artık fotoğrafı okutmaz (foto_base64 göndermez), plakayı kendi okur.
@@ -674,6 +676,27 @@ esit('kart: boş kod (ağ) → 503', kartYazilamadiDurumu(''), 503)
 esit('kart: kod yok → 503', kartYazilamadiDurumu(undefined), 503)
 esit('webhook: kart hatası yardımcıyla karar verir',
   kartla.includes('if (kartYazilamadiDurumu(kartErr.code) === 409) return rpcHatasi(rpc, error)'), true)
+
+// 077 D (sahip 25.11, "yalnızca benzeri yoksa"): tek kapıda kapıdan ÇIKTI
+// diye izlenen kartın ≥ 0.90 tahmini önce kamera_tahmin_cikis'e sorulur
+// (bileti yalnızca TAM ve benzersiz açık bilet varsa kapatır); null ya da
+// hata → eski kart yolu. Başka hiçbir kart sorulmaz.
+const tc = (o) => ({ koprudenOkunamadi: true, koprudenTahmin: '34ABC123',
+  koprudenGuven: 0.93, hareket: 'CIKTI', ...o })
+esit('tahmin çıkış: ORTAK, ÇIKTI, 0.93 → sorulur', tahminCikisDenenir('ORTAK', tc({})), true)
+esit('tahmin çıkış: tam 0.90 → sorulur', tahminCikisDenenir('ORTAK', tc({ koprudenGuven: 0.9 })), true)
+esit('tahmin çıkış: 0.89 → kart', tahminCikisDenenir('ORTAK', tc({ koprudenGuven: 0.89 })), false)
+esit('tahmin çıkış: güven yok → kart', tahminCikisDenenir('ORTAK', tc({ koprudenGuven: null })), false)
+esit('tahmin çıkış: tahmin yok → kart', tahminCikisDenenir('ORTAK', tc({ koprudenTahmin: null })), false)
+esit('tahmin çıkış: GİRDİ → kart', tahminCikisDenenir('ORTAK', tc({ hareket: 'GIRDI' })), false)
+esit('tahmin çıkış: yön yok → kart', tahminCikisDenenir('ORTAK', tc({ hareket: null })), false)
+esit('tahmin çıkış: GİRİŞ şeridi → kart', tahminCikisDenenir('GIRIS', tc({})), false)
+esit('tahmin çıkış: köprü kartı değil → hayır', tahminCikisDenenir('ORTAK', tc({ koprudenOkunamadi: false })), false)
+const tcYeri = webhook.indexOf("admin.rpc('kamera_tahmin_cikis'")
+esit('webhook: tahmin çıkışı kart yazılmadan önce sorulur',
+  tcYeri > 0 && tcYeri < webhook.indexOf("admin.rpc('kamera_okunamadi'"), true)
+esit('webhook: kapanınca 200 CIKIS TAHMIN',
+  webhook.includes("karar: 'CIKIS', sebep: 'TAHMIN'"), true)
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)
 process.exit(kalan === 0 ? 0 : 1)

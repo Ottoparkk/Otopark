@@ -67,6 +67,15 @@ esit('başka türde tahmin okunmaz',
 // --- kisaDurum: her tür için TEK kısa satır --------------------------------------
 esit('okunamadı', kisaDurum(kayit()), 'Plaka tam olarak okunamadı')
 esit('okunamadı, servis yok', kisaDurum(kayit({ ham_yanit: { hata: 'x' } })), 'Plaka okuma servisi çalışmıyordu')
+// 077 E2: giriş kartının plakası az sonra otopark içinde okundu (kart açık kalır).
+esit('okunamadı, plaka içeride okundu',
+  kisaDurum(kayit({ yon: 'ORTAK', plaka: '34ABC123',
+                    ham_yanit: { sonradan_okunan: '34ABC123', sonradan_sebep: 'ICERIDE' } })),
+  'Girişte okunamadı — plaka içeride okundu')
+esit('okunamadı, başka sonradan sebep eskisi gibi',
+  kisaDurum(kayit({ yon: 'ORTAK', plaka: '34ABC123',
+                    ham_yanit: { sonradan_okunan: '34ABC123', sonradan_sebep: 'BENZER_ACIK' } })),
+  'Plaka tam olarak okunamadı')
 esit('açık bilet yok', kisaDurum(kayit({ tur: 'ACIK_BILET_YOK', yon: 'CIKIS' })), 'Çıkışta açık bilet bulunamadı')
 // 054: son dört karakter tek araca da uysa kamera kapatmaz; kart bunu söyler.
 esit('çoklu eşleşme', kisaDurum(kayit({ tur: 'COKLU_ESLESME', yon: 'CIKIS' })), 'İçeride benzer plakalı bilet var')
@@ -110,12 +119,57 @@ for (const tur of TURLER) {
 // görünemiyordu; ölü kod silindi.
 esit('elleGirmeUyarisi artık yok', 'elleGirmeUyarisi' in kart, false)
 
-// --- aciklama: uzun metin "Ayrıntı"nın arkasında, metinler değişmedi ------------
-esit('tek kapı okunamadı kendi metni', aciklama(kayit({ yon: 'ORTAK' })).startsWith('Tek kapıda bir araç görüldü'), true)
-esit('giriş okunamadı metni', aciklama(kayit()).startsWith('Kamera bir araç gördü ama plakasını okuyamadı'), true)
-for (const tur of TURLER) {
-  esit(`açıklama var ${tur}`, aciklama(kayit({ tur, yon: tur === 'OKUNAMADI' ? 'GIRIS' : 'CIKIS' })).length > 20, true)
+// --- aciklama: KISA, her zaman görünür, ne yapılacağını söyler (sahip 2026-11-23)
+// "Ayrıntı" düğmesi kalktı; metin tek-iki kısa cümle, en çok 100 karakter.
+const TUM_TURLER = [...TURLER, 'GIRISTE_ACIK_BILET', 'ICERIDE_BILETSIZ', 'REDDEDILDI', 'CIKMAMIS_OLABILIR']
+for (const tur of TUM_TURLER) {
+  for (const yon of YONLER) {
+    for (const kaynak of ['KAMERA', 'MOBIL']) {
+      const i = kayit({ tur, yon, kaynak, plaka: tur === 'OKUNAMADI' ? null : '34ABC123', aday_bilet_ids: ['b-1'],
+        ham_yanit: tur === 'REDDEDILDI' ? { ret_sebebi: 'z'.repeat(300) } : null })
+      const s = aciklama(i)
+      esit(`açıklama kısa ${tur}/${yon}/${kaynak}`, typeof s === 'string' && s.length >= 10 && s.length <= 100 && !s.includes('\n'), true)
+      // Metin yalnızca kartta OLAN düğmeyi söyler.
+      const e = eylemler(i)
+      if (s.includes('Giriş aç')) esit(`"Giriş aç" düğmesi var ${tur}/${yon}/${kaynak}`, e.girisAc || e.girisAcSaatli, true)
+      if (s.includes('Bilete git')) esit(`"Bilete git" düğmesi var ${tur}/${yon}/${kaynak}`, e.bileteGit !== null, true)
+    }
+  }
 }
+esit('tek kapı okunamadı: yön bilinmiyor', aciklama(kayit({ yon: 'ORTAK' })).includes('Girdi mi çıktı mı bilinmiyor'), true)
+esit('giriş okunamadı: Giriş aç / Kapat', aciklama(kayit()), 'Bileti yoksa plakayı yazıp Giriş aç; bileti varsa Kapat.')
+esit('tek kapı açık bilet yok (kamera): giriş saati', aciklama(kayit({ tur: 'ACIK_BILET_YOK', yon: 'ORTAK', plaka: '34ABC123' })).includes('giriş saatini'), true)
+
+// --- tahminNotu: plaka alanındaki değer kameranın tahminiyse söylenir --------------
+esit('tahmin + güven', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12', guven: 0.624 } })), 'Alandaki plaka kameranın tahmini (%62).')
+esit('tahmin, güven yok', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12' } })), 'Alandaki plaka kameranın tahmini.')
+esit('tahmin yok', kart.tahminNotu(kayit()), null)
+esit('kayıtta plaka varsa tahmin notu yok', kart.tahminNotu(kayit({ plaka: '34ABC123', ham_yanit: { tahmin: '34ABC12' } })), null)
+esit('başka türde tahmin notu yok', kart.tahminNotu(kayit({ tur: 'ACIK_BILET_YOK', ham_yanit: { tahmin: '34ABC12' } })), null)
+esit('çözülmüş kayıtta tahmin notu yok', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12' }, ...COZULDU })), null)
+
+// --- sekme: Bekleyen / Çözülmüş / Kapatılan (075) --------------------------------
+esit('bekleyen', kart.sekme(kayit()), 'BEKLEYEN')
+esit('bekleyen, kapatildi bozuk true olsa da', kart.sekme(kayit({ kapatildi: true })), 'BEKLEYEN')
+esit('kapatılan', kart.sekme(kayit({ ...COZULDU, cozuldu_by: 'u1', kapatildi: true })), 'KAPATILAN')
+esit('çözülmüş (eylemle)', kart.sekme(kayit({ ...COZULDU, cozuldu_by: 'u1', kapatildi: false, cozum_notu: 'Bilet açıldı: 34ABC123' })), 'COZULMUS')
+esit('çözülmüş (kamera, kapatildi boş)', kart.sekme(kayit({ ...COZULDU, kapatildi: null })), 'COZULMUS')
+esit('çözülmüş (sütun yok — eski sunucu)', kart.sekme(kayit(COZULDU)), 'COZULMUS')
+
+// --- kimSatirlari: Yönetici kimin ne yaptığını görür (063 deseni) ----------------
+// Ad çağıran tarafta çözülür (adCoz); burada yalnızca satırlar kurulur.
+const ZAMAN = '2026-10-31T11:00:00Z'
+esit('bekleyende satır yok', kart.kimSatirlari(kayit(), null), [])
+esit('kapatılan', kart.kimSatirlari(kayit({ ...COZULDU, cozuldu_by: 'u1', kapatildi: true }), 'Ayşe'),
+  [{ etiket: 'Kapatan', ad: 'Ayşe', zaman: ZAMAN }])
+esit('kapatılan, notlu', kart.kimSatirlari(kayit({ ...COZULDU, cozuldu_by: 'u1', kapatildi: true, cozum_notu: 'kapıda bakıldı' }), 'Ayşe'),
+  [{ etiket: 'Kapatan', ad: 'Ayşe', zaman: ZAMAN }, { etiket: 'Not', ad: 'kapıda bakıldı', zaman: null }])
+esit('çözülmüş, insan', kart.kimSatirlari(kayit({ ...COZULDU, cozuldu_by: 'u1', kapatildi: false, cozum_notu: 'Bilet açıldı: 34ABC123' }), 'Mehmet'),
+  [{ etiket: 'Çözen', ad: 'Mehmet', zaman: ZAMAN }, { etiket: 'Ne yapıldı', ad: 'Bilet açıldı: 34ABC123', zaman: null }])
+esit('çözülmüş, kamera', kart.kimSatirlari(kayit({ ...COZULDU, cozum_notu: 'Kamera yeniden denedi ve okudu: 34ABC123 → GIRIS' }), null),
+  [{ etiket: 'Çözen', ad: 'Kamera', zaman: ZAMAN }, { etiket: 'Ne yapıldı', ad: 'Kamera yeniden denedi ve okudu: 34ABC123 → GIRIS', zaman: null }])
+esit('ad çözülemezse yanlış ad değil "Bilinmiyor"', kart.kimSatirlari(kayit({ ...COZULDU, cozuldu_by: 'u9', kapatildi: true }), null),
+  [{ etiket: 'Kapatan', ad: 'Bilinmiyor', zaman: ZAMAN }])
 
 // --- 056: tek kapıda köprünün yön ipucu iki yeni kayıt türü doğurur ---------------
 // GIRISTE_ACIK_BILET: araç GİRERKEN görüldü ama eski açık bileti var — eski
@@ -128,9 +182,7 @@ esit('girişte eski bilet: düğmeler', eylemler(GIRISTE), { girisAc: false, cik
 esit('içeride biletsiz: düğmeler', eylemler(ICERIDE), { girisAc: true, cikis: false, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('girişte eski bilet: kısa durum', kisaDurum(GIRISTE), 'Girerken görüldü — eski açık bileti var')
 esit('içeride biletsiz: kısa durum', kisaDurum(ICERIDE), 'İçeride, bileti yok')
-esit('girişte eski bilet: açıklama', aciklama(GIRISTE).startsWith('Kamera bu aracı tek kapıdan GİRERKEN gördü'), true)
-esit('içeride biletsiz: açıklama', aciklama(ICERIDE).startsWith('Otoparkın içinde hareket eden bu aracın'), true)
-esit('içeride biletsiz: giriş saati açıklanır', aciklama(ICERIDE).includes('içeride görüldüğü an'), true)
+esit('girişte eski bilet: açıklama', aciklama(GIRISTE).startsWith('Eski bileti açık'), true)
 // Kamera aracı yanlışlıkla "çıktı" diye kapattıysa (054) doğru eylem eski
 // bilette "Araç çıkmadı"dır, yeni giriş değil — metin bunu söylemeli.
 esit('içeride biletsiz: yanlış çıkışta "Araç çıkmadı" söylenir', aciklama(ICERIDE).includes('Araç çıkmadı'), true)
@@ -166,7 +218,6 @@ esit('çıkmamış olabilir: çözülmüş', eylemler(CIKMAMIS(COZULDU)),
 esit('başka türde aday bilet: bilete git yok',
   eylemler(kayit({ tur: 'YON_BELIRSIZ', yon: 'ORTAK', aday_bilet_ids: ['b-1'] })).bileteGit, null)
 esit('çıkmamış olabilir: kısa durum', kisaDurum(CIKMAMIS()), 'Çıktı sayıldı ama içeride görüldü')
-esit('çıkmamış olabilir: açıklama', aciklama(CIKMAMIS()).startsWith('Kamera bu aracın biletini çıkış diye kapattı'), true)
 esit('çıkmamış olabilir: "Araç çıkmadı" söylenir', aciklama(CIKMAMIS()).includes('"Araç çıkmadı"'), true)
 esit('çıkmamış olabilir: plaka alanı', baslangicPlakasi(CIKMAMIS()), '34ABC123')
 
@@ -181,9 +232,9 @@ esit('reddedildi: uzun cümle kısalır', kisaDurum(RED({ ham_yanit: { ret_sebeb
 esit('reddedildi giriş: düğmeler', eylemler(RED()), { girisAc: false, cikis: false, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('reddedildi çıkış: düğmeler', eylemler(RED({ yon: 'CIKIS' })), { girisAc: false, cikis: true, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('reddedildi tek kapı: düğmeler', eylemler(RED({ yon: 'ORTAK' })), { girisAc: false, cikis: true, kapat: true, girisAcSaatli: false, bileteGit: null })
-esit('reddedildi: açıklama', aciklama(RED()).startsWith('Kamera bu aracı gördü ama sunucu kaydı kabul etmedi'), true)
-esit('reddedildi: ayrıntıda tam ret cümlesi', aciklama(RED({ ham_yanit: { ret_sebebi: 'y'.repeat(150) } })).includes('y'.repeat(150)), true)
-esit('reddedildi: cümle yoksa ayrıntı yine çalışır', aciklama(RED({ ham_yanit: null })).startsWith('Kamera bu aracı gördü'), true)
+// Ret cümlesi durum satırında (kisaDurum); açıklama yalnızca ne yapılacağını söyler.
+esit('reddedildi giriş: açıklama', aciklama(RED()), 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın; değilse Kapat.')
+esit('reddedildi tek kapı: açıklama Çıkış der', aciklama(RED({ yon: 'ORTAK' })).includes('Çıkış'), true)
 esit('reddedildi: plaka alanı okunan plakayla', baslangicPlakasi(RED()), '34ABC123')
 
 console.log(`${gecen} geçti, ${kalan} kaldı`)

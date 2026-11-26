@@ -136,7 +136,15 @@ approach, touching the picture edge):
   (1.4.3, owner 18.11) a plate sent as `CIKTI` does not block it: if the
   camera closed that ticket and the car is then seen inside within the exit
   window, the server opens a `CIKMAMIS_OLABILIR` card that leads staff to
-  the ticket's "Araç çıkmadı" (migration 072).
+  the ticket's "Araç çıkmadı" (migration 072). The other way round (1.4.6 A,
+  owner 24.11): an inside query never blocks a later gate decision. A car
+  read inside and then driving out (or in) through the gate within 60 s is
+  still sent as `GIRDI` / `CIKTI`, a sure plate or a guess card. On site,
+  23–24.11, 11 real passes were dropped this way, mostly exits whose
+  tickets stayed open. Only `GIRDI` / `CIKTI` get this; a direction-unknown
+  event (one frame, lost at the gate, at the gate at start-up) is still
+  blocked by an inside query, and `GIRDI` / `CIKTI` / no-hint records still
+  block everything as before.
 - **Entered unseen, found standing at the gate (1.4.2, A4)** — site 11.11
   19:08: the finder missed an entering car in the gate area and first found
   it STANDING just past it; a standing birth is not an entry (a car parked by
@@ -452,6 +460,39 @@ ikinci gönderim, bilet 2 dakikadan eskiyse "çıkıyor" sayılır (para hareket
 etmez, yalnızca "Kapıda" işareti). Kamerayı araçların **geçtiği** noktaya
 çevirin; sıra beklenen ya da park edilen bir yeri hariç alanla dışarıda
 bırakın.
+
+**1.4.6 (24.11 teşhisi, sunucu 077 ile):**
+- **A** — kapıdan GİRDİ / ÇIKTI olayı, az önceki **içeride sorusuna** (ICERIDE
+  kaydı) 60 sn kuralıyla takılmaz: içeride sorusu bilet açıp kapatmaz, ardından
+  kapıdan geçen araç gerçek bir geçiştir (23–24.11'de 11 geçiş böyle düştü).
+  Aynı izin girişi de kendi çıkışını susturmaz (K).
+  Tek kapıda (ORTAK) kapı alanında doğup en az 2 görünümle kapıda kaybolan iz
+  (yönü bilinmeyen emin plaka) da takılmaz — 23.11 13:06'daki gri Fiat böyle
+  düşmüştü; sunucu bilete bakıp karar verir. Tek kare / eski giriş takılır.
+- **Dikiş** — kapıdan resmin kenarına giderken kaybolan (en az 1.5 sn ve 3
+  ölçülen karede görülmeyen) araç ya da plaka izine 4 sn içinde aynı yerden
+  gelen yeni kutu dikilmez, eşleşmez de: o başka araçtır, çıkan ÇIKTI, giren
+  kendi GİRDİ'sini alır. "Kayıp" o karede yargılanır (yavaş bilgisayarda
+  seyrek kare de aynı sonucu verir). Kısa örtülme (1.5 sn'den az), kenara
+  varmadan kaybolma ve kapıda duran iz eskisi gibi dikilir. Bedeli: aynı araç 4 sn içinde çıkıp
+  geri girerse ÇIKTI + GİRDİ olur, GİRDİ 60 sn kuralıyla düşer; sonraki
+  içeride sorusu "çıkmamış olabilir" kartını açar (Araç çıkmadı).
+- **D** — kapıdan GİRDİ / ÇIKTI diye izlenen aracın kartı yönünü de taşır
+  (`hareket`; yönü bilinmeyen kartta yok). Sunucu ≥ 0.90 tahminli ÇIKTI kartında,
+  tahmin TAM bir açık bilete uyuyor, içeride ona bir karakter uzak başka bilet
+  yok ve giriş penceresi geçtiyse kart yerine bileti kapatır (`CIKIS TAHMIN`,
+  ödemesiz — tahsilat her zaman bir kişi).
+- **E2** — kapıda girişi beklenen bir araç varken içeride sorusu en çok 120 sn
+  ertelenir (`içeride sorusu ertelendi`); içeride emin okunan plaka son 15 dk'nın
+  plakasız giriş kartına yazılır (`ICERIDE_GIRIS_KARTI`), ikinci kart açılmaz,
+  bilet açılmaz.
+- **J** — kenardan girip kapı alanında aynı kenardan dönen (en az 2 görünüm) ve çizgiyi geçmeyen
+  plakasız iz kart açmaz (`kapı alanında dönüp gitti — kart açılmadı`; klip kalır).
+- **K** — aynı iz plakayla girip 120 sn içinde plakayla çıkarsa çıkış
+  `ayni_iz_dondu` işaretiyle gider; sunucu giriş penceresinde de bileti kapatır
+  (`CIKIS AYNI_IZ_DONDU`). Ücret tarifeden — `ucretsiz_dakika` ≥ 2 ise 0.
+- **H** — içeride emin görülen aracın bileti son görülme saatini taşır;
+  İçeride listesinde `İçeride görüldü HH:MM`.
 
 Gönderim kutusu (1.3.0) yüzünden olaylar gecikerek de gelebilir. Tek kapı
 kararları bu yüzden olayın **kendi saatine** göre verilir (048): 10:00 girişi
@@ -863,6 +904,9 @@ numbers that must be valid, or the bridge stops at start (and `durum` says so).
 | `TEK_KARAR` | `1` | 1.4.5 A (owner 22.11): one passage = one decision. A second track of the same car (tyre, corner, edge piece, a box inside or beside the car's box) no longer opens a second staff card next to the car's ticket (`takip.Gecitci`). A track that would become a card (no sure plate) waits while a related track is still undecided (moving, standing in the gate, or born under 40 s ago) — at most **40 s**. It is dropped if the same passage already has a handled decision (sent plate, wrong-lane event, 60-s rule) whose plates cover its own; otherwise one card per direction goes (the one with a plate guess, then the higher vehicle score). Same passage = in the same frames its box is ≥ 50 % inside the other's in at least half of them and they don't move opposite ways, or (direction-unknown only) born ≤ 2 s after the other vanished at the same spot. GİRDİ and ÇIKTI are never the same passage; two different plate readings are two cars; a motorcycle card is never held. A dropped card leaves `aynı aracın parçası sayıldı: iz 7 → iz 6 (girdi, aynı karelerde) — girdi kartı gönderilmedi` and, with `KLIP=1`, a clip named `…_emildi.avi`; the heartbeat counts them (`emildi`). `0` = 1.4.4: every event is sent at once. Replaces 1.4.3's `PARCA_EMME` (now ignored). Tracking only. |
 | `IZ_ONAY` | `1` | 1.4.5 B (owner 22.11): a car seen in only ONE frame (`TEK_KARE`) becomes a staff card only if a plate was read — a sure plate is sent as before (1.4.3), a guess makes a card. With no plate read the log says `tek karede görüldü, plaka okunmadı — kart açılmadı (araç 0.49 motosiklet)` and, with `KLIP=1`, the clip is still written. Most one-frame cards on site were pieces of cars. `0` = 1.4.4. Tracking only. |
 | `BYTE_ESLES` | `1` | 1.4.5 C (owner 22.11): the vehicle tracker matches boxes like ByteTrack (`esles.py`, ported from Ultralytics 8.4.210 without PyTorch): first the boxes at or above the birth score, then the weaker ones only for the tracks still unmatched (a weak piece box can't steal the car's track and make the real box a second track), each round by the best one-to-one assignment instead of greedily, with a Kalman prediction (time-aware: model frames come 0.1–2 s apart). Overlap ≥ 0.30 is still required; the centre-distance round for fast cars, standing cars, stitching and park memory are unchanged; the plate tracker is unchanged. Helps a car missed for a frame or two (mostly at night); it does not remove twins on its own (`TEK_KARAR` does). If it misbehaves on site: `0` and Yeniden başlat. Tracking only. |
+| `ARAC11_KART_ESIK` | empty | 1.4.6 B (owner 25.11): YOLO11s only. A plateless GİRDİ / ÇIKTI / KAPIDA_KAYBOLDU / TEK_KARE event becomes a staff card only at vehicle score ≥ **0.75** (`arac.YOLO11S.kart_esik`; below it the log line names the score and no card goes). A motorcycle keeps `ARAC11_MOTO_ESIK` (0.70). The tracker's birth score is unchanged. Empty = 0.75; `0.30` = rule off. |
+| `IKIZ_SN` | `25` | 1.4.6 C (owner 25.11): a plateless KAPIDA_KAYBOLDU track with no plate guess, born ≤ 25 s after a handled GİRDİ / ÇIKTI was last seen, is that car's twin — dropped like a `TEK_KARAR` piece (`…_emildi.avi`). `0` = 1.4.5 (only the 2-s head / tail). No effect with `TEK_KARAR=0`. |
+| `PLAKA_KIRPIK` | `1` | 1.4.6 L (owner 25.11): for every staff card the best plate crop (full resolution, JPEG) is kept on this computer only, in `%PROGRAMDATA%\Otopark\plaka-kirpik`, named like the clips (`YYYY-MM-DD_HH-MM-SS_iz{N}_{OLAY}_{islem8}.jpg`, never the plate), `KLIP_GUN` days, at most 200 MB, never overwritten, never uploaded. `0` = none. Every decision also logs one `plaka teşhisi:` line (why the plate was not sent: `bulunmadı`, `kenara değiyor`, `dar/geniş uyuşmadı`, `0.95 altı`, `tek görünüm`, `çok plaka`; widest box px, best confidence — never the plate text). |
 | `KLIP` | `0` | 1.4.3 (1d, owner's choice 17.11): `1` records a short video of every direction-unknown event (TEK_KARE, KAPIDA_KAYBOLDU, ESKI_GIRDI — including sure plates sent without a direction, and edge pieces counted as part of a car) and, since 1.4.4 (owner's choice 21.11), of every staff card (a tracked GİRDİ / ÇIKTI / KAPISIZ with no sure plate) and of every ÇIKTI, including a sure plate that closed a ticket (owner 21.11: check night exits from the clips); only a sure-plate GİRDİ gets no clip: the crop, about 5 frames/s, from 5 s before the car was first seen (at most 60 s back) to 5 s after the event, with the Istanbul time in the corner. Files go to `C:\ProgramData\Otopark\klipler\`, named `2026-11-18_22-26-05_iz368_KAPIDA_KAYBOLDU_ab12cd34.avi` (time, track, event, the first 8 characters of the sent `islem_id` — the same as the log's `gönderildi -> ab12cd34`; `gonderimyok` if nothing was sent, `emildi` if the piece was absorbed). The plate is never in the name or the log, but it is visible in the video: the clips stay on this computer only, are never sent, and are deleted after 7 days (oldest first above 2 GB; nothing is written while the disk has less than 5 GB free) — a deliberate exception, chosen by the owner, to the outbox's "only until sent" rule. Clips still waiting when the bridge stops are lost. Open them with VLC. Uses about 30–65 MB of RAM (busier pictures take more) and ~15 ms of CPU per second. Tracking only. |
 | `PARK_GORUNUR` | `0` | 1.4.3 (owner 19.11): `1` lets the two models see the WHOLE crop rectangle on tracking frames, including what is outside the blue crop area (`KIRPMA_ALAN`); the motion trigger and the 1.3.4 fallback rule (`TAKIP=0`, or tracking switched off) stay masked. 1.4.5 (owner 22.11): the clips, and while tracking the stored photo, are unmasked too, so a car outside the blue is no longer hidden behind the grey. Why: a car that drove through a grey part vanished and came back as a new track, and its plate was "cut" at the grey edge (the half-seen plates of 18–19.11). Events come only from tracks whose bottom-centre point has been in the blue area or the yellow gate; a track that never was gives no event, no `iz kararsız bitti` line, and asks for model frames only while it is clearly moving. The 1.4.1 speed rule and the 1.4.2 A4 rule apply only to tracks born in that zone (a parked car outside that switches its lights on at night is never "came through the gate"). A plate inside the blue is no longer cut at the blue edge (only the crop rectangle's edges cut); a plate further outside is read only inside a moving track's predicted box (widened 25 %) — a parked car's plate outside is never read. The tracker also follows the unmasked picture, so a car's views and stillness outside the blue count; whether a new model frame is needed is still decided on the masked picture. Polygon only: with the old rectangle crop the log says `PARK_GORUNUR=1 yalnızca kırpma alanıyla … kapalı` and nothing changes. Known limits: an exiting car parked outside the blue is looked at only every 2 s until it moves into the blue. Turn on after a `--plaka` check on site; compare the `· N model karesi` count on the `çalışıyor` line before and after. Tracking only. |
 | `PLAKA_BEKLE_SN` | `0.4` | The least a decision waits for a read in flight (1.3.1: more on a slow laptop, see *When it sends*). |
@@ -879,18 +923,18 @@ Left in an old config file they are simply ignored.
 ## Testler
 
 ```bash
-python test_kopru.py            # yakalama döngüsü, 116 senaryo
+python test_kopru.py            # yakalama döngüsü, 136 senaryo
 python test_kopru.py iki_arac   # tek senaryo
 python test_kurulum.py          # kurulum tarafı, 184 birim testi
-python test_okuma.py            # kararlar + iki iş parçacığı + izleme karesi (okuma.py), 99 test
+python test_okuma.py            # kararlar + iki iş parçacığı + izleme karesi (okuma.py), 102 test
 python test_plaka.py            # bulucu + okuyucu + oylama + çokgen alan (plaka.py), 65 test
-python test_arac.py             # araç bulucu (arac.py), 37 test
-python test_hizlandirici.py     # grafik işlemcisi + işlemciye geri dönüş (1.4.2), 26 test
-python test_takip.py            # araç izleme, kapı kuralları (takip.py), 132 test (TAKIP_BYTE_ESLES=0 ile de)
+python test_arac.py             # araç bulucu (arac.py), 38 test
+python test_hizlandirici.py     # grafik işlemcisi + işlemciye geri dönüş (1.4.2), 29 test
+python test_takip.py            # araç izleme, kapı kuralları (takip.py), 137 test (TAKIP_BYTE_ESLES=0 ile de)
 python test_esles.py            # ByteTrack eşlemesi: Kalman + en iyi atama (esles.py), 8 test
 python test_giden.py            # gönderim kutusu (giden.py), 16 test
-python test_klip.py             # klip kaydedici (klip.py), 22 test
-python test_mutasyon.py         # 375 kural tek tek bozulur; her biri yakalanmalı
+python test_klip.py             # klip kaydedici (klip.py), 25 test
+python test_mutasyon.py         # 454 kural tek tek bozulur; her biri yakalanmalı
 ```
 
 Testler hiçbir şey silmez; bıraktıkları her şey tek klasörde toplanır
@@ -1106,10 +1150,12 @@ köşesine tıklamak o alana geçer. Köşeler numaralıdır. **Öneriyi yükle*
 `kirpma_sunucu.SAHA_ONERISI`'ni (karenin oranı olarak; her çözünürlüğe uyar)
 çizer: 19.11 sahası, bugünkü zum. Mavi alan 14:53 plakasının kesildiği sol
 üst köşeyi açar, sağı kamyonun altına kadar açık, sol altı Mercedes yerini
-dışarıda bırakır; sarı kapı alanı alt kenarda drenaj kanalında biter, bir araç
-boyu derin (18.11 19:44 / 19:57 araçları kanalın sağında kayboldu — öneride
-kapının dışında kalırlar, yön bilinir). Zum değişirse öneri yalnızca
-başlangıçtır. **Kayıtlı alanları yükle**, Yeniden kur'da bugünkü
+dışarıda bırakır; sarı kapı alanı alt kenarda drenaj kanalında biter (18.11
+19:44 / 19:57 araçları kanalın sağında kayboldu — öneride kapının dışında
+kalırlar, yön bilinir). 1.4.6'dan beri sarı 5 köşelidir: sol üst köşesi
+aşağıda (≈%83), araya bir köşe — sol sıraya park eden aracın kutusu, önünden
+araç geçince sarıya kayıp giriyor / çıkıyor görünüyordu (22–24.11); sokaktan
+giriş yine sarıda başlar. 1.4.6'nın önerisi 26.11 zumundadır (1.0926×, 20:15 / 20:39 anlık görüntülerinden ölçüldü): iki alan aynı dönüşümle taşındı, kare kenarında kırpıldı; 22–24.11 kutuları da taşınıp sınandı (giriş 6/6 sarıda doğar, çıkış 66/73 sarıda biter, park aracı sarıda 0). Zum yeniden değişirse öneri yalnızca başlangıçtır. **Kayıtlı alanları yükle**, Yeniden kur'da bugünkü
 `KIRPMA_ALAN` / `KAPI_ALANI`'yı çizer (yoksa düğme görünmez; bozuk metin ya da
 karenin dışına taşan köşe yüklenmez). İkisi de çizili alanın üstüne yazmadan
 önce sorar. Kaydetme değişmedi: Python (`_alan_coz`) yine esastır. Tarayıcıda

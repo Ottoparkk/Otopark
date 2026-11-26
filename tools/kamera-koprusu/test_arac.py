@@ -422,6 +422,23 @@ def test_motosiklet_esigi_profilde_ve_ayarda():
     assert b.moto_esik is None, b.moto_esik                 # tiny: ayar dokunmaz
 
 
+def test_kart_esigi_profilde_ve_ayarda():
+    # 1.4.6 B (sahibin kararı 25.11): YOLO11s'te plakasız kapı kartı 0.75
+    # ister; tiny'nin puan ölçeği farklı — orada kural yok.
+    t, y = arac.YOLOX_TINY, arac.YOLO11S
+    assert t.kart_esik is None and t.kart_anahtari is None, t
+    assert (y.kart_esik, y.kart_anahtari) == (0.75, "arac11_kart_esik"), y
+    b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), _ayar(), plaka.MODEL_DIZINI,
+                        profil=arac.YOLO11S)
+    assert b.kart_esik == 0.75, b.kart_esik
+    b = arac.AracBulucu(_SahteOturum(_ham11(), n=N11), dict(_ayar(), arac11_kart_esik=0.30),
+                        plaka.MODEL_DIZINI, profil=arac.YOLO11S)
+    assert b.kart_esik == 0.30, b.kart_esik                 # sahada geri alma
+    b = arac.AracBulucu(_SahteOturum(_ham()), dict(_ayar(), arac11_kart_esik=0.5),
+                        plaka.MODEL_DIZINI)
+    assert b.kart_esik is None, b.kart_esik                 # tiny: ayar dokunmaz
+
+
 def test_bulucu11_kendi_on_islemini_ve_esik_anahtarini_kullanir():
     # Bulucu profilin ön işlemini kullanmalı (RGB /255, ≤ 1) — YOLOX'unkiyle
     # (0-255) beslenen YOLO11 hata vermez, yalnızca zayıf görür.

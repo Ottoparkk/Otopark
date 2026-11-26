@@ -133,7 +133,8 @@ AYAR_ADLARI = ("PLAKA_BUL", "PLAKA_BUL_ESIK", "PLAKA_OKU_ESIK", "PLAKA_TEK_ESIK"
                "ARAC_BUL", "ARAC_BUL_ESIK", "ARAC_GECIS_ESIK", "PLAKA_TAM", "TAKIP",
                "PLAKA_BIRLESIK", "HIZLANDIRICI", "ARAC_MODEL", "ARAC11_BUL_ESIK",
                "ARAC11_GECIS_ESIK", "KLIP", "PARK_GORUNUR",
-               "ARAC11_MOTO_ESIK", "TEK_KARAR", "IZ_ONAY", "BYTE_ESLES")
+               "ARAC11_MOTO_ESIK", "TEK_KARAR", "IZ_ONAY", "BYTE_ESLES",
+               "ARAC11_KART_ESIK", "IKIZ_SN", "PLAKA_KIRPIK")
 
 
 def _oran(alt_dahil: bool):
@@ -184,12 +185,20 @@ _KURALLAR = (
     # arac.YOLO11S.moto_esik 0.70. Boş = profilin değeri; 0.30 (doğum eşiği) =
     # kural kapalı (sahada geri alma).
     ("ARAC11_MOTO_ESIK", "arac11_moto_esik", None, float, lambda v: 0 < v < 1),
+    # 1.4.6 B (sahibin kararı 25.11): plakasız kapı kartının araç puanı
+    # (arac.YOLO11S.kart_esik 0.75). Boş = profilin değeri; 0.30 = kural kapalı.
+    ("ARAC11_KART_ESIK", "arac11_kart_esik", None, float, lambda v: 0 < v < 1),
     # 1.4.5 (sahibin kararları 22.11) — üçü de varsayılan AÇIK; sahada bir
     # parça sorun çıkarırsa kopru-ortak.json'a "0" yazılıp yeniden başlatılır.
     # A: bir geçiş = bir karar (takip.Gecitci; 1.4.3'ün PARCA_EMME'si bunun
     # yerine geçti). Aynı araca ait ikinci izin kartı gönderilmez.
     ("TEK_KARAR", "tek_karar", True, lambda s: {"1": True, "0": False}[s.strip()],
      lambda v: True),
+    # 1.4.6 C (sahibin kararı 25.11): karardan sonra bu kadar saniye içinde
+    # doğan plakasız "kapıda kayboldu" izi o aracın ikizidir (takip.Gecitci).
+    # 0 = kapalı (1.4.5 gibi yalnızca 2 sn'lik baş / kuyruk). TEK_KARAR=0 iken
+    # etkisiz.
+    ("IKIZ_SN", "ikiz_sn", 25.0, float, lambda v: 0 <= v <= 60),
     # B: yalnızca tek karede görülen aracın kartı ancak plakası okunduysa.
     ("IZ_ONAY", "iz_onay", True, lambda s: {"1": True, "0": False}[s.strip()],
      lambda v: True),
@@ -199,6 +208,10 @@ _KURALLAR = (
     # 1.4.3 (1d, sahibin kararı 17.11): yönü bilinmeyen olayın klibi (klip.py) —
     # yalnızca bu bilgisayarda, 7 gün. Varsayılan KAPALI.
     ("KLIP", "klip", False, lambda s: {"1": True, "0": False}[s.strip()], lambda v: True),
+    # 1.4.6 L (sahibin kararı 25.11): kartın en iyi plaka kırpığı bu
+    # bilgisayarda (%PROGRAMDATA%\Otopark\plaka-kirpik, KLIP_GUN gün). Varsayılan AÇIK.
+    ("PLAKA_KIRPIK", "plaka_kirpik", True, lambda s: {"1": True, "0": False}[s.strip()],
+     lambda v: True),
     # 1.4.3 (sahip 19.11): modeller kırpma alanının DIŞINI da görür (izleme
     # karelerinde); olay yalnızca alana/kapıya girmiş izden çıkar. Hareket,
     # fotoğraf, klip ve 1.3.4 geçiş kuralı maskeli kalır. Yalnızca çokgenle

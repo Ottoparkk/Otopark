@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import type { Istisna } from '../../lib/types'
+import type { Sekme } from './kart'
 import { useGiseInvalidate } from '../gise/api'
 
 /**
@@ -9,18 +10,23 @@ import { useGiseInvalidate } from '../gise/api'
  * Staff-readable on purpose: two of the four kinds — an exit with no open
  * ticket, and a plate matching several — are everyday typo problems rather
  * than camera problems, and they happen at the gate where they must be fixed.
- * The rows carry no financial data.
+ * The rows carry no financial data. Since 075 Personel read only the WAITING
+ * rows (RLS); the Yönetici reads all three tabs.
  */
-export function useIstisnalar(sadeceAcik: boolean) {
+export function useIstisnalar(sekme: Sekme) {
   return useQuery({
-    queryKey: ['istisnalar', sadeceAcik],
+    queryKey: ['istisnalar', sekme],
     queryFn: async (): Promise<Istisna[]> => {
       let q = supabase
         .from('istisnalar')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(200)
-      if (sadeceAcik) q = q.is('cozuldu_at', null)
+      // 075: the three tabs. Personel can read only waiting rows (RLS); the
+      // screen never asks them for the other two.
+      if (sekme === 'BEKLEYEN') q = q.is('cozuldu_at', null)
+      else if (sekme === 'KAPATILAN') q = q.eq('kapatildi', true)
+      else q = q.not('cozuldu_at', 'is', null).or('kapatildi.is.null,kapatildi.eq.false')
       const { data, error } = await q
       if (error) throw error
       return data as Istisna[]

@@ -1163,6 +1163,53 @@ def test_izleme_kesik_plaka_karta_tahmin_olur():
     assert olc == [(KENAR, None)], olc
 
 
+def _teshis(kutular, okumalar, n=3, tam=None):
+    p = SahtePlakaci({no: kutular for no in range(1, n + 1)},
+                     {(no, k): v for no in range(1, n + 1) for k, v in okumalar.items()})
+    g = _gecis()
+    for no in range(1, n + 1):
+        olc = okuma.plakalari_olc(p, _kare(no), None, 0.95, tam)
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no, olc)
+    s = okuma.plaka_teshisi(g, 0.95)
+    assert not any(m in s for m in ("34ABC", "06KZ")), f"satırda plaka metni: {s}"
+    return s, g
+
+
+def test_plaka_teshisi_nedenleri():
+    # 1.4.6 L (sahibin kararı 25.11): her izin kararında plakanın neden
+    # okunmadığı tek satırda — kural, en geniş kutu (tam çözünürlük px), en
+    # iyi okuma (iki kırpıntının düşüğü = en düşük karakter olasılığı).
+    # Plaka metni ASLA yazılmaz.
+    iki = K(900, 300, 1100, 345, 0.9)
+    s, g = _teshis([], {})
+    assert "bulunmadı" in s and okuma.plaka_kirpigi(g) is None, s
+    s, g = _teshis([KENAR], {KENAR: [("34ABC123", 0.99)] * 2})
+    assert "kenara değiyor" in s and okuma.plaka_kirpigi(g) is not None, s
+    s, _ = _teshis([ORTA], {ORTA: [("34ABC123", 0.99), ("34ABC128", 0.98)]})
+    # Sayaç kısmı da "uyuşmadı" kelimesini taşır: nedeni ve sayıları ayrı ayrı.
+    assert "dar/geniş uyuşmadı —" in s and "uyuşmadı 3, eşik altı 0" in s, s
+    s, _ = _teshis([ORTA], {ORTA: [("34ABC123", 0.93), ("34ABC123", 0.90)]})
+    assert "0.95 altı" in s and "en iyi 0.90" in s, s
+    s, _ = _teshis([ORTA], {ORTA: [("34ABC123", 0.97), ("34ABC123", 0.96)]}, n=1)
+    assert "tek görünüm" in s, s
+    s, _ = _teshis([ORTA, iki], {ORTA: [("34ABC123", 0.99)] * 2, iki: [("06KZ4581", 0.99)] * 2})
+    assert "çok plaka" in s, s
+    s, g = _teshis([ORTA], {ORTA: [("34ABC123", 0.99)] * 2})
+    assert "okundu" in s and "200 px" in s, s
+    k = okuma.plaka_kirpigi(g)
+    assert k is not None and k.shape[:2] == (45, 200), None if k is None else k.shape
+    # Kırpık en iyi kutunun: önce görülen kesik kutu (38 px boy) değil, emin okunan.
+    _, g = _teshis([KENAR, ORTA], {KENAR: [("34ABC123", 0.99)] * 2,
+                                   ORTA: [("34ABC123", 0.99)] * 2})
+    assert okuma.plaka_kirpigi(g).shape[:2] == (45, 200), okuma.plaka_kirpigi(g).shape
+    # Tam çözünürlük (1.3.4): genişlik ve kırpık büyük resimden.
+    tam = np.zeros((BOY * 2, EN * 2, 3), np.uint8)
+    tam[0, 0, 0] = 1
+    s, g = _teshis([ORTA], {}, n=1, tam=tam)
+    assert "okunamadı" in s and "400 px" in s, s
+    assert okuma.plaka_kirpigi(g).shape[:2] == (90, 400)
+
+
 def _iz_karari(g, **kw):
     v = dict(olay_zamani=_z(50), son_gonderilen=[], simdi=1000.0, arac_gecis_esik=0.60)
     v.update(kw)
@@ -1377,6 +1424,40 @@ def test_motosiklet_esigi_yonsuz_kapi_olayinda():
     assert okuma.iz_arac_esigi("TEK_KARE", 0.30, 0.60, komsu=True, sinif=m, moto_esik=0.70) == 0.70
 
 
+def test_kart_esigi_plakasiz_kapi_olayinda():
+    # 1.4.6 B (sahibin kararı 25.11): 23–24.11'de plakasız kapı kartlarının
+    # 16'sı araç değildi (insan, el arabası, yağmur: YOLO11s 0.32–0.73) ve 4'ü
+    # ikizdi (0.35–0.75); gerçek araçların en düşüğü 0.84. Plakasız kapı olayı
+    # (GİRDİ / ÇIKTI / KAPIDA_KAYBOLDU / komşusuz TEK_KARE) en az `kart_esik`
+    # (YOLO11s 0.75) ister. Motosiklet bugünkü kuralında kalır (sahip: kart
+    # olmaya devam etsin, 0.70). tiny'de kural yok (None).
+    m = arac.MOTOSIKLET
+    for tur in ("GIRDI", "CIKTI", "KAPIDA_KAYBOLDU", "TEK_KARE"):
+        for s in (2, 5, 7, None):
+            assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=s, moto_esik=0.70,
+                                       kart_esik=0.75) == 0.75, (tur, s)
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, sinif=m, moto_esik=0.70,
+                                   kart_esik=0.75) == 0.70, tur
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, kart_esik=None) == 0.30, tur
+        # Sahada geri alma: ARAC11_KART_ESIK=0.30 → bugünkü eşik.
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, kart_esik=0.30) == 0.30, tur
+        # Araç eşiğinin altında bir değer eşiği İNDİRMEZ (ayar 0 < v < 1 kabul eder).
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, kart_esik=0.20) == 0.30, tur
+    # Kapı kanıtı olmayan olaylar ve komşulu tek kare 0.60'ta kalır.
+    for tur in ("KAPISIZ", "ESKI_GIRDI"):
+        assert okuma.iz_arac_esigi(tur, 0.30, 0.60, kart_esik=0.75) == 0.60, tur
+    assert okuma.iz_arac_esigi("TEK_KARE", 0.30, 0.60, komsu=True, kart_esik=0.75) == 0.60
+    # Karar: 0.74 kayıt satırı, 0.75 kart.
+    esik = okuma.iz_arac_esigi("CIKTI", 0.30, 0.60, sinif=2, kart_esik=0.75)
+    g = _gecis()
+    g.arac_max, g.arac_sinif, g.arac_kirpik = 0.74, 2, _kare(8)
+    gonder, satir = _iz_karari(g, arac_gecis_esik=esik)
+    assert gonder == [] and any(gunluk.ARAC_YOK_ISARETI in s for s in satir), satir
+    g.arac_max = 0.75
+    gonder, _ = _iz_karari(g, arac_gecis_esik=esik)
+    assert [x.tur for x in gonder] == ["OKUNAMADI"], gonder
+
+
 def test_iz_karari_sinifi_kayda_yazar():
     # 1.4.3: plakasız satırlar en iyi kutunun sınıfını söyler — sahada
     # `Select-String motosiklet` her düşen izi bulur. Sınıf bilinmiyorsa satır
@@ -1470,6 +1551,47 @@ def test_iceride_sorusu_cikti_kaydina_takilmaz():
         assert gonder == [] and any(gunluk.AYRILIS_ISARETI in s for s in satir), (kayit, gonder)
     # İçeride sorusu DEĞİLSE ÇIKTI kaydı eskisi gibi engeller.
     assert _iz_karari(g, son_gonderilen=[cikti])[0] == []
+
+
+def test_kapi_olayi_iceride_kaydina_takilmaz():
+    # 1.4.6 A (sahibin kararı 24.11; sahada 23–24.11, 11 kayıp geçiş): araç
+    # otoparkın içinde okunur, "içeride" sorusu gider; 2–38 sn sonra kapıdan
+    # ÇIKAR (ya da başka iz içeride sorduktan sonra GİRER). 60 sn belleği bu
+    # gerçek geçişi yutmamalı: kapı olayı (GİRDİ / ÇIKTI) ICERIDE kaydına
+    # takılmaz — 18.11 istisnasının tersi. GİRDİ, ÇIKTI, ipucusuz kayıt
+    # eskisi gibi engeller (24.11 08:32: manevra yapan aracın girişi).
+    g = _gecis()
+    _oy(g, "34ABC123", [1, 2])
+    iceride = ("34ABC123", 990.0, True, "ICERIDE")
+    gonder, _ = _iz_karari(g, son_gonderilen=[iceride], kapi_olayi=True)
+    assert [(x.tur, x.plaka) for x in gonder] == [("PLAKA", "34ABC123")], gonder
+    # Bir karakter farklı ICERIDE kaydı da engellemez.
+    gonder, _ = _iz_karari(g, son_gonderilen=[("34ABC128", 990.0, True, "ICERIDE")],
+                           kapi_olayi=True)
+    assert [x.plaka for x in gonder] == ["34ABC123"], gonder
+    for kayit in (("34ABC123", 990.0, True, "GIRDI"), ("34ABC123", 990.0, True, "CIKTI"),
+                  ("34ABC123", 990.0, True, None), ("34ABC123", 990.0, True)):
+        gonder, satir = _iz_karari(g, son_gonderilen=[kayit], kapi_olayi=True)
+        assert gonder == [] and any(gunluk.AYRILIS_ISARETI in s for s in satir), (kayit, gonder)
+    # ICERIDE kaydı ve başka bir engelleyen kayıt birlikte: yine engeller.
+    gonder, _ = _iz_karari(g, son_gonderilen=[iceride, ("34ABC123", 995.0, True, "GIRDI")],
+                           kapi_olayi=True)
+    assert gonder == [], gonder
+    # Kapı olayı DEĞİLSE (yönü bilinmeyen olay) ICERIDE kaydı eskisi gibi engeller.
+    assert _iz_karari(g, son_gonderilen=[iceride])[0] == []
+    # İçeride sorusu ICERIDE kaydına eskisi gibi takılır.
+    assert _iz_karari(g, son_gonderilen=[iceride], iceride=True)[0] == []
+    # Yalnız tahmin okunan kapı olayı: ICERIDE kaydına takılmaz, kart gider.
+    g = _gecis()
+    _oy(g, "34ABC123", [1], enk=0.96)
+    g.oylama.kutu(_z(2), 1)
+    g.kutulu = (0.8, _kare(5))
+    gonder, _ = _iz_karari(g, son_gonderilen=[iceride], kapi_olayi=True)
+    assert [(x.tur, x.tahmin) for x in gonder] == [("OKUNAMADI", "34ABC123")], gonder
+    assert _iz_karari(g, son_gonderilen=[iceride])[0] == []
+    gonder, _ = _iz_karari(g, son_gonderilen=[("34ABC123", 990.0, True, "CIKTI")],
+                           kapi_olayi=True)
+    assert gonder == [], gonder
 
 
 def test_tek_kapida_yonu_bilinmeyen_emin_plaka_gider():
