@@ -23,6 +23,7 @@ import {
   Deger,
   IslemlerListesi,
   KarsilastirmaChip,
+  SATIR_RENK,
   Satir,
   kisaTL,
 } from './raporParcalari'
@@ -116,6 +117,7 @@ export default function GunRaporu() {
         <div className="divide-y divide-divider overflow-hidden rounded-card border border-border bg-surface shadow-card">
           <Satir
             ikon={<IconGiris size={20} />}
+            renk={SATIR_RENK.giren}
             etiket={
               <>
                 Giren araçlar
@@ -128,13 +130,15 @@ export default function GunRaporu() {
           />
           <Satir
             ikon={<IconCikis size={20} />}
+            renk={SATIR_RENK.cikan}
             etiket="Çıkan araçlar"
             deger={<Deger>{r.biletler.length}</Deger>}
             onClick={r.biletler.length > 0 ? () => setSayfa('araclar') : undefined}
           />
           {r.islemler.length > 0 && (
             <Satir
-              ikon={<IconUyari size={20} className="text-warn" />}
+              ikon={<IconUyari size={20} />}
+              renk={SATIR_RENK.dikkat}
               etiket="Dikkat"
               deger={<Chip sinif="bg-warn-soft text-warn">{r.islemler.length}</Chip>}
               onClick={() => setSayfa('dikkat')}
@@ -142,11 +146,13 @@ export default function GunRaporu() {
           )}
           <Satir
             ikon={<IconAraba size={20} />}
+            renk={SATIR_RENK.iceride}
             etiket={buGun ? 'İçeride' : 'Gün sonunda içeride'}
             deger={<Deger>{r.iceride} araç</Deger>}
           />
           <Satir
             ikon={<IconOnay size={20} />}
+            renk={SATIR_RENK.onay}
             etiket="Onay bekleyen"
             deger={<Deger>{r.onay.adet > 0 ? `${r.onay.adet} · ${kisaTL(r.onay.tutar)}` : 'Yok'}</Deger>}
             onClick={() => navigate('/finans/onay')}
@@ -196,7 +202,11 @@ function VardiyaSatiri({ v, onClick }: { v: GunRaporuVardiya; onClick: () => voi
       onClick={onClick}
       className="flex min-h-[64px] w-full items-center gap-3 px-4 py-3 text-left active:bg-field"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-field bg-field text-soft">
+      <span
+        className={`flex size-9 shrink-0 items-center justify-center rounded-field ${
+          gunduz ? 'bg-warn-soft text-warn' : 'bg-kart-soft text-kart'
+        }`}
+      >
         {gunduz ? <IconGunes size={19} /> : <IconAy size={19} />}
       </span>
       <div className="min-w-0 flex-1">

@@ -37,6 +37,12 @@ assert.equal(hafizaOku(d, 'gise.filtre', 'ICERIDE', SEKMELER), 'ICERIDE')
 d = sahteDepo({ 'op.ekran.gise.filtre': '"ESKI_SEKME"' })
 assert.equal(hafizaOku(d, 'gise.filtre', 'ICERIDE', SEKMELER), 'ICERIDE')
 
+// Sahip 28.11: Gişe'de "30 gün" (AY) kalktı — hatırlanan AY → Bugün.
+d = sahteDepo({ 'op.ekran.gise.donem': '"AY"' })
+assert.equal(hafizaOku(d, 'gise.donem', 'BUGUN', ['TUMU', 'BUGUN', 'HAFTA', 'OZEL']), 'BUGUN')
+d = sahteDepo({ 'op.ekran.gise.donem': '"OZEL"' })
+assert.equal(hafizaOku(d, 'gise.donem', 'BUGUN', ['TUMU', 'BUGUN', 'HAFTA', 'OZEL']), 'OZEL')
+
 // Liste verilmezse tür denetlenir: sayı bekleyene metin gelmez.
 d = sahteDepo({ 'op.ekran.gise.adet': '"yirmi"' })
 assert.equal(hafizaOku(d, 'gise.adet', 25), 25)

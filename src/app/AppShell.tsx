@@ -44,8 +44,9 @@ export function AppShell() {
     { to: '/gise', label: 'Gişe', Icon: IconAraba },
     // 085 (owner, 28.11): shifts run themselves — the PIN hand-over on the
     // terminal is the shift change — so Personel no longer open or count
-    // anything. Vardiya is the Yönetici's (count, settings, report).
-    ...(yonetici ? [{ to: '/vardiya', label: 'Vardiya', Icon: IconVardiya }] : []),
+    // anything. Vardiya is the Yönetici's (count, settings, report) —
+    // labelled "Rapor" since it became the daily report (owner 28.11).
+    ...(yonetici ? [{ to: '/vardiya', label: 'Rapor', Icon: IconVardiya }] : []),
     // 062 (owner, 2026-11-15): Personel follow and collect abonmans, right
     // after Gişe. The Yönetici keeps it in the Yönetim menu (owner's
     // choice), so their row stays at four.

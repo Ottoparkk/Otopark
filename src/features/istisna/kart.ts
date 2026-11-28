@@ -13,32 +13,33 @@ import type { KimSatiri } from '../../lib/kimYapti'
  * What HAPPENED is the status line above it (kisaDurum).
  */
 const TUR_ACIKLAMA: Record<IstisnaTur, string> = {
-  GELECEK: 'Kameranın saati ileri. Yöneticiye haber verin; araç içerideyse girişini Gişe\'den açın.',
-  BAYAT: 'Geç ulaştı; araç çıkmış olabilir. İçerideyse girişini Gişe\'den açın, değilse Kapat.',
-  ACIK_BILET_YOK: 'Plaka yanlış okunmuş ya da girişi yapılmamış olabilir. Doğru bileti Çıkış\'tan bulun.',
-  COKLU_ESLESME: 'Doğru aracı Çıkış ekranından seçin.',
-  YON_BELIRSIZ: 'İçerideki benzer araç çıkıyorsa Çıkış; yeni bir araçsa girişini Gişe\'den açın.',
-  OKUNAMADI: 'Bileti yoksa plakayı yazıp Giriş aç; bileti varsa Kapat.',
+  GELECEK: 'Yöneticiye haber verin. Araç içerideyse girişini Gişe\'den açın.',
+  BAYAT: 'Araç içerideyse girişini Gişe\'den açın. Değilse Kapat\'a basın.',
+  ACIK_BILET_YOK: 'Plaka yanlış okunmuş olabilir. Doğru bileti Çıkış\'tan bulun.',
+  COKLU_ESLESME: 'Doğru aracı Çıkış\'tan seçin.',
+  YON_BELIRSIZ: 'Araç çıkıyorsa Çıkış\'a basın. Yeni gelen araçsa girişini Gişe\'den açın.',
+  OKUNAMADI: 'Bileti yoksa plakayı yazıp Giriş aç\'a, varsa Kapat\'a basın.',
   GIRISTE_ACIK_BILET:
-    'Eski bileti açık. Araç çıkıp geri geldiyse eskisini Çıkış\'tan kapatın; hiç çıkmadıysa Kapat.',
+    'Araç çıkıp döndüyse eski bileti Çıkış\'tan kapatın. Hiç çıkmadıysa Kapat\'a basın.',
   // 054: the camera may have closed this car's ticket as an exit by mistake —
   // then the fix is "Araç çıkmadı" on that ticket, not a new entry.
-  ICERIDE_BILETSIZ: 'Kamera az önce çıkış saydıysa o bilette "Araç çıkmadı"; değilse Giriş aç.',
+  ICERIDE_BILETSIZ:
+    'Kamera az önce çıkış saydıysa o bileti açıp "Araç çıkmadı"ya basın. Değilse Giriş aç\'a basın.',
   // 071: the refusal sentence is on the status line; this says what to do.
-  REDDEDILDI: 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın; değilse Kapat.',
-  CIKMAMIS_OLABILIR: 'Araç çıkmadıysa Bilete git ve "Araç çıkmadı"; çıktıysa Kapat.',
+  REDDEDILDI: 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın. Değilse Kapat\'a basın.',
+  CIKMAMIS_OLABILIR: 'Araç çıkmadıysa Bilete git\'e basıp "Araç çıkmadı"yı seçin. Çıktıysa Kapat\'a basın.',
 }
 
 // Single gate: the car may have been LEAVING, and an entry for it would leave
 // a phantom ticket that blocks that plate's next real entry.
 const OKUNAMADI_TEK_KAPI =
-  'Girdi mi çıktı mı bilinmiyor. Giren araçsa Giriş aç; çıkansa ya da bileti varsa Kapat.'
+  'Araç girdi mi çıktı mı belli değil. Girdiyse Giriş aç\'a, çıktıysa Kapat\'a basın.'
 // 072: a camera "exit, no open ticket" on the single gate may have been a car
 // coming in; Giriş aç then asks for the entry time and a reason.
 const ACIK_BILET_YOK_TEK_KAPI =
-  'Araç giriyorduysa giriş saatini ve sebebi yazıp Giriş aç; çıktıysa Kapat.'
+  'Araç girdiyse Giriş aç\'a basıp giriş saatini yazın. Çıktıysa Kapat\'a basın.'
 // 071: on the exit lane and the single gate the refused car may have been leaving.
-const REDDEDILDI_CIKIS = 'İçerideyse girişini Gişe\'den açın; çıkıyorsa Çıkış.'
+const REDDEDILDI_CIKIS = 'Araç içerideyse girişini Gişe\'den açın. Çıkıyorsa Çıkış\'a basın.'
 
 export function aciklama(i: Istisna): string {
   if (i.tur === 'OKUNAMADI' && i.yon === 'ORTAK') return OKUNAMADI_TEK_KAPI
@@ -56,8 +57,8 @@ export function tahminNotu(i: Istisna): string | null {
   const { tahmin, guven } = okumaBilgisi(i)
   if (!tahmin) return null
   return guven === null
-    ? 'Alandaki plaka kameranın tahmini.'
-    : `Alandaki plaka kameranın tahmini (%${Math.round(guven * 100)}).`
+    ? 'Plaka kameranın tahmini, kontrol edin.'
+    : `Plaka kameranın tahmini (%${Math.round(guven * 100)}), kontrol edin.`
 }
 
 /**
@@ -79,16 +80,16 @@ export function okumaBilgisi(i: Istisna): {
 }
 
 const KISA: Record<IstisnaTur, string> = {
-  GELECEK: 'Kamera saati ileri — kabul edilmedi',
-  BAYAT: 'Olay çok geç ulaştı',
-  ACIK_BILET_YOK: 'Çıkışta açık bilet bulunamadı',
-  COKLU_ESLESME: 'İçeride benzer plakalı bilet var',
-  YON_BELIRSIZ: 'İçerideki bir plakaya çok benziyor',
-  OKUNAMADI: 'Plaka tam olarak okunamadı',
-  GIRISTE_ACIK_BILET: 'Girerken görüldü — eski açık bileti var',
-  ICERIDE_BILETSIZ: 'İçeride, bileti yok',
-  REDDEDILDI: 'Sunucu kaydı reddetti',
-  CIKMAMIS_OLABILIR: 'Çıktı sayıldı ama içeride görüldü',
+  GELECEK: 'Kamera saati ileri, kayıt alınmadı',
+  BAYAT: 'Kayıt çok geç geldi',
+  ACIK_BILET_YOK: 'Çıkan aracın açık bileti yok',
+  COKLU_ESLESME: 'Birden çok bilete benziyor',
+  YON_BELIRSIZ: 'İçerideki bir araca benziyor',
+  OKUNAMADI: 'Plaka okunamadı',
+  GIRISTE_ACIK_BILET: 'Giren aracın eski bileti açık',
+  ICERIDE_BILETSIZ: 'İçerideki aracın bileti yok',
+  REDDEDILDI: 'Sistem kaydı almadı',
+  CIKMAMIS_OLABILIR: 'Çıktı sayıldı, içeride görüldü',
 }
 
 /** The refusal sentence on a REDDEDILDI row (071), cut to fit one line. */
@@ -102,13 +103,13 @@ function retSebebi(i: Istisna): string | null {
 /** The card's single status line. */
 export function kisaDurum(i: Istisna): string {
   if (i.tur === 'OKUNAMADI' && okumaBilgisi(i).servisHatasi) {
-    return 'Plaka okuma servisi çalışmıyordu'
+    return 'Plaka okuma çalışmıyordu'
   }
   const ret = retSebebi(i)
-  if (ret) return 'Sunucu reddetti: ' + ret
+  if (ret) return 'Sistem almadı: ' + ret
   // 077 E2: the entry card's plate was read a little later inside the yard.
   if (i.tur === 'OKUNAMADI' && i.ham_yanit?.sonradan_sebep === 'ICERIDE') {
-    return 'Girişte okunamadı — plaka içeride okundu'
+    return 'Girişte okunamadı, içeride okundu'
   }
   return KISA[i.tur]
 }

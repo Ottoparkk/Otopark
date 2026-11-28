@@ -85,6 +85,7 @@ assert.equal(sureMetni(1440 + 185), '1 gün 3 sa 5 dk')
   assert.ok(!s.some((x) => x.t === 'qr'), 'giriş fişinde QR olmamalı')
   assert.ok(!m.includes('TEKRAR BASIM'))
   assert.ok(!m.includes('Tahmini'))
+  assert.ok(!m.includes('Hesaplanan'))
   assert.ok(!m.includes('₺'), 'önceden belirlenmiş ücret yokken fişte para yazmaz')
 }
 
@@ -96,7 +97,24 @@ assert.equal(sureMetni(1440 + 185), '1 gün 3 sa 5 dk')
   yokMu(m, 'tahminli giriş')
   assert.ok(m.includes('TEKRAR BASIM (2)'))
   assert.ok(m.includes('Tahmini çıkış | 16:05'))
-  assert.ok(m.includes('Tahmini ücret (2 sa) | 200 ₺'))
+  // Sahip 28.11: "Tahmini ücret" → "Hesaplanan ücret".
+  assert.ok(m.includes('Hesaplanan ücret (2 sa) | 200 ₺'))
+  assert.ok(!m.includes('Tahmini ücret'))
+}
+
+// ------------------------- giriş fişi: tahmini çıkış ertesi güne düşerse tarih
+// Kademe seçenekleri (sahip 28.11) 24 saate kadar gider: 14:05 + 24 sa yalnızca
+// "14:05" yazsaydı bugün sanılırdı. Gün değişince tarih de yazar.
+{
+  const m = metin(girisFisi({ otopark, bilet: temel, basim: 1, basimAt, tahmin: { dakika: 1440, kurus: 50000 } }, araclar))
+  assert.ok(m.includes('Tahmini çıkış | 29.11.2026 14:05'), m)
+  assert.ok(m.includes('Hesaplanan ücret (1 gün) | 500 ₺'))
+  // 14:05 + 8 sa = 22:05, aynı gün: yalnızca saat.
+  const m2 = metin(girisFisi({ otopark, bilet: temel, basim: 1, basimAt, tahmin: { dakika: 480, kurus: 40000 } }, araclar))
+  assert.ok(m2.includes('Tahmini çıkış | 22:05'), m2)
+  // 14:05 + 10 sa = 00:05 ertesi gün: tarih yazar.
+  const m3 = metin(girisFisi({ otopark, bilet: temel, basim: 1, basimAt, tahmin: { dakika: 600, kurus: 40000 } }, araclar))
+  assert.ok(m3.includes('Tahmini çıkış | 29.11.2026 00:05'), m3)
 }
 
 // --------------------------------------------- giriş fişi: yıkama, anlaşma

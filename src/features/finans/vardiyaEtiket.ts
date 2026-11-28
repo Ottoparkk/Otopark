@@ -112,6 +112,35 @@ export function gecenGunMetni(gun: string): string {
   return `geçen ${GUNDEN[haftaGunu(gun)]}`
 }
 
+/**
+ * The Rapor list's day rows: today left out (it is the hero card), and a day
+ * with no money and no cars is not worth a row. Newest first.
+ */
+export function gecmisGunler<T extends { toplam: number; arac: number }>(
+  gunler: Map<string, T> | undefined,
+  bugun: string,
+): [string, T][] {
+  return [...(gunler?.entries() ?? [])]
+    .filter(([g, t]) => g !== bugun && (t.toplam !== 0 || t.arac > 0))
+    .sort(([a], [b]) => (a < b ? 1 : -1))
+}
+
+/** 'YYYY-MM' of the month before. */
+export function oncekiAy(ay: string): string {
+  const [y = 0, m = 1] = ay.split('-').map(Number)
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
+}
+
+/**
+ * Whether "Önceki ayı gör" has anything to show: a month older than the oldest
+ * one on screen can only hold records if the first record is older still.
+ * Unknown first day: offer it (an empty month says "kayıt yok").
+ */
+export function oncekiAyVar(enEskiAy: string, ilkGun: string | undefined): boolean {
+  if (!ilkGun) return true
+  return ilkGun.slice(0, 7) < enEskiAy
+}
+
 const ISLEMLER: Record<string, string> = {
   bilet_iptal: 'Bilet iptal',
   bilet_iptal_talebi: 'İptal talebi',

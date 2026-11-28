@@ -54,15 +54,15 @@ const SEKMELER: { deger: Sekme; etiket: string }[] = [
 const BOS: Record<Sekme, { title: string; hint: string }> = {
   BEKLEYEN: {
     title: 'Bekleyen kayıt yok',
-    hint: 'Kamera bir aracı bilete dönüştüremezse burada görünür.',
+    hint: 'Kamera bir araca bilet açamazsa burada görünür.',
   },
   COZULMUS: {
     title: 'Çözülmüş kayıt yok',
-    hint: 'Giriş açılarak ya da kameranın kendisiyle çözülen kayıtlar burada görünür.',
+    hint: 'Giriş açılan ya da kameranın çözdüğü kayıtlar burada görünür.',
   },
   KAPATILAN: {
     title: 'Kapatılan kayıt yok',
-    hint: '"Kapat" ile kapatılan kayıtlar burada görünür.',
+    hint: 'Kapat\'a basılan kayıtlar burada görünür.',
   },
 }
 
@@ -97,7 +97,7 @@ export default function Istisnalar() {
 
   return (
     <div>
-      <ScreenHeader title="Çözülmemiş kayıtlar" back subtitle="Bilete dönüşemeyen kamera olayları" />
+      <ScreenHeader title="Çözülmemiş kayıtlar" back subtitle="Kameranın bilet açamadığı araçlar" />
 
       <div className="space-y-4 px-5">
         {yonetici && (
@@ -123,7 +123,7 @@ export default function Istisnalar() {
           >
             <span className="min-w-0">
               {basari.zaten_vardi
-                ? `Kamera bu aracın biletini zaten açmış: ${formatPlaka(basari.plaka)}`
+                ? `Kamera bileti zaten açmış: ${formatPlaka(basari.plaka)}`
                 : `${formatPlaka(basari.plaka)} girişi açıldı${basari.yer_kod ? ` · ${basari.yer_kod}` : ''}`}
             </span>
             <span className="shrink-0 underline">Bilete git</span>
@@ -174,7 +174,7 @@ export default function Istisnalar() {
         open={kapatilacak !== null}
         onOpenChange={() => setKapatilacak(null)}
         title="Kaydı kapat"
-        description="İşlendi olarak kapanır; kayıt silinmez, Yönetici Kapatılan'da görür."
+        description="Kayıt silinmez. Yönetici onu Kapatılan sekmesinde görür."
         confirmLabel="Kapat"
         loading={coz.isPending}
         error={kapatHata}
@@ -194,7 +194,7 @@ export default function Istisnalar() {
         tone="danger"
         title="Kaydı sil"
         description={
-          "Kayıt tamamen kalkar (Çöp Kutusu'ndan geri alınabilir). Yalnızca işlendi demek için Kapat'a basın — kayıt saklanır."
+          "Kayıt listeden kalkar. Çöp Kutusu'ndan geri alabilirsiniz. Saklamak için Kapat'ı kullanın."
         }
         confirmLabel="Sil"
         loading={sil.isPending}

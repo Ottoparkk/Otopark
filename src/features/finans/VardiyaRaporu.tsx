@@ -15,6 +15,7 @@ import {
   IslemlerListesi,
   Kalem,
   KarsilastirmaChip,
+  SATIR_RENK,
   Satir,
   kisaTL,
 } from './raporParcalari'
@@ -29,7 +30,7 @@ const KAPANIS: Record<string, string> = {
   DEVIR: 'Devredildi (sayımsız)',
 }
 
-type Sayfa = 'kese' | 'araclar' | 'dikkat' | null
+type Sayfa = 'kasa' | 'araclar' | 'dikkat' | null
 
 /**
  * One shift, as a summary (086; owner 28.11: "like Rocket Money"). One big
@@ -116,8 +117,9 @@ export default function VardiyaRaporu() {
         <div className="divide-y divide-divider overflow-hidden rounded-card border border-border bg-surface shadow-card">
           <Satir
             ikon={<IconKasa size={20} />}
-            etiket="Kese"
-            onClick={() => setSayfa('kese')}
+            renk={SATIR_RENK.kasa}
+            etiket="Kasa"
+            onClick={() => setSayfa('kasa')}
             deger={
               acik ? (
                 <Chip sinif="bg-accent-soft text-accent">Açık</Chip>
@@ -135,13 +137,15 @@ export default function VardiyaRaporu() {
           />
           <Satir
             ikon={<IconCikis size={20} />}
+            renk={SATIR_RENK.cikan}
             etiket="Çıkan araçlar"
             deger={<Deger>{r.biletler.length}</Deger>}
             onClick={r.biletler.length > 0 ? () => setSayfa('araclar') : undefined}
           />
           {r.islemler.length > 0 && (
             <Satir
-              ikon={<IconUyari size={20} className="text-warn" />}
+              ikon={<IconUyari size={20} />}
+              renk={SATIR_RENK.dikkat}
               etiket="Dikkat"
               deger={<Chip sinif="bg-warn-soft text-warn">{r.islemler.length}</Chip>}
               onClick={() => setSayfa('dikkat')}
@@ -149,11 +153,13 @@ export default function VardiyaRaporu() {
           )}
           <Satir
             ikon={<IconAraba size={20} />}
+            renk={SATIR_RENK.iceride}
             etiket={acik ? 'İçeride' : 'Kapanışta içeride'}
             deger={<Deger>{r.iceride} araç</Deger>}
           />
           <Satir
             ikon={<IconOnay size={20} />}
+            renk={SATIR_RENK.onay}
             etiket="Onay bekleyen"
             deger={<Deger>{r.onay.adet > 0 ? `${r.onay.adet} · ${kisaTL(r.onay.tutar)}` : 'Yok'}</Deger>}
             onClick={() => navigate('/finans/onay')}
@@ -168,7 +174,7 @@ export default function VardiyaRaporu() {
       </div>
 
       {/* ---- sheets ------------------------------------------------- */}
-      <AltSayfa open={sayfa === 'kese'} onOpenChange={(o) => !o && setSayfa(null)} baslik="Kese">
+      <AltSayfa open={sayfa === 'kasa'} onOpenChange={(o) => !o && setSayfa(null)} baslik="Kasa">
         <Kalem k="Açılış nakdi" v={formatTL(v.acilis_nakit_kurus)} />
         <Kalem k={acik ? 'Şu an olması gereken' : 'Olması gereken'} v={formatTL(beklenen)} />
         {!acik && (

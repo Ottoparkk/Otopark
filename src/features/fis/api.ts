@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { fisYazdirir } from './fisIste'
+import { parcala } from './fisSecenek'
+import type { Tarife } from '../../lib/types'
 
 /** Whether this account gets the fiş buttons (Personel, owner 28.11). */
 export function useFisYazdirir(): boolean {
@@ -19,9 +21,6 @@ export interface FisBasimi {
 }
 
 export type FisTur = FisBasimi['tur']
-
-/** The customer-stated stays offered on the entry fiş (minutes); "Yok" is null. */
-export const TAHMIN_SECENEKLERI = [60, 120, 180, 240, 360] as const
 
 /**
  * Records a print and returns its number for this ticket and type (1 = first,
@@ -49,21 +48,47 @@ export function useFisBasildi() {
 }
 
 /**
+ * The tariff the ticket was priced with — its own snapshot (`tarife_id`), not
+ * today's active one, so the choices match what the car will really pay.
+ */
+export function useBiletTarifesi(tarifeId: string | undefined) {
+  return useQuery({
+    queryKey: ['tarife', tarifeId],
+    enabled: Boolean(tarifeId),
+    staleTime: 5 * 60_000,
+    queryFn: async (): Promise<Pick<Tarife, 'id' | 'tur' | 'kademeler'>> => {
+      const { data, error } = await supabase
+        .from('tarifeler')
+        .select('id, tur, kademeler')
+        .eq('id', tarifeId!)
+        .single()
+      if (error) throw error
+      return data as Pick<Tarife, 'id' | 'tur' | 'kademeler'>
+    },
+  })
+}
+
+/**
  * The entry fiş's estimates, priced by the server at the full tariff (088
  * `fis_tahmini`). `returns table` → an array of rows. Map minute → kuruş.
+ * The server takes at most 6 minutes a call, so longer lists go in parts.
  */
-export function useFisTahmini(biletId: string | undefined, enabled: boolean) {
+export function useFisTahmini(biletId: string | undefined, dakikalar: number[], enabled: boolean) {
   return useQuery({
-    queryKey: ['fis_tahmini', biletId],
-    enabled: enabled && Boolean(biletId),
+    queryKey: ['fis_tahmini', biletId, dakikalar],
+    enabled: enabled && Boolean(biletId) && dakikalar.length > 0,
     staleTime: 60_000,
     queryFn: async (): Promise<Map<number, number>> => {
-      const { data, error } = await supabase.rpc('fis_tahmini', {
-        p_bilet_id: biletId!,
-        p_dakikalar: [...TAHMIN_SECENEKLERI],
-      })
-      if (error) throw error
-      return new Map((data as { dakika: number; kurus: number }[]).map((r) => [r.dakika, r.kurus]))
+      const m = new Map<number, number>()
+      for (const parca of parcala(dakikalar, 6)) {
+        const { data, error } = await supabase.rpc('fis_tahmini', {
+          p_bilet_id: biletId!,
+          p_dakikalar: parca,
+        })
+        if (error) throw error
+        for (const r of data as { dakika: number; kurus: number }[]) m.set(r.dakika, r.kurus)
+      }
+      return m
     },
   })
 }

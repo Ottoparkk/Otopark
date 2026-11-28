@@ -10,8 +10,10 @@ import { ucretsizEtiket } from '../../lib/ucretsiz'
 import { rpcErrorText } from '../../lib/errors'
 import { formatPlaka } from '../../lib/plaka'
 import { useAyarlar, useBilet } from '../gise/api'
-import { TAHMIN_SECENEKLERI, useFisBasildi, useFisBasimlari, useFisTahmini, type FisTur } from './api'
+import { useBiletTarifesi, useFisBasildi, useFisBasimlari, useFisTahmini, type FisTur } from './api'
 import { cikisFisi, girisFisi, sureMetni, type FisAraclari, type FisSatiri } from './fisIcerik'
+import { fisTahminSecenekleri } from './fisSecenek'
+import { kademeAraliklari } from '../finans/kademe'
 import { FisBaskiPortal, FisKagidi } from './FisBaski'
 
 const ARACLAR: FisAraclari = { tl: formatTL, saat: formatSaat, tam: formatTam, ucretsizEtiket, plaka: formatPlaka }
@@ -39,7 +41,14 @@ export function FisSayfasi({
   const giris = tur === 'GIRIS'
   const tahminli = giris && bilet?.durum === 'ACIK' && !bilet.abonman_id
   const { data: basimlar } = useFisBasimlari(biletId, open)
-  const { data: tahminler } = useFisTahmini(biletId, open && tahminli)
+  // Owner 28.11: the choices are the ticket's own tariff bands (0–2, 2–4…).
+  const { data: tarife } = useBiletTarifesi(open && tahminli ? bilet?.tarife_id : undefined)
+  const secenekler = fisTahminSecenekleri(tarife, { araliklar: kademeAraliklari, sure: sureMetni })
+  const { data: tahminler } = useFisTahmini(
+    biletId,
+    secenekler.map((s) => s.dakika),
+    open && tahminli,
+  )
   const basildi = useFisBasildi()
 
   const [tahminDk, setTahminDk] = useState<number | null>(null)
@@ -119,7 +128,9 @@ export function FisSayfasi({
               >
                 <span className="flex-1 text-body text-soft">Müşteri ne kadar kalacak?</span>
                 <span className="text-body font-semibold text-ink tnum">
-                  {tahminDk === null ? 'Belirsiz' : sureMetni(tahminDk)}
+                  {tahminDk === null
+                    ? 'Belirsiz'
+                    : (secenekler.find((s) => s.dakika === tahminDk)?.etiket ?? sureMetni(tahminDk))}
                 </span>
                 <IconAsagi
                   size={18}
@@ -128,7 +139,8 @@ export function FisSayfasi({
               </button>
               {secimAcik && (
                 <ul className="divide-y divide-divider border-t border-divider">
-                  {[null, ...TAHMIN_SECENEKLERI].map((dk) => {
+                  {[null, ...secenekler].map((s) => {
+                    const dk = s?.dakika ?? null
                     const secili = tahminDk === dk
                     const kurus = dk === null ? undefined : tahminler?.get(dk)
                     return (
@@ -143,7 +155,7 @@ export function FisSayfasi({
                           className="flex min-h-[48px] w-full items-center gap-3 px-4 text-left active:bg-field"
                         >
                           <span className={`flex-1 text-body ${secili ? 'font-semibold text-ink' : 'text-soft'}`}>
-                            {dk === null ? 'Belirsiz' : sureMetni(dk)}
+                            {s === null ? 'Belirsiz' : s.etiket}
                           </span>
                           {kurus !== undefined && (
                             <span className="text-body text-faint tnum">{formatTL(kurus)}</span>

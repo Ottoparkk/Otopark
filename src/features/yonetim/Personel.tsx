@@ -17,6 +17,7 @@ import { RolBilgisi } from './RolBilgisi'
 import { SegmentedControl } from '../../components/ui/primitives'
 import {
   useApproveSignup,
+  usePersonelAdDegistir,
   usePersonelListesi,
   useSetRole,
   useSetStatus,
@@ -31,7 +32,7 @@ import type { Rol } from '../../lib/types'
 
 export default function Personel() {
   const navigate = useNavigate()
-  const { profile: ben } = useAuth()
+  const { profile: ben, refreshProfile } = useAuth()
   const { data: liste = [], isPending, error, refetch } = usePersonelListesi()
 
   const onayla = useApproveSignup()
@@ -54,6 +55,12 @@ export default function Personel() {
   const [pinHedef, setPinHedef] = useState<PersonelSatiri | null>(null)
   const [yeniPin, setYeniPin] = useState('')
   const [formHata, setFormHata] = useState<string | null>(null)
+
+  // ---- 092: the Yönetici corrects a name (a name + PIN worker can't) ---
+  const adDegistir = usePersonelAdDegistir()
+  const [adHedef, setAdHedef] = useState<PersonelSatiri | null>(null)
+  const [yeniAd, setYeniAd] = useState('')
+  const yeniAdTemiz = yeniAd.trim().replace(/\s+/g, ' ')
 
   // ---- 085: each worker's shift hours (drive the hand-over reminder) ----
   const { data: saatListesi = [] } = useVardiyaSaatleri()
@@ -181,6 +188,11 @@ export default function Personel() {
                       onDurum={() => {
                         setHata(null)
                         setDurumHedef(p)
+                      }}
+                      onAd={() => {
+                        setYeniAd(p.ad_soyad)
+                        setFormHata(null)
+                        setAdHedef(p)
                       }}
                       onPin={
                         p.rol === 'PERSONEL'
@@ -376,6 +388,45 @@ export default function Personel() {
         </div>
       </FormModal>
 
+      {/* ---- 092: correct a name ----------------------------------------- */}
+      <FormModal
+        open={adHedef !== null}
+        onOpenChange={() => setAdHedef(null)}
+        title="İsmi düzenle"
+        loading={adDegistir.isPending}
+        error={formHata}
+        disabled={
+          yeniAdTemiz.length < 2 || yeniAdTemiz.length > 80 || yeniAdTemiz === adHedef?.ad_soyad
+        }
+        onSubmit={() => {
+          if (!adHedef) return
+          const hedef = adHedef
+          setFormHata(null)
+          void adDegistir
+            .mutateAsync({ id: hedef.id, adSoyad: yeniAdTemiz })
+            .then(() => {
+              // Your own name also sits in the header and the shift records.
+              if (hedef.id === ben?.id) void refreshProfile()
+              setAdHedef(null)
+            })
+            .catch((e) => setFormHata(rpcErrorText(e, 'İsim kaydedilemedi.')))
+        }}
+      >
+        <div className="space-y-4">
+          <p className="text-body text-soft">
+            Yeni isim terminal listesinde, raporlarda ve geçmiş kayıtlarda görünür. PIN değişmez.
+          </p>
+          <Input
+            label="Ad soyad"
+            name="ad_soyad"
+            autoComplete="off"
+            maxLength={80}
+            value={yeniAd}
+            onChange={(e) => setYeniAd(e.target.value)}
+          />
+        </div>
+      </FormModal>
+
       {/* ---- 085: shift hours ------------------------------------------- */}
       <FormModal
         open={saatHedef !== null}
@@ -468,6 +519,7 @@ function KisiKart({
   onRol,
   onDurum,
   onAc,
+  onAd,
   onPin,
   saat,
   onSaat,
@@ -476,6 +528,8 @@ function KisiKart({
   ben: boolean
   onRol?: () => void
   onDurum?: () => void
+  /** 092: correct the name. Active people only. */
+  onAd?: () => void
   /** 084: set the worker's terminal PIN. Personel only. */
   onPin?: () => void
   /** 085: the worker's shift hours; null = none set, undefined = not shown. */
@@ -554,7 +608,7 @@ function KisiKart({
 
       {/* Offered for YOURSELF too: a Yönetici who pays themselves a salary
           still needs the screen. */}
-      {(onAc || onPin || onSaat) && (
+      {(onAc || onAd || onPin || onSaat) && (
         <div className="mt-3 flex gap-2">
           {onAc && (
             <button
@@ -563,6 +617,16 @@ function KisiKart({
               className="min-h-[44px] flex-1 rounded-field bg-accent-soft text-body font-medium text-accent"
             >
               Ödemeler
+            </button>
+          )}
+          {onAd && (
+            <button
+              type="button"
+              onClick={onAd}
+              aria-label="İsmi düzenle"
+              className="min-h-[44px] shrink-0 rounded-field bg-field px-4 text-body font-medium text-ink active:brightness-95"
+            >
+              İsim
             </button>
           )}
           {onPin && (

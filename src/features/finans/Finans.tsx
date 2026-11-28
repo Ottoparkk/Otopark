@@ -397,7 +397,7 @@ export default function Finans() {
               to="/vardiya"
               tone={farkli.length > 0 ? 'warn' : 'accent'}
               icon={<IconVardiya size={22} />}
-              baslik="Vardiyalar"
+              baslik="Günlük rapor"
               aciklama="Vardiya raporları, kasa sayımları"
             />
             {/* Prices belong with the money they generate, not with the

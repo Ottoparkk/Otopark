@@ -116,7 +116,12 @@ export default function Gise() {
    */
   const { profile } = useAuth()
   const yonetici = isYonetici(profile)
-  const { donem, ozel, secim } = useDonem('BUGUN', 'gise')
+  // Owner 28.11: no "30 gün" on Gişe; the calendar takes its place.
+  const { donem, ozel, secim } = useDonem(
+    'BUGUN',
+    'gise',
+    yonetici ? ['TUMU', 'BUGUN', 'HAFTA', 'OZEL'] : ['BUGUN', 'UC_GUN'],
+  )
   const gecmis = yonetici && donem !== 'BUGUN'
   const { bas, bit, hazir } = useDonemAralik(donem, ozel)
   // 067 (owner, 2026-11-15): the chips also scope Çıkanlar. Tümü is no
@@ -293,7 +298,13 @@ export default function Gise() {
         />
 
         {yonetici ? (
-          <DonemSecici value={donem} ozel={ozel} onChange={secim} />
+          <DonemSecici
+            value={donem}
+            ozel={ozel}
+            onChange={secim}
+            secenekler={['TUMU', 'BUGUN', 'HAFTA']}
+            takvimSatirda
+          />
         ) : (
           // 067: Personel see exits from today or the last 3 days, no further
           // (RLS) — so two chips and no calendar. The card above stays

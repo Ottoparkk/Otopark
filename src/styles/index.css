@@ -83,6 +83,10 @@
   --color-kart-soft: #e6edfd;
   --color-havale: #a3186e; /* 6.0:1 on soft · 7.2:1 white on fill */
   --color-havale-soft: #fce4f1;
+  /* `mor` (owner 28.11): the sixth hue for the report rows' icon tiles
+     (Onay bekleyen), so no two rows share a colour. 6.0:1 on soft. */
+  --color-mor: #6d28d9;
+  --color-mor-soft: #ede9fe;
 
   /* --- type ramp ------------------------------------------------------
      Deliberately short.
@@ -168,6 +172,8 @@
   --color-kart-soft: #1b2740;
   --color-havale: #f472b6; /* 6.0:1 on soft · 7.2:1 on the fill */
   --color-havale-soft: #3a1528;
+  --color-mor: #a78bfa; /* 6.0:1 on soft */
+  --color-mor-soft: #241a3d;
 }
 
 /* ================================================ elevation + brand ===

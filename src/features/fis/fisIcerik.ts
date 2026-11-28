@@ -137,8 +137,10 @@ export function girisFisi(g: GirisFisiGirdisi, a: FisAraclari): FisSatiri[] {
   if (g.tahmin) {
     const bitis = new Date(new Date(b.giris_at).getTime() + g.tahmin.dakika * 60_000).toISOString()
     s.push({ t: 'cizgi' })
-    s.push({ t: 'satir', sol: 'Tahmini çıkış', sag: a.saat(bitis) })
-    s.push({ t: 'satir', sol: `Tahmini ücret (${sureMetni(g.tahmin.dakika)})`, sag: a.tl(g.tahmin.kurus) })
+    // A band can reach 24 h: past midnight the time alone would read as today.
+    const ayniGun = a.tam(bitis).slice(0, 10) === a.tam(b.giris_at).slice(0, 10)
+    s.push({ t: 'satir', sol: 'Tahmini çıkış', sag: ayniGun ? a.saat(bitis) : a.tam(bitis) })
+    s.push({ t: 'satir', sol: `Hesaplanan ücret (${sureMetni(g.tahmin.dakika)})`, sag: a.tl(g.tahmin.kurus) })
   }
   return [...s, ...son(g.basimAt, a)]
 }

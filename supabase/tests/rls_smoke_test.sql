@@ -12304,8 +12304,11 @@ if public.fis_basildi(v_bilet, 'GIRIS', 120) <> 1
    or public.fis_basildi(v_bilet, 'GIRIS', null) <> 2 then
   raise exception 'FAIL 130a: giriş fişi sıra numarası 1, 2 olmalıydı';
 end if;
-if (select tahmin_dk from public.fis_basimlari where bilet_id = v_bilet order by created_at, id limit 1)
-   is distinct from 120 then
+-- Both rows share created_at (now() is fixed inside this one transaction) and
+-- id is a random uuid, so "which came first" cannot be read back here; check
+-- the contents instead: one print with 120, one without.
+if (select count(*) from public.fis_basimlari where bilet_id = v_bilet and tahmin_dk = 120) <> 1
+   or (select count(*) from public.fis_basimlari where bilet_id = v_bilet and tahmin_dk is null) <> 1 then
   raise exception 'FAIL 130b: tahmini kalış kaydedilmedi';
 end if;
 begin
@@ -13083,6 +13086,73 @@ foreach v_txt in array array['kamera_tek_kapi', 'kamera_okunamadi', 'kamera_tahm
 end loop;
 
 raise notice 'PASS 145: 090 yardımcıları kimseye açık değil; kamera fonksiyonlarının tek imzası var';
+
+-- 146 (092): Yönetici başkasının ismini düzeltir (personel_ad_degistir).
+--      Personel ve onay bekleyen değiştiremez; isim kırpılır, 2–80 karakter;
+--      bilinmeyen kişi hata verir; eski ve yeni isim audit'e yazılır.
+--      Fonksiyon yalnızca authenticated'a açık.
+update public.profiles set rol = 'YONETICI', durum = 'ACTIVE' where id = u_yonetici;
+update public.profiles set rol = 'PERSONEL', durum = 'ACTIVE' where id in (u_personel, u_personel2);
+if to_regprocedure('public.personel_ad_degistir(uuid, text)') is null then
+  raise exception 'FAIL 146: personel_ad_degistir yok (092 çalıştırılmadı)';
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.personel_ad_degistir(u_personel2, 'Personel Değiştirdi');
+  raise exception 'FAIL 146a: Personel başkasının ismini değiştirdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_pending);
+begin
+  perform public.personel_ad_degistir(u_personel2, 'Bekleyen Değiştirdi');
+  raise exception 'FAIL 146a: onay bekleyen kullanıcı isim değiştirdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+if exists (select 1 from public.profiles where id = u_personel2 and ad_soyad like '%Değiştirdi') then
+  raise exception 'FAIL 146a: reddedilen isim yazıldı';
+end if;
+
+perform pg_temp.login(u_yonetici);
+foreach v_txt3 in array array['', '   ', 'A', repeat('x', 81)] loop
+  begin
+    perform public.personel_ad_degistir(u_personel2, v_txt3);
+    raise exception 'FAIL 146b: geçersiz isim kabul edildi: "%"', v_txt3;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+  end;
+end loop;
+begin
+  perform public.personel_ad_degistir(gen_random_uuid(), 'Kimse Yok');
+  raise exception 'FAIL 146c: bilinmeyen kişi için hata yok';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+
+select ad_soyad into v_txt from public.profiles where id = u_personel2;
+perform public.personel_ad_degistir(u_personel2, '  Ali   Veli  ');
+perform pg_temp.logout();
+if not exists (select 1 from public.profiles where id = u_personel2 and ad_soyad = 'Ali Veli') then
+  raise exception 'FAIL 146d: isim kırpılıp yazılmadı (%)',
+    (select ad_soyad from public.profiles where id = u_personel2);
+end if;
+if not exists (select 1 from public.audit_log
+                where action = 'personel_ad_degistir' and tablo = 'profiles'
+                  and row_id = u_personel2 and actor = u_yonetici
+                  and detay ->> 'eski' = v_txt and detay ->> 'yeni' = 'Ali Veli') then
+  raise exception 'FAIL 146e: isim değişikliği audit''e yazılmadı';
+end if;
+
+if has_function_privilege('anon', 'public.personel_ad_degistir(uuid, text)', 'execute')
+   or has_function_privilege('service_role', 'public.personel_ad_degistir(uuid, text)', 'execute')
+   or not has_function_privilege('authenticated', 'public.personel_ad_degistir(uuid, text)', 'execute') then
+  raise exception 'FAIL 146f: personel_ad_degistir yalnızca authenticated''a açık olmalı';
+end if;
+
+raise notice 'PASS 146: ismi yalnızca Yönetici değiştirir; kırpılır, 2–80 karakter; audit''e yazılır (092)';
 
 perform pg_temp.logout();
 raise notice '';

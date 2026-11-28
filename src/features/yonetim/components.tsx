@@ -115,9 +115,12 @@ export function donemAralik(d: Donem, ilkGun?: string, ozel?: DonemAralik | null
  * preset must NOT clear the custom range, so switching to Bugün and back to
  * the chip returns to the dates already chosen instead of an empty modal.
  */
-export function useDonem(baslangic: Donem = 'TUMU', anahtar = 'donem') {
+export function useDonem(baslangic: Donem = 'TUMU', anahtar = 'donem', gecerli: readonly Donem[] = DONEMLER) {
   // Remembered per screen (owner, 27.11): `anahtar` names the screen.
-  const [donem, setDonem] = useEkranDurumu<Donem>(`${anahtar}.donem`, baslangic, DONEMLER)
+  // `gecerli`: a screen that dropped a chip (Gişe's "30 gün", owner 28.11)
+  // passes what it still offers, so a remembered old choice falls back to
+  // `baslangic` instead of leaving no chip selected.
+  const [donem, setDonem] = useEkranDurumu<Donem>(`${anahtar}.donem`, baslangic, gecerli)
   const [ozel, setOzel] = useEkranDurumu<DonemAralik | null>(`${anahtar}.ozel`, null)
 
   const secim = useCallback((d: Donem, aralik?: DonemAralik) => {
@@ -146,6 +149,7 @@ export function DonemSecici({
   onChange,
   secenekler = VARSAYILAN_SECENEKLER,
   takvim = true,
+  takvimSatirda = false,
 }: {
   value: Donem
   ozel?: DonemAralik | null
@@ -154,6 +158,9 @@ export function DonemSecici({
   secenekler?: Exclude<Donem, 'OZEL'>[]
   /** The calendar chip for a custom range. Off for Personel (067). */
   takvim?: boolean
+  /** Gişe (owner 28.11): the calendar takes the dropped "30 gün" slot, one
+   *  equal chip in the same row; a chosen range shows as two stacked dates. */
+  takvimSatirda?: boolean
 }) {
   const [acik, setAcik] = useState(false)
   const [bas, setBas] = useState('')
@@ -224,9 +231,31 @@ export function DonemSecici({
               </button>
             )
           })}
+          {takvim && takvimSatirda && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={ozelAktif}
+              aria-label="Tarih aralığı seç"
+              onClick={ac}
+              className={[
+                'flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-chip px-3',
+                'transition-colors md:flex-none md:px-4',
+                ozelAktif ? 'bg-ink text-bg' : 'bg-field text-soft',
+              ].join(' ')}
+            >
+              <IconTakvim size={18} className="shrink-0" />
+              {ozelAktif && (
+                <span className="flex flex-col text-micro leading-tight font-medium tnum">
+                  <span>{formatTarihKisa(ozel.bas)}</span>
+                  {ozel.bit !== ozel.bas && <span>{formatTarihKisa(ozel.bit)}</span>}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
-        {takvim && (
+        {takvim && !takvimSatirda && (
           <button
             type="button"
             role="tab"

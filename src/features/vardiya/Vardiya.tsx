@@ -110,7 +110,7 @@ export default function Vardiya() {
           whoever is on it. Titling it with a person would say the opposite. */}
       <ScreenHeader
         title="Kasa"
-        subtitle="Açık vardiyanın kesesi"
+        subtitle="Açık vardiyanın kasası"
         back="/vardiya"
         right={
           yonetici ? (
@@ -319,7 +319,7 @@ export default function Vardiya() {
           const birakilanKurus =
             yonetici && birakilan.trim() !== '' ? parseTLToKurus(birakilan) : null
           if (yonetici && birakilan.trim() !== '' && birakilanKurus === null) {
-            setHata('Kesede bırakılan için geçerli bir tutar girin.')
+            setHata('Kasada bırakılan için geçerli bir tutar girin.')
             return
           }
           void kapat
@@ -404,7 +404,7 @@ export default function Vardiya() {
 
         {yonetici && (
           <Input
-            label="Kesede bırakılan (₺)"
+            label="Kasada bırakılan (₺)"
             value={birakilan}
             onChange={(e) => setBirakilan(e.target.value)}
             inputMode="decimal"
@@ -524,7 +524,7 @@ export default function Vardiya() {
             {/* No help text under these fields (owner, 2026-11-15: too much
                 to read). What each one does, for whoever changes them:
                 - Açılış nakdi (sayımdan sonra): what the next shift starts
-                  with after a counted close when Kesede bırakılan is left
+                  with after a counted close when Kasada bırakılan is left
                   empty. A hand-over (DEVIR) or a stale close carries the old
                   shift's expected cash instead (085), so this is rarely used.
                 - Kapanma eşiği: a shift open this long is closed by itself,

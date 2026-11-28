@@ -113,6 +113,22 @@ export function useSetRole() {
   })
 }
 
+/** 092: the Yönetici corrects anyone's name (personel_ad_degistir). */
+export function usePersonelAdDegistir() {
+  const invalidate = useProfilInvalidate()
+  return useMutation({
+    retry: false,
+    mutationFn: async ({ id, adSoyad }: { id: string; adSoyad: string }) => {
+      const { error } = await supabase.rpc('personel_ad_degistir', {
+        p_profile_id: id,
+        p_ad_soyad: adSoyad,
+      })
+      if (error) throw error
+    },
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetStatus() {
   const invalidate = useProfilInvalidate()
   return useMutation({

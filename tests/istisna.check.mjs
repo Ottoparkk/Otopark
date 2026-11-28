@@ -65,23 +65,23 @@ esit('başka türde tahmin okunmaz',
   okumaBilgisi(kayit({ tur: 'ACIK_BILET_YOK', yon: 'CIKIS', ham_yanit: { tahmin: '34ABC12' } })).tahmin, null)
 
 // --- kisaDurum: her tür için TEK kısa satır --------------------------------------
-esit('okunamadı', kisaDurum(kayit()), 'Plaka tam olarak okunamadı')
-esit('okunamadı, servis yok', kisaDurum(kayit({ ham_yanit: { hata: 'x' } })), 'Plaka okuma servisi çalışmıyordu')
+esit('okunamadı', kisaDurum(kayit()), 'Plaka okunamadı')
+esit('okunamadı, servis yok', kisaDurum(kayit({ ham_yanit: { hata: 'x' } })), 'Plaka okuma çalışmıyordu')
 // 077 E2: giriş kartının plakası az sonra otopark içinde okundu (kart açık kalır).
 esit('okunamadı, plaka içeride okundu',
   kisaDurum(kayit({ yon: 'ORTAK', plaka: '34ABC123',
                     ham_yanit: { sonradan_okunan: '34ABC123', sonradan_sebep: 'ICERIDE' } })),
-  'Girişte okunamadı — plaka içeride okundu')
+  'Girişte okunamadı, içeride okundu')
 esit('okunamadı, başka sonradan sebep eskisi gibi',
   kisaDurum(kayit({ yon: 'ORTAK', plaka: '34ABC123',
                     ham_yanit: { sonradan_okunan: '34ABC123', sonradan_sebep: 'BENZER_ACIK' } })),
-  'Plaka tam olarak okunamadı')
-esit('açık bilet yok', kisaDurum(kayit({ tur: 'ACIK_BILET_YOK', yon: 'CIKIS' })), 'Çıkışta açık bilet bulunamadı')
+  'Plaka okunamadı')
+esit('açık bilet yok', kisaDurum(kayit({ tur: 'ACIK_BILET_YOK', yon: 'CIKIS' })), 'Çıkan aracın açık bileti yok')
 // 054: son dört karakter tek araca da uysa kamera kapatmaz; kart bunu söyler.
-esit('çoklu eşleşme', kisaDurum(kayit({ tur: 'COKLU_ESLESME', yon: 'CIKIS' })), 'İçeride benzer plakalı bilet var')
-esit('yön belirsiz', kisaDurum(kayit({ tur: 'YON_BELIRSIZ', yon: 'ORTAK' })), 'İçerideki bir plakaya çok benziyor')
-esit('gelecek', kisaDurum(kayit({ tur: 'GELECEK' })), 'Kamera saati ileri — kabul edilmedi')
-esit('bayat', kisaDurum(kayit({ tur: 'BAYAT' })), 'Olay çok geç ulaştı')
+esit('çoklu eşleşme', kisaDurum(kayit({ tur: 'COKLU_ESLESME', yon: 'CIKIS' })), 'Birden çok bilete benziyor')
+esit('yön belirsiz', kisaDurum(kayit({ tur: 'YON_BELIRSIZ', yon: 'ORTAK' })), 'İçerideki bir araca benziyor')
+esit('gelecek', kisaDurum(kayit({ tur: 'GELECEK' })), 'Kamera saati ileri, kayıt alınmadı')
+esit('bayat', kisaDurum(kayit({ tur: 'BAYAT' })), 'Kayıt çok geç geldi')
 for (const tur of TURLER) {
   for (const yon of YONLER) {
     const s = kisaDurum(kayit({ tur, yon }))
@@ -136,13 +136,13 @@ for (const tur of TUM_TURLER) {
     }
   }
 }
-esit('tek kapı okunamadı: yön bilinmiyor', aciklama(kayit({ yon: 'ORTAK' })).includes('Girdi mi çıktı mı bilinmiyor'), true)
-esit('giriş okunamadı: Giriş aç / Kapat', aciklama(kayit()), 'Bileti yoksa plakayı yazıp Giriş aç; bileti varsa Kapat.')
+esit('tek kapı okunamadı: yön bilinmiyor', aciklama(kayit({ yon: 'ORTAK' })).includes('girdi mi çıktı mı belli değil'), true)
+esit('giriş okunamadı: Giriş aç / Kapat', aciklama(kayit()), 'Bileti yoksa plakayı yazıp Giriş aç\'a, varsa Kapat\'a basın.')
 esit('tek kapı açık bilet yok (kamera): giriş saati', aciklama(kayit({ tur: 'ACIK_BILET_YOK', yon: 'ORTAK', plaka: '34ABC123' })).includes('giriş saatini'), true)
 
 // --- tahminNotu: plaka alanındaki değer kameranın tahminiyse söylenir --------------
-esit('tahmin + güven', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12', guven: 0.624 } })), 'Alandaki plaka kameranın tahmini (%62).')
-esit('tahmin, güven yok', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12' } })), 'Alandaki plaka kameranın tahmini.')
+esit('tahmin + güven', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12', guven: 0.624 } })), 'Plaka kameranın tahmini (%62), kontrol edin.')
+esit('tahmin, güven yok', kart.tahminNotu(kayit({ ham_yanit: { tahmin: '34ABC12' } })), 'Plaka kameranın tahmini, kontrol edin.')
 esit('tahmin yok', kart.tahminNotu(kayit()), null)
 esit('kayıtta plaka varsa tahmin notu yok', kart.tahminNotu(kayit({ plaka: '34ABC123', ham_yanit: { tahmin: '34ABC12' } })), null)
 esit('başka türde tahmin notu yok', kart.tahminNotu(kayit({ tur: 'ACIK_BILET_YOK', ham_yanit: { tahmin: '34ABC12' } })), null)
@@ -180,9 +180,9 @@ const GIRISTE = kayit({ tur: 'GIRISTE_ACIK_BILET', yon: 'ORTAK', plaka: '34ABC12
 const ICERIDE = kayit({ tur: 'ICERIDE_BILETSIZ', yon: 'ORTAK', plaka: '34ABC123' })
 esit('girişte eski bilet: düğmeler', eylemler(GIRISTE), { girisAc: false, cikis: true, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('içeride biletsiz: düğmeler', eylemler(ICERIDE), { girisAc: true, cikis: false, kapat: true, girisAcSaatli: false, bileteGit: null })
-esit('girişte eski bilet: kısa durum', kisaDurum(GIRISTE), 'Girerken görüldü — eski açık bileti var')
-esit('içeride biletsiz: kısa durum', kisaDurum(ICERIDE), 'İçeride, bileti yok')
-esit('girişte eski bilet: açıklama', aciklama(GIRISTE).startsWith('Eski bileti açık'), true)
+esit('girişte eski bilet: kısa durum', kisaDurum(GIRISTE), 'Giren aracın eski bileti açık')
+esit('içeride biletsiz: kısa durum', kisaDurum(ICERIDE), 'İçerideki aracın bileti yok')
+esit('girişte eski bilet: açıklama', aciklama(GIRISTE).startsWith('Araç çıkıp döndüyse eski bileti Çıkış'), true)
 // Kamera aracı yanlışlıkla "çıktı" diye kapattıysa (054) doğru eylem eski
 // bilette "Araç çıkmadı"dır, yeni giriş değil — metin bunu söylemeli.
 esit('içeride biletsiz: yanlış çıkışta "Araç çıkmadı" söylenir', aciklama(ICERIDE).includes('Araç çıkmadı'), true)
@@ -217,7 +217,7 @@ esit('çıkmamış olabilir: çözülmüş', eylemler(CIKMAMIS(COZULDU)),
   { girisAc: false, cikis: false, kapat: false, girisAcSaatli: false, bileteGit: null })
 esit('başka türde aday bilet: bilete git yok',
   eylemler(kayit({ tur: 'YON_BELIRSIZ', yon: 'ORTAK', aday_bilet_ids: ['b-1'] })).bileteGit, null)
-esit('çıkmamış olabilir: kısa durum', kisaDurum(CIKMAMIS()), 'Çıktı sayıldı ama içeride görüldü')
+esit('çıkmamış olabilir: kısa durum', kisaDurum(CIKMAMIS()), 'Çıktı sayıldı, içeride görüldü')
 esit('çıkmamış olabilir: "Araç çıkmadı" söylenir', aciklama(CIKMAMIS()).includes('"Araç çıkmadı"'), true)
 esit('çıkmamış olabilir: plaka alanı', baslangicPlakasi(CIKMAMIS()), '34ABC123')
 
@@ -226,14 +226,14 @@ esit('çıkmamış olabilir: plaka alanı', baslangicPlakasi(CIKMAMIS()), '34ABC
 // Çıkış şeridinde ve tek kapıda araç çıkıyor olabilir: "Çıkış" düğmesi.
 const RED = (o = {}) => kayit({ tur: 'REDDEDILDI', plaka: '34ABC123',
   ham_yanit: { ret_sebebi: 'Bu plakanın zaten açık bir bileti var.' }, ...o })
-esit('reddedildi: kısa durum ret cümlesiyle', kisaDurum(RED()), 'Sunucu reddetti: Bu plakanın zaten açık bir bileti var.')
-esit('reddedildi: cümle yoksa', kisaDurum(RED({ ham_yanit: null })), 'Sunucu kaydı reddetti')
+esit('reddedildi: kısa durum ret cümlesiyle', kisaDurum(RED()), 'Sistem almadı: Bu plakanın zaten açık bir bileti var.')
+esit('reddedildi: cümle yoksa', kisaDurum(RED({ ham_yanit: null })), 'Sistem kaydı almadı')
 esit('reddedildi: uzun cümle kısalır', kisaDurum(RED({ ham_yanit: { ret_sebebi: 'x'.repeat(200) } })).length <= 100, true)
 esit('reddedildi giriş: düğmeler', eylemler(RED()), { girisAc: false, cikis: false, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('reddedildi çıkış: düğmeler', eylemler(RED({ yon: 'CIKIS' })), { girisAc: false, cikis: true, kapat: true, girisAcSaatli: false, bileteGit: null })
 esit('reddedildi tek kapı: düğmeler', eylemler(RED({ yon: 'ORTAK' })), { girisAc: false, cikis: true, kapat: true, girisAcSaatli: false, bileteGit: null })
 // Ret cümlesi durum satırında (kisaDurum); açıklama yalnızca ne yapılacağını söyler.
-esit('reddedildi giriş: açıklama', aciklama(RED()), 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın; değilse Kapat.')
+esit('reddedildi giriş: açıklama', aciklama(RED()), 'Araç içerideyse ve bileti yoksa girişini Gişe\'den açın. Değilse Kapat\'a basın.')
 esit('reddedildi tek kapı: açıklama Çıkış der', aciklama(RED({ yon: 'ORTAK' })).includes('Çıkış'), true)
 esit('reddedildi: plaka alanı okunan plakayla', baslangicPlakasi(RED()), '34ABC123')
 

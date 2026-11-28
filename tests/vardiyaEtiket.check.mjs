@@ -14,7 +14,10 @@
 import assert from 'node:assert/strict'
 import {
   gecenGunMetni,
+  gecmisGunler,
   gunEtiketi,
+  oncekiAy,
+  oncekiAyVar,
   yuzdeFark,
   islemEtiketi,
   oncekiKarsilastirma,
@@ -103,5 +106,42 @@ const gecen = {
   '2026-11-29': 'geçen pazardan',
 }
 for (const [gun, metin] of Object.entries(gecen)) assert.equal(gecenGunMetni(gun), metin, gun)
+
+// ------------------------------------------- Rapor listesi: bu ay, önceki ay
+// Sahip 28.11: liste bu ayın günleri; altta "Önceki ayı gör" bir önceki ayı
+// ekler, kaydın olduğu ilk aya kadar.
+{
+  const g = (toplam, arac) => ({ toplam, arac, onceki: 0 })
+  const m = new Map([
+    ['2026-11-26', g(10000, 3)],
+    ['2026-11-28', g(5000, 1)], // bugün: listede değil (üstte büyük kart)
+    ['2026-11-27', g(0, 0)], //    ne para ne araç: satır yok
+    ['2026-11-25', g(0, 2)], //    para yok ama araç var: satır var
+    ['2026-11-24', g(-2000, 0)], // iade: eksi toplam da satır
+  ])
+  assert.deepEqual(
+    gecmisGunler(m, '2026-11-28').map(([gun]) => gun),
+    ['2026-11-26', '2026-11-25', '2026-11-24'],
+  )
+  assert.deepEqual(gecmisGunler(undefined, '2026-11-28'), [])
+  // Geçmiş bir ayın bütün günleri (bugün içinde değil).
+  assert.deepEqual(
+    gecmisGunler(new Map([['2026-10-01', g(1, 1)], ['2026-10-31', g(1, 1)]]), '2026-11-28').map(([x]) => x),
+    ['2026-10-31', '2026-10-01'],
+  )
+}
+
+assert.equal(oncekiAy('2026-11'), '2026-10')
+assert.equal(oncekiAy('2026-01'), '2025-12')
+assert.equal(oncekiAy('2026-10'), '2026-09')
+
+// Gösterilen en eski ay ilk kaydın ayıysa ya da ondan eskiyse düğme yok.
+assert.equal(oncekiAyVar('2026-11', '2026-09-14'), true)
+assert.equal(oncekiAyVar('2026-10', '2026-09-14'), true)
+assert.equal(oncekiAyVar('2026-09', '2026-09-14'), false)
+assert.equal(oncekiAyVar('2026-08', '2026-09-14'), false)
+assert.equal(oncekiAyVar('2026-01', '2025-12-31'), true)
+// İlk gün henüz bilinmiyor: düğme görünür (sorulunca boş ay "kayıt yok" der).
+assert.equal(oncekiAyVar('2026-11', undefined), true)
 
 console.log('vardiyaEtiket.check: tamam')

@@ -15,21 +15,38 @@ import type { VardiyaRaporuBilet, VardiyaRaporuIslem } from './api'
 
 export const kisaTL = (kurus: number) => formatTL(kurus, { decimals: 0 })
 
+/**
+ * Icon-tile colours of the report rows (owner 28.11: "give icons colour to
+ * better differentiate them"). One map, so a row has the same colour in the
+ * shift report and the day report.
+ */
+export const SATIR_RENK = {
+  kasa: 'bg-nakit-soft text-nakit',
+  giren: 'bg-accent-soft text-accent',
+  cikan: 'bg-kart-soft text-kart',
+  dikkat: 'bg-warn-soft text-warn',
+  iceride: 'bg-havale-soft text-havale',
+  onay: 'bg-mor-soft text-mor',
+} as const
+
 /** One summary row: icon, label, value, and an arrow when it opens something. */
 export function Satir({
   ikon,
   etiket,
   deger,
   onClick,
+  renk = 'bg-field text-soft',
 }: {
   ikon: ReactNode
   etiket: ReactNode
   deger: ReactNode
   onClick?: () => void
+  /** The icon tile's colours — one of SATIR_RENK. */
+  renk?: string
 }) {
   const ic = (
     <>
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-field bg-field text-soft">
+      <span className={`flex size-9 shrink-0 items-center justify-center rounded-field ${renk}`}>
         {ikon}
       </span>
       <span className="min-w-0 flex-1 truncate text-body text-ink">{etiket}</span>
