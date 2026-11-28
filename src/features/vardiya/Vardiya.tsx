@@ -5,7 +5,6 @@ import {
   EmptyState,
   Input,
   ScreenHeader,
-  Select,
 } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -21,7 +20,6 @@ import {
 import { useAyarlar } from '../gise/api'
 import { useAyarGuncelle } from '../yonetim/api'
 import {
-  SAAT_SECENEKLERI,
   vardiyaAyarBaslangic,
   vardiyaAyarHatasi,
   vardiyaAyarYamasi,
@@ -82,6 +80,9 @@ export default function Vardiya() {
   const [acilisNakit, setAcilisNakit] = useState('0')
   const [sayilan, setSayilan] = useState('')
   const [notlar, setNotlar] = useState('')
+  // 085: Yönetici only — what stays in the pouch for the next shift, which
+  // opens the moment this one closes. Empty = the Açılış nakdi setting.
+  const [birakilan, setBirakilan] = useState('')
   const [hata, setHata] = useState<string | null>(null)
   const [sonuc, setSonuc] = useState<{
     /** False = the count became a request; the till is still open. */
@@ -108,8 +109,9 @@ export default function Vardiya() {
       {/* Not the operator's name any more: one drawer, one shift, shared by
           whoever is on it. Titling it with a person would say the opposite. */}
       <ScreenHeader
-        title="Vardiya"
-        subtitle="Ortak kasa"
+        title="Kasa"
+        subtitle="Açık vardiyanın kesesi"
+        back="/vardiya"
         right={
           yonetici ? (
             // Icon only, at the owner's request; the label lives in
@@ -221,6 +223,7 @@ export default function Vardiya() {
                     : '',
                 )
                 setNotlar(duzeltme ? (acik?.talep_notlar ?? '') : '')
+                setBirakilan('')
                 setHata(null)
                 setKapatModal(true)
               }}
@@ -313,8 +316,18 @@ export default function Vardiya() {
             setHata('Sayılan nakdi girin.')
             return
           }
+          const birakilanKurus =
+            yonetici && birakilan.trim() !== '' ? parseTLToKurus(birakilan) : null
+          if (yonetici && birakilan.trim() !== '' && birakilanKurus === null) {
+            setHata('Kesede bırakılan için geçerli bir tutar girin.')
+            return
+          }
           void kapat
-            .mutateAsync({ sayilan: sayilanKurus, notlar: notlar.trim() || null })
+            .mutateAsync({
+              sayilan: sayilanKurus,
+              notlar: notlar.trim() || null,
+              birakilan: birakilanKurus,
+            })
             .then((r) => {
               setKapatModal(false)
               setSonuc({
@@ -387,6 +400,17 @@ export default function Vardiya() {
               </span>
             </div>
           </div>
+        )}
+
+        {yonetici && (
+          <Input
+            label="Kesede bırakılan (₺)"
+            value={birakilan}
+            onChange={(e) => setBirakilan(e.target.value)}
+            inputMode="decimal"
+            placeholder="Boşsa ayardaki açılış nakdi"
+            hint="Yeni vardiya hemen bu tutarla açılır."
+          />
         )}
 
         <Input
@@ -499,33 +523,20 @@ export default function Vardiya() {
           <>
             {/* No help text under these fields (owner, 2026-11-15: too much
                 to read). What each one does, for whoever changes them:
-                - Otomatik açılış saati: the till shift opens by itself at this
-                  hour. Off, a shift nobody opened means the cash collected
-                  meanwhile shows up in no count.
-                - Açılış nakdi: the change in the drawer of an automatically
-                  opened shift. Nobody counts it, so this figure is used; if it
-                  is wrong every close shows that much difference.
+                - Açılış nakdi (sayımdan sonra): what the next shift starts
+                  with after a counted close when Kesede bırakılan is left
+                  empty. A hand-over (DEVIR) or a stale close carries the old
+                  shift's expected cash instead (085), so this is rarely used.
                 - Kapanma eşiği: a shift open this long is closed by itself,
                   without a count, difference left empty. 4-72 hours; the
-                  validation message (vardiyaAyar.ts) states the range. */}
-            <Select
-              label="Otomatik açılış saati"
-              value={ayarTaslak.otoSaat}
-              onChange={(e) => setAyarTaslak({ ...ayarTaslak, otoSaat: e.target.value })}
-            >
-              <option value="">Kapalı — elle açılır</option>
-              {SAAT_SECENEKLERI.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
+                  validation message (vardiyaAyar.ts) states the range.
+                085: no automatic opening hour any more — a shift is always
+                open and each worker's hours live on the Personel screen. */}
             <Input
-              label="Otomatik açılış nakdi (₺)"
+              label="Açılış nakdi (₺)"
               value={ayarTaslak.acilisNakit}
               onChange={(e) => setAyarTaslak({ ...ayarTaslak, acilisNakit: e.target.value })}
               inputMode="decimal"
-              disabled={!ayarTaslak.otoSaat}
             />
             <Input
               label="Vardiya kapanma eşiği (saat)"

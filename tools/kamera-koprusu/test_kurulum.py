@@ -2856,6 +2856,37 @@ assert kopru.kanit_base64(img) is not None
 """)
 
 
+def test_olay_arac_esigi_kart_olmayanlar() -> None:
+    """
+    1.4.7 F7 (sahibin kararı 28.11): plakasız şu olaylar kart OLMAZ (kayıt
+    satırı ve klip kalır): motosiklet sınıfı (26–28.11'de 4 kartın 4'ü
+    polis), kapıda tek görünümde kaybolan parça, kapıda hiç görülmeyen
+    "çıkış". Plakası okunan / tahmin edilen her olay eskisi gibi gider —
+    eşik yalnızca plakasız kararda kullanılır.
+    """
+    kod, cikti = _kopru_calistir(r"""
+import types, arac
+B = types.SimpleNamespace(esik=0.35, gecis_esik=0.60, moto_esik=0.70, kart_esik=0.75)
+def olay(tur, sinif=None, gorunum=5, kapida_gorulmedi=False):
+    iz = types.SimpleNamespace(dogumda_komsu=False, gorunum_no=gorunum,
+                               kapida_gorulmedi=kapida_gorulmedi,
+                               gecis=types.SimpleNamespace(arac_sinif=sinif))
+    return types.SimpleNamespace(tur=tur, iz=iz)
+inf = float('inf')
+e = kopru.olay_arac_esigi
+for tur in ('GIRDI', 'CIKTI', 'KAPIDA_KAYBOLDU', 'TEK_KARE', 'ESKI_GIRDI'):
+    assert e(olay(tur, arac.MOTOSIKLET), B) == inf, tur
+    assert e(olay(tur), B) < inf, tur
+assert e(olay('KAPIDA_KAYBOLDU', gorunum=1), B) == inf
+assert e(olay('KAPIDA_KAYBOLDU', gorunum=2), B) < inf
+assert e(olay('TEK_KARE', gorunum=1), B) < inf
+assert e(olay('CIKTI', kapida_gorulmedi=True), B) == inf
+assert e(olay('GIRDI', kapida_gorulmedi=True), B) < inf
+print('TAMAM')
+""")
+    assert kod == 0 and "TAMAM" in cikti, cikti
+
+
 def test_kanit_siniri_sunucuyla_ayni() -> None:
     """
     Köprü sınırı sunucunun sınırıyla AYNI sayı olmalı: köprü daha büyüğüne izin
@@ -3287,19 +3318,19 @@ def test_kalp_bilgisi_sayilari() -> None:
     import kopru
     import gunluk
     import paketle
-    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.6", (gunluk.KOPRU_SURUMU, paketle.SURUM)
+    assert gunluk.KOPRU_SURUMU == paketle.SURUM == "1.4.7", (gunluk.KOPRU_SURUMU, paketle.SURUM)
     simdi = datetime(2026, 11, 18, 10, 10, tzinfo=timezone.utc)
     b = kopru.kalp_bilgisi(model_kare=43, sure_sn=5.0, izleme=True, istendi=True,
                            kume="GPU · YOLO11s", kuyruk=(2, "2026-11-18T10:00:00+00:00"),
                            simdi=simdi, reddedilen=1, saat_farki=-2.44)
-    assert b == {"surum": "1.4.6", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
+    assert b == {"surum": "1.4.7", "fps": 8.6, "kuyruk": 2, "kuyruk_en_eski_sn": 600,
                  "takip": "acik", "kume": "GPU · YOLO11s", "reddedilen": 1,
                  "saat_farki_sn": -2.4}, b
     # İzleme çalışırken kapandı: kare sayısı anlamsız, gönderilmez.
     b = kopru.kalp_bilgisi(model_kare=0, sure_sn=5.0, izleme=False, istendi=True,
                            kume="CPU · YOLOX-tiny", kuyruk=(0, None), simdi=simdi,
                            reddedilen=0, saat_farki=None)
-    assert b == {"surum": "1.4.6", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
+    assert b == {"surum": "1.4.7", "kuyruk": 0, "kuyruk_en_eski_sn": 0, "takip": "kapandi",
                  "kume": "CPU · YOLOX-tiny", "reddedilen": 0}, b
     # Ayarla kapalı (TAKIP=0), ilk kalp (süre yok), bozuk zaman, uzun küme adı.
     b = kopru.kalp_bilgisi(model_kare=5, sure_sn=0.0, izleme=False, istendi=False,

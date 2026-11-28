@@ -734,6 +734,11 @@ def olay_govdesi(g: okuma.Gonderim, kutu) -> dict:
         # (yalnızca benzeri yoksa), içeride okunan plakayı giriş kartına bağlar.
         if g.hareket:
             govde["hareket"] = g.hareket
+    # 1.4.7 F4: aynı izin giriş kartı (PLAKA da kart da). Sunucu 090 kartı
+    # bulur; eski sunucu gövdeyi `ham` olarak saklar, kararı değişmez.
+    # Yoksa anahtar hiç yazılmaz.
+    if g.giris_islem_id:
+        govde["giris_islem_id"] = g.giris_islem_id
     if kutu is not None and g.kirpik is not None:
         kanit = kanit_base64(g.kirpik)
         if kanit is not None:
@@ -1343,6 +1348,9 @@ AYNI_IZ_SN = 120.0
 # 1.4.6 E2 (sahibin kararı 25.11): ertelenen içeride sorusu en çok bu kadar
 # bekler; sonra kapıdaki karar beklenmeden gider.
 ICERIDE_ERTELEME_SN = 120.0
+# 1.4.7 F5: içeride sorusu son kapı olayından en az bu kadar sonra gider
+# (bekletilen kart varken hiç gitmez; ICERIDE_ERTELEME_SN tavanı aynen).
+ICERIDE_KAPI_SN = 5.0
 PLAKA_OLAY_ADLARI = {
     "GIRDI": "ARAÇ GİRDİ", "CIKTI": "ARAÇ ÇIKTI",
     "ESKI_GIRDI": "ARAÇ KAPIDAN GEÇTİ (açılışta kapıdaydı, yönü bilinmez)",
@@ -1360,7 +1368,16 @@ def olay_arac_esigi(olay: takip.Olay, bulucu) -> float:
     canlı döngü ve `--plaka` ikisi de buradan. 1.4.3: izin en iyi kutusunun
     sınıfı ve bulucunun motosiklet eşiği (YOLO11s 0.70 — 1.4.4, her plakasız
     olayda; tiny'de yok).
+    1.4.7 F7 (sahibin kararı 28.11): plakasız şunlar hiç kart olmaz (kayıt
+    satırı ve klip kalır): motosiklet sınıfı iz (26–28.11'de 4 kartın 4'ü
+    polis), kapıda tek görünümde kaybolan parça, kapıda hiç görülmeyen çıkış.
+    Plakası okunan ya da tahmin edilen olay bu eşiğe bakmaz, eskisi gibi gider.
     """
+    iz = olay.iz
+    if (getattr(iz.gecis, "arac_sinif", None) == arac.MOTOSIKLET
+            or (olay.tur == "KAPIDA_KAYBOLDU" and iz.gorunum_no < 2)
+            or (olay.tur == "CIKTI" and iz.kapida_gorulmedi)):
+        return float("inf")
     return okuma.iz_arac_esigi(olay.tur, bulucu.esik, bulucu.gecis_esik,
                                komsu=olay.iz.dogumda_komsu,
                                sinif=getattr(olay.iz.gecis, "arac_sinif", None),
@@ -2082,9 +2099,13 @@ def main() -> None:
                 print(f"[i] {gunluk.AYNI_IZ_DONDU_ISARETI} (iz {olay.iz.id})", flush=True)
             if g.tur == "PLAKA" and olay.tur == "GIRDI":
                 giris_izleri[olay.iz.id] = (g.plaka, simdi)
+            if olay.iz.giris_karti:                          # 1.4.7 F4
+                g = g._replace(giris_islem_id=olay.iz.giris_karti)
             kimlik = araci_gonder(g, kutu)
             if kimlik is not None:
                 kimlikler.append(kimlik)
+                if olay.tur == "GIRDI" and g.tur == "OKUNAMADI" and not olay.iz.giris_karti:
+                    olay.iz.giris_karti = kimlik             # 1.4.7 F4
                 if g.tur != "PLAKA" and p_ayar["plaka_kirpik"]:    # 1.4.6 L
                     kirpik_kaydet(olay, simdi, kimlik)
             son_gonderilen.append(okuma.gonderim_kaydi(g, simdi))
@@ -2143,10 +2164,19 @@ def main() -> None:
         giren araç kart olduysa soru kartın ardından gider (sunucu bağlar).
         """
         for olay, ilk in list(ertelenen_iceride):
-            if (simdi - ilk > ICERIDE_ERTELEME_SN or izci is None
-                    or not izci.giris_bekliyor(haric=olay.iz)):
+            if simdi - ilk > ICERIDE_ERTELEME_SN or not kapi_bekliyor(olay, simdi):
                 ertelenen_iceride.remove((olay, ilk))
                 iceride_sor(olay, simdi, ertelendi=True)
+
+    def kapi_bekliyor(olay: takip.Olay, simdi: float) -> bool:
+        """
+        İçeride sorusu beklesin mi: 1.4.6 E2 kapıda karar bekleyen canlı iz;
+        1.4.7 F5 Gecitci'nin bekletilen kartı ya da ICERIDE_KAPI_SN içinde
+        bir kapı olayı (kopan parçanın kartı sorudan önce gitsin).
+        """
+        if izci is not None and izci.giris_bekliyor(haric=olay.iz):
+            return True
+        return gecitci.kapi_yakin(simdi, ICERIDE_KAPI_SN)
 
     def iceride_sor(olay: takip.Olay, simdi: float, ertelendi: bool = False) -> None:
         """
@@ -2164,7 +2194,8 @@ def main() -> None:
         gonderimler, _ = okuma.iz_karari(
             olay.iz.gecis, olay_zamani=olay.zaman, son_gonderilen=son_gonderilen, simdi=simdi,
             arac_gecis_esik=float("inf"), personele=False, iceride=True)
-        plakalar = [g._replace(hareket="ICERIDE") for g in gonderimler if g.tur == "PLAKA"]
+        plakalar = [g._replace(hareket="ICERIDE", giris_islem_id=olay.iz.giris_karti)
+                    for g in gonderimler if g.tur == "PLAKA"]             # 1.4.7 F4
         if not plakalar:
             if ertelendi:
                 print(f"[i] {gunluk.AYRILIS_ISARETI} — ertelenen içeride sorusu "
@@ -2172,7 +2203,7 @@ def main() -> None:
             return
         # 1.4.6 E2 (sahibin kararı 25.11): kapıdan giren aracın kararı
         # bekleniyorsa soru ertelenir (ertelenenleri_sor).
-        if not ertelendi and izci is not None and izci.giris_bekliyor(haric=olay.iz):
+        if not ertelendi and kapi_bekliyor(olay, simdi):
             print(f"[i] {gunluk.ICERIDE_ERTELENDI_ISARETI} (iz {olay.iz.id})", flush=True)
             ertelenen_iceride.append((olay, simdi))
             return

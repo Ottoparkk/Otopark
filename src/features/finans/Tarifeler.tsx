@@ -67,6 +67,8 @@ export default function Tarifeler() {
   const [sonraki, setSonraki] = useState('')
   const [tavan, setTavan] = useState('')
   const [kayip, setKayip] = useState('')
+  // 078: oto yıkama price; empty = no wash offered.
+  const [yikama, setYikama] = useState('')
   const [kademeler, setKademeler] = useState<KademeSatiri[]>([])
   const [hata, setHata] = useState<string | null>(null)
   const [silinecek, setSilinecek] = useState<Tarife | null>(null)
@@ -81,6 +83,7 @@ export default function Tarifeler() {
     setSonraki(kurusToInput(t.sonraki_saat_kurus))
     setTavan(kurusToInput(t.gunluk_tavan_kurus))
     setKayip(kurusToInput(t.kayip_bilet_kurus))
+    setYikama(t.yikama_kurus ? kurusToInput(t.yikama_kurus) : '')
     setKademeler(kademeBaslangic(t.kademeler, PARA))
     setHata(null)
   }
@@ -155,6 +158,7 @@ export default function Tarifeler() {
                     k="Kayıp bilet"
                     v={t.kayip_bilet_kurus > 0 ? formatTL(t.kayip_bilet_kurus) : 'tanımsız'}
                   />
+                  <Satir k="Oto yıkama" v={t.yikama_kurus ? formatTL(t.yikama_kurus) : 'yok'} />
                 </dl>
               </button>
             </Card>
@@ -247,6 +251,16 @@ export default function Tarifeler() {
           const tavK = saatlikMi ? parseTLToKurus(tavan || '0') : 0
           const sabitK = sabitMi ? parseTLToKurus(sabit) : 0
           const kayK = parseTLToKurus(kayip || '0')
+          // 078: empty = no wash; otherwise a positive amount.
+          const yikK = yikama.trim() === '' ? null : parseTLToKurus(yikama)
+          if (yikK !== null && yikK <= 0) {
+            setHata('Oto yıkama ücreti sıfırdan büyük olmalı ya da boş bırakılmalı.')
+            return
+          }
+          if (yikama.trim() !== '' && yikK === null) {
+            setHata('Tutarları geçerli girin (örn. 60 ya da 60,50).')
+            return
+          }
           const ucD = Number(ucretsiz)
 
           if (ilkK === null || sonK === null || tavK === null || kayK === null || sabitK === null) {
@@ -283,6 +297,7 @@ export default function Tarifeler() {
               gunluk_tavan_kurus: tavK,
               kayip_bilet_kurus: kayK,
               kademeler: kademeliMi ? kademeListesi(kademeler, PARA) : null,
+              yikama_kurus: yikK,
             })
             .then(() => setDuzenlenen(null))
             .catch((e) => setHata(rpcErrorText(e, 'Tarife güncellenemedi.')))
@@ -439,6 +454,13 @@ export default function Tarifeler() {
           onChange={(e) => setKayip(e.target.value)}
           inputMode="decimal"
           hint="0 = kapalı"
+        />
+        <Input
+          label="Oto yıkama ücreti (₺)"
+          value={yikama}
+          onChange={(e) => setYikama(e.target.value)}
+          inputMode="decimal"
+          hint="Boş bırakılırsa yıkama düğmesi görünmez."
         />
       </FormModal>
     </div>

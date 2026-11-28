@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import type { AsimOnizleme } from './asim'
 import { yerleriSirala } from '../../lib/yerkodu'
 import { compressEvidence, fotoYolu } from '../../lib/image'
 import { normalizePlaka } from '../../lib/plaka'
@@ -88,6 +89,12 @@ export function useAktifTarifeler() {
     },
     staleTime: 5 * 60_000,
   })
+}
+
+/** 078: the current oto yıkama price, or null when the tariff offers none. */
+export function useYikamaUcreti(): number | null {
+  const { data } = useAktifTarifeler()
+  return data?.[0]?.yikama_kurus ?? null
 }
 
 export function useParkYerleri() {
@@ -343,19 +350,27 @@ export function useUcretOnizleme(bilet: AcikBilet | Bilet | null | undefined) {
   return useQuery({
     // giris_at is part of the key: a corrected entry time (046) must re-price
     // at once rather than show the old fee until the next 30-second tick.
-    queryKey: ['ucret', bilet?.id, bilet?.giris_at],
+    // yikama_kurus too (078): switching the wash re-prices at once.
+    // 080: the deal's end and "extra time added" re-price at once too.
+    queryKey: [
+      'ucret',
+      bilet?.id,
+      bilet?.giris_at,
+      bilet?.yikama_kurus ?? null,
+      bilet?.anlasma_bitis ?? null,
+      bilet?.anlasma_fazla_at ?? null,
+      // 082: a decision on the first-tier cap re-prices at once.
+      (bilet as Bilet | null | undefined)?.asim_karar ?? null,
+    ],
     enabled: Boolean(bilet),
     queryFn: async (): Promise<number> => {
-      // A subscriber's stay is free, and the RPC would price it as if it
-      // were not. bilet_kapat applies the same rule server-side.
-      if (bilet!.abonman_id) return 0
-      const { data, error } = await supabase.rpc('ucret_hesapla', {
-        p_giris: bilet!.giris_at,
-        p_cikis: new Date().toISOString(),
-        p_tarife_id: bilet!.tarife_id,
+      // 078: bilet_ucret_onizle = bilet_ucreti(ticket, now()) — parking (0 for
+      // an abonman) + oto yıkama, the very function bilet_kapat charges with.
+      const { data, error } = await supabase.rpc('bilet_ucret_onizle', {
+        p_bilet_id: bilet!.id,
       })
       if (error) throw error
-      return (data as number) ?? 0 // rpc -> scalar integer
+      return (data as number | null) ?? 0 // rpc -> scalar integer (null once closed)
     },
     // Re-price every 30s so a car sitting at the barrier does not show a
     // number that quietly goes stale while the operator hunts for change.
@@ -707,6 +722,134 @@ export function useBiletUcretsizCikis() {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
       void qc.invalidateQueries({ queryKey: ['cikan_biletler'] })
+    },
+  })
+}
+
+/**
+ * 078: switch oto yıkama on / off on an OPEN ticket. The server takes the
+ * price from the tariff and locks it onto the ticket; the client sends only
+ * on/off. Never retried: a failure is told, not repeated.
+ */
+export function useBiletYikama() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: { bilet_id: string; acik: boolean }): Promise<number | null> => {
+      const { data, error } = await supabase.rpc('bilet_yikama', {
+        p_bilet_id: girdi.bilet_id,
+        p_acik: girdi.acik,
+      })
+      if (error) throw error
+      return (data as number | null) ?? null
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['ucret', girdi.bilet_id] })
+    },
+  })
+}
+
+/**
+ * 080: set, change or remove (kurus null) the agreed price on an OPEN ticket.
+ * The server counts the time from entry and notifies the Yönetici.
+ */
+export function useBiletAnlasma() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: { bilet_id: string; kurus: number | null; saat: number | null }) => {
+      const { error } = await supabase.rpc('bilet_anlasma', {
+        p_bilet_id: girdi.bilet_id,
+        p_kurus: girdi.kurus,
+        p_saat: girdi.saat,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['ucret', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['fazla', girdi.bilet_id] })
+    },
+  })
+}
+
+/** 080: "Fazla süreyi ekle" — staff choose to charge the time past the deal. */
+export function useAnlasmaFazla() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (bilet_id: string) => {
+      const { error } = await supabase.rpc('bilet_anlasma_fazla', { p_bilet_id: bilet_id })
+      if (error) throw error
+    },
+    onSuccess: (_d, bilet_id) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['ucret', bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['fazla', bilet_id] })
+    },
+  })
+}
+
+/** 080: the extra time's price (tariff from the deal's end to now), for the button. */
+export function useFazlaOnizleme(bilet: Bilet | null | undefined, aktif: boolean) {
+  return useQuery({
+    queryKey: ['fazla', bilet?.id, bilet?.anlasma_bitis ?? null, bilet?.anlasma_fazla_at ?? null],
+    enabled: Boolean(bilet) && aktif,
+    queryFn: async (): Promise<number> => {
+      const { data, error } = await supabase.rpc('bilet_fazla_onizle', { p_bilet_id: bilet!.id })
+      if (error) throw error
+      return (data as number | null) ?? 0
+    },
+    refetchInterval: 30_000,
+    staleTime: 0,
+  })
+}
+
+/**
+ * 082: the first tier and the full tariff price, when the stay is past the
+ * first tier. null = no overrun (or a type the cap does not apply to).
+ */
+export function useAsimOnizleme(bilet: Bilet | null | undefined, aktif: boolean) {
+  return useQuery({
+    queryKey: ['asim', bilet?.id, bilet?.giris_at, bilet?.cikis_at ?? null, bilet?.asim_karar ?? null],
+    enabled: Boolean(bilet) && aktif,
+    queryFn: async (): Promise<AsimOnizleme | null> => {
+      const { data, error } = await supabase.rpc('bilet_asim_onizle', { p_bilet_id: bilet!.id })
+      if (error) throw error
+      const satir = (data as AsimOnizleme[] | null)?.[0]
+      return satir ?? null
+    },
+    // An open ticket can cross the first tier while the screen is open.
+    refetchInterval: bilet?.cikis_at ? false : 30_000,
+    staleTime: 0,
+  })
+}
+
+/** 082: "Onayla" (full tariff price) or "İlk kademe kalsın". Once per ticket. */
+export function useAsimKarar() {
+  const invalidate = useGiseInvalidate()
+  const qc = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async (girdi: { bilet_id: string; tam: boolean }) => {
+      const { error } = await supabase.rpc('bilet_asim_karar', {
+        p_bilet_id: girdi.bilet_id,
+        p_tam: girdi.tam,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, girdi) => {
+      invalidate()
+      void qc.invalidateQueries({ queryKey: ['bilet', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['ucret', girdi.bilet_id] })
+      void qc.invalidateQueries({ queryKey: ['asim', girdi.bilet_id] })
     },
   })
 }

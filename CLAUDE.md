@@ -72,6 +72,14 @@ bridge is Python, in `tools/kamera-koprusu/`.
   the exit.
 - The camera closes a ticket only unpaid (054); collecting is always a
   person (`bilet_tahsil`), and every collection waits in Onay.
+- Single gate, 090 (owner 28.11): an exit **guess** closes nothing
+  (`kamera_tahmin_cikis` returns null). A sure entry (GIRDI) with an old open
+  ticket closes it unpaid at its last inside sighting (else its own entry
+  time), notes it, notifies the Yönetici and opens a new ticket. A plateless
+  entry card linked to a later sure plate (bridge `giris_islem_id`, else the
+  single exact-guess card in 10 h, else 077 E2's 15-min card inside) opens
+  the ticket from the card's time; a car seen inside with no ticket gets one,
+  marked "girişi görülmedi". No new `ICERIDE_BILETSIZ` cards.
 
 **Migrations.**
 - Numbered, run by hand in the Supabase SQL editor, in order. There is no

@@ -461,6 +461,23 @@ etmez, yalnızca "Kapıda" işareti). Kamerayı araçların **geçtiği** noktay
 çevirin; sıra beklenen ya da park edilen bir yeri hariç alanla dışarıda
 bırakın.
 
+**1.4.7 (28.11 teşhisi, sunucu 090 ile):**
+- **F1** — eşik altı okumanın tahmin güveni iki kırpıntının **düşüğü** (teşhis
+  satırı gibi); bir izde iki emin plaka varsa kart **güven taşımaz**. 090 ile
+  çıkış tahmini hiçbir bileti kapatmaz (077 D kapandı: 26–28.11'de iki kez
+  çalıştı, ikisi de yanlıştı).
+- **F4** — plakasız GİRDİ kartı açan izin sonraki gönderimleri (çıkış, içeride
+  sorusu) o kartın kimliğini taşır (`giris_islem_id`). 090: bilet kartın
+  saatinden açılır, kart çözülür; çıkışta açılıp kapanır.
+- **F5** — içeride sorusu son kapı olayından 5 sn sonra, Gecitci'nin bekleyen
+  kartı varken hiç gitmez (en çok 120 sn); bir karenin kapı olayları içeride
+  olaylarından önce ele alınır. Kopan parçanın kartı sorudan önce gider.
+- **F7** — plakasız şunlar kart açmaz (kayıt satırı ve klip kalır): motosiklet
+  sınıfı iz, kapıda tek görünümde kaybolan parça, kapıda görülmeyen çıkış.
+  Plakası okunan ya da tahmin edilen her olay eskisi gibi gider.
+- **F8** — ele alınmış bir ÇIKTI kararının kutusunda 25 sn içinde doğan, en çok
+  4 görünümlük plakasız GİRDİ o çıkışın ikizidir: kart gitmez, klip "emildi".
+
 **1.4.6 (24.11 teşhisi, sunucu 077 ile):**
 - **A** — kapıdan GİRDİ / ÇIKTI olayı, az önceki **içeride sorusuna** (ICERIDE
   kaydı) 60 sn kuralıyla takılmaz: içeride sorusu bilet açıp kapatmaz, ardından

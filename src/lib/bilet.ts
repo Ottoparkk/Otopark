@@ -41,12 +41,13 @@ export function biletBorcu(b: Bilet): number {
  * floored at 0; an abonman stays free, as `bilet_kapat` makes it.
  */
 export function gosterilenUcret(
-  b: Pick<Bilet, 'durum' | 'ucret_kurus' | 'indirim_kurus' | 'abonman_id'>,
+  b: Pick<Bilet, 'durum' | 'ucret_kurus' | 'indirim_kurus' | 'abonman_id' | 'yikama_kurus'>,
   canliUcretKurus: number | null | undefined,
 ): number | null {
   if (b.durum === 'IPTAL') return null
   if (b.durum === 'KAPALI') return b.ucret_kurus - b.indirim_kurus
-  if (b.abonman_id) return 0
+  // 078: parking is free for a subscriber; an oto yıkama is not.
+  if (b.abonman_id) return b.yikama_kurus ?? 0
   if (canliUcretKurus == null) return null
   return Math.max(0, canliUcretKurus - b.indirim_kurus)
 }

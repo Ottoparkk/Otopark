@@ -12,6 +12,8 @@ import {
 } from '../components/ui/icons'
 import { useOkunmamisSayisi } from '../features/settings/api'
 import { CekYenile } from '../components/ui/CekYenile'
+import { useKaydirmaHafizasi } from './useKaydirmaHafizasi'
+import { TerminalSeridi } from '../features/terminal/TerminalSeridi'
 
 interface NavItem {
   to: string
@@ -32,15 +34,20 @@ export function AppShell() {
   const yonetici = isYonetici(profile)
   // Every role since 045 (Personel is told about unread plates too).
   const { data: okunmamis = 0 } = useOkunmamisSayisi(true)
+  // Back lands where the list was (owner, 27.11).
+  useKaydirmaHafizasi()
 
   const items: NavItem[] = [
     // One slot, not three: Giriş, Çıkış and the vehicle list are modes of
     // the same page now. No `end`, so /gise/giris and /gise/cikis keep the
     // tab lit instead of dropping the highlight the moment a mode is picked.
     { to: '/gise', label: 'Gişe', Icon: IconAraba },
-    { to: '/vardiya', label: 'Vardiya', Icon: IconVardiya },
+    // 085 (owner, 28.11): shifts run themselves — the PIN hand-over on the
+    // terminal is the shift change — so Personel no longer open or count
+    // anything. Vardiya is the Yönetici's (count, settings, report).
+    ...(yonetici ? [{ to: '/vardiya', label: 'Vardiya', Icon: IconVardiya }] : []),
     // 062 (owner, 2026-11-15): Personel follow and collect abonmans, right
-    // after Vardiya. The Yönetici keeps it in the Yönetim menu (owner's
+    // after Gişe. The Yönetici keeps it in the Yönetim menu (owner's
     // choice), so their row stays at four.
     ...(yonetici ? [] : [{ to: '/abonman', label: 'Abonman', Icon: IconAbonman }]),
     // Personel only, and not out of thrift: a Yönetici reaches Profil from
@@ -105,6 +112,8 @@ export function AppShell() {
 
       {/* ---------------------------------------------------------- body */}
       <main className="mx-auto w-full max-w-[1100px] pb-[calc(72px+env(safe-area-inset-bottom))] md:px-6 md:pb-10">
+        {/* Shared handheld only (084): who holds the shift + Devral. */}
+        <TerminalSeridi />
         <Outlet />
       </main>
 

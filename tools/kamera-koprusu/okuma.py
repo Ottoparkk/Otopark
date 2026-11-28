@@ -477,7 +477,9 @@ def plakalari_yaz(gecis: Gecis, kirpik: np.ndarray, zaman, gorunum, olcumler: li
             # 1.4.1: iki kırpıntının da okuduğu her metin (birleşik kararda rakip).
             gecis.oylama.gorulen([m for m, _ in okunan])
             if emin is None:
-                gecis.oylama.tahmin(okunan[0][0], okunan[0][1])
+                # 1.4.7 F1: tahmin güveni iki kırpıntının DÜŞÜĞÜ (teşhis satırı
+                # gibi) — 28.11 12:36 teşhis 0.88, kart > 0.90 gitmişti.
+                gecis.oylama.tahmin(okunan[0][0], min(e for _, e in okunan))
                 # 1.4.1: iki kırpıntı AYNI metni, ikisi de ≥ YARIM_ESIK: yarım oy.
                 if (len(okunan) == 2 and okunan[0][0] == okunan[1][0]
                         and min(okunan[0][1], okunan[1][1]) >= plaka.YARIM_ESIK):
@@ -901,6 +903,10 @@ class Gonderim(NamedTuple):
     # 1.4.6 K (sahibin kararı 25.11): AYNI iz az önce bu plakayla GİRDİ diye
     # gönderildi, şimdi ÇIKTI — köprü ekler; sunucu yeni bileti kapatır (077).
     ayni_iz_dondu: bool = False
+    # 1.4.7 F4 (sahibin kararı 28.11): AYNI izin önceki plakasız GİRDİ
+    # kartının islem_id'si — köprü ekler; sunucu (090) bileti kartın
+    # saatinden açar ve kartı çözer.
+    giris_islem_id: str | None = None
 
 
 def gonderim_kaydi(g: Gonderim, simdi: float) -> tuple[str | None, float, bool, str | None]:
@@ -1175,7 +1181,9 @@ def iz_karari(gecis: Gecis, *, olay_zamani, son_gonderilen: list, simdi: float,
     if len(k.eminler) >= 2:
         e = k.eminler[0]
         satirlar.append(f"[i] {IKI_PLAKA_SATIRI}")
-        return [Gonderim("OKUNAMADI", None, e.metin, e.guven, olay_zamani,
+        # 1.4.7 F1: iki plakalı izin kartı güven taşımaz (28.11 15:59 35AOL140:
+        # ilk plakanın 1.00'ı sunucunun tahmin kuralıyla bilet kapattı).
+        return [Gonderim("OKUNAMADI", None, e.metin, None, olay_zamani,
                          en_iyi.get(e.metin, (None, foto))[1])], satirlar
     if k.eminler:
         e = k.eminler[0]

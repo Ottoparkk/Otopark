@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useNavigate } from 'react-router'
 import {
   Card,
@@ -14,9 +15,9 @@ import { formatPlaka } from '../../lib/plaka'
 import { formatTL } from '../../lib/money'
 import { formatGoreceli } from '../../lib/dates'
 import { sureMetni } from '../../lib/sure'
-import { olusturanAdi } from '../../lib/olusturan'
+import { OlusturanEtiketi } from '../gise/components'
 import { useAdlar } from '../yonetim/api'
-import { IconAra, IconAraba } from '../../components/ui/icons'
+import { IconAra, IconAraba, IconGuvenlikKamerasi } from '../../components/ui/icons'
 import {
   ODEME_CHIP,
   ODEME_DURUM_ETIKET,
@@ -41,8 +42,9 @@ export default function Biletler() {
   // than a component, but the rule is the same one BiletKart documents.
   const adlar = useAdlar()
   const navigate = useNavigate()
-  const [durum, setDurum] = useState<BiletFiltre>('TUMU')
-  const [q, setQ] = useState('')
+  // Remembered (owner, 27.11): back from a ticket keeps the filter and search.
+  const [durum, setDurum] = useEkranDurumu<BiletFiltre>('biletler.durum', 'TUMU', FILTRELER.map((f) => f.value))
+  const [q, setQ] = useEkranDurumu('biletler.q', '')
   const { data: liste = [], isPending, error, refetch } = useBiletGecmisi({ durum, q })
 
   /**
@@ -180,9 +182,11 @@ export default function Biletler() {
                           entry side while it is still inside (who let it in) —
                           each row shows the half that can be asked about. */}
                       {' · '}
-                      {b.cikis_at
-                        ? olusturanAdi(b.cikis_by, b.cikis_kaynak, adlar)
-                        : olusturanAdi(b.giris_by, b.giris_kaynak, adlar)}
+                      {b.cikis_at ? (
+                        <OlusturanEtiketi id={b.cikis_by} kaynak={b.cikis_kaynak} adlar={adlar} />
+                      ) : (
+                        <OlusturanEtiketi id={b.giris_by} kaynak={b.giris_kaynak} adlar={adlar} />
+                      )}
                     </span>
                     {/* Whether the money was taken at all comes before
                         whether it counts: an unpaid exit has nothing to
@@ -243,9 +247,16 @@ export default function Biletler() {
                         Kayıp bilet
                       </span>
                     )}
-                    {b.giris_kaynak === 'KAMERA' && (
-                      <span className="rounded-chip bg-field px-2 py-0.5 text-micro font-medium text-soft">
-                        Kamera
+                    {/* Camera entry, as an icon (owner, 27.11). Hidden when the
+                        line above already shows the entry's camera icon (car
+                        still inside), so the same fact is not said twice. */}
+                    {b.giris_kaynak === 'KAMERA' && b.cikis_at && (
+                      <span
+                        role="img"
+                        aria-label="Kamera girişi"
+                        className="flex items-center rounded-chip bg-field px-2 py-1 text-soft"
+                      >
+                        <IconGuvenlikKamerasi size={15} />
                       </span>
                     )}
                   </div>

@@ -35,6 +35,7 @@ const Personel = lazy(() => import('./features/yonetim/Personel'))
 const PersonelDetay = lazy(() => import('./features/yonetim/PersonelDetay'))
 const OtoparkAyarlari = lazy(() => import('./features/yonetim/OtoparkAyarlari'))
 const Kameralar = lazy(() => import('./features/yonetim/Kameralar'))
+const Terminaller = lazy(() => import('./features/yonetim/Terminaller'))
 
 const Finans = lazy(() => import('./features/finans/Finans'))
 const Raporlar = lazy(() => import('./features/finans/Raporlar'))
@@ -42,6 +43,8 @@ const Kasa = lazy(() => import('./features/finans/Kasa'))
 const Onay = lazy(() => import('./features/finans/Onay'))
 const Biletler = lazy(() => import('./features/finans/Biletler'))
 const Vardiyalar = lazy(() => import('./features/finans/Vardiyalar'))
+const VardiyaRaporu = lazy(() => import('./features/finans/VardiyaRaporu'))
+const GunRaporu = lazy(() => import('./features/finans/GunRaporu'))
 const AbonmanListe = lazy(() => import('./features/abonman/AbonmanListe'))
 const AbonmanDetay = lazy(() => import('./features/abonman/AbonmanDetay'))
 const Hesaplar = lazy(() => import('./features/hesap/Hesaplar'))
@@ -155,7 +158,6 @@ export default function App() {
                 following an old link would hit the guard and bounce home
                 instead of landing on the page that now holds the section. */}
             <Route path="/yonetim/yerler" element={<Navigate to="/gise" replace />} />
-            <Route path="/vardiya" element={<Vardiya />} />
             <Route path="/bildirimler" element={<Bildirimler />} />
             <Route path="/ayarlar" element={<Ayarlar />} />
             <Route path="/istisnalar" element={<Istisnalar />} />
@@ -174,6 +176,12 @@ export default function App() {
             {/* Yönetici only. The guard mirrors RLS for UX; RLS and the RPCs
                 are what actually refuse a Personel who types the URL. */}
             <Route element={<YoneticiRotalari />}>
+              {/* 085/086: Personel no longer open, count or close shifts.
+                  The Yönetici's tab is the report list; the count is Kasa. */}
+              <Route path="/vardiya" element={<Vardiyalar />} />
+              <Route path="/vardiya/kasa" element={<Vardiya />} />
+              <Route path="/vardiya/gun/:gun" element={<GunRaporu />} />
+              <Route path="/vardiya/:id" element={<VardiyaRaporu />} />
               <Route path="/yonetim" element={<Panel />} />
               <Route path="/yonetim/personel" element={<Personel />} />
               {/* Pay is the most private thing stored about a person; the
@@ -184,6 +192,7 @@ export default function App() {
               <Route path="/yonetim/cop" element={<Cop />} />
               <Route path="/yonetim/ayarlar" element={<OtoparkAyarlari />} />
               <Route path="/yonetim/kameralar" element={<Kameralar />} />
+              <Route path="/yonetim/terminaller" element={<Terminaller />} />
 
               {/* Finans is its own section, but the same guard: every
                   table behind it is Yönetici-only in RLS. */}
@@ -194,7 +203,7 @@ export default function App() {
                   shared finance duty — and the RPCs behind it say the same. */}
               <Route path="/finans/onay" element={<Onay />} />
               <Route path="/finans/biletler" element={<Biletler />} />
-              <Route path="/finans/vardiyalar" element={<Vardiyalar />} />
+              <Route path="/finans/vardiyalar" element={<Navigate to="/vardiya" replace />} />
               <Route path="/finans/tarifeler" element={<Tarifeler />} />
               {/* Money moved out of /yonetim. Notification rows written before
                   the move still carry the old links and cannot be rewritten, so
@@ -203,7 +212,7 @@ export default function App() {
               <Route path="/yonetim/raporlar" element={<Navigate to="/finans/raporlar" replace />} />
               <Route path="/yonetim/kasa" element={<Navigate to="/finans/kasa" replace />} />
               <Route path="/yonetim/biletler" element={<Navigate to="/finans/biletler" replace />} />
-              <Route path="/yonetim/vardiyalar" element={<Navigate to="/finans/vardiyalar" replace />} />
+              <Route path="/yonetim/vardiyalar" element={<Navigate to="/vardiya" replace />} />
 
               <Route path="/yonetim/hesaplar" element={<Hesaplar />} />
               <Route path="/yonetim/hesaplar/:id" element={<HesapDetay />} />

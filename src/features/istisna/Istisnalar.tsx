@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useNavigate } from 'react-router'
 import {
   Button,
@@ -6,8 +7,8 @@ import {
   Input,
   ListeDurumu,
   ScreenHeader,
-  SegmentedControl,
 } from '../../components/ui/primitives'
+import { FiltreChip } from '../../components/ui/FiltreChip'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { KimSatirlari } from '../../components/ui/KimSatirlari'
 import { PlakaInput } from '../../components/ui/PlakaInput'
@@ -44,6 +45,12 @@ import {
   type Sekme,
 } from './kart'
 
+const SEKMELER: { deger: Sekme; etiket: string }[] = [
+  { deger: 'BEKLEYEN', etiket: 'Bekleyen' },
+  { deger: 'COZULMUS', etiket: 'Çözülmüş' },
+  { deger: 'KAPATILAN', etiket: 'Kapatılan' },
+]
+
 const BOS: Record<Sekme, { title: string; hint: string }> = {
   BEKLEYEN: {
     title: 'Bekleyen kayıt yok',
@@ -66,7 +73,8 @@ export default function Istisnalar() {
   // rows at all; the tabs are simply not drawn for them. Deleting is the
   // Yönetici's too: the RPC refuses Personel either way.
   const yonetici = isYonetici(useAuth().profile)
-  const [secilen, setSecilen] = useState<Sekme>('BEKLEYEN')
+  // Remembered (owner, 27.11).
+  const [secilen, setSecilen] = useEkranDurumu<Sekme>('istisna.sekme', 'BEKLEYEN', ['BEKLEYEN', 'COZULMUS', 'KAPATILAN'])
   const sekme: Sekme = yonetici ? secilen : 'BEKLEYEN'
   const { data: liste = [], isPending, error, refetch } = useIstisnalar(sekme)
   const adlar = useAdlar()
@@ -93,15 +101,18 @@ export default function Istisnalar() {
 
       <div className="space-y-4 px-5">
         {yonetici && (
-          <SegmentedControl
-            value={secilen}
-            onChange={setSecilen}
-            options={[
-              { value: 'BEKLEYEN', label: 'Bekleyen' },
-              { value: 'COZULMUS', label: 'Çözülmüş' },
-              { value: 'KAPATILAN', label: 'Kapatılan' },
-            ]}
-          />
+          // Three separate buttons, like Gişe's İçeride / Çıkanlar (owner,
+          // 27.11: not the glued bar). Wraps rather than scrolls at 360 px.
+          <div className="flex flex-wrap gap-2">
+            {SEKMELER.map((s) => (
+              <FiltreChip
+                key={s.deger}
+                aktif={secilen === s.deger}
+                onClick={() => setSecilen(s.deger)}
+                etiket={s.etiket}
+              />
+            ))}
+          </div>
         )}
 
         {basari && (

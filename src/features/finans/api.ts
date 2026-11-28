@@ -858,3 +858,136 @@ export function useKararlar(tur: KararTur, sonuc: KararSonuc, enabled = true) {
     },
   })
 }
+
+// ------------------------------------------------- 086: vardiya raporu --
+
+export interface VardiyaRaporuBilet {
+  id: string
+  plaka: string
+  giris_at: string
+  cikis_at: string | null
+  durum: BiletDurum
+  ucret_kurus: number
+  tahsil_kurus: number
+  odeme_yontemi: OdemeYontemi | null
+  cikis_kaynak: string | null
+  cikis_by: string | null
+  ucretsiz_sebep: string | null
+}
+
+export interface VardiyaRaporuIslem {
+  actor: string | null
+  action: string
+  row_id: string | null
+  created_at: string
+  plaka: string | null
+}
+
+export interface VardiyaRaporu {
+  vardiya: Vardiya & { personel_ad: string | null }
+  toplam: { nakit: number; kart: number; havale: number; toplam: number; arac: number }
+  biletler: VardiyaRaporuBilet[]
+  giris: { toplam: number; kamera: number }
+  islemler: VardiyaRaporuIslem[]
+  iceride: number
+  onay: { adet: number; tutar: number }
+}
+
+/** One shift's report (Yönetici; the RPC re-checks). */
+export function useVardiyaRaporu(id: string | undefined) {
+  return useQuery({
+    queryKey: ['vardiya_raporu', id],
+    enabled: Boolean(id),
+    queryFn: async (): Promise<VardiyaRaporu> => {
+      const { data, error } = await supabase.rpc('vardiya_raporu', { p_vardiya_id: id })
+      if (error) throw error
+      return data as VardiyaRaporu
+    },
+  })
+}
+
+/** Toplam + car count per shift, for the list rows. */
+export function useVardiyaToplamlari(ids: string[]) {
+  const anahtar = [...ids].sort()
+  return useQuery({
+    queryKey: ['vardiya_toplamlari', anahtar],
+    enabled: ids.length > 0,
+    queryFn: async (): Promise<Map<string, { toplam: number; arac: number }>> => {
+      const { data, error } = await supabase.rpc('vardiya_toplamlari', { p_ids: anahtar })
+      if (error) throw error
+      const m = new Map<string, { toplam: number; arac: number }>()
+      for (const r of (data ?? []) as {
+        vardiya_id: string
+        toplam_kurus: number
+        arac_sayisi: number
+      }[]) {
+        m.set(r.vardiya_id, { toplam: Number(r.toplam_kurus), arac: Number(r.arac_sayisi) })
+      }
+      return m
+    },
+  })
+}
+
+// --------------------------------------------------- 087: günlük rapor --
+
+export interface GunRaporuVardiya {
+  id: string
+  personel_id: string | null
+  personel_ad: string | null
+  acilis_at: string
+  kapanis_at: string | null
+  fark_kurus: number | null
+  sayilan_nakit_kurus: number | null
+  /** The shift's own whole total — a night shift is not cut at midnight. */
+  toplam: number
+}
+
+export interface GunRaporu extends Omit<VardiyaRaporu, 'vardiya'> {
+  gun: string
+  vardiyalar: GunRaporuVardiya[]
+}
+
+/** One calendar day, 00:00–24:00 Istanbul (Yönetici; the RPC re-checks). */
+export function useGunRaporu(gun: string | undefined) {
+  return useQuery({
+    queryKey: ['gun_raporu', gun],
+    enabled: Boolean(gun),
+    queryFn: async (): Promise<GunRaporu> => {
+      const { data, error } = await supabase.rpc('gun_raporu', { p_gun: gun })
+      if (error) throw error
+      return data as GunRaporu
+    },
+  })
+}
+
+export interface GunToplami {
+  toplam: number
+  arac: number
+  /** Same weekday last week; for today, only up to the same time of day. */
+  onceki: number
+}
+
+/** Per-day total, car count and last week's figure, keyed 'YYYY-MM-DD'. */
+export function useGunToplamlari(bas: string, bit: string) {
+  return useQuery({
+    queryKey: ['gun_toplamlari', bas, bit],
+    queryFn: async (): Promise<Map<string, GunToplami>> => {
+      const { data, error } = await supabase.rpc('gun_toplamlari', { p_bas: bas, p_bit: bit })
+      if (error) throw error
+      const m = new Map<string, GunToplami>()
+      for (const r of (data ?? []) as {
+        gun: string
+        toplam_kurus: number
+        arac_sayisi: number
+        onceki_kurus: number
+      }[]) {
+        m.set(r.gun, {
+          toplam: Number(r.toplam_kurus),
+          arac: Number(r.arac_sayisi),
+          onceki: Number(r.onceki_kurus),
+        })
+      }
+      return m
+    },
+  })
+}

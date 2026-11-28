@@ -1,4 +1,5 @@
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useLocation, useNavigate } from 'react-router'
 import { BrandPanel, OranCubugu, ScreenHeader } from '../../components/ui/primitives'
 import { DolulukRozeti, VardiyaUyarisi, dolulukYuzde } from './components'
@@ -17,12 +18,15 @@ import {
   IconAraba,
   IconArti,
   IconKamera,
+  IconFis,
   IconTik,
   IconUyari,
   IconYer,
 } from '../../components/ui/icons'
 import type { AcikBilet } from '../../lib/types'
 import { useGecikmeli } from '../../lib/useGecikmeli'
+import { useFisYazdirir } from '../fis/api'
+import { FisSayfasi } from '../fis/FisSayfasi'
 
 // Lazily loaded so the spot grid, its two form modals and the confirm dialog
 // stay out of the gate's chunk — this is the screen an operator opens all
@@ -59,7 +63,12 @@ export default function Gise() {
   // in the search and the cursor in it (cikisLink.ts). Read once, on arrival;
   // cleared once a car is picked, so the hint does not return after collecting.
   const [cikisAra, setCikisAra] = useState(() => cikisAramasi(pathname, state))
-  const [sorgu, setSorgu] = useState(cikisAra ?? '')
+  // Remembered (owner, 27.11); a plate handed over as "Çıkış" wins once.
+  const [sorgu, setSorgu] = useEkranDurumu('gise.sorgu', '')
+  const ilkCikisAra = useRef(cikisAra)
+  useEffect(() => {
+    if (ilkCikisAra.current) setSorgu(ilkCikisAra.current)
+  }, [setSorgu])
   /**
    * The confirmation handed over by Araç Girişi as it closed itself.
    *
@@ -70,7 +79,13 @@ export default function Gise() {
   const [girisBasari, setGirisBasari] = useState<{
     plaka: string
     yerKod: string | null
+    /** 078: the ticket opened but the wash could not be added. */
+    uyari?: string | null
+    /** 088: the new ticket, for "Fiş yazdır" on the bar. */
+    biletId?: string
   } | null>(null)
+  const yazici = useFisYazdirir()
+  const [fisBilet, setFisBilet] = useState<string | null>(null)
   const [secili, setSecili] = useState<AcikBilet | null>(null)
   // Park yerleri: opened from the icon in the occupancy card (owner,
   // 2026-11-15 — the row of its own is gone).
@@ -101,7 +116,7 @@ export default function Gise() {
    */
   const { profile } = useAuth()
   const yonetici = isYonetici(profile)
-  const { donem, ozel, secim } = useDonem('BUGUN')
+  const { donem, ozel, secim } = useDonem('BUGUN', 'gise')
   const gecmis = yonetici && donem !== 'BUGUN'
   const { bas, bit, hazir } = useDonemAralik(donem, ozel)
   // 067 (owner, 2026-11-15): the chips also scope Çıkanlar. Tümü is no
@@ -112,7 +127,9 @@ export default function Gise() {
   const { data: acikIstisna = 0 } = useAcikIstisnaSayisi()
 
   useEffect(() => {
-    const s = state as { girisBasari?: { plaka: string; yerKod: string | null } } | null
+    const s = state as {
+      girisBasari?: { plaka: string; yerKod: string | null; uyari?: string | null; biletId?: string }
+    } | null
     if (!s?.girisBasari) return
     setGirisBasari(s.girisBasari)
     navigate(pathname, { replace: true, state: null })
@@ -120,9 +137,12 @@ export default function Gise() {
 
   useEffect(() => {
     if (!girisBasari) return
-    const t = setTimeout(() => setGirisBasari(null), 5000)
+    // 078: a failed wash stays up longer — someone has to act on it.
+    // 088: so does the bar with "Fiş yazdır" — the customer is still there.
+    const ms = girisBasari.uyari ? 20000 : yazici && girisBasari.biletId ? 30000 : 5000
+    const t = setTimeout(() => setGirisBasari(null), ms)
     return () => clearTimeout(t)
-  }, [girisBasari])
+  }, [girisBasari, yazici])
 
   // Keep the selected ticket in step with refetches (points may have been
   // applied, the camera may have flagged it at the gate).
@@ -148,9 +168,13 @@ export default function Gise() {
           back="/gise"
           right={ozet ? <DolulukRozeti dolu={ozet.doluluk} kapasite={ozet.kapasite} /> : null}
         />
-        <div className="mb-4 px-5">
-          <VardiyaUyarisi />
-        </div>
+        {/* 085: only the Yönetici — shifts reopen by themselves within a
+            minute, and Personel have no Vardiya screen to fix it from. */}
+        {yonetici && (
+          <div className="mb-4 px-5">
+            <VardiyaUyarisi />
+          </div>
+        )}
         <GirisBolumu autoFocus />
       </div>
     )
@@ -164,7 +188,7 @@ export default function Gise() {
       />
 
       <div className="space-y-4 px-5">
-        <VardiyaUyarisi />
+        {yonetici && <VardiyaUyarisi />}
         {/* Owner 2026-11-18: the camera strip is the Yönetici's only; 070's
             kamera_durum_ozet refuses Personel too. */}
         {yonetici && <KameraSeridi />}
@@ -283,12 +307,38 @@ export default function Gise() {
         )}
 
         {girisBasari && (
-          <p className="flex items-center gap-2 rounded-card bg-success-soft px-4 py-3 text-body font-medium text-success">
-            <IconTik size={18} />
-            {girisBasari.plaka} girişi kaydedildi
-            {girisBasari.yerKod && (
-              <strong className="font-semibold"> · {girisBasari.yerKod}</strong>
+          <div className="flex items-center gap-2 rounded-card bg-success-soft py-1.5 pr-1.5 pl-4 text-body font-medium text-success">
+            <IconTik size={18} className="shrink-0" />
+            <p className="min-w-0 flex-1 py-1.5">
+              {girisBasari.plaka} girişi kaydedildi
+              {girisBasari.yerKod && (
+                <strong className="font-semibold"> · {girisBasari.yerKod}</strong>
+              )}
+            </p>
+            {/* 088: entry fiş "only when asked" (owner 28.11), Personel only (the P2). */}
+            {yazici && girisBasari.biletId && (
+              <button
+                type="button"
+                onClick={() => setFisBilet(girisBasari.biletId ?? null)}
+                className="flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-field bg-surface px-3 text-label font-semibold text-success active:bg-field"
+              >
+                <IconFis size={18} />
+                Fiş yazdır
+              </button>
             )}
+          </div>
+        )}
+        {fisBilet && (
+          <FisSayfasi
+            biletId={fisBilet}
+            tur="GIRIS"
+            open
+            onOpenChange={(o) => !o && setFisBilet(null)}
+          />
+        )}
+        {girisBasari?.uyari && (
+          <p role="alert" className="rounded-card bg-warn-soft px-4 py-3 text-body text-warn">
+            {girisBasari.uyari}
           </p>
         )}
 

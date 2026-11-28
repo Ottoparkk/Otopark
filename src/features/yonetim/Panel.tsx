@@ -8,6 +8,7 @@ import {
   IconCop,
   IconKisi,
   IconPuan,
+  IconTerminal,
 } from '../../components/ui/icons'
 
 /**
@@ -89,7 +90,16 @@ export default function Panel() {
             tone="accent"
             icon={<IconKisi size={22} />}
             baslik="Personel"
-            aciklama="Kayıt onayı, rol ve durum"
+            aciklama="Kayıt onayı, rol, durum ve PIN"
+          />
+          {/* 084: the shared handheld where workers switch with name + PIN. */}
+          <MenuKart
+            satir
+            to="/yonetim/terminaller"
+            tone="accent"
+            icon={<IconTerminal size={22} />}
+            baslik="Terminaller"
+            aciklama="Ortak el terminali: isim + PIN ile devir"
           />
           <MenuKart
             satir

@@ -437,6 +437,38 @@ SENARYOLAR.update({
                                       kayitta_sirayla=["içeride sorusu ertelendi",
                                                        "araç girdi",
                                                        "içeride görülen araç sunucuya soruldu"]),
+    # 1.4.7 F4 (28.11 teşhisi: 7 kısa ziyaret iki kart açtı, 4 araç saatlerce
+    # biletsiz kaldı): plakasız GİRDİ kartı açan iz sonra plakasıyla ÇIKAR —
+    # çıkış gönderimi giriş kartının kimliğini taşır.
+    "takip_giris_karti_cikis": dict(_IZ, yon="ORTAK", sure=16.0, arac_puan=0.9,
+                                    araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                             (3, 6, 400, 60, 400, 60, None, 220),
+                                             (6, 8, 400, 60, 20, 400, 0, 220)],
+                                    gonderim_sayisi=2, kart_hareketleri=["GIRDI"],
+                                    hareket_sirasi={0: ["CIKTI"]}, giris_karti_baglantisi=1),
+    # Aynı iz plakası otopark İÇİNDE okununca içeride sorusu kartın kimliğini taşır.
+    "takip_giris_karti_iceride": dict(_IZ, yon="ORTAK", sure=18.0, arac_puan=0.9,
+                                      araclar=[(1, 3, 10, 380, 400, 60, None, 220),
+                                               (3, 6, 400, 60, 400, 60, None, 220),
+                                               (6, 7.5, 400, 60, 450, 260, 0, 220),
+                                               (7.5, 99, 450, 260, 450, 260, 0, 220)],
+                                      gonderim_sayisi=2, kart_hareketleri=["GIRDI"],
+                                      hareket_sirasi={0: ["ICERIDE"]}, giris_karti_baglantisi=1),
+    # 1.4.7 F5 (28.11: 35BNC539, 16PR385): kapıda plakasız kayboldu kartı
+    # gitti; birkaç saniye sonra otopark içinde plakası okunan araç (çoğu kez
+    # aynı aracın içeri kopan izi) — içeride sorusu kapı olayından 5 sn sonra
+    # gider, kartın ARDINDAN (sunucu bağlar).
+    "takip_iceride_kapi_karti_sonra": dict(_IZ, yon="ORTAK", sure=20.0, arac_puan=0.9,
+                                           araclar=[(1, 3, -80, 340, 120, 340, None, 220),
+                                                    (3, 5, 120, 340, 150, 470, None, 220),
+                                                    (0, 6, 420, 200, 420, 200, 0, 220),
+                                                    (6, 7.5, 420, 200, 450, 260, 0, 220),
+                                                    (7.5, 99, 450, 260, 450, 260, 0, 220)],
+                                           gonderim_sayisi=2, kart_hareketleri=[None],
+                                           hareket_sirasi={0: ["ICERIDE"]},
+                                           kayitta_sirayla=["araç kapı alanında kayboldu",
+                                                            "içeride sorusu ertelendi",
+                                                            "içeride görülen araç sunucuya soruldu"]),
     # 1.4.6 L (sahibin kararı 25.11): her izin kararında plaka teşhisi satırı
     # (plaka metni yok) ve kartın en iyi plaka kırpığı bu bilgisayarda
     # (PLAKA_KIRPIK, varsayılan açık). "kirpiklar": klipler gibi (olay, ek).
@@ -765,11 +797,12 @@ SENARYOLAR.update({
                                 gonderim_sayisi=0,
                                 kayitta_sirayla=["araç tek karede görüldü",
                                                  "(araç 0.49 motosiklet)"]),
-    # Gerçek motosiklet net görülür (sahibinin skuterleri 0.77-0.92): kart gider.
+    # Gerçek motosiklet net görülür (sahibinin skuterleri 0.77-0.92). 1.4.7 F7
+    # (sahibin kararı 28.11): plakasız motosiklet kart olmaz — net olsa da.
     "takip_tek_kare_moto_guclu": dict(_IZ, arac_bir_kez=True, arac_puan=0.75, arac_sinif=3,
                                       moto_esik=0.70, sure=11.0, ortam={"IZ_ONAY": "0"},
                                       araclar=[(1.0, 2.0, 330, 200, 150, 260, None, 220)],
-                                      personele=[(1, 11, None)], gonderim_sayisi=1,
+                                      gonderim_sayisi=0,
                                       kayitta_sirayla=["araç tek karede görüldü",
                                                        "(araç 0.75 motosiklet)"]),
     # 1.4.4 (sahibin kararı 21.11): kapıdan GİRDİĞİ izlenen plakasız
@@ -786,11 +819,12 @@ SENARYOLAR.update({
         araclar=[(1, 3, 10, 380, 400, 60, None, 220), (3, 99, 400, 60, 400, 60, None, 220)],
         sure=10.0, gonderim_sayisi=0,
         kayitta_sirayla=["araç girdi", "(araç 0.61 motosiklet)"]),
-    # Gerçek motosiklet net görülür (sahibinin skuterleri 0.77-0.92): kart gider.
+    # Gerçek motosiklet net görülür (sahibinin skuterleri 0.77-0.92). 1.4.7 F7
+    # (sahibin kararı 28.11): kapıdan giren plakasız motosiklet de kart olmaz.
     "takip_plakasiz_moto_girdi_guclu": dict(
         _IZ, arac_puan=0.75, arac_sinif=3, moto_esik=0.70,
         araclar=[(1, 3, 10, 380, 400, 60, None, 220), (3, 99, 400, 60, 400, 60, None, 220)],
-        sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1,
+        sure=10.0, gonderim_sayisi=0,
         kayitta_sirayla=["araç girdi", "(araç 0.75 motosiklet)"]),
     # 1.4.6 B (sahibin kararı 25.11): plakasız kapı kartı YOLO11s'te 0.75
     # ister — 23–24.11'de insanlar ve el arabaları 0.52–0.73 ile kart oldu.
@@ -804,11 +838,12 @@ SENARYOLAR.update({
         araclar=[(1, 3, 10, 380, 400, 60, None, 220), (3, 99, 400, 60, 400, 60, None, 220)],
         sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1,
         kayitta_sirayla=["araç girdi", "(araç 0.80 otomobil)"]),
-    # Motosiklet bugünkü kuralında (sahip: kart olmaya devam etsin): 0.72 kart.
+    # 1.4.6'da motosiklet kendi kuralındaydı (0.72 kart). 1.4.7 F7 (sahibin
+    # kararı 28.11): plakasız motosiklet kart olmaz.
     "takip_plakasiz_kart_esigi_moto": dict(
         _IZ, arac_puan=0.72, arac_sinif=3, moto_esik=0.70, kart_esik=0.75,
         araclar=[(1, 3, 10, 380, 400, 60, None, 220), (3, 99, 400, 60, 400, 60, None, 220)],
-        sure=10.0, personele=[(3, 10, None)], gonderim_sayisi=1,
+        sure=10.0, gonderim_sayisi=0,
         kayitta_sirayla=["araç girdi", "(araç 0.72 motosiklet)"]),
     # 1.4.2 (A3 koruması): park etmiş araç kapıdan alt kenara çıkar; çıkarken
     # aracın son kutusu tam (kenara değiyor), hemen ardından bulucu yalnızca
@@ -837,18 +872,22 @@ SENARYOLAR.update({
     # görür. Her kutu
     # 0.70 (kuyruk da kart eşiğini geçer): bugün plakanın yanına ikinci
     # (personele) kart. 1.4.5: TEK_KARAR=0 (ve IZ_ONAY=0, kuyruk tek karede
-    # görülebilir): 1.4.4 gibi iki gönderim — ikiz kart.
+    # görülebilir): 1.4.4 gibi iki gönderim — ikiz kart. 1.4.7 F7: tek
+    # görünümlü, kapıda kaybolan parça kart olmaz — TEK_KARAR kapalıyken de
+    # tek gönderim.
     "takip_kenar_kuyrugu_tek_karar_kapali": dict(
         _IZ, yon="ORTAK", arac_puan=0.70, ortam={"TEK_KARAR": "0", "IZ_ONAY": "0"},
         araclar=[(0.0, 3.0, 420, 60, 420, 60, 0, 220),
                  (3.0, 4.6, 420, 60, 150, 370, 0, 220),
                  (4.6, 5.2, 150, 370, 150, 380, 0, 220),
                  (5.25, 5.65, 150, 455, 150, 455, None, 230, 130, 25)],
-        sure=13.0, plakalar=[(5, 13, 0)], personele=[(5, 13, None)], gonderim_sayisi=2,
-        kayitta_sirayla=["tek karar kapalı (TEK_KARAR=0)", "araç çıktı"],
+        sure=13.0, plakalar=[(5, 13, 0)], gonderim_sayisi=1,
+        kayitta_sirayla=["tek karar kapalı (TEK_KARAR=0)", "araç çıktı", "gönderim yok"],
         kayitta_yok=["aynı aracın parçası"]),
     # 1.4.5 A (TEK_KARAR=1 varsayılan): kuyruğun kartı gitmez — bir araç, bir
     # gönderim. IZ_ONAY=0: B'siz de (kuyruk tek kare ya da kapıda kaybolan).
+    # 1.4.7 F7: tek görünümlü kuyruk ikiz kararına varmadan düşer ("gönderim
+    # yok") — sonuç aynı: bir araç, bir gönderim.
     "takip_kenar_kuyrugu_tek_karar": dict(
         _IZ, yon="ORTAK", arac_puan=0.70, ortam={"IZ_ONAY": "0"},
         araclar=[(0.0, 3.0, 420, 60, 420, 60, 0, 220),
@@ -856,9 +895,7 @@ SENARYOLAR.update({
                  (4.6, 5.2, 150, 370, 150, 380, 0, 220),
                  (5.25, 5.65, 150, 455, 150, 455, None, 230, 130, 25)],
         sure=13.0, plakalar=[(5, 13, 0)], gonderim_sayisi=1,
-        kayitta_sirayla=["tek karar açık (TEK_KARAR=1)", "araç çıktı",
-                         "aynı aracın parçası sayıldı"],
-        kayitta_yok=["personele"]),
+        kayitta_sirayla=["tek karar açık (TEK_KARAR=1)", "araç çıktı", "gönderim yok"]),
     # 1.4.2 (E12): `--video` — takip_giris'in sahnesi bir video DOSYASINA
     # yazılıp gerçek köprü döngüsünden geçirilir: plaka "girdi" ipucuyla
     # özette, hiçbir şey ağa gitmez, kayıt geçici klasörde, plaka kayıtta yok.
@@ -962,17 +999,27 @@ SENARYOLAR.update({
     "takip_kenar_kuyrugu_klip": dict(
         SENARYOLAR["takip_kenar_kuyrugu_tek_karar_kapali"], sure=17.0,
         ortam={"TEK_KARAR": "0", "IZ_ONAY": "0", "KLIP": "1"},
-        plakalar=[(5, 17, 0)], personele=[(5, 17, None)],
-        # 1.4.4: plakalı çıkışın da klibi var (önce o, sonra parça).
-        klipler=[("CIKTI", "PLAKA"), ("TEK_KARE|KAPIDA_KAYBOLDU", "OKUNAMADI")],
+        plakalar=[(5, 17, 0)],
+        # 1.4.4: plakalı çıkışın da klibi var (önce o, sonra parça). 1.4.7 F7:
+        # tek görünümlü parça gönderilmez — klibi "gonderimyok".
+        klipler=[("CIKTI", "PLAKA"), ("TEK_KARE|KAPIDA_KAYBOLDU", "gonderimyok")],
         kayitta_sirayla=["klip kaydı açık (KLIP=1)", "araç çıktı", "klip yazıldı"]),
-    # 1.4.5 A: gönderilmeyen kuyruğun klibi "emildi" adıyla yazılır.
+    # 1.4.5 A: gönderilmeyen kuyruğun klibi "emildi" adıyla yazılır. 1.4.7 F7:
+    # tek görünümlü kuyruk ikiz kararından önce düşer — klibi "gonderimyok".
     "takip_kenar_kuyrugu_tek_karar_klip": dict(
         SENARYOLAR["takip_kenar_kuyrugu_tek_karar"], ortam={"IZ_ONAY": "0", "KLIP": "1"},
         sure=17.0, plakalar=[(5, 17, 0)],
-        klipler=[("CIKTI", "PLAKA"), ("TEK_KARE|KAPIDA_KAYBOLDU", "emildi")],
+        klipler=[("CIKTI", "PLAKA"), ("TEK_KARE|KAPIDA_KAYBOLDU", "gonderimyok")],
         kayitta_sirayla=["klip kaydı açık (KLIP=1)", "araç çıktı",
-                         "aynı aracın parçası sayıldı", "klip yazıldı"]),
+                         "gönderim yok", "klip yazıldı"]),
+    # 1.4.7: F7'den sonra tek görünümlü kuyruk Gecitci'ye kart olarak
+    # varmıyor; Gecitci'nin düşürdüğü kartın klibi burada sınanır — 1.4.6 C
+    # gecikmiş kuyruk (çok görünümlü KAPIDA_KAYBOLDU) kart olacaktı, ikizdir,
+    # klibi "emildi".
+    "takip_ikiz_gec_kuyruk_klip": dict(
+        SENARYOLAR["takip_ikiz_gec_kuyruk"], ortam={"KLIP": "1"}, sure=22.0,
+        klipler=[("CIKTI", "PLAKA"), ("KAPIDA_KAYBOLDU", "emildi")],
+        kayitta_sirayla=["klip kaydı açık (KLIP=1)", "araç çıktı", "ikiz", "klip yazıldı"]),
     # 1.4.4 (sahibin kararı 21.11): HER personel kartının klibi — kapıdan
     # GİRDİĞİ izlenen plakasız araç da (21.11 16:30 ikiz kartı böyleydi; 1.4.3
     # yalnızca yönü bilinmeyen olaya klip açıyordu).
@@ -1080,7 +1127,7 @@ SENARYOLAR.update({
     "takip_kenar_kuyrugu_giris_seridi": dict(
         SENARYOLAR["takip_kenar_kuyrugu_tek_karar"], yon="GIRIS", plakalar=[],
         gonderim_sayisi=0,
-        kayitta_sirayla=["araç çıktı", "yönüne ters", "aynı aracın parçası sayıldı"]),
+        kayitta_sirayla=["araç çıktı", "yönüne ters", "gönderim yok"]),   # 1.4.7 F7
     # Plakası okunan GİREN araç bilet olur, kart değil: klip yok.
     "takip_plakali_girdi_klipsiz": dict(
         SENARYOLAR["takip_giris"], ortam={"KLIP": "1"}, sure=15.0,
@@ -1520,6 +1567,7 @@ def tek_kos(ad: str) -> int:
                  "hareket": json.get("hareket"), "hareket_var": "hareket" in json,
                  "yonsuz": json.get("yon_bilinmiyor"), "yonsuz_var": "yon_bilinmiyor" in json,
                  "dondu": json.get("ayni_iz_dondu"), "dondu_var": "ayni_iz_dondu" in json,
+                 "giris_id": json.get("giris_islem_id"), "giris_var": "giris_islem_id" in json,
                  "kanit_var": "foto_kanit_base64" in json, "kanit": json.get("foto_kanit_base64")}
         gonderimler.append(kayit)
         if S.get("yavas"):
@@ -1841,6 +1889,18 @@ def tek_kos(ad: str) -> int:
     for g in donenler:
         if g["tur"] != "PLAKA" or g["hareket"] != "CIKTI" or g["dondu"] is not True:
             fail(f"aynı iz döndü işareti yanlış yerde: {g['tur']} {g['hareket']!r} {g['dondu']!r}")
+    # 1.4.7 F4 (sahibin kararı 28.11): plakasız GİRDİ kartı açan izin sonraki
+    # gönderimleri (çıkış, içeride sorusu) o kartın islem_id'sini taşır —
+    # sunucu (090) bileti kartın saatinden açar, kartı çözer. Başka hiçbir
+    # gönderim taşımaz. "giris_karti_baglantisi": taşıyan sayı (varsayılan 0).
+    giris_kartlari = {g["id"] for g in tekil if g["tur"] == "OKUNAMADI" and g["hareket"] == "GIRDI"}
+    baglilar = [g for g in tekil if g["giris_var"]]
+    if len(baglilar) != S.get("giris_karti_baglantisi", 0):
+        fail(f"{S.get('giris_karti_baglantisi', 0)} giriş kartı bağlantısı bekleniyordu, "
+             f"{len(baglilar)}")
+    for g in baglilar:
+        if g["giris_id"] not in giris_kartlari or g["giris_id"] == g["id"]:
+            fail(f"giris_islem_id bir GİRDİ kartının kimliği değil: {g['tur']} {g['hareket']!r}")
     for g in gonderimler:
         if g["tur"] == "OKUNAMADI" and g["hareket_var"] and g["hareket"] not in ("GIRDI", "CIKTI"):
             fail(f"personele giden olayda yanlış yön ipucu: {g['hareket']!r}")

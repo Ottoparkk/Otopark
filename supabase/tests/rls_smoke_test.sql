@@ -115,6 +115,7 @@ declare
   v_islem        uuid;
   v_ucret        integer;
   v_ucret2       integer;
+  v_tr           public.tarifeler;                 -- PASS 100-103 (078)
   v_gun          date;
   v_ts           timestamptz;
   v_ts2          timestamptz;
@@ -371,6 +372,12 @@ raise notice 'PASS 09: rol/durum istemciden yazılamıyor (kolon izni + RPC koru
 -- 10  Ticket lifecycle, idempotency, money identity
 -- =====================================================================
 
+-- 085: canlıda kasa vardiyası artık hep açık. Bilinen vardiya (PASS 52
+-- deseni): açık olan kapanır (sonunda geri alınır), personel açar.
+perform pg_temp.logout();
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE'
+ where kapanis_at is null;
+perform pg_temp.login(u_personel);
 select public.vardiya_ac(10000) into v_vardiya;
 
 v_islem := gen_random_uuid();
@@ -573,6 +580,13 @@ if v_id is null then raise exception 'FAIL 18c: 3 saatlik kamera bileti bulunama
 -- The quote the operator sees, taken BEFORE the charge...
 select public.ucret_hesapla(b.giris_at, now(), b.tarife_id) into v_ucret2
   from public.biletler b where b.id = v_id;
+-- 082: canlı tarife KADEMELI ise 3 saatlik bilet ilk kademeyi aşar ve kapanış
+-- karar ister. Tam tarife seçilir (ücret = ucret_hesapla); aşım yoksa geçilir.
+begin
+  perform public.bilet_asim_karar(v_id, true);
+exception when others then
+  if sqlerrm <> 'Bu bilette süre aşımı yok.' then raise; end if;
+end;
 select b.tahsil_kurus into v_ucret from public.bilet_kapat(v_id, 'NAKIT') b;
 
 -- ...must equal the charge. One function prices a stay, so these cannot differ.
@@ -1908,7 +1922,11 @@ v_beklenen := array[
   'handle_new_user', 'kamera_cikis_bildir', 'kamera_eslestir', 'kamera_foto_bagla',
   'kamera_kalp', 'kamera_kalp_bilgi', 'kamera_kalp_cihaz', 'kamera_okuma_bagla', 'kamera_okuma_hatasi',
   'kamera_okuma_siniri', 'kamera_okunamadi', 'kamera_reddedildi', 'kamera_tahmin_cikis',
-  'kamera_tek_kapi'];
+  'kamera_tek_kapi',
+  -- 084: ortak terminal. Üçü de terminal-giris / personel-olustur Edge
+  -- Function'larından çağrılır; kendi içlerinde terminal anahtarını ya da
+  -- çağıran Yöneticiyi yeniden doğrularlar (PASS 116-119).
+  'personel_pin_olustur', 'terminal_personel_listesi', 'terminal_pin_dogrula'];
 --     `kamera_tahmin_cikis` (077) de BİLEREK eklendi ve sınırı genişletmiyor:
 --     kendisi hiçbir şey yazmaz, yalnızca bu listedeki kamera_cikis_bildir'i
 --     çağırır — o da yalnızca plakası TAM tutan, benzeri olmayan açık bileti
@@ -6811,7 +6829,8 @@ end if;
 
 -- (h) Yetkiler: yazma yolu yalnızca giriş yapmış kullanıcıya açık (rolü
 --     gövde denetler); saf hesap ve doğrulayıcı istemciye açık değil.
-v_txt := 'public.tarife_guncelle(integer, integer, integer, integer, integer, public.tarife_tur, integer, jsonb)';
+-- 078: imza 9 argümanlı oldu (p_yikama_kurus); 8 argümanlı düşürüldü.
+v_txt := 'public.tarife_guncelle(integer, integer, integer, integer, integer, public.tarife_tur, integer, jsonb, integer)';
 if has_function_privilege('anon', v_txt, 'execute')
    or has_function_privilege('service_role', v_txt, 'execute')
    or not has_function_privilege('authenticated', v_txt, 'execute') then
@@ -7439,26 +7458,33 @@ if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinc
   raise exception 'FAIL 76e: az önce giren araç yok sayılmadı (%)', v_json;
 end if;
 
--- (d) GİREN araç ama ESKİ açık bileti var: bilet KAPATILMAZ, insana gider.
+-- (d) GİREN araç ama ESKİ açık bileti var.
+--     090 (sahibin kararı 28.11; 26–28.11'de 9 kart, bu biletlerin çıkışı
+--     10–60 saat sonra kapandı): eski bilet çıkışı görülmeden kapanır —
+--     ödemesiz, son içeride görüldüğü anda (görülmediyse kendi giriş
+--     saatinde), notu "çıkışı görülmedi". Bu olayla YENİ bilet açılır;
+--     kart yok. Ayrıntılar PASS 136-137.
 update public.biletler
    set created_at = now() - make_interval(mins => v_n + 1) where id = v_bilet;
 v_islem := gen_random_uuid();
 perform pg_temp.kamera();
 select public.kamera_tek_kapi('ZZ76DD404', v_islem, now(), null, null, 'GIRDI') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'GIRIS_ACIK_BILET' then
-  raise exception 'FAIL 76d: giren aracın eski açık bileti insana gitmedi (%)', v_json;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'ESKI_BILET_KAPANDI' then
+  raise exception 'FAIL 76d: giren aracın eski bileti kapanıp yenisi açılmadı (%)', v_json;
 end if;
 if not exists (select 1 from public.biletler
-                where id = v_bilet and durum = 'ACIK' and cikis_bekliyor_at is null) then
-  raise exception 'FAIL 76d: giren aracın eski bileti kapatıldı ya da işaretlendi';
+                where id = v_bilet and durum = 'KAPALI' and cikis_kaynak::text = 'KAMERA'
+                  and tahsil_kurus = 0 and notlar like '%çıkışı görülmedi%') then
+  raise exception 'FAIL 76d: giren aracın eski bileti "çıkışı görülmedi" diye kapanmadı';
 end if;
-if (select count(*) from public.istisnalar
-     where islem_id = v_islem and tur::text = 'GIRISTE_ACIK_BILET' and yon = 'ORTAK'
-       and plaka = 'ZZ76DD404' and aday_bilet_ids = array[v_bilet]
-       and cozuldu_at is null) <> 1 then
-  raise exception 'FAIL 76d: GIRISTE_ACIK_BILET kaydı adayıyla birlikte yazılmadı';
+if exists (select 1 from public.istisnalar where islem_id = v_islem) then
+  raise exception 'FAIL 76d: eski bileti olan girişte kart açıldı';
 end if;
+-- 090: (f) artık YENİ bileti kapatır; giriş penceresi geri çekilerek geçer.
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+update public.biletler
+   set created_at = now() - make_interval(mins => v_n + 1) where id = v_bilet;
 
 -- (f) ÇIKAN araç, eski açık bileti var: bugünkü gibi ÇIKIŞ (bilet kapanır).
 perform pg_temp.kamera();
@@ -7504,11 +7530,11 @@ perform pg_temp.logout();
 if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'YENI_CIKIS' then
   raise exception 'FAIL 76g: bileti az önce kapanan araç yok sayılmadı (%)', v_json;
 end if;
--- Bileti yok: bilet AÇILMAZ, insana gider.
--- 077 E2'den beri içeride okunan plaka son 15 dk'nın plakasız tek kapı
--- kartına bağlanır (PASS 97). Bu adım "yakında giriş kartı YOK" hâlidir:
--- testin önceki adımlarının now() damgalı plakasız kartları (60, 63, 65 …)
--- ve canlı kartlar önce kapatılır (transaction sonunda geri alınır).
+-- Bileti yok. 090 (sahibin kararı 28.11): bilet bu görülmeden AÇILIR,
+-- notu "girişi görülmedi" (PASS 143); kart yok. Bu adım "yakında giriş
+-- kartı YOK" hâlidir: testin önceki adımlarının now() damgalı plakasız
+-- kartları (60, 63, 65 …) ve canlı kartlar önce kapatılır (transaction
+-- sonunda geri alınır) — yoksa bilet o kartın saatinden açılırdı (PASS 142).
 -- 2026-11-26 sahada: bu satır yokken FAIL 76g, sebep ICERIDE_GIRIS_KARTI.
 update public.istisnalar set cozuldu_at = now()
  where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
@@ -7517,25 +7543,26 @@ v_islem := gen_random_uuid();
 perform pg_temp.kamera();
 select public.kamera_tek_kapi('ZZ76FF606', v_islem, now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
-   or exists (select 1 from public.biletler where plaka = 'ZZ76FF606') then
-  raise exception 'FAIL 76g: içeride bileti olmayan araç insana gitmedi (%)', v_json;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ76FF606'
+                     and durum = 'ACIK' and islem_id = v_islem)
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ76FF606') then
+  raise exception 'FAIL 76g: içeride bileti olmayan araca bilet açılmadı (%)', v_json;
 end if;
-select id into v_id from public.istisnalar
- where islem_id = v_islem and tur::text = 'ICERIDE_BILETSIZ' and yon = 'ORTAK'
-   and plaka = 'ZZ76FF606' and cozuldu_at is null;
-if v_id is null then
-  raise exception 'FAIL 76g: ICERIDE_BILETSIZ kaydı yazılmadı';
-end if;
--- Aynı biletsiz araç yeniden görüldü (başka iz, yeni olay): açık kaydı
--- dururken ikinci kart ve ikinci bildirim YOK.
+-- Aynı araç yeniden görüldü (başka iz, yeni olay): artık biletli — hiçbir şey.
 perform pg_temp.kamera();
 select public.kamera_tek_kapi('ZZ76FF606', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'ICERIDE_KAYITLI'
-   or (select count(*) from public.istisnalar where plaka = 'ZZ76FF606') <> 1 then
-  raise exception 'FAIL 76g: içeride biletsiz araç ikinci kart açtı (%)', v_json;
+if v_json ->> 'karar' is distinct from 'YOKSAY' or v_json ->> 'sebep' is distinct from 'ICERIDE_ACIK'
+   or (select count(*) from public.biletler where plaka = 'ZZ76FF606') <> 1 then
+  raise exception 'FAIL 76g: içeride yeniden görülen araç ikinci bilet ya da kart açtı (%)', v_json;
 end if;
+-- 090: (i) için 1.4.6'dan kalan bir ICERIDE_BILETSIZ kartı elle kurulur
+-- (sahada açık kartlar 090'dan sonra da "Giriş aç"la açılabilmeli).
+v_islem := gen_random_uuid();
+v_id := public.istisna_yaz('ICERIDE_BILETSIZ', 'ORTAK', 'ZZ76GH707', 'KAMERA', v_islem,
+                           null, null, now());
 -- Bileti az önce kapanan araca (f) BİR KARAKTER uzak okuma: ödeyip çıkan
 -- aracın yanlış okunması — kart yok (048'in 4. adımı gibi).
 perform pg_temp.kamera();
@@ -7550,11 +7577,11 @@ end if;
 -- (i) "Giriş aç": ICERIDE_BILETSIZ kaydından açılır (044'ün bütün
 --     korumalarıyla), ACIK_BILET_YOK kaydından açılmaz.
 perform pg_temp.login(u_personel);
-select public.istisna_bilet_ac(v_id, 'ZZ76FF606') into v_json;
+select public.istisna_bilet_ac(v_id, 'ZZ76GH707') into v_json;
 perform pg_temp.logout();
 if (v_json ->> 'zaten_vardi')::boolean is distinct from false
    or not exists (select 1 from public.biletler
-                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ76FF606'
+                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ76GH707'
                      and durum = 'ACIK' and islem_id = v_islem)
    or not exists (select 1 from public.istisnalar
                    where id = v_id and cozuldu_by = u_personel and cozuldu_at is not null) then
@@ -7572,7 +7599,7 @@ exception when others then
 end;
 perform pg_temp.logout();
 
-raise notice 'PASS 76: tek kapıda köprünün yön ipucu yalnızca yanlış tahmini durdurur — çıkan biletsiz araca hayalet giriş yok, girenin eski bileti kapanmaz, içerideki araç asla kapatılmaz; bileti yoksa insana gider ve "Giriş aç"la açılır';
+raise notice 'PASS 76: tek kapıda köprünün yön ipucu — çıkan biletsiz araca hayalet giriş yok; girenin eski bileti çıkışı görülmedi diye kapanır, yenisi açılır (090); içerideki biletli araç asla kapatılmaz, biletsizine bilet açılır (090); eski ICERIDE_BILETSIZ kartından "Giriş aç"';
 
 -- =====================================================================
 -- 77  Kameranın günlük özeti Yönetici'ye (057, 058)
@@ -9693,14 +9720,15 @@ if v_json ->> 'karar' is distinct from 'CIKIS' then
   raise exception 'FAIL 90g: hazırlık — kamera çıkışı kapatmadı (%)', v_json;
 end if;
 -- 077 E2: yakındaki plakasız tek kapı kartları kapatılır (76g'deki gibi),
--- yoksa içeride okuma onlara bağlanır ve ICERIDE_BILETSIZ gelmez.
+-- yoksa içeride okuma onlara bağlanır.
+-- 090: içeride bileti olmayan araca bilet açılır (ICERIDE_GORULDU, PASS 143).
 update public.istisnalar set cozuldu_at = now()
  where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
    and kaynak_zaman > now() - interval '30 minutes';
 perform pg_temp.kamera();
 select public.kamera_tek_kapi('ZZ90BB202', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
+if v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
    or exists (select 1 from public.istisnalar
                where plaka = 'ZZ90BB202' and tur::text = 'CIKMAMIS_OLABILIR') then
   raise exception 'FAIL 90g: pencere dışında CIKMAMIS_OLABILIR kartı açıldı (%)', v_json;
@@ -10452,25 +10480,23 @@ if not has_function_privilege('service_role', v_txt, 'execute')
   raise exception 'FAIL 96a: kamera_tahmin_cikis yetkileri yanlış';
 end if;
 
--- (b) Tam eşleşme, 0.93, ÇIKTI, 30 dk önce girmiş: bilet kapanır; denetim
---     kaydı güveni taşır; aynı olayın tekrarı aynı bileti döndürür.
+-- (b) 090 (sahibin kararı 28.11): kural KAPANDI. 26–28.11'de iki kez
+--     çalıştı, ikisi de yanlıştı (park etmiş aracın plakası; iki plakalı
+--     iz). Tam eşleşme, 0.93, ÇIKTI, 30 dk önce girmiş: yine hiçbir şey —
+--     bilet açık kalır, denetim kaydı yok; webhook kartı yazar.
 perform pg_temp.kamera();
 v_bilet := public.bilet_ac('ZZ96KK101', gen_random_uuid(), 'KAMERA', now() - interval '30 minutes');
 v_islem := gen_random_uuid();
 v_id := public.kamera_tahmin_cikis('ZZ96KK101', 0.93, v_islem, now(),
                                    jsonb_build_object('hareket', 'CIKTI'));
-v_id2 := public.kamera_tahmin_cikis('ZZ96KK101', 0.93, v_islem, now(),
-                                    jsonb_build_object('hareket', 'CIKTI'));
 perform pg_temp.logout();
-if v_id is distinct from v_bilet or v_id2 is distinct from v_bilet
-   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI'
-                                                 and cikis_kaynak::text = 'KAMERA' and cikis_at = now()) then
-  raise exception 'FAIL 96b: emin çıkış tahmini bileti kapatmadı ya da tekrar farklı döndü (% / %)', v_id, v_id2;
+if v_id is not null
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 96b: çıkış tahmini bileti kapattı (090 kapattı) (%)', v_id;
 end if;
-if (select count(*) from public.audit_log
-     where action = 'kamera_tahmin_cikis' and row_id = v_bilet
-       and (detay ->> 'guven')::numeric = 0.93 and detay ->> 'islem_id' = v_islem::text) <> 1 then
-  raise exception 'FAIL 96b: kamera_tahmin_cikis denetim kaydı tek değil ya da güveni taşımıyor';
+if exists (select 1 from public.audit_log
+            where action = 'kamera_tahmin_cikis' and row_id = v_bilet) then
+  raise exception 'FAIL 96b: kapalı kural denetim kaydı yazdı';
 end if;
 
 -- (c) Bir karakter uzak başka açık bilet var: hiçbir şey (kart yolu).
@@ -10514,7 +10540,7 @@ if public.kamera_tahmin_cikis('ZZ96KN401', 0.99, gen_random_uuid(), now(),
 end if;
 perform pg_temp.logout();
 
-raise notice 'PASS 96: ÇIKTI kartının ≥0.90 tahmini yalnızca tam ve benzersiz açık bileti, giriş penceresi geçtiyse kapatır; tekrar aynı bileti döndürür; yalnızca kamera çağırır';
+raise notice 'PASS 96: ÇIKTI kartının tahmini hiçbir bileti kapatmaz (090); yalnızca kamera çağırır';
 
 -- =====================================================================
 -- 97  Tek kapı: içeride okunan plaka az önceki giriş kartına bağlanır (077 E2)
@@ -10539,22 +10565,25 @@ v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '3 minutes', 
                                 jsonb_build_object('hareket', 'GIRDI'));
 select public.kamera_tek_kapi('ZZ97MM101', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'karar' is distinct from 'ISTISNA'
-   or v_json ->> 'sebep' is distinct from 'ICERIDE_GIRIS_KARTI' then
+-- 090 (sahibin kararı 28.11): bağlanan kart artık BİLETE döner — bilet
+-- kartın saatinden açılır, kart sistemce çözülür (PASS 139-142).
+if v_json ->> 'karar' is distinct from 'GIRIS'
+   or v_json ->> 'sebep' is distinct from 'GIRIS_KARTI' then
   raise exception 'FAIL 97a: içeride okuma giriş kartına bağlanmadı (%)', v_json;
 end if;
 if not exists (select 1 from public.istisnalar
-                where id = v_id and plaka = 'ZZ97MM101' and cozuldu_at is null
-                  and ham_yanit ->> 'sonradan_sebep' = 'ICERIDE'
-                  and ham_yanit ->> 'sonradan_okunan' = 'ZZ97MM101')
+                where id = v_id and cozuldu_at is not null and cozuldu_by is null)
    or exists (select 1 from public.istisnalar
                where plaka = 'ZZ97MM101' and tur::text = 'ICERIDE_BILETSIZ')
-   or exists (select 1 from public.biletler where plaka = 'ZZ97MM101') then
-  raise exception 'FAIL 97a: kart plakayı almadı ya da ikinci kart / bilet açıldı';
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ97MM101'
+                     and durum = 'ACIK' and giris_at = now() - interval '3 minutes'
+                     and islem_id = v_islem) then
+  raise exception 'FAIL 97a: kart çözülmedi, bilet kartın saatinden açılmadı ya da ikinci kart açıldı';
 end if;
 
--- (b) ÇIKTI kartı ve tahmini başka plaka olan kart bağlanmaz; eskisi gibi
---     İçeride bileti olmayan araç.
+-- (b) ÇIKTI kartı ve tahmini başka plaka olan kart bağlanmaz.
+--     090: kartsız içerideki araca bilet açılır (ICERIDE_GORULDU).
 v_islem := gen_random_uuid();
 perform pg_temp.kamera();
 v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '2 minutes', null, null,
@@ -10563,7 +10592,7 @@ v_id2 := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1
                                  'ZZ97MX999', 0.7, jsonb_build_object('hareket', 'GIRDI'));
 select public.kamera_tek_kapi('ZZ97ML202', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
+if v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
    or exists (select 1 from public.istisnalar where id in (v_id, v_id2) and plaka is not null) then
   raise exception 'FAIL 97b: çıkış kartı ya da başka tahminli kart plakayı aldı (%)', v_json;
 end if;
@@ -10574,12 +10603,13 @@ v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '20
                                 null, null, jsonb_build_object('hareket', 'GIRDI'));
 select public.kamera_tek_kapi('ZZ97MN303', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
 perform pg_temp.logout();
-if v_json ->> 'sebep' is distinct from 'ICERIDE_BILETSIZ'
+-- 090: 15 dk'dan eski, tahminsiz kart bağlanmaz; bilet görülmeden açılır.
+if v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
    or exists (select 1 from public.istisnalar where id = v_id and plaka is not null) then
   raise exception 'FAIL 97c: eski kart plakayı aldı (%)', v_json;
 end if;
 
-raise notice 'PASS 97: içeride emin okunan plaka son 15 dk içindeki plakasız giriş kartına bağlanır; çıkış kartı, başka tahmin ve eski kart bağlanmaz';
+raise notice 'PASS 97: içeride emin okunan plaka son 15 dk içindeki plakasız giriş kartından bilet açar (090); çıkış kartı, başka tahmin ve eski tahminsiz kart bağlanmaz';
 
 -- =====================================================================
 -- 98  Tek kapı: aynı iz girip 2 dk içinde çıktı — bilet kapanır (077 K)
@@ -10654,6 +10684,2405 @@ if not has_function_privilege('authenticated', 'public.acik_bilet_ara(text)', 'e
 end if;
 
 raise notice 'PASS 99: açık biletli araç içeride görülünce bilet o saati taşır (geri gitmez), İçeride listesi gösterir';
+
+-- =====================================================================
+-- 100  Oto yıkama ücreti tarifede (078)
+--      Yalnızca Yönetici girer; tarife_guncelle'nin son, varsayılanlı
+--      parametresi. Ücretin geri kalanı olduğu gibi kalır (aynı değerler).
+-- =====================================================================
+select * into v_tr from public.tarifeler where gecerli_bitis is null;
+perform pg_temp.login(u_personel);
+begin
+  perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+    v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler, 15000);
+  raise exception 'FAIL 100a: Personel oto yıkama ücretini değiştirebildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%Yönetici%' then
+    raise exception 'FAIL 100a: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+  v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler, 15000);
+perform pg_temp.logout();
+select yikama_kurus into v_n from public.tarifeler where gecerli_bitis is null;
+if v_n is distinct from 15000 then
+  raise exception 'FAIL 100b: Yönetici yıkama ücretini kaydedemedi (%)', v_n;
+end if;
+
+raise notice 'PASS 100: oto yıkama ücretini yalnızca Yönetici tarifeye girer';
+
+-- =====================================================================
+-- 101  Bilete yıkama ekle / kaldır (078 bilet_yikama, bilet_ucret_onizle)
+--      Fiyat eklendiği anda bilete kilitlenir; sonraki tarife değişikliği
+--      dokunmaz. Kaldırma puanı ücretin üstüne çıkaramaz. Fiyat yoksa ya da
+--      kullanıcı personel değilse reddedilir.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+v_bilet := public.bilet_ac('ZZ100YK1', gen_random_uuid());
+v_n := public.bilet_yikama(v_bilet, true);
+perform pg_temp.logout();
+if v_n is distinct from 15000
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and yikama_kurus = 15000 and yikama_at is not null) then
+  raise exception 'FAIL 101a: yıkama bilete eklenmedi (%)', v_n;
+end if;
+
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+  v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler, 20000);
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+v_n := public.bilet_yikama(v_bilet, true);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform pg_temp.logout();
+select public.ucret_hesapla(giris_at, now(), tarife_id) into v_ucret2
+  from public.biletler where id = v_bilet;
+if v_n is distinct from 15000
+   or (select yikama_kurus from public.biletler where id = v_bilet) is distinct from 15000 then
+  raise exception 'FAIL 101b: tarife değişince biletteki yıkama fiyatı değişti (%)', v_n;
+end if;
+if v_ucret is distinct from v_ucret2 + 15000 then
+  raise exception 'FAIL 101c: önizleme otopark + yıkama değil (% / %)', v_ucret, v_ucret2;
+end if;
+
+perform pg_temp.login(u_personel);
+v_n := public.bilet_yikama(v_bilet, false);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform pg_temp.logout();
+if v_n is not null or v_ucret is distinct from v_ucret2
+   or exists (select 1 from public.biletler
+               where id = v_bilet and (yikama_kurus is not null or yikama_at is not null)) then
+  raise exception 'FAIL 101d: yıkama kaldırılamadı (% / %)', v_n, v_ucret;
+end if;
+
+-- Puan ücretin üstüne çıkamaz: yıkamasız ücretten büyük indirim varken kaldırma reddedilir.
+-- Yeniden ekleme o anki tarife fiyatını kilitler (şimdi 200 ₺).
+perform pg_temp.login(u_personel);
+v_n := public.bilet_yikama(v_bilet, true);
+perform pg_temp.logout();
+if v_n is distinct from 20000 then
+  raise exception 'FAIL 101e: yeniden eklenen yıkama o anki tarife fiyatını almadı (%)', v_n;
+end if;
+update public.biletler set indirim_kurus = v_ucret2 + 1 where id = v_bilet;
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_yikama(v_bilet, false);
+  raise exception 'FAIL 101e: puan ücretten fazlayken yıkama kaldırıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%puan%' then
+    raise exception 'FAIL 101e: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+update public.biletler set indirim_kurus = 0 where id = v_bilet;
+
+-- Tarifede fiyat yoksa eklenemez.
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+  v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler, null);
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+v_bilet2 := public.bilet_ac('ZZ100YK2', gen_random_uuid());
+begin
+  perform public.bilet_yikama(v_bilet2, true);
+  raise exception 'FAIL 101f: tarifede fiyat yokken yıkama eklendi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%tarifede tanımlı değil%' then
+    raise exception 'FAIL 101f: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_yikama(v_bilet2, true);
+  raise exception 'FAIL 101g: onaysız kullanıcı yıkama ekledi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+-- Sonraki adımlar için fiyat yine 150 ₺.
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+  v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler, 15000);
+perform pg_temp.logout();
+
+raise notice 'PASS 101: yıkama eklenir/kaldırılır, fiyatı kilitlenir, önizleme ekler; puan, fiyatsız tarife ve onaysız kullanıcı reddedilir';
+
+-- =====================================================================
+-- 102  Yıkamalı bilet kapanır (078 bilet_ucreti)
+--      bilet_kapat, abonman ve kamera çıkışı aynı fiyatı kullanır:
+--      otopark (abonmanda 0) + yıkama. Kapanmış bilete yıkama eklenmez.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+select b.ucret_kurus into v_n from public.bilet_kapat(v_bilet, 'NAKIT') b;
+perform pg_temp.logout();
+-- Bu biletin kilitli yıkama fiyatı 200 ₺ (101e).
+if v_n is distinct from v_ucret2 + 20000
+   or (select coalesce(sum(tutar_kurus), 0) from public.tahsilatlar
+        where bilet_id = v_bilet) is distinct from v_n then
+  raise exception 'FAIL 102a: bilet_kapat yıkamayı almadı (% / %)', v_n, v_ucret2;
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_yikama(v_bilet, true);
+  raise exception 'FAIL 102b: kapanmış bilete yıkama eklendi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%açık değil%' then
+    raise exception 'FAIL 102b: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+insert into public.abonmanlar (plaka, baslangic, bitis, ucret_kurus)
+values ('ZZ100AB1', (now() at time zone 'Europe/Istanbul')::date - 1,
+        (now() at time zone 'Europe/Istanbul')::date + 30, 100000);
+perform pg_temp.login(u_personel);
+v_bilet2 := public.bilet_ac('ZZ100AB1', gen_random_uuid());
+perform public.bilet_yikama(v_bilet2, true);
+select a.ucret_kurus, a.yikama_kurus into v_n, v_n2
+  from public.acik_bilet_ara('ZZ100AB1') a where a.id = v_bilet2;
+perform pg_temp.logout();
+if (select abonman_id from public.biletler where id = v_bilet2) is null
+   or v_n is distinct from 15000 or v_n2 is distinct from 15000 then
+  raise exception 'FAIL 102c: abonmanlı yıkamalı araç listede yalnızca yıkama değil (% / %)', v_n, v_n2;
+end if;
+perform pg_temp.login(u_personel);
+select b.ucret_kurus into v_n from public.bilet_kapat(v_bilet2, 'NAKIT') b;
+perform pg_temp.logout();
+if v_n is distinct from 15000 then
+  raise exception 'FAIL 102d: abonmanlı araç yıkama ücretiyle kapanmadı (%)', v_n;
+end if;
+
+perform pg_temp.kamera();
+v_id := public.bilet_ac('ZZ100KM1', gen_random_uuid(), 'KAMERA', now() - interval '40 minutes');
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.bilet_yikama(v_id, true);
+perform pg_temp.logout();
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ100KM1', gen_random_uuid(), now());
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler b
+                where b.id = v_id and b.durum = 'KAPALI' and b.cikis_kaynak::text = 'KAMERA'
+                  and b.tahsil_kurus = 0
+                  and b.ucret_kurus = public.ucret_hesapla(b.giris_at, b.cikis_at, b.tarife_id) + 15000) then
+  raise exception 'FAIL 102e: kamera yıkamalı bileti yıkamasız kapattı';
+end if;
+
+raise notice 'PASS 102: yıkama ücreti tahsilata, abonmana ve kamera çıkışının borcuna eklenir; kapanmış bilete eklenmez';
+
+-- =====================================================================
+-- 103  Ücretsiz çıkış yıkamayı da sıfırlar; yetkiler (078)
+-- =====================================================================
+perform pg_temp.login(u_personel);
+v_bilet := public.bilet_ac('ZZ100UC1', gen_random_uuid());
+perform public.bilet_yikama(v_bilet, true);
+perform public.bilet_ucretsiz_cikis(v_bilet, 'DIGER', 'Deneme yıkama');
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler where id = v_bilet and durum = 'KAPALI' and ucret_kurus = 0)
+   or exists (select 1 from public.tahsilatlar where bilet_id = v_bilet) then
+  raise exception 'FAIL 103a: ücretsiz çıkış yıkamayı sıfırlamadı';
+end if;
+-- Bağışlanan yıkama "ücret değişti" olarak yazılır (ücretsiz sürede bile:
+-- otopark 0 olsa da 150 ₺ bağışlandı).
+if not exists (select 1 from public.biletler where id = v_bilet and ucret_degistirildi) then
+  raise exception 'FAIL 103c: bağışlanan yıkama ücret değişikliği olarak yazılmadı';
+end if;
+
+if not has_function_privilege('authenticated', 'public.bilet_yikama(uuid, boolean)', 'execute')
+   or has_function_privilege('anon', 'public.bilet_yikama(uuid, boolean)', 'execute')
+   or has_function_privilege('service_role', 'public.bilet_yikama(uuid, boolean)', 'execute')
+   or not has_function_privilege('authenticated', 'public.bilet_ucret_onizle(uuid)', 'execute')
+   or has_function_privilege('anon', 'public.bilet_ucret_onizle(uuid)', 'execute')
+   or has_function_privilege('service_role', 'public.bilet_ucret_onizle(uuid)', 'execute')
+   or has_function_privilege('authenticated', 'public.bilet_ucreti(public.biletler, timestamptz)', 'execute')
+   or has_function_privilege('anon', 'public.bilet_ucreti(public.biletler, timestamptz)', 'execute')
+   or has_function_privilege('service_role', 'public.bilet_ucreti(public.biletler, timestamptz)', 'execute') then
+  raise exception 'FAIL 103b: yıkama fonksiyonlarının yetkileri yanlış';
+end if;
+
+raise notice 'PASS 103: ücretsiz çıkış yıkamayı da sıfırlar; yıkama fonksiyonları yalnızca giriş yapmış kullanıcıya, iç fiyat hiç kimseye açık değil';
+
+-- =====================================================================
+-- 104  Anlaşmalı fiyat: kur, değiştir, kaldır (080 bilet_anlasma)
+--      Süre girişten sayılır; ücret anlaşma fiyatıdır (+ yıkama). Yönetici
+--      haberdar edilir. Abonman, onaysız kullanıcı, 0 ₺ / 0 saat / 90 günden
+--      uzun reddedilir. Kaldırınca tarife geri gelir.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+v_bilet := public.bilet_ac('ZZ104AN1', gen_random_uuid());
+perform public.bilet_anlasma(v_bilet, 60000, 72);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_bilet and anlasma_kurus = 60000
+                  and anlasma_bitis = giris_at + interval '72 hours'
+                  and anlasma_fazla_at is null and anlasma_bildirim_at is null)
+   or v_ucret is distinct from 60000 then
+  raise exception 'FAIL 104a: anlaşma kurulmadı ya da önizleme anlaşma fiyatı değil (%)', v_ucret;
+end if;
+if not exists (select 1 from public.notifications
+                where profile_id = u_yonetici and tur::text = 'ANLASMA' and govde like 'ZZ104AN1%') then
+  raise exception 'FAIL 104b: Yönetici yeni anlaşmadan haberdar edilmedi';
+end if;
+
+-- Yıkama anlaşmanın üstüne eklenir.
+perform pg_temp.login(u_personel);
+v_n2 := public.bilet_yikama(v_bilet, true);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform public.bilet_yikama(v_bilet, false);
+perform pg_temp.logout();
+if v_ucret is distinct from 60000 + v_n2 then
+  raise exception 'FAIL 104c: yıkama anlaşmanın üstüne eklenmedi (% / %)', v_ucret, v_n2;
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_anlasma(v_bilet, 0, 72);
+  raise exception 'FAIL 104d: 0 ₺ anlaşma kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.bilet_anlasma(v_bilet, 60000, 0);
+  raise exception 'FAIL 104d: 0 saatlik anlaşma kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.bilet_anlasma(v_bilet, 60000, 2161);
+  raise exception 'FAIL 104d: 90 günden uzun anlaşma kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_anlasma(v_bilet, 50000, 24);
+  raise exception 'FAIL 104e: onaysız kullanıcı anlaşma kurdu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+insert into public.abonmanlar (plaka, baslangic, bitis, ucret_kurus)
+values ('ZZ104AB1', (now() at time zone 'Europe/Istanbul')::date - 1,
+        (now() at time zone 'Europe/Istanbul')::date + 30, 100000);
+perform pg_temp.login(u_personel);
+v_bilet2 := public.bilet_ac('ZZ104AB1', gen_random_uuid());
+begin
+  perform public.bilet_anlasma(v_bilet2, 50000, 24);
+  raise exception 'FAIL 104f: abonmanlı araca anlaşma kuruldu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%bonman%' then
+    raise exception 'FAIL 104f: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- Kaldırma: dört sütun boşalır, ücret yine tarife.
+perform pg_temp.login(u_personel);
+perform public.bilet_anlasma(v_bilet, null, null);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform pg_temp.logout();
+select public.ucret_hesapla(giris_at, now(), tarife_id) into v_ucret2
+  from public.biletler where id = v_bilet;
+if v_ucret is distinct from v_ucret2
+   or exists (select 1 from public.biletler
+               where id = v_bilet and (anlasma_kurus is not null or anlasma_bitis is not null
+                                       or anlasma_fazla_at is not null or anlasma_bildirim_at is not null)) then
+  raise exception 'FAIL 104g: anlaşma kaldırılamadı (% / %)', v_ucret, v_ucret2;
+end if;
+
+raise notice 'PASS 104: anlaşma girişten sayılır, ücret anlaşma fiyatı (+ yıkama), Yönetici haberdar; geçersiz değer, abonman ve onaysız kullanıcı reddedilir; kaldırınca tarife döner';
+
+-- =====================================================================
+-- 105  Süre dolunca: fazla süre kendiliğinden eklenmez (080)
+--      Personel "Fazla süreyi ekle"ye basana kadar ücret anlaşma fiyatıdır.
+--      Basınca tarife anlaşmanın bitişinden çıkışa kadar sayar. Süre
+--      dolmadan eklenemez. Kamera, eklenmemiş fazla süreyi almaz.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+perform public.bilet_anlasma(v_bilet, 60000, 1);
+perform pg_temp.logout();
+update public.biletler
+   set giris_at = now() - interval '3 hours 10 minutes',
+       anlasma_bitis = now() - interval '2 hours 10 minutes'
+ where id = v_bilet;
+
+perform pg_temp.login(u_personel);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+v_n := public.bilet_fazla_onizle(v_bilet);
+perform pg_temp.logout();
+select public.ucret_hesapla(anlasma_bitis, now(), tarife_id) into v_ucret2
+  from public.biletler where id = v_bilet;
+if v_ucret is distinct from 60000 or v_n is distinct from v_ucret2 then
+  raise exception 'FAIL 105a: süre dolunca fazla süre kendiliğinden eklendi ya da önizleme yanlış (% / % / %)',
+    v_ucret, v_n, v_ucret2;
+end if;
+
+perform pg_temp.login(u_personel);
+v_bilet2 := public.bilet_ac('ZZ104AN2', gen_random_uuid());
+perform public.bilet_anlasma(v_bilet2, 60000, 72);
+v_n := public.bilet_fazla_onizle(v_bilet2);
+begin
+  perform public.bilet_anlasma_fazla(v_bilet2);
+  raise exception 'FAIL 105b: süre dolmadan fazla süre eklendi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%dolmadı%' then
+    raise exception 'FAIL 105b: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+if v_n is distinct from 0 then
+  raise exception 'FAIL 105b: süresi dolmamış anlaşmada fazla süre önizlemesi 0 değil (%)', v_n;
+end if;
+
+-- İki kez basmak bir kez sayılır.
+perform pg_temp.login(u_personel);
+perform public.bilet_anlasma_fazla(v_bilet);
+perform public.bilet_anlasma_fazla(v_bilet);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform pg_temp.logout();
+if v_ucret is distinct from 60000 + v_ucret2
+   or not exists (select 1 from public.biletler where id = v_bilet and anlasma_fazla_at = now()) then
+  raise exception 'FAIL 105c: fazla süre eklenmedi (% / %)', v_ucret, v_ucret2;
+end if;
+
+perform pg_temp.login(u_personel);
+select b.ucret_kurus into v_n from public.bilet_kapat(v_bilet, 'NAKIT') b;
+perform pg_temp.logout();
+if v_n is distinct from 60000 + v_ucret2
+   or (select coalesce(sum(tutar_kurus), 0) from public.tahsilatlar
+        where bilet_id = v_bilet) is distinct from v_n then
+  raise exception 'FAIL 105d: bilet_kapat anlaşma + fazla süreyi almadı (% / %)', v_n, v_ucret2;
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_anlasma(v_bilet, 50000, 24);
+  raise exception 'FAIL 105e: kapanmış bilete anlaşma kuruldu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%açık değil%' then
+    raise exception 'FAIL 105e: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+perform pg_temp.kamera();
+v_id := public.bilet_ac('ZZ104KM1', gen_random_uuid(), 'KAMERA', now() - interval '3 hours');
+perform pg_temp.logout();
+perform pg_temp.login(u_personel);
+perform public.bilet_anlasma(v_id, 50000, 1);
+perform pg_temp.logout();
+perform pg_temp.kamera();
+perform public.kamera_cikis_bildir('ZZ104KM1', gen_random_uuid(), now());
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI' and cikis_kaynak::text = 'KAMERA'
+                  and tahsil_kurus = 0 and ucret_kurus = 50000) then
+  raise exception 'FAIL 105f: kamera eklenmemiş fazla süreyi aldı ya da anlaşmayı yok saydı';
+end if;
+
+raise notice 'PASS 105: süre dolunca fazla süre kendiliğinden eklenmez; basınca bitişten sayar, bir kez; süre dolmadan eklenemez; kamera anlaşma fiyatıyla kapatır';
+
+-- =====================================================================
+-- 106  Süre doldu bildirimi: herkese, bir kez (080 anlasma_bildirim_gonder)
+-- =====================================================================
+perform pg_temp.login(u_personel);
+v_id := public.bilet_ac('ZZ104BD1', gen_random_uuid());
+perform public.bilet_anlasma(v_id, 40000, 1);
+perform pg_temp.logout();
+update public.biletler
+   set giris_at = now() - interval '2 hours', anlasma_bitis = now() - interval '1 hour'
+ where id = v_id;
+
+perform public.anlasma_bildirim_gonder();
+if not exists (select 1 from public.notifications
+                where profile_id = u_personel and tur::text = 'ANLASMA'
+                  and govde = 'ZZ104BD1: anlaşma süresi doldu')
+   or not exists (select 1 from public.notifications
+                   where profile_id = u_yonetici and tur::text = 'ANLASMA'
+                     and govde = 'ZZ104BD1: anlaşma süresi doldu')
+   or not exists (select 1 from public.biletler where id = v_id and anlasma_bildirim_at is not null) then
+  raise exception 'FAIL 106a: süre doldu bildirimi Personel ve Yönetici''ye gitmedi';
+end if;
+select count(*) into v_n from public.notifications where govde = 'ZZ104BD1: anlaşma süresi doldu';
+perform public.anlasma_bildirim_gonder();
+select count(*) into v_n2 from public.notifications where govde = 'ZZ104BD1: anlaşma süresi doldu';
+if v_n2 <> v_n then
+  raise exception 'FAIL 106b: süre doldu bildirimi ikinci kez gitti (% → %)', v_n, v_n2;
+end if;
+if exists (select 1 from public.notifications where govde = 'ZZ104AN2: anlaşma süresi doldu') then
+  raise exception 'FAIL 106c: süresi dolmamış anlaşma için bildirim gitti';
+end if;
+if public.bildirim_yonetici_turu('ANLASMA') then
+  raise exception 'FAIL 106d: ANLASMA Yönetici''ye özel; Personel göremez';
+end if;
+
+raise notice 'PASS 106: süre dolunca herkese bir kez bildirim gider; süresi dolmamışa gitmez';
+
+-- =====================================================================
+-- 107  Puan anlaşma fiyatına göre sınırlı; yetkiler (080)
+-- =====================================================================
+select kurus_per_puan into v_n2 from public.puan_kurallari where gecerli_bitis is null;
+if coalesce(v_n2, 0) = 0 then
+  raise exception 'FAIL 107: aktif puan kuralı yok (PASS 25 kuralı bekler)';
+end if;
+insert into public.hesaplar (ad) values ('ZZ104 Puan') returning id into v_hesap;
+insert into public.hesap_araclari (hesap_id, plaka) values (v_hesap, 'ZZ104PN1');
+insert into public.puan_hareketleri (hesap_id, tur, puan, kural_id)
+select v_hesap, 'DUZELTME', 60000 / v_n2 + 10, k.id from public.puan_kurallari k
+ where k.gecerli_bitis is null;
+
+perform pg_temp.login(u_personel);
+v_bilet := public.bilet_ac('ZZ104PN1', gen_random_uuid());
+perform public.bilet_anlasma(v_bilet, 60000, 24);
+begin
+  perform public.puan_kullan(v_bilet, 60000 / v_n2 + 1);
+  raise exception 'FAIL 107a: puan anlaşma fiyatını aştı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%en fazla%' then
+    raise exception 'FAIL 107a: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+-- Yeni girmiş araç tarifeyle ücretsiz sürede olurdu; anlaşmayla 600 ₺'ye puan kullanılır.
+v_n := public.puan_kullan(v_bilet, 60000 / v_n2);
+perform pg_temp.logout();
+if v_n is distinct from (60000 / v_n2) * v_n2 then
+  raise exception 'FAIL 107b: anlaşmalı bilette puan kullanılamadı (%)', v_n;
+end if;
+
+-- Puan kullanılmışken anlaşmayı kaldırmak ücreti puanın altına düşürür: reddedilir.
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_anlasma(v_bilet, null, null);
+  raise exception 'FAIL 107c: puan ücretten fazlayken anlaşma kaldırıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%puan%' then
+    raise exception 'FAIL 107c: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+foreach v_txt in array array['public.bilet_anlasma(uuid, integer, integer)',
+                             'public.bilet_anlasma_fazla(uuid)',
+                             'public.bilet_fazla_onizle(uuid)'] loop
+  if not has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 107d: % yalnızca giriş yapmış kullanıcıya açık olmalı', v_txt;
+  end if;
+end loop;
+if has_function_privilege('authenticated', 'public.anlasma_bildirim_gonder()', 'execute')
+   or has_function_privilege('anon', 'public.anlasma_bildirim_gonder()', 'execute')
+   or has_function_privilege('service_role', 'public.anlasma_bildirim_gonder()', 'execute') then
+  raise exception 'FAIL 107d: anlasma_bildirim_gonder kimseye açık olmamalı';
+end if;
+
+raise notice 'PASS 107: puan anlaşma fiyatına göre sınırlı, kaldırma puanın altına düşüremez; anlaşma fonksiyonları yalnızca giriş yapmış kullanıcıya, bildirim işi kimseye açık değil';
+
+-- =====================================================================
+-- 108  Süre aşımı: normal bilet ilk kademede durur (082)
+--      Sahip (27.11): kademeli tarifede normal bilet ilk kademenin fiyatını
+--      geçmez; tarifenin tam fiyatı ancak bir kişi "Onayla"ya basınca
+--      alınır. Süreli / sabit tarife ve abonman değişmez.
+--      Bilinen kademeli tarife: 5 dk ücretsiz, ≤2 sa 200 ₺, ≤6 sa 450 ₺,
+--      ≤24 sa 700 ₺. Biletler açıldıkları tarifeyle fiyatlanır, bu yüzden
+--      tarife PASS 111 sonunda eskisine döner.
+-- =====================================================================
+select * into v_tr from public.tarifeler where gecerli_bitis is null;
+if v_tr.tur::text = 'KADEMELI' then
+  raise exception 'FAIL 108: fixture — PASS 75''ten sonra etkin tarife kademeli olmamalı';
+end if;
+
+-- Önce eski (kademeli olmayan) tarifeyle bir bilet: tavan ona uygulanmaz.
+perform pg_temp.login(u_personel);
+v_id2 := public.bilet_ac('ZZ108SB1', gen_random_uuid());
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '10 hours' where id = v_id2;
+
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(5, 0, 0, 0, 20000, 'KADEMELI', 0,
+  '[{"dakika":120,"kurus":20000},{"dakika":360,"kurus":45000},{"dakika":1440,"kurus":70000}]'::jsonb,
+  null);
+perform pg_temp.logout();
+
+perform pg_temp.login(u_personel);
+v_bilet  := public.bilet_ac('ZZ108AS1', gen_random_uuid());
+v_bilet2 := public.bilet_ac('ZZ108AS2', gen_random_uuid());
+v_id     := public.bilet_ac('ZZ108AS3', gen_random_uuid());
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '5 hours' where id in (v_bilet, v_id);
+update public.biletler set giris_at = now() - interval '1 hour'  where id = v_bilet2;
+
+-- (a) 5 saat: tarife 450 ₺ der, ücret 200 ₺'de durur; rapor ikisini de verir.
+perform pg_temp.login(u_personel);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+select o.ilk_kurus, o.tam_kurus into v_n, v_n2 from public.bilet_asim_onizle(v_bilet) o;
+select a.ucret_kurus, a.asim_bekliyor into v_ucret2, v_bool
+  from public.acik_bilet_ara('ZZ108AS1') a where a.id = v_bilet;
+perform pg_temp.logout();
+if v_ucret is distinct from 20000 or v_n is distinct from 20000 or v_n2 is distinct from 45000
+   or v_ucret2 is distinct from 20000 or v_bool is distinct from true then
+  raise exception 'FAIL 108a: ilk kademede durmadı ya da rapor yanlış (% / % / % / % / %)',
+    v_ucret, v_n, v_n2, v_ucret2, v_bool;
+end if;
+
+-- (b) 1 saat: ilk kademenin içinde — aşım yok, rapor boş.
+perform pg_temp.login(u_personel);
+v_ucret := public.bilet_ucret_onizle(v_bilet2);
+select count(*) into v_n from public.bilet_asim_onizle(v_bilet2);
+select a.asim_bekliyor into v_bool from public.acik_bilet_ara('ZZ108AS2') a where a.id = v_bilet2;
+perform pg_temp.logout();
+if v_ucret is distinct from 20000 or v_n <> 0 or v_bool is distinct from false then
+  raise exception 'FAIL 108b: ilk kademe içindeki bilette aşım görüldü (% / % / %)', v_ucret, v_n, v_bool;
+end if;
+
+-- (c) Kademeli olmayan tarifeyle açılmış bilet: tarife ne diyorsa o.
+perform pg_temp.login(u_personel);
+v_ucret := public.bilet_ucret_onizle(v_id2);
+select count(*) into v_n from public.bilet_asim_onizle(v_id2);
+perform pg_temp.logout();
+select public.ucret_hesapla(giris_at, now(), tarife_id) into v_ucret2 from public.biletler where id = v_id2;
+if v_ucret is distinct from v_ucret2 or v_n <> 0 then
+  raise exception 'FAIL 108c: kademeli olmayan tarifeye tavan uygulandı (% / % / %)', v_ucret, v_ucret2, v_n;
+end if;
+
+raise notice 'PASS 108: kademeli tarifede normal bilet ilk kademede durur, rapor tarifenin tam fiyatını verir; ilk kademe içi ve kademesiz tarife değişmez';
+
+-- =====================================================================
+-- 109  Karar: "Onayla" tam fiyat, "200 ₺ kalsın" ilk kademe (082)
+--      Personel ve Yönetici verir; bir kez. Yönetici her iki kararda
+--      haberdar. Aşım yoksa ya da kullanıcı onaysızsa reddedilir.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+perform public.bilet_asim_karar(v_bilet, true);
+v_ucret := public.bilet_ucret_onizle(v_bilet);
+perform public.bilet_asim_karar(v_id, false);
+v_ucret2 := public.bilet_ucret_onizle(v_id);
+select a.asim_bekliyor into v_bool from public.acik_bilet_ara('ZZ108AS3') a where a.id = v_id;
+perform pg_temp.logout();
+if v_ucret is distinct from 45000
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and asim_karar = 'TAM'
+                     and asim_karar_by = u_personel and asim_karar_at = now()) then
+  raise exception 'FAIL 109a: "Onayla" tam fiyatı getirmedi (%)', v_ucret;
+end if;
+if v_ucret2 is distinct from 20000 or v_bool is distinct from false
+   or not exists (select 1 from public.biletler where id = v_id and asim_karar = 'ILK') then
+  raise exception 'FAIL 109b: "ilk kademe kalsın" ücreti değiştirdi ya da bekliyor görünüyor (% / %)', v_ucret2, v_bool;
+end if;
+if (select count(*) from public.notifications
+     where profile_id = u_yonetici and tur::text = 'SURE_ASIMI'
+       and (govde like 'ZZ108AS1%' or govde like 'ZZ108AS3%')) <> 2 then
+  raise exception 'FAIL 109c: Yönetici iki karardan da haberdar edilmedi';
+end if;
+if not public.bildirim_yonetici_turu('SURE_ASIMI') then
+  raise exception 'FAIL 109c: SURE_ASIMI Yönetici''ye özel olmalı';
+end if;
+
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.bilet_asim_karar(v_bilet, false);
+  raise exception 'FAIL 109d: karar ikinci kez değişti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%zaten%' then
+    raise exception 'FAIL 109d: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_asim_karar(v_bilet2, true);
+  raise exception 'FAIL 109e: aşımı olmayan bilete karar verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%aşım%' then
+    raise exception 'FAIL 109e: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_pending);
+begin
+  perform public.bilet_asim_karar(v_bilet2, true);
+  raise exception 'FAIL 109f: onaysız kullanıcı karar verdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+
+raise notice 'PASS 109: "Onayla" tam fiyatı, "ilk kademe kalsın" 200 ₺''yi bırakır; bir kez, Yönetici haberdar; aşımsız bilet ve onaysız kullanıcı reddedilir';
+
+-- =====================================================================
+-- 110  Karar verilmeden çıkış yok (082 bilet_kapat)
+--      Ödemeli ve ödemesiz çıkış, aşım bekleyen bilette reddedilir. Elle
+--      ücret (sebepli) bir karardır. Karar verilmiş ya da aşımsız bilet
+--      eskisi gibi çıkar.
+-- =====================================================================
+perform pg_temp.login(u_personel);
+v_id2 := public.bilet_ac('ZZ108AS4', gen_random_uuid());
+perform pg_temp.logout();
+update public.biletler set giris_at = now() - interval '5 hours' where id = v_id2;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_kapat(v_id2, 'NAKIT');
+  raise exception 'FAIL 110a: aşım kararı verilmeden ödemeli çıkış yapıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%önce karar%' then
+    raise exception 'FAIL 110a: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+begin
+  perform public.bilet_kapat(v_id2, null, null, null, null, 'MOBIL', false);
+  raise exception 'FAIL 110a: aşım kararı verilmeden ödemesiz çıkış yapıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%önce karar%' then
+    raise exception 'FAIL 110a: beklenmeyen hata (ödemesiz) (%)', sqlerrm;
+  end if;
+end;
+
+select b.ucret_kurus into v_n  from public.bilet_kapat(v_bilet, 'NAKIT') b;
+select b.ucret_kurus into v_n2 from public.bilet_kapat(v_id, 'NAKIT') b;
+select b.ucret_kurus into v_ucret from public.bilet_kapat(v_bilet2, 'NAKIT') b;
+select b.ucret_kurus into v_ucret2 from public.bilet_kapat(v_id2, 'NAKIT', 30000, 'ZZ108 elle') b;
+perform pg_temp.logout();
+if v_n is distinct from 45000 or v_n2 is distinct from 20000 or v_ucret is distinct from 20000
+   or v_ucret2 is distinct from 30000 then
+  raise exception 'FAIL 110b: kararlı / aşımsız / elle ücretli çıkış yanlış (% / % / % / %)',
+    v_n, v_n2, v_ucret, v_ucret2;
+end if;
+
+raise notice 'PASS 110: aşım kararı verilmeden ödemeli ya da ödemesiz çıkış yok; karar, elle ücret ve aşımsız bilet eskisi gibi çıkar';
+
+-- =====================================================================
+-- 111  Kameranın kapattığı bilet (082)
+--      Kamera karar veremez: bileti ilk kademe fiyatıyla, ödemesiz kapatır.
+--      Ödeme toplanmadan karar verilmeli (bilet_tahsil reddeder). Karar
+--      kapanmış bilette yalnızca ücreti değiştirir (koruma istisnası);
+--      kendi vardiyası ya da Yönetici. Yetkiler.
+-- =====================================================================
+perform pg_temp.kamera();
+v_id := public.bilet_ac('ZZ108KMA', gen_random_uuid(), 'KAMERA', now() - interval '5 hours');
+perform public.kamera_cikis_bildir('ZZ108KMA', gen_random_uuid(), now());
+perform pg_temp.logout();
+if not exists (select 1 from public.biletler
+                where id = v_id and durum = 'KAPALI' and cikis_kaynak::text = 'KAMERA'
+                  and tahsil_kurus = 0 and ucret_kurus = 20000 and asim_karar is null) then
+  raise exception 'FAIL 111a: kamera bileti ilk kademe fiyatıyla ödemesiz kapatmadı';
+end if;
+
+perform pg_temp.login(u_personel);
+begin
+  perform public.bilet_tahsil(v_id, 'NAKIT');
+  raise exception 'FAIL 111b: aşım kararı verilmeden ödeme toplandı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like '%önce karar%' then
+    raise exception 'FAIL 111b: beklenmeyen hata (%)', sqlerrm;
+  end if;
+end;
+perform pg_temp.logout();
+
+-- Başka vardiyadaki Personel karar veremez (vardiyası yoksa sınanır).
+perform pg_temp.login(u_personel2);
+if public.acik_vardiyam() is null then
+  begin
+    perform public.bilet_asim_karar(v_id, true);
+    raise exception 'FAIL 111c: başka vardiyadaki Personel kapanmış bilete karar verdi';
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+    if sqlerrm not like '%yetki%' then
+      raise exception 'FAIL 111c: beklenmeyen hata (%)', sqlerrm;
+    end if;
+  end;
+end if;
+perform pg_temp.logout();
+
+perform pg_temp.login(u_personel);
+perform public.bilet_asim_karar(v_id, true);
+v_n := public.bilet_tahsil(v_id, 'NAKIT');
+perform pg_temp.logout();
+if v_n is distinct from 45000
+   or not exists (select 1 from public.biletler
+                   where id = v_id and durum = 'KAPALI' and asim_karar = 'TAM'
+                     and ucret_kurus = 45000 and tahsil_kurus = 45000
+                     and cikis_at is not null and ucret_degistirildi = false) then
+  raise exception 'FAIL 111d: kapanmış bilette "Onayla" tam fiyatı getirmedi (%)', v_n;
+end if;
+
+-- Koruma: istisna yalnızca kendi bileti için, yalnızca karar ve ücret.
+begin
+  update public.biletler set ucret_kurus = 1 where id = v_id;
+  raise exception 'FAIL 111e: kapanmış bilet istisnasız değişti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+
+foreach v_txt in array array['public.bilet_asim_karar(uuid, boolean)',
+                             'public.bilet_asim_onizle(uuid)',
+                             'public.bilet_kapat(uuid, public.odeme_yontemi, integer, text, text, public.kaynak, boolean)',
+                             'public.bilet_tahsil(uuid, public.odeme_yontemi)',
+                             'public.acik_bilet_ara(text)'] loop
+  if not has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 111f: % yalnızca giriş yapmış kullanıcıya açık olmalı', v_txt;
+  end if;
+end loop;
+foreach v_txt in array array['public.ilk_kademe_kurus(uuid)',
+                             'public.bilet_asim_bekliyor(public.biletler, timestamptz)'] loop
+  if has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 111f: % kimseye açık olmamalı', v_txt;
+  end if;
+end loop;
+
+-- Tarife eskisine döner (yukarıdaki biletler kendi tarifeleriyle kalır).
+perform pg_temp.login(u_yonetici);
+perform public.tarife_guncelle(v_tr.ucretsiz_dakika, v_tr.ilk_saat_kurus, v_tr.sonraki_saat_kurus,
+  v_tr.gunluk_tavan_kurus, v_tr.kayip_bilet_kurus, v_tr.tur, v_tr.sabit_kurus, v_tr.kademeler,
+  v_tr.yikama_kurus);
+perform pg_temp.logout();
+
+raise notice 'PASS 111: kamera ilk kademe fiyatıyla kapatır; karar verilmeden ödeme toplanmaz; kapanmış bilette karar yalnızca ücreti değiştirir, kendi vardiyası; yetkiler';
+
+-- =====================================================================
+-- 112-115  Abonman bitiş bildirimi (083, sahip 27.11)
+--
+--   Personel ve Yönetici ikisi de bilgilenir: bitişe 4 gün kala ve son gün.
+--   Yenilemeden sonra (aynı satır, bitiş ileri gider) bildirim yeniden gelir —
+--   eskiden bağlantıya bakan "bir kez, sonsuza dek" kontrolü bunu engelliyordu.
+--   Alıcılar o an okunur: etkin, rolü olan ve tercihini kapatmamış ilk
+--   Yönetici ve ilk Personel.
+-- =====================================================================
+
+perform pg_temp.logout();
+v_gun := (now() at time zone 'Europe/Istanbul')::date;
+
+-- 112: Personel'e de gider; fonksiyon kimseye açık değil.
+if public.bildirim_yonetici_turu('ABONMAN_BITIYOR') then
+  raise exception 'FAIL 112a: ABONMAN_BITIYOR hâlâ yalnızca Yönetici türü';
+end if;
+if to_regprocedure('public.abonman_bitis_bildirimleri(date)') is null then
+  raise exception 'FAIL 112b: abonman_bitis_bildirimleri(date) yok';
+end if;
+if has_function_privilege('authenticated', 'public.abonman_bitis_bildirimleri(date)', 'execute')
+   or has_function_privilege('anon', 'public.abonman_bitis_bildirimleri(date)', 'execute')
+   or has_function_privilege('service_role', 'public.abonman_bitis_bildirimleri(date)', 'execute') then
+  raise exception 'FAIL 112c: abonman_bitis_bildirimleri kimseye açık olmamalı';
+end if;
+raise notice 'PASS 112: ABONMAN_BITIYOR herkese; bildirim fonksiyonu kapalı';
+
+-- 113: 3 gün kala — iki rol de bir kez.
+select p.id into v_id from public.profiles p
+ where p.rol = 'YONETICI' and p.durum = 'ACTIVE'
+   and coalesce(p.notif_prefs ->> 'ABONMAN_BITIYOR', 'true') <> 'false'
+ order by p.id limit 1;
+select p.id into v_id2 from public.profiles p
+ where p.rol = 'PERSONEL' and p.durum = 'ACTIVE'
+   and coalesce(p.notif_prefs ->> 'ABONMAN_BITIYOR', 'true') <> 'false'
+ order by p.id limit 1;
+if v_id is null or v_id2 is null then
+  raise exception 'FAIL 113: etkin bir Yönetici ve bir Personel bulunamadı (% / %)', v_id, v_id2;
+end if;
+
+insert into public.abonmanlar (plaka, musteri_ad, baslangic, bitis, ucret_kurus, yenileme_gunu)
+values ('ZZ113AB1', 'Bitis Test', v_gun - 27, v_gun + 3, 100000,
+        extract(day from v_gun + 3)::int)
+returning id into v_abonman;
+
+perform public.abonman_bitis_bildirimleri(v_gun);
+select count(*) into v_n from public.notifications n
+ where n.tur = 'ABONMAN_BITIYOR' and n.link = '/abonman/' || v_abonman
+   and n.baslik = 'Abonman bitiyor' and n.profile_id = v_id;
+select count(*) into v_n2 from public.notifications n
+ where n.tur = 'ABONMAN_BITIYOR' and n.link = '/abonman/' || v_abonman
+   and n.baslik = 'Abonman bitiyor' and n.profile_id = v_id2;
+if v_n <> 1 or v_n2 <> 1 then
+  raise exception 'FAIL 113a: 3 gün kala Yönetici % / Personel % bildirim (1 / 1 beklenir)', v_n, v_n2;
+end if;
+select n.govde into v_txt from public.notifications n
+ where n.link = '/abonman/' || v_abonman and n.profile_id = v_id;
+if v_txt not like 'ZZ113AB1%' || to_char(v_gun + 3, 'DD.MM.YYYY') || '%' then
+  raise exception 'FAIL 113b: bildirim metni beklenmedik: %', v_txt;
+end if;
+
+perform public.abonman_bitis_bildirimleri(v_gun);
+select count(*) into v_n from public.notifications n
+ where n.tur = 'ABONMAN_BITIYOR' and n.link = '/abonman/' || v_abonman and n.profile_id = v_id;
+if v_n <> 1 then
+  raise exception 'FAIL 113c: ikinci çalıştırma bildirimi tekrarladı (%)', v_n;
+end if;
+raise notice 'PASS 113: bitişe 3 gün kala Yönetici ve Personel bir kez bilgilenir';
+
+-- 114: son gün bir kez; 6 gün kala hiç.
+update public.abonmanlar set bitis = v_gun where id = v_abonman;
+perform public.abonman_bitis_bildirimleri(v_gun);
+perform public.abonman_bitis_bildirimleri(v_gun);
+select count(*) into v_n from public.notifications n
+ where n.tur = 'ABONMAN_BITIYOR' and n.link = '/abonman/' || v_abonman
+   and n.baslik = 'Abonman bugün bitiyor' and n.profile_id = v_id2;
+if v_n <> 1 then
+  raise exception 'FAIL 114a: son gün Personel % bildirim aldı (1 beklenir)', v_n;
+end if;
+
+insert into public.abonmanlar (plaka, musteri_ad, baslangic, bitis, ucret_kurus, yenileme_gunu)
+values ('ZZ114AB2', 'Bitis Test 2', v_gun - 24, v_gun + 6, 100000,
+        extract(day from v_gun + 6)::int)
+returning id into v_id;
+perform public.abonman_bitis_bildirimleri(v_gun);
+if exists (select 1 from public.notifications n where n.link = '/abonman/' || v_id) then
+  raise exception 'FAIL 114b: 6 gün kala bildirim gitti (pencere 4 gün)';
+end if;
+raise notice 'PASS 114: son gün "bugün bitiyor" bir kez; 4 günden uzakta bildirim yok';
+
+-- 115: yenilemeden sonra bildirim yeniden gelir (eski hata).
+update public.abonmanlar set bitis = v_gun + 33 where id = v_abonman;
+select count(*) into v_n2 from public.notifications n
+ where n.link = '/abonman/' || v_abonman and n.baslik = 'Abonman bitiyor' and n.profile_id = v_id2;
+perform public.abonman_bitis_bildirimleri(v_gun + 30);
+select count(*) into v_n from public.notifications n
+ where n.link = '/abonman/' || v_abonman and n.baslik = 'Abonman bitiyor' and n.profile_id = v_id2;
+if v_n <> v_n2 + 1 then
+  raise exception 'FAIL 115a: yenilenen abonman için bildirim gelmedi (% → %)', v_n2, v_n;
+end if;
+
+v_txt := pg_get_functiondef('public.run_gunluk_bakim()'::regprocedure);
+if position('abonman_bitis_bildirimleri' in v_txt) = 0 then
+  raise exception 'FAIL 115b: run_gunluk_bakim abonman_bitis_bildirimleri''ni çağırmıyor';
+end if;
+if position('notify_yonetici(''ABONMAN_BITIYOR''' in v_txt) > 0 then
+  raise exception 'FAIL 115c: run_gunluk_bakim eski 7 günlük Yönetici bildirimini hâlâ gönderiyor';
+end if;
+raise notice 'PASS 115: yenilemeden sonra bildirim yeniden gelir; gece işi yeni fonksiyonu çağırır';
+
+-- =====================================================================
+-- 116-120  Ortak terminal: isim + PIN ile devir (084, sahip 28.11)
+--
+--   Gündüz ve gece personeli TEK el terminalini kullanır. Terminal bir kez
+--   Yönetici tarafından kaydedilir (64 hex gizli anahtar, yalnızca sha256'sı
+--   saklanır — 036 kamera deseni). Personel adını seçip 4 haneli PIN girer;
+--   PIN'i terminal-giris Edge Function'ı service_role ile doğrular ve o an
+--   kasa vardiyası yeni kişiye DEVREDİLİR: eski vardiya sayımsız 'DEVIR' ile
+--   kapanır, yenisi kasadaki beklenen nakitle açılır.
+--   Testler canlı veriye dayanmaz: rolleri ve açık vardiyayı kendisi kurar.
+-- =====================================================================
+
+perform pg_temp.logout();
+update public.profiles set rol = 'YONETICI', durum = 'ACTIVE' where id = u_yonetici;
+update public.profiles set rol = 'PERSONEL', durum = 'ACTIVE' where id = u_personel;
+
+-- 116: tablolar ve fonksiyonlar yalnızca kendi kapısından açık.
+if to_regclass('public.terminaller') is null or to_regclass('public.personel_pin') is null then
+  raise exception 'FAIL 116a: terminaller / personel_pin tablosu yok (084 çalıştı mı?)';
+end if;
+if has_table_privilege('anon', 'public.personel_pin', 'SELECT')
+   or has_table_privilege('authenticated', 'public.personel_pin', 'SELECT')
+   or has_table_privilege('service_role', 'public.personel_pin', 'SELECT')
+   or has_table_privilege('authenticated', 'public.personel_pin', 'UPDATE') then
+  raise exception 'FAIL 116b: personel_pin bir istemci rolüne açık';
+end if;
+if has_table_privilege('anon', 'public.terminaller', 'SELECT')
+   or has_column_privilege('authenticated', 'public.terminaller', 'gizli_hash', 'SELECT')
+   or has_table_privilege('authenticated', 'public.terminaller', 'INSERT')
+   or has_table_privilege('authenticated', 'public.terminaller', 'UPDATE') then
+  raise exception 'FAIL 116c: terminaller gizli_hash''i ya da yazmayı istemciye açıyor';
+end if;
+foreach v_txt in array array[
+  'public.terminal_personel_listesi(text)',
+  'public.terminal_pin_dogrula(text, uuid, text)',
+  'public.personel_pin_olustur(uuid, text, uuid)'
+] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute')
+     or not has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 116d: % yalnızca service_role''e açık olmalı', v_txt;
+  end if;
+end loop;
+foreach v_txt in array array[
+  'public.terminal_kaydet(text)', 'public.terminal_kaldir(uuid)',
+  'public.pin_ayarla(uuid, text)'
+] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute')
+     or not has_function_privilege('authenticated', v_txt, 'execute') then
+    raise exception 'FAIL 116e: % yalnızca authenticated''a açık olmalı', v_txt;
+  end if;
+end loop;
+if has_function_privilege('authenticated', 'public.vardiya_devret(uuid)', 'execute')
+   or has_function_privilege('service_role', 'public.vardiya_devret(uuid)', 'execute') then
+  raise exception 'FAIL 116f: vardiya_devret istemciye açık';
+end if;
+raise notice 'PASS 116: terminal ve PIN tabloları kapalı; her fonksiyon yalnızca kendi rolüne açık';
+
+-- 117: terminali yalnızca Yönetici kaydeder; anahtarın kendisi saklanmaz.
+perform pg_temp.login(u_personel);
+begin
+  perform public.terminal_kaydet('Personel terminali');
+  raise exception 'FAIL 117a: Personel terminal kaydetti';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+
+perform pg_temp.login(u_yonetici);
+v_json := public.terminal_kaydet('Gişe terminali');
+v_txt  := v_json ->> 'gizli';
+v_id   := (v_json ->> 'id')::uuid;
+if v_txt !~ '^[0-9a-f]{64}$' then
+  raise exception 'FAIL 117b: gizli anahtar 64 hex değil: %', v_txt;
+end if;
+perform pg_temp.logout();
+v_txt2 := encode(sha256(convert_to(v_txt, 'UTF8')), 'hex');
+if not exists (select 1 from public.terminaller where id = v_id and gizli_hash = v_txt2 and aktif) then
+  raise exception 'FAIL 117c: terminal sha256 ile saklanmamış';
+end if;
+if exists (select 1 from public.terminaller where gizli_hash = v_txt) then
+  raise exception 'FAIL 117d: gizli anahtarın kendisi saklanmış';
+end if;
+raise notice 'PASS 117: terminali yalnızca Yönetici kaydeder; yalnızca sha256 saklanır';
+
+-- 120 (önce, çünkü 118-119 PIN'e dayanıyor): PIN'i yalnızca Yönetici koyar.
+perform pg_temp.login(u_personel);
+begin
+  perform public.pin_ayarla(u_personel, '1234');
+  raise exception 'FAIL 120a: Personel PIN koydu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_yonetici);
+foreach v_txt3 in array array['123', '12345', '12a4', ''] loop
+  begin
+    perform public.pin_ayarla(u_personel, v_txt3);
+    raise exception 'FAIL 120b: geçersiz PIN kabul edildi: "%"', v_txt3;
+  exception when others then
+    if sqlerrm like 'FAIL%' then raise; end if;
+  end;
+end loop;
+begin
+  perform public.pin_ayarla(u_yonetici, '1234');
+  raise exception 'FAIL 120c: Yönetici hesabına terminal PIN''i kondu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform public.pin_ayarla(u_personel, '4321');
+perform pg_temp.logout();
+select pin_hash into v_txt3 from public.personel_pin where profile_id = u_personel;
+if v_txt3 is null or v_txt3 = '4321' or v_txt3 not like '$2%' then
+  raise exception 'FAIL 120d: PIN bcrypt ile saklanmamış';
+end if;
+raise notice 'PASS 120: PIN''i yalnızca Yönetici koyar; tam 4 rakam; bcrypt ile saklanır';
+
+-- 118: doğrulama — doğru PIN e-postayı verir, yanlış sayılır, 5'te kilit.
+perform pg_temp.kamera();   -- service_role, JWT yok: Edge Function'ın kendisi
+select count(*) into v_n from public.terminal_personel_listesi(v_txt2) l where l.id = u_personel;
+if v_n <> 1 then
+  raise exception 'FAIL 118a: PIN''li personel terminal listesinde yok';
+end if;
+begin
+  perform * from public.terminal_personel_listesi(repeat('0', 64));
+  raise exception 'FAIL 118b: tanınmayan terminal listeyi aldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+
+v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '0000');
+if (v_json ->> 'ok')::boolean then
+  raise exception 'FAIL 118c: yanlış PIN kabul edildi';
+end if;
+perform pg_temp.logout();
+if (select hatali from public.personel_pin where profile_id = u_personel) <> 1 then
+  raise exception 'FAIL 118d: yanlış PIN sayılmadı (dönüş exception ile geri alınmış olabilir)';
+end if;
+
+select count(*) into v_n2 from public.notifications
+ where tur = 'PIN_KILIT' and profile_id = u_yonetici;
+perform pg_temp.kamera();
+for v_n in 1..4 loop
+  v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '0000');
+end loop;
+-- Kilitliyken DOĞRU PIN de reddedilir.
+v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '4321');
+if (v_json ->> 'ok')::boolean then
+  raise exception 'FAIL 118e: kilitli kişi doğru PIN ile girdi';
+end if;
+perform pg_temp.logout();
+if (select kilit_bitis from public.personel_pin where profile_id = u_personel)
+     not between now() + interval '14 minutes' and now() + interval '16 minutes' then
+  raise exception 'FAIL 118f: 5 hatalı denemede 15 dakikalık kilit yok';
+end if;
+select count(*) into v_n from public.notifications
+ where tur = 'PIN_KILIT' and profile_id = u_yonetici;
+if v_n <> v_n2 + 1 then
+  raise exception 'FAIL 118g: kilit Yöneticiye bildirilmedi (% → %)', v_n2, v_n;
+end if;
+
+-- Kilit kalkınca doğru PIN e-postayı döner ve sayaç sıfırlanır.
+update public.personel_pin set kilit_bitis = now() - interval '1 minute' where profile_id = u_personel;
+perform pg_temp.kamera();
+v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '4321');
+if not coalesce((v_json ->> 'ok')::boolean, false)
+   or v_json ->> 'email' <> 'test_personel@otopark.local' then
+  raise exception 'FAIL 118h: doğru PIN e-postayı vermedi: %', v_json;
+end if;
+perform pg_temp.logout();
+if (select hatali from public.personel_pin where profile_id = u_personel) <> 0 then
+  raise exception 'FAIL 118i: başarılı girişte sayaç sıfırlanmadı';
+end if;
+
+-- Kaldırılan terminal artık hiçbir şey yapamaz.
+perform pg_temp.login(u_yonetici);
+v_json2 := public.terminal_kaydet('Geçici terminal');
+perform public.terminal_kaldir((v_json2 ->> 'id')::uuid);
+perform pg_temp.kamera();
+v_json2 := public.terminal_pin_dogrula(
+  encode(sha256(convert_to(v_json2 ->> 'gizli', 'UTF8')), 'hex'), u_personel, '4321');
+if coalesce((v_json2 ->> 'ok')::boolean, false) then
+  raise exception 'FAIL 118j: kaldırılan terminal PIN doğruladı';
+end if;
+perform pg_temp.logout();
+raise notice 'PASS 118: doğru PIN girer; yanlış sayılır; 5 hatada 15 dk kilit + Yönetici uyarısı; kaldırılan terminal ölü';
+
+-- 119: devir — başka kişiye geçiş eski vardiyayı sayımsız kapatır, yenisini
+--      kasadaki beklenen nakitle açar. Aynı kişi hiçbir şeyi değiştirmez.
+perform pg_temp.logout();
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi)
+values (u_yonetici, 5000, false) returning id into v_eski_vardiya;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id)
+values ('BILET', null, 2500, 'NAKIT', v_eski_vardiya);
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id)
+values ('BILET', null, 9900, 'KREDI_KARTI', v_eski_vardiya);
+
+perform pg_temp.kamera();
+v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '4321');
+perform pg_temp.logout();
+if not coalesce((v_json ->> 'ok')::boolean, false) then
+  raise exception 'FAIL 119a: devir girişi reddedildi: %', v_json;
+end if;
+select * into v_rec from public.vardiyalar where id = v_eski_vardiya;
+if v_rec.kapanis_at is null or v_rec.kapanis_kaynak <> 'DEVIR'
+   or v_rec.sayilan_nakit_kurus is not null or v_rec.fark_kurus is not null
+   or v_rec.beklenen_nakit_kurus <> 7500 then
+  raise exception 'FAIL 119b: eski vardiya DEVIR/sayımsız/7500 ile kapanmadı: % % % %',
+    v_rec.kapanis_kaynak, v_rec.sayilan_nakit_kurus, v_rec.fark_kurus, v_rec.beklenen_nakit_kurus;
+end if;
+select * into v_rec from public.vardiyalar where kapanis_at is null;
+if v_rec.personel_id is distinct from u_personel or v_rec.acilis_nakit_kurus <> 7500
+   or v_rec.otomatik_acildi then
+  raise exception 'FAIL 119c: yeni vardiya personel/7500 ile açılmadı: % %',
+    v_rec.personel_id, v_rec.acilis_nakit_kurus;
+end if;
+v_vardiya := v_rec.id;
+if not exists (select 1 from public.audit_log
+                where action = 'vardiya_devir' and row_id = v_vardiya and actor = u_personel) then
+  raise exception 'FAIL 119d: devir audit satırı kişiyle yazılmadı';
+end if;
+
+perform pg_temp.kamera();
+v_json := public.terminal_pin_dogrula(v_txt2, u_personel, '4321');
+perform pg_temp.logout();
+if (select id from public.vardiyalar where kapanis_at is null) <> v_vardiya then
+  raise exception 'FAIL 119e: aynı kişinin tekrar girişi vardiyayı değiştirdi';
+end if;
+
+-- Devirden sonra yeni kişi kendi vardiyasında çalışır (own-shift kapısı).
+perform pg_temp.login(u_personel);
+if public.acik_vardiyam() <> v_vardiya then
+  raise exception 'FAIL 119f: acik_vardiyam yeni vardiyayı göstermiyor';
+end if;
+perform pg_temp.logout();
+raise notice 'PASS 119: PIN ile devir — eski vardiya DEVIR (sayımsız, beklenen yazılı), yenisi kasadaki nakitle açılır';
+
+-- =====================================================================
+-- 121-124  Vardiya kendi kendine döner (085, sahip 28.11)
+--
+--   Kasada HER ZAMAN açık bir vardiya olur: vardiyasız tahsilat hiçbir
+--   sayıma girmiyordu. Devirde ve otomatik kapanışta kesedeki para (beklenen)
+--   sonraki vardiyaya taşınır; Yönetici sayıp kapattığında sonraki vardiya
+--   onun kesede bıraktığı tutarla hemen açılır. Her personelin vardiya
+--   saatleri hesabında durur; bitişten 15 dk sonra devir olmamışsa o
+--   personele bir kez hatırlatma gider.
+-- =====================================================================
+
+perform pg_temp.logout();
+update public.profiles set rol = 'YONETICI', durum = 'ACTIVE' where id = u_yonetici;
+update public.profiles set rol = 'PERSONEL', durum = 'ACTIVE' where id = u_personel;
+
+-- 121: açık vardiya yoksa gece işi hemen açar (günde bir kez kuralı yok);
+--      sayımsız kapanmış vardiyanın beklenen nakdi taşınır.
+--      run_vardiya_otomatik_ac son kapanan vardiyaya bakar (kapanis_at,
+--      sonra acilis_at). Bu dosyada now() sabit: canlı vardiya ve önceki
+--      test vardiyaları da now()'da kapanır. Sınanan satır bu yüzden birer
+--      saniye ileri kapanır (121b, 121d, 123b) — eşitlikte başkası seçilmesin.
+update public.otopark_ayarlari set vardiya_otomatik_saat = null, vardiya_acilis_nakit_kurus = 1111 where id = 1;
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi, acilis_at)
+values (u_personel, 4000, false, now() - interval '3 hours') returning id into v_eski_vardiya;
+update public.vardiyalar
+   set kapanis_at = now() + interval '1 second', kapanis_kaynak = 'DEVIR',
+       beklenen_nakit_kurus = 4200
+ where id = v_eski_vardiya;
+
+perform public.run_vardiya_otomatik_ac();
+select count(*) into v_n from public.vardiyalar where kapanis_at is null;
+if v_n <> 1 then
+  raise exception 'FAIL 121a: açık vardiya yokken otomatik açılmadı (açık: %)', v_n;
+end if;
+select * into v_rec from public.vardiyalar where kapanis_at is null;
+if v_rec.acilis_nakit_kurus <> 4200 or v_rec.personel_id is distinct from u_personel then
+  raise exception 'FAIL 121b: devirden sonra açılış 4200 / aynı kişi değil: % %',
+    v_rec.acilis_nakit_kurus, v_rec.personel_id;
+end if;
+perform public.run_vardiya_otomatik_ac();
+select count(*) into v_n from public.vardiyalar where kapanis_at is null;
+if v_n <> 1 then
+  raise exception 'FAIL 121c: ikinci çalıştırma ikinci vardiya açtı';
+end if;
+
+-- Sayılmış (ELLE) kapanıştan sonra: ayardaki açılış nakdi.
+update public.vardiyalar set kapanis_at = now() + interval '2 seconds', kapanis_kaynak = 'ELLE',
+       sayilan_nakit_kurus = 0, beklenen_nakit_kurus = 0, fark_kurus = 0
+ where kapanis_at is null;
+perform public.run_vardiya_otomatik_ac();
+if (select acilis_nakit_kurus from public.vardiyalar where kapanis_at is null) <> 1111 then
+  raise exception 'FAIL 121d: sayılmış kapanıştan sonra ayardaki açılış nakdi kullanılmadı';
+end if;
+raise notice 'PASS 121: vardiya yoksa hemen açılır; sayımsız kapanışta keseden taşınır, sayılmışta ayardaki tutar';
+
+-- 122: Yönetici sayıp kapatınca sonraki vardiya hemen, bıraktığı tutarla açılır.
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi)
+values (u_personel, 1000, false) returning id into v_vardiya;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id)
+values ('BILET', null, 500, 'NAKIT', v_vardiya);
+
+perform pg_temp.login(u_yonetici);
+select v.kapandi, v.fark_kurus into v_bool, v_ucret from public.vardiya_kapat(1500, 'kese boşaltıldı', 300) v;
+perform pg_temp.logout();
+if not v_bool or v_ucret <> 0 then
+  raise exception 'FAIL 122a: Yönetici kapanışı kapanmadı ya da fark 0 değil (% %)', v_bool, v_ucret;
+end if;
+select * into v_rec from public.vardiyalar where kapanis_at is null;
+if not found or v_rec.id = v_vardiya then
+  raise exception 'FAIL 122b: Yönetici kapanışından sonra yeni vardiya hemen açılmadı';
+end if;
+if v_rec.acilis_nakit_kurus <> 300 or v_rec.personel_id is distinct from u_personel then
+  raise exception 'FAIL 122c: yeni vardiya bırakılan 300 / aynı kişiyle açılmadı: % %',
+    v_rec.acilis_nakit_kurus, v_rec.personel_id;
+end if;
+
+-- Bırakılan tutar verilmezse ayardaki açılış nakdi.
+perform pg_temp.login(u_yonetici);
+perform * from public.vardiya_kapat(300, null);
+perform pg_temp.logout();
+if (select acilis_nakit_kurus from public.vardiyalar where kapanis_at is null) <> 1111 then
+  raise exception 'FAIL 122d: bırakılan tutar yokken ayardaki açılış nakdi kullanılmadı';
+end if;
+raise notice 'PASS 122: Yönetici sayıp kapatınca sonraki vardiya hemen, kesede bıraktığıyla açılır';
+
+-- 123: bayat vardiya OTOMATIK kapanır; sonraki çalıştırma beklenenle yeniden açar.
+update public.vardiyalar set acilis_at = now() - interval '40 hours' where kapanis_at is null
+returning id into v_vardiya;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id)
+values ('BILET', null, 2000, 'NAKIT', v_vardiya);
+perform public.run_vardiya_kurtarma();
+if (select kapanis_kaynak from public.vardiyalar where id = v_vardiya) is distinct from 'OTOMATIK' then
+  raise exception 'FAIL 123a: bayat vardiya OTOMATIK kapanmadı';
+end if;
+update public.vardiyalar set kapanis_at = now() + interval '3 seconds' where id = v_vardiya;
+perform public.run_vardiya_otomatik_ac();
+select * into v_rec from public.vardiyalar where kapanis_at is null;
+if not found or v_rec.acilis_nakit_kurus <> 1111 + 2000 then
+  raise exception 'FAIL 123b: otomatik kapanıştan sonra kese (3111) taşınmadı: %', v_rec.acilis_nakit_kurus;
+end if;
+raise notice 'PASS 123: bayat vardiya kapanır ve hemen kesedeki tutarla yeniden açılır';
+
+-- 124: her personelin vardiya saatleri; bitişten sonra bir kez hatırlatma.
+perform pg_temp.login(u_personel);
+begin
+  perform public.personel_vardiya_saati(u_personel, '09:00', '21:00');
+  raise exception 'FAIL 124a: Personel vardiya saatini değiştirdi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  update public.profiles set vardiya_bitis = '23:00' where id = u_personel;
+  raise exception 'FAIL 124b: Personel vardiya saatini doğrudan yazdı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_yonetici);
+begin
+  perform public.personel_vardiya_saati(u_personel, '09:00', null);
+  raise exception 'FAIL 124c: yalnızca başlangıç kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform public.personel_vardiya_saati(u_personel, '09:00', '21:00');
+perform pg_temp.login(u_personel);
+select vardiya_baslangic, vardiya_bitis into v_rec from public.profiles where id = u_personel;
+if v_rec.vardiya_baslangic <> '09:00'::time or v_rec.vardiya_bitis <> '21:00'::time then
+  raise exception 'FAIL 124d: Personel kendi vardiya saatlerini okuyamıyor';
+end if;
+perform pg_temp.logout();
+
+-- Bitiş 20 dk önceydi, vardiya ondan önce açıldı → bir kez hatırlatma.
+update public.profiles
+   set vardiya_baslangic = ((now() at time zone 'Europe/Istanbul') - interval '12 hours 20 minutes')::time,
+       vardiya_bitis     = ((now() at time zone 'Europe/Istanbul') - interval '20 minutes')::time
+ where id = u_personel;
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi, acilis_at)
+values (u_personel, 0, false, now() - interval '5 hours') returning id into v_vardiya;
+
+select count(*) into v_n2 from public.notifications where tur = 'VARDIYA_DEGISIM' and profile_id = u_personel;
+perform public.run_vardiya_degisim_hatirlat();
+perform public.run_vardiya_degisim_hatirlat();
+select count(*) into v_n from public.notifications where tur = 'VARDIYA_DEGISIM' and profile_id = u_personel;
+if v_n <> v_n2 + 1 then
+  raise exception 'FAIL 124e: bitişten 20 dk sonra tek hatırlatma beklenirdi (% → %)', v_n2, v_n;
+end if;
+if exists (select 1 from public.notifications
+            where tur = 'VARDIYA_DEGISIM' and profile_id = u_yonetici and created_at >= now()) then
+  raise exception 'FAIL 124f: hatırlatma Yöneticiye de gitti';
+end if;
+
+-- Devir olmuşsa (yeni vardiya bitişten SONRA açıldı) hatırlatma yok.
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'DEVIR', beklenen_nakit_kurus = 0
+ where id = v_vardiya;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi, acilis_at)
+values (u_personel, 0, false, now() - interval '10 minutes');
+perform public.run_vardiya_degisim_hatirlat();
+select count(*) into v_n2 from public.notifications where tur = 'VARDIYA_DEGISIM' and profile_id = u_personel;
+if v_n2 <> v_n then
+  raise exception 'FAIL 124g: devirden sonra yine hatırlatma gitti';
+end if;
+
+-- Bitişten yalnızca 5 dk geçtiyse henüz yok (15 dk payı).
+update public.profiles
+   set vardiya_bitis = ((now() at time zone 'Europe/Istanbul') - interval '5 minutes')::time
+ where id = u_personel;
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi, acilis_at)
+values (u_personel, 0, false, now() - interval '5 hours');
+perform public.run_vardiya_degisim_hatirlat();
+select count(*) into v_n from public.notifications where tur = 'VARDIYA_DEGISIM' and profile_id = u_personel;
+if v_n <> v_n2 then
+  raise exception 'FAIL 124h: 15 dk dolmadan hatırlatma gitti';
+end if;
+
+if has_function_privilege('authenticated', 'public.run_vardiya_degisim_hatirlat()', 'execute')
+   or has_function_privilege('service_role', 'public.run_vardiya_degisim_hatirlat()', 'execute') then
+  raise exception 'FAIL 124i: run_vardiya_degisim_hatirlat istemciye açık';
+end if;
+raise notice 'PASS 124: vardiya saatlerini yalnızca Yönetici yazar; bitişten 15 dk sonra bir kez, yalnızca o personele hatırlatma';
+
+-- =====================================================================
+-- PASS 125-126 (086): Vardiya raporu — Yöneticinin vardiya ekranı.
+-- Tek vardiyanın toplamları (yönteme göre, ters kayıtlar düşülmüş), o
+-- vardiyada kapanan biletler, pencere içindeki girişler, istisnai işlemler,
+-- içeride kalanlar ve Onay bekleyenler. Liste için çoklu toplam.
+-- =====================================================================
+update public.vardiyalar set kapanis_at = now(), kapanis_kaynak = 'ELLE' where kapanis_at is null;
+insert into public.vardiyalar (personel_id, acilis_nakit_kurus, otomatik_acildi, acilis_at)
+values (u_personel, 500, false, now() - interval '2 hours') returning id into v_vardiya;
+select id into v_id2 from public.tarifeler where gecerli_bitis is null order by id limit 1;
+
+-- Bu vardiyada kapanan bilet (nakit 40 ₺) ve kamerayla girip içeride kalan.
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi, vardiya_id,
+                             kapatan_vardiya_id, giris_kaynak, cikis_kaynak, cikis_by)
+values (gen_random_uuid(), 'ZZ125A', now() - interval '90 minutes', now() - interval '30 minutes',
+        v_id2, 'KAPALI', 4000, 4000, 'NAKIT', v_vardiya, v_vardiya, 'MOBIL', 'MOBIL', u_personel)
+returning id into v_bilet;
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, giris_kaynak)
+values (gen_random_uuid(), 'ZZ125B', now() - interval '20 minutes', v_id2, 'ACIK', 'KAMERA')
+returning id into v_bilet2;
+
+-- Tahsilatlar: nakit 40, kart 25 + ters kaydı (net 0), onaylı havale 10;
+-- vardiyasız bir kayıt rapora girmemeli.
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, created_by)
+values ('BILET', v_bilet, 4000, 'NAKIT', v_vardiya, u_personel);
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, created_by)
+values ('BILET', null, 2500, 'KREDI_KARTI', v_vardiya, u_personel) returning id into v_id;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, iptal_of, created_by)
+values ('BILET', null, -2500, 'KREDI_KARTI', v_vardiya, v_id, u_personel);
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, durum, created_by)
+values ('BILET', null, 1000, 'HAVALE', v_vardiya, 'ONAYLANDI', u_personel);
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id)
+values ('BILET', null, 7777, 'NAKIT', null);
+
+-- İşlem kaydı: pencere içinde bir ücretsiz çıkış; pencereden önce bir iptal.
+insert into public.audit_log (actor, action, tablo, row_id, detay, created_at)
+values (u_personel, 'bilet_ucretsiz_cikis', 'biletler', v_bilet, null, now() - interval '40 minutes');
+insert into public.audit_log (actor, action, tablo, row_id, detay, created_at)
+values (u_personel, 'bilet_iptal', 'biletler', v_bilet2, null, now() - interval '3 hours');
+
+-- 125: yalnızca Yönetici.
+perform pg_temp.login(u_personel);
+begin
+  perform public.vardiya_raporu(v_vardiya);
+  raise exception 'FAIL 125a: Personel vardiya raporunu okudu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform * from public.vardiya_toplamlari(array[v_vardiya]);
+  raise exception 'FAIL 125b: Personel vardiya toplamlarını okudu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_yonetici);
+v_json := public.vardiya_raporu(v_vardiya);
+if (v_json->'vardiya'->>'id')::uuid is distinct from v_vardiya then
+  raise exception 'FAIL 125c: rapor başka vardiyayı döndü';
+end if;
+begin
+  perform public.vardiya_raporu(gen_random_uuid());
+  raise exception 'FAIL 125d: olmayan vardiya için rapor döndü';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+raise notice 'PASS 125: vardiya raporu ve toplamları yalnızca Yöneticiye açık';
+
+-- 126: toplamlar tahsilatlarla, bilet listesi kapatan_vardiya_id ile tutar.
+v_json2 := v_json->'toplam';
+if (v_json2->>'nakit')::int <> 4000 or (v_json2->>'kart')::int <> 0
+   or (v_json2->>'havale')::int <> 1000 or (v_json2->>'toplam')::int <> 5000 then
+  raise exception 'FAIL 126a: yönteme göre toplamlar yanlış: %', v_json2;
+end if;
+if (v_json2->>'toplam')::bigint <>
+   (select sum(tutar_kurus) from public.tahsilatlar where vardiya_id = v_vardiya) then
+  raise exception 'FAIL 126b: toplam tahsilatlarla tutmuyor';
+end if;
+if (v_json2->>'arac')::int <> 1 then
+  raise exception 'FAIL 126c: kapanan araç sayısı 1 beklenirdi: %', v_json2->>'arac';
+end if;
+if jsonb_array_length(v_json->'biletler') <> 1
+   or (v_json->'biletler'->0->>'id')::uuid <> v_bilet
+   or v_json->'biletler'->0->>'plaka' <> 'ZZ125A' then
+  raise exception 'FAIL 126d: bilet listesi kapatan_vardiya_id ile tutmuyor: %', v_json->'biletler';
+end if;
+if (v_json->'giris'->>'toplam')::int <>
+   (select count(*) from public.biletler
+     where giris_at >= now() - interval '2 hours' and giris_at <= now())
+   or (v_json->'giris'->>'kamera')::int < 1 then
+  raise exception 'FAIL 126e: pencere içindeki girişler yanlış: %', v_json->'giris';
+end if;
+if not exists (select 1 from jsonb_array_elements(v_json->'islemler') e
+                where e->>'action' = 'bilet_ucretsiz_cikis'
+                  and (e->>'row_id')::uuid = v_bilet and e->>'plaka' = 'ZZ125A') then
+  raise exception 'FAIL 126f: pencere içindeki ücretsiz çıkış raporda yok';
+end if;
+if exists (select 1 from jsonb_array_elements(v_json->'islemler') e
+            where e->>'action' = 'bilet_iptal' and (e->>'row_id')::uuid = v_bilet2) then
+  raise exception 'FAIL 126g: vardiyadan önceki işlem rapora girdi';
+end if;
+if (v_json->>'iceride')::int <>
+   (select count(*) from public.biletler where durum = 'ACIK') then
+  raise exception 'FAIL 126h: açık vardiyada içeride kalan sayısı yanlış';
+end if;
+if (v_json->'onay'->>'adet')::int <>
+   (select count(*) from public.tahsilatlar where vardiya_id = v_vardiya and durum = 'BEKLIYOR')
+   or (v_json->'onay'->>'adet')::int < 1 then
+  raise exception 'FAIL 126i: Onay bekleyen sayısı yanlış: %', v_json->'onay';
+end if;
+select * into v_rec from public.vardiya_toplamlari(array[v_vardiya]);
+if not found or v_rec.toplam_kurus <> 5000 or v_rec.arac_sayisi <> 1 then
+  raise exception 'FAIL 126j: liste toplamı raporla tutmuyor';
+end if;
+perform pg_temp.logout();
+raise notice 'PASS 126: rapor toplamları tahsilatlarla, bilet listesi vardiyayla tutuyor';
+
+-- =====================================================================
+-- PASS 127-128 (087): Günlük rapor — takvim günü, 00:00-24:00 İstanbul.
+-- O gün yapılan bütün tahsilatlar (ters kayıtlar düşer), o gün kapanan
+-- biletler, güne değen vardiyalar; liste için gün başına toplam ve geçen
+-- haftanın aynı günü (bugün için aynı saate kadar).
+-- =====================================================================
+v_gun := (now() at time zone 'Europe/Istanbul')::date;
+v_ts  := v_gun::timestamp at time zone 'Europe/Istanbul';      -- bugünün 00:00'ı
+
+-- Bugün kapanan bilet + 30 ₺ nakit; dün 23:30'da kapanan bilet + tahsilatı;
+-- geçen haftanın aynı gününün tam başında 20 ₺ kart (önceki pencereye girer).
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi, vardiya_id,
+                             kapatan_vardiya_id, giris_kaynak, cikis_kaynak, cikis_by)
+values (gen_random_uuid(), 'ZZ127A', now() - interval '50 minutes', now() - interval '1 minute',
+        v_id2, 'KAPALI', 3000, 3000, 'NAKIT', v_vardiya, v_vardiya, 'MOBIL', 'MOBIL', u_personel)
+returning id into v_bilet;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, created_by)
+values ('BILET', v_bilet, 3000, 'NAKIT', v_vardiya, u_personel);
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi,
+                             giris_kaynak, cikis_kaynak, cikis_by)
+values (gen_random_uuid(), 'ZZ127B', v_ts - interval '3 hours', v_ts - interval '30 minutes',
+        v_id2, 'KAPALI', 1500, 1500, 'NAKIT', 'MOBIL', 'MOBIL', u_personel)
+returning id into v_bilet2;
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, created_by, created_at)
+values ('BILET', v_bilet2, 1500, 'NAKIT', null, u_personel, v_ts - interval '30 minutes');
+insert into public.tahsilatlar (tur, bilet_id, tutar_kurus, yontem, vardiya_id, created_by, created_at)
+values ('BILET', null, 2000, 'KREDI_KARTI', null, u_personel, v_ts - interval '7 days');
+
+-- 127: yalnızca Yönetici; aralık denetimleri.
+perform pg_temp.login(u_personel);
+begin
+  perform public.gun_raporu(v_gun);
+  raise exception 'FAIL 127a: Personel günlük raporu okudu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform * from public.gun_toplamlari(v_gun, v_gun);
+  raise exception 'FAIL 127b: Personel gün toplamlarını okudu';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_yonetici);
+v_json := public.gun_raporu(v_gun);
+if v_json is null or v_json->'toplam' is null then
+  raise exception 'FAIL 127c: Yönetici günlük raporu okuyamadı';
+end if;
+begin
+  perform * from public.gun_toplamlari(v_gun, v_gun - 1);
+  raise exception 'FAIL 127d: ters aralık kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform * from public.gun_toplamlari(v_gun - 62, v_gun);
+  raise exception 'FAIL 127e: 63 günlük aralık kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+raise notice 'PASS 127: günlük rapor ve gün toplamları yalnızca Yöneticiye açık; aralık sınırlı';
+
+-- 128: gün penceresi tahsilatlarla, biletlerle ve vardiyalarla tutar.
+v_json2 := v_json->'toplam';
+select coalesce(sum(tutar_kurus), 0) into v_bigint
+  from public.tahsilatlar
+ where created_at >= v_ts and created_at < v_ts + interval '1 day';
+if (v_json2->>'toplam')::bigint <> v_bigint then
+  raise exception 'FAIL 128a: gün toplamı tahsilatlarla tutmuyor: % <> %', v_json2->>'toplam', v_bigint;
+end if;
+if (v_json2->>'nakit')::bigint + (v_json2->>'kart')::bigint + (v_json2->>'havale')::bigint
+   <> (v_json2->>'toplam')::bigint then
+  raise exception 'FAIL 128b: yönteme göre toplamlar toplamı vermiyor: %', v_json2;
+end if;
+if not exists (select 1 from jsonb_array_elements(v_json->'biletler') e
+                where (e->>'id')::uuid = v_bilet) then
+  raise exception 'FAIL 128c: bugün kapanan bilet raporda yok';
+end if;
+if exists (select 1 from jsonb_array_elements(v_json->'biletler') e
+            where (e->>'id')::uuid = v_bilet2) then
+  raise exception 'FAIL 128d: dün kapanan bilet bugünün raporuna girdi';
+end if;
+if (v_json2->>'arac')::bigint <>
+   (select count(*) from public.biletler
+     where durum = 'KAPALI' and cikis_at >= v_ts and cikis_at < v_ts + interval '1 day') then
+  raise exception 'FAIL 128e: günün araç sayısı yanlış: %', v_json2->>'arac';
+end if;
+if not exists (select 1 from jsonb_array_elements(v_json->'vardiyalar') e
+                where (e->>'id')::uuid = v_vardiya
+                  and (e->>'toplam')::bigint =
+                      (select sum(tutar_kurus) from public.tahsilatlar where vardiya_id = v_vardiya)) then
+  raise exception 'FAIL 128f: güne değen vardiya ya da toplamı raporda yok: %', v_json->'vardiyalar';
+end if;
+if (v_json->'onay'->>'adet')::bigint <>
+   (select count(*) from public.tahsilatlar
+     where durum = 'BEKLIYOR' and created_at >= v_ts and created_at < v_ts + interval '1 day') then
+  raise exception 'FAIL 128g: Onay bekleyen sayısı yanlış: %', v_json->'onay';
+end if;
+select * into v_rec from public.gun_toplamlari(v_gun, v_gun);
+if not found or v_rec.gun <> v_gun or v_rec.toplam_kurus <> v_bigint
+   or v_rec.arac_sayisi <> (v_json2->>'arac')::bigint then
+  raise exception 'FAIL 128h: gün toplamı raporla tutmuyor';
+end if;
+select coalesce(sum(tutar_kurus), 0) into v_bigint2
+  from public.tahsilatlar
+ where created_at >= v_ts - interval '7 days' and created_at < now() - interval '7 days';
+if v_rec.onceki_kurus <> v_bigint2 or v_bigint2 < 2000 then
+  raise exception 'FAIL 128i: geçen haftanın aynı saate kadarki toplamı yanlış: % <> %',
+    v_rec.onceki_kurus, v_bigint2;
+end if;
+-- Dünün satırı: tam gün, dün 23:30'daki tahsilat dahil.
+select * into v_rec from public.gun_toplamlari(v_gun - 1, v_gun - 1);
+if v_rec.toplam_kurus <>
+   (select coalesce(sum(tutar_kurus), 0) from public.tahsilatlar
+     where created_at >= v_ts - interval '1 day' and created_at < v_ts) then
+  raise exception 'FAIL 128j: dünün toplamı tam günü kapsamıyor';
+end if;
+perform pg_temp.logout();
+raise notice 'PASS 128: günlük rapor gün penceresiyle tutuyor; geçen hafta aynı saate kadar';
+
+-- =====================================================================
+-- PASS 129-131 (088): Fiş — giriş ve çıkış fişi basımları.
+-- Her basım kayıtlıdır (sıra no = "TEKRAR BASIM"); çıkış fişi yalnızca borç
+-- kalmamışsa; tahmini ücret sunucuda, tarifenin tam fiyatıyla.
+-- =====================================================================
+-- Açık bilet (fişi basılacak), borçlu kapalı bilet, ödenmiş kapalı bilet,
+-- ve Personelin göremeyeceği 5 gün önce kapanmış ödenmiş bilet.
+insert into public.biletler (islem_id, plaka, giris_at, tarife_id, durum, giris_kaynak)
+values (gen_random_uuid(), 'ZZ129A', now() - interval '25 minutes', v_id2, 'ACIK', 'KAMERA')
+returning id into v_bilet;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, giris_kaynak, cikis_kaynak,
+                             kapatan_vardiya_id)
+values (gen_random_uuid(), 'ZZ129B', now() - interval '3 hours', now() - interval '10 minutes',
+        v_id2, 'KAPALI', 4000, 0, 'KAMERA', 'KAMERA', v_vardiya)
+returning id into v_bilet2;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi, giris_kaynak,
+                             cikis_kaynak, cikis_by, kapatan_vardiya_id)
+values (gen_random_uuid(), 'ZZ129C', now() - interval '2 hours', now() - interval '5 minutes',
+        v_id2, 'KAPALI', 3000, 3000, 'NAKIT', 'MOBIL', 'MOBIL', u_personel, v_vardiya)
+returning id into v_id;
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi, giris_kaynak,
+                             cikis_kaynak, cikis_by)
+values (gen_random_uuid(), 'ZZ129D', now() - interval '5 days 2 hours', now() - interval '5 days',
+        v_id2, 'KAPALI', 3000, 3000, 'NAKIT', 'MOBIL', 'MOBIL', u_personel)
+returning id into v_islem;
+
+-- 129: kimin neyi gördüğü; tabloya doğrudan yazılmaz.
+perform pg_temp.login(u_pending);
+begin
+  perform public.fis_basildi(v_bilet, 'GIRIS', null);
+  raise exception 'FAIL 129a: onaysız kullanıcı fiş bastı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+if (select count(*) from public.fis_basimlari) <> 0 then
+  raise exception 'FAIL 129b: onaysız kullanıcı fiş kayıtlarını görüyor';
+end if;
+perform pg_temp.login(u_personel);
+begin
+  insert into public.fis_basimlari (bilet_id, tur) values (v_bilet, 'GIRIS');
+  raise exception 'FAIL 129c: fiş kaydı doğrudan yazıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.fis_basildi(v_islem, 'CIKIS', null);
+  raise exception 'FAIL 129d: Personel göremediği eski biletin fişini bastı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_yonetici);
+if public.fis_basildi(v_islem, 'CIKIS', null) <> 1 then
+  raise exception 'FAIL 129e: Yönetici eski biletin çıkış fişini basamadı';
+end if;
+perform pg_temp.login(u_personel);
+if exists (select 1 from public.fis_basimlari where bilet_id = v_islem) then
+  raise exception 'FAIL 129f: Personel göremediği biletin fiş kaydını görüyor';
+end if;
+raise notice 'PASS 129: fişi yalnızca bileti görebilen basar; kayıt yalnızca fonksiyonla yazılır';
+
+-- 130: sıra numarası; çıkış fişi yalnızca borç kalmamışsa.
+if public.fis_basildi(v_bilet, 'GIRIS', 120) <> 1
+   or public.fis_basildi(v_bilet, 'GIRIS', null) <> 2 then
+  raise exception 'FAIL 130a: giriş fişi sıra numarası 1, 2 olmalıydı';
+end if;
+if (select tahmin_dk from public.fis_basimlari where bilet_id = v_bilet order by created_at, id limit 1)
+   is distinct from 120 then
+  raise exception 'FAIL 130b: tahmini kalış kaydedilmedi';
+end if;
+begin
+  perform public.fis_basildi(v_bilet, 'CIKIS', null);
+  raise exception 'FAIL 130c: açık bilete çıkış fişi basıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform public.fis_basildi(v_bilet2, 'CIKIS', null);
+  raise exception 'FAIL 130d: borçlu bilete çıkış fişi basıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+  if sqlerrm not like 'Önce%' then
+    raise exception 'FAIL 130e: borçlu çıkış fişinin sebebi yanlış: %', sqlerrm;
+  end if;
+end;
+begin
+  perform public.fis_basildi(v_id, 'GIRIS', null);
+  raise exception 'FAIL 130f: kapanmış bilete giriş fişi basıldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+if public.fis_basildi(v_id, 'CIKIS', null) <> 1 then
+  raise exception 'FAIL 130g: ödenmiş biletin çıkış fişi basılamadı';
+end if;
+begin
+  perform public.fis_basildi(v_bilet, 'BASKA', null);
+  raise exception 'FAIL 130h: bilinmeyen fiş türü kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+if (select count(*) from public.fis_basimlari where bilet_id = v_bilet and basan = u_personel) <> 2 then
+  raise exception 'FAIL 130i: basan kişi kaydedilmedi';
+end if;
+raise notice 'PASS 130: fiş basımları sıralı; çıkış fişi yalnızca borç kalmamış kapalı bilete';
+
+-- 131: tahmini ücret sunucuda, tarifenin tam fiyatıyla (aşım kararı beklemeden).
+select count(*), min(t.kurus) filter (where t.dakika = 120) into v_n, v_n2
+  from public.fis_tahmini(v_bilet, array[60, 120]) t;
+select giris_at into v_ts from public.biletler where id = v_bilet;
+if v_n <> 2 or v_n2 is distinct from
+   public.ucret_hesapla(v_ts, v_ts + interval '120 minutes', v_id2) then
+  raise exception 'FAIL 131a: 2 saatlik tahmin tarifeyle tutmuyor: %', v_n2;
+end if;
+begin
+  perform * from public.fis_tahmini(v_id, array[60]);
+  raise exception 'FAIL 131b: kapanmış bilete tahmin verildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+begin
+  perform * from public.fis_tahmini(v_bilet, array[60, 120, 180, 240, 360, 480, 600]);
+  raise exception 'FAIL 131c: 6''dan çok tahmin kabul edildi';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.login(u_pending);
+begin
+  perform * from public.fis_tahmini(v_bilet, array[60]);
+  raise exception 'FAIL 131d: onaysız kullanıcı tahmin aldı';
+exception when others then
+  if sqlerrm like 'FAIL%' then raise; end if;
+end;
+perform pg_temp.logout();
+raise notice 'PASS 131: tahmini ücret sunucuda, tam tarifeyle; yalnızca açık bilet ve personel';
+
+-- =====================================================================
+-- PASS 132-134 (089): Ödeyip sonra çıkan araç.
+-- Personel ödemeyi alıp bileti kapattı, müşteri arabasına yürüdü ve
+-- dakikalar sonra çıktı. Kamera onu o bilete bağlar: yeni bilet açılmaz,
+-- "açık bilet yok" kaydı yazılmaz. Gecikme uyarı süresini aşarsa Dikkat'e
+-- bir satır (audit). Köprü "GIRDI" dediyse yeni giriştir. Süreler canlı
+-- ayardan okunur.
+-- =====================================================================
+select o.tek_kapi_cikis_yoksay_dk, o.odeme_sonrasi_cikis_dk, o.gec_cikis_uyari_dk
+  into v_n, v_n2, v_ucret
+  from public.otopark_ayarlari o where o.id = 1;
+-- v_n = aynı çıkışın penceresi, v_n2 = ödemeden sonra çıkış penceresi,
+-- v_ucret = Dikkat eşiği (dakika). Geç: ikisinin de üstünde, pencerenin içinde.
+v_ucret2 := greatest(v_n, v_ucret) + 10;
+if v_ucret2 >= v_n2 then
+  raise exception 'FAIL 132-: ayarlar test edilemez: çıkış %, pencere %, uyarı %', v_n, v_n2, v_ucret;
+end if;
+
+-- Personelin ödeyip kapattığı biletler (MOBIL).
+insert into public.biletler (islem_id, plaka, giris_at, cikis_at, tarife_id, durum,
+                             ucret_kurus, tahsil_kurus, odeme_yontemi, giris_kaynak,
+                             cikis_kaynak, cikis_by)
+select gen_random_uuid(), x.p, now() - interval '3 hours', now() - make_interval(mins => x.dk),
+       v_id2, 'KAPALI', 3000, 3000, 'NAKIT', 'MOBIL', 'MOBIL', u_personel
+  from (values ('AA1320', v_ucret2), ('BB1321', 2), ('CC1322', v_ucret2),
+               ('DD1323', v_n2 + 10), ('EE1324', v_ucret2), ('FF1330', v_ucret2)) x(p, dk);
+
+-- 132: tek kapı.
+perform pg_temp.kamera();
+v_json := public.kamera_tek_kapi('AA1320', gen_random_uuid(), now(), null, null, 'CIKTI');
+if v_json ->> 'sebep' is distinct from 'ODENMIS_CIKIS'
+   or (v_json ->> 'bilet_id')::uuid is distinct from
+      (select id from public.biletler where plaka = 'AA1320' and durum = 'KAPALI') then
+  raise exception 'FAIL 132a: ödeyip geç çıkan araç bilete bağlanmadı: %', v_json;
+end if;
+v_json2 := public.kamera_tek_kapi('AA1320', gen_random_uuid(), now() + interval '1 minute', null, null, null);
+if v_json2 ->> 'sebep' is distinct from 'ODENMIS_CIKIS' then
+  raise exception 'FAIL 132b: aynı çıkışın ikinci karesi yeniden değerlendirildi: %', v_json2;
+end if;
+v_json := public.kamera_tek_kapi('BB1321', gen_random_uuid(), now(), null, null, null);
+if v_json ->> 'sebep' is distinct from 'ODENMIS_CIKIS' then
+  raise exception 'FAIL 132c: ödeyip hemen çıkan araç bilete bağlanmadı: %', v_json;
+end if;
+v_json := public.kamera_tek_kapi('CC1322', gen_random_uuid(), now(), null, null, 'GIRDI');
+if v_json ->> 'sebep' = 'ODENMIS_CIKIS'
+   or not exists (select 1 from public.biletler where plaka = 'CC1322' and durum = 'ACIK') then
+  raise exception 'FAIL 132d: köprü GIRDI dediği halde yeni giriş açılmadı: %', v_json;
+end if;
+v_json := public.kamera_tek_kapi('DD1323', gen_random_uuid(), now(), null, null, null);
+if v_json ->> 'sebep' = 'ODENMIS_CIKIS' then
+  raise exception 'FAIL 132e: pencereden sonra görülen araç ödenmiş bilete bağlandı';
+end if;
+v_json := public.kamera_tek_kapi('EE1324', gen_random_uuid(), now(), null, null, 'ICERIDE');
+if v_json ->> 'sebep' is distinct from 'ODENMIS_ICERIDE'
+   or exists (select 1 from public.istisnalar where plaka = 'EE1324') then
+  raise exception 'FAIL 132f: ödemiş, arabasına giden araç kart açtı: %', v_json;
+end if;
+perform pg_temp.logout();
+if (select count(*) from public.biletler where plaka in ('AA1320', 'BB1321') and durum = 'ACIK') <> 0 then
+  raise exception 'FAIL 132g: ödenmiş araca yeni bilet açıldı';
+end if;
+if (select count(*) from public.audit_log a join public.biletler b on b.id = a.row_id
+     where a.action = 'odeme_sonrasi_gec_cikis' and b.plaka = 'AA1320') <> 1
+   or exists (select 1 from public.audit_log a join public.biletler b on b.id = a.row_id
+               where a.action = 'odeme_sonrasi_gec_cikis' and b.plaka in ('BB1321', 'EE1324')) then
+  raise exception 'FAIL 132h: Dikkat satırı yalnızca eşiği aşan çıkışa, bir kez yazılmalı';
+end if;
+if (select gecikme_dk from public.odenmis_kapi_cikislari k join public.biletler b on b.id = k.bilet_id
+     where b.plaka = 'AA1320') is distinct from v_ucret2
+   or exists (select 1 from public.odenmis_kapi_cikislari k join public.biletler b on b.id = k.bilet_id
+               where b.plaka = 'EE1324') then
+  raise exception 'FAIL 132i: çıkış kaydı yanlış (gecikme ya da içeride görülen araç)';
+end if;
+raise notice 'PASS 132: tek kapı — ödeyip sonra çıkan araç bilete bağlanır; geç çıkış Dikkat''e bir kez; GIRDI yeni giriş';
+
+-- 133: iki kapı (CIKIS kapısı) — "açık bilet yok" kaydı yerine ödenmiş bilet.
+perform pg_temp.kamera();
+v_id := public.kamera_cikis_bildir('FF1330', gen_random_uuid(), now(), null, null);
+v_bilet := public.kamera_cikis_bildir('GG1339', gen_random_uuid(), now(), null, null);
+perform pg_temp.logout();
+if v_id is distinct from (select id from public.biletler where plaka = 'FF1330')
+   or exists (select 1 from public.istisnalar where plaka = 'FF1330') then
+  raise exception 'FAIL 133a: CIKIS kapısında ödenmiş bilet bulunmadı';
+end if;
+if (select count(*) from public.audit_log where action = 'odeme_sonrasi_gec_cikis' and row_id = v_id) <> 1 then
+  raise exception 'FAIL 133b: CIKIS kapısında geç çıkış Dikkat''e yazılmadı';
+end if;
+if v_bilet is not null
+   or not exists (select 1 from public.istisnalar where plaka = 'GG1339' and tur::text = 'ACIK_BILET_YOK') then
+  raise exception 'FAIL 133c: bileti hiç olmayan araç eskisi gibi kayda düşmedi';
+end if;
+raise notice 'PASS 133: iki kapı — ödeyip sonra çıkan araç bilete bağlanır, biletsiz araç eskisi gibi';
+
+-- 134: yardımcı fonksiyon kimseye açık değil; tablo yalnızca Yöneticiye.
+if has_function_privilege('authenticated', 'public.odenmis_cikis(text, timestamptz, uuid, boolean)', 'execute')
+   or has_function_privilege('anon', 'public.odenmis_cikis(text, timestamptz, uuid, boolean)', 'execute')
+   or has_function_privilege('service_role', 'public.odenmis_cikis(text, timestamptz, uuid, boolean)', 'execute') then
+  raise exception 'FAIL 134a: odenmis_cikis istemciye açık';
+end if;
+perform pg_temp.login(u_personel);
+if exists (select 1 from public.odenmis_kapi_cikislari) then
+  raise exception 'FAIL 134b: Personel ödenmiş çıkış kayıtlarını görüyor';
+end if;
+perform pg_temp.login(u_yonetici);
+if not exists (select 1 from public.odenmis_kapi_cikislari where bilet_id = v_id) then
+  raise exception 'FAIL 134c: Yönetici ödenmiş çıkış kaydını göremiyor';
+end if;
+perform pg_temp.logout();
+raise notice 'PASS 134: ödenmiş çıkış yardımcısı kapalı; kayıtlar yalnızca Yöneticiye';
+
+-- =====================================================================
+-- 135-145  Köprü 1.4.7 + 090: geç okunan plaka biletlenir (28.11 teşhisi)
+--   Sahada 26-28.11 (köprü 1.4.6): iki yanlış kamera çıkışı (tahmin
+--   kuralı), 10-60 saatlik altı bilet (çıkışı görülmeyen eski bilet),
+--   içeri giren araçlara "İçeride, bileti yok" kartı, 32 saatte 73 kart.
+--   Sahibin kararları (28.11): çıkış tahmini hiçbir bileti kapatmaz; emin
+--   girişte eski bilet son içeride görüldüğü saatte (yoksa kendi giriş
+--   saatinde) kapanır ve Yönetici bilgilenir; geç okunan plaka kartın
+--   saatinden (ya da içeride görüldüğü andan) işaretli bilet açar.
+--   Canlı veritabanında son 11 saatin çözülmemiş tek kapı kartları testi
+--   şaşırtmasın diye bloklar önce onları kapatır (sonunda geri alınır).
+-- =====================================================================
+perform pg_temp.logout();
+if to_regprocedure('public.plaka_harf_karisir(text, text)') is null
+   or to_regprocedure('public.kamera_eski_bileti_kapat(uuid, timestamptz)') is null
+   or to_regprocedure('public.kamera_giris_karti(text, timestamptz, uuid, jsonb, text)') is null
+   or to_regprocedure('public.kamera_yeniden_giris(uuid, text, uuid, timestamptz, text, jsonb)') is null then
+  raise exception 'FAIL 135: 090 çalıştırılmadı (yardımcı fonksiyonlar yok)';
+end if;
+update public.otopark_ayarlari
+   set tek_kapi_giris_yoksay_dk = 2, tek_kapi_cikis_yoksay_dk = 5, kamera_gecikme_limiti_dk = 720
+ where id = 1;
+if exists (select 1 from public.biletler b,
+                  unnest(array['ZZ135TA01', 'ZZ136AB01', 'ZZ137CD02', 'ZZ137EF03',
+                               'ZZ138CO11', 'ZZ138CD11', 'ZZ138KA22', 'ZZ138XA22',
+                               'ZZ138DA33', 'ZZ1380A33', 'ZZ138OA33', 'ZZ138CO44', 'ZZ138CD44',
+                               'ZZ139KI01', 'ZZ139LM02', 'ZZ140LA01', 'ZZ140LA07', 'ZZ140NP03',
+                               'ZZ140QR04', 'ZZ141GA01', 'ZZ141GB02', 'ZZ141GC03', 'ZZ141GD04',
+                               'ZZ141GE05', 'ZZ141GF06', 'ZZ142EA01', 'ZZ143IG11', 'ZZ143JH22',
+                               'ZZ144MF01', 'ZZ144NG02', 'ZZ141HK21', 'ZZ141HK27']) as p(plaka)
+            where b.plaka = p.plaka or public.plaka_yakin(b.plaka, p.plaka)) then
+  raise exception 'FAIL 135: fixture — ZZ135-144 plakalarından birine eşit ya da bir karakter yakın bilet var';
+end if;
+
+-- 135 (F1): çıkış tahmini — 1.00 güvenle, tam ve tek eşleşmede bile —
+--     bileti kapatmaz; köprü 1.4.7 iki plakalı izde güven göndermez (null).
+--     Fonksiyon ve yetkisi kalır: webhook onu çağırır, null alır, kartı yazar.
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ135TA01', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+v_id := public.kamera_tahmin_cikis('ZZ135TA01', 1.00, gen_random_uuid(), now(),
+                                   jsonb_build_object('hareket', 'CIKTI'));
+v_id2 := public.kamera_tahmin_cikis('ZZ135TA01', null, gen_random_uuid(), now(),
+                                    jsonb_build_object('hareket', 'CIKTI'));
+perform pg_temp.logout();
+if v_id is not null or v_id2 is not null
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK')
+   or exists (select 1 from public.audit_log
+               where action = 'kamera_tahmin_cikis' and row_id = v_bilet) then
+  raise exception 'FAIL 135: çıkış tahmini bileti kapattı (% / %)', v_id, v_id2;
+end if;
+v_txt := 'public.kamera_tahmin_cikis(text, numeric, uuid, timestamptz, jsonb)';
+if not has_function_privilege('service_role', v_txt, 'execute')
+   or has_function_privilege('authenticated', v_txt, 'execute')
+   or has_function_privilege('anon', v_txt, 'execute') then
+  raise exception 'FAIL 135: kamera_tahmin_cikis yetkileri değişti (webhook çağırabilmeli)';
+end if;
+
+raise notice 'PASS 135: çıkış tahmini hiçbir bileti kapatmaz, güveni ne olursa olsun (090)';
+
+-- 136 (F2): giren aracın eski açık bileti var; araç içeride en son 3 saat
+--     önce görüldü. Eski bilet o saatte ödemesiz kapanır (ücret o saate
+--     kadar), not ve denetim kaydı alır, Yönetici bilgilenir; yeni bilet
+--     açılır. Kart yok. Aynı olay yeniden gelirse aynı yeni bilet döner.
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ136AB01', gen_random_uuid(), 'KAMERA', now() - interval '5 hours');
+select public.kamera_tek_kapi('ZZ136AB01', gen_random_uuid(), now() - interval '3 hours',
+                              null, null, 'ICERIDE') into v_json;
+v_islem := gen_random_uuid();
+select public.kamera_tek_kapi('ZZ136AB01', v_islem, now(), null, null, 'GIRDI') into v_json2;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ICERIDE_ACIK'
+   or v_json2 ->> 'karar' is distinct from 'GIRIS'
+   or v_json2 ->> 'sebep' is distinct from 'ESKI_BILET_KAPANDI' then
+  raise exception 'FAIL 136a: eski bilet kapanıp yeni giriş açılmadı (% / %)', v_json, v_json2;
+end if;
+if not exists (select 1 from public.biletler b
+                where b.id = v_bilet and b.durum = 'KAPALI' and b.cikis_kaynak::text = 'KAMERA'
+                  and b.cikis_at = now() - interval '3 hours' and b.tahsil_kurus = 0
+                  and b.odeme_yontemi is null
+                  and b.ucret_kurus = public.bilet_ucreti(b, b.cikis_at)
+                  and b.notlar like '%Kamera: çıkışı görülmedi%') then
+  raise exception 'FAIL 136a: eski bilet son içeride görüldüğü saatte, ödemesiz ve notla kapanmadı';
+end if;
+if not exists (select 1 from public.biletler b
+                where b.id = (v_json2 ->> 'bilet_id')::uuid and b.plaka = 'ZZ136AB01'
+                  and b.durum = 'ACIK' and b.islem_id = v_islem and b.giris_at = now()
+                  and b.notlar = 'Kamera: önceki bilet çıkışı görülmeden kapandı')
+   or (select count(*) from public.biletler where plaka = 'ZZ136AB01' and durum = 'ACIK') <> 1 then
+  raise exception 'FAIL 136a: yeni bilet açılmadı ya da işaretli değil';
+end if;
+if (select count(*) from public.audit_log
+     where action = 'kamera_cikis_gorulmedi' and tablo = 'biletler' and row_id = v_bilet) <> 1 then
+  raise exception 'FAIL 136a: kamera_cikis_gorulmedi denetim kaydı tek değil';
+end if;
+if not exists (select 1 from public.notifications
+                where tur::text = 'KAMERA_HAREKET' and baslik = 'Çıkışı görülmedi'
+                  and link = '/gise/bilet/' || v_bilet)
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ136AB01') then
+  raise exception 'FAIL 136a: Yönetici bilgilenmedi ya da kart açıldı';
+end if;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ136AB01', v_islem, now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'TEKRAR'
+   or v_json ->> 'bilet_id' is distinct from v_json2 ->> 'bilet_id'
+   or (select count(*) from public.audit_log
+        where action = 'kamera_cikis_gorulmedi' and row_id = v_bilet) <> 1 then
+  raise exception 'FAIL 136b: tekrar gelen giriş aynı bileti döndürmedi (%)', v_json;
+end if;
+
+raise notice 'PASS 136: emin girişte eski açık bilet son içeride görüldüğü saatte kapanır, Yönetici bilgilenir, yeni bilet açılır (090)';
+
+-- 137 (F2): araç içeride hiç görülmediyse eski bilet kendi giriş saatinde
+--     kapanır (ücret o saate kadar). Kapanamıyorsa (kullanılan puan
+--     ücretten fazla) eskisi gibi GIRISTE_ACIK_BILET kartı.
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ137CD02', gen_random_uuid(), 'KAMERA', now() - interval '6 hours');
+select public.kamera_tek_kapi('ZZ137CD02', gen_random_uuid(), now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ESKI_BILET_KAPANDI'
+   or not exists (select 1 from public.biletler b
+                   where b.id = v_bilet and b.durum = 'KAPALI'
+                     and b.giris_at = now() - interval '6 hours' and b.cikis_at = b.giris_at
+                     and b.ucret_kurus = public.bilet_ucreti(b, b.cikis_at)) then
+  raise exception 'FAIL 137a: görülmeyen eski bilet kendi giriş saatinde kapanmadı (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ137EF03', gen_random_uuid(), 'KAMERA', now() - interval '4 hours');
+perform pg_temp.logout();
+update public.biletler set indirim_kurus = 100000000 where id = v_bilet;
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ137EF03', v_islem, now(), null, null, 'GIRDI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'ISTISNA' or v_json ->> 'sebep' is distinct from 'GIRIS_ACIK_BILET'
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK')
+   or not exists (select 1 from public.istisnalar
+                   where islem_id = v_islem and tur::text = 'GIRISTE_ACIK_BILET'
+                     and aday_bilet_ids = array[v_bilet])
+   or (select count(*) from public.biletler where plaka = 'ZZ137EF03') <> 1 then
+  raise exception 'FAIL 137b: kapanamayan eski bilet eskisi gibi karta gitmedi (%)', v_json;
+end if;
+
+raise notice 'PASS 137: içeride görülmeyen eski bilet kendi giriş saatinde kapanır; kapanamayan eskisi gibi karta (090)';
+
+-- 138 (F3): ÇIKTI ipuçlu okuma tek harfte, sık karışan bir çiftle
+--     (O/D/0, M/N, B/8, I/1, S/5, Z/2, G/6) yanlış ve içeride tek benzeri
+--     var: o bilet her kamera çıkışı gibi kapanır (ödemesiz), denetim kaydı
+--     okunanı taşır. Karışmayan harf, iki benzer ya da ipuçsuz okuma
+--     eskisi gibi insana (BENZER_ACIK).
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ138CO11', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+v_islem := gen_random_uuid();
+select public.kamera_tek_kapi('ZZ138CD11', v_islem, now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or v_json ->> 'sebep' is distinct from 'BENZER_HARF'
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and durum = 'KAPALI' and cikis_kaynak::text = 'KAMERA'
+                     and cikis_at = now() and tahsil_kurus = 0)
+   or exists (select 1 from public.biletler where plaka = 'ZZ138CD11')
+   or exists (select 1 from public.istisnalar where islem_id = v_islem) then
+  raise exception 'FAIL 138a: O/D karışan çıkış benzer bileti kapatmadı (%)', v_json;
+end if;
+if (select count(*) from public.audit_log
+     where action = 'kamera_benzer_harf' and row_id = v_bilet
+       and detay ->> 'okunan' = 'ZZ138CD11' and detay ->> 'bilet_plaka' = 'ZZ138CO11') <> 1 then
+  raise exception 'FAIL 138a: kamera_benzer_harf denetim kaydı yok ya da okunanı taşımıyor';
+end if;
+
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ138KA22', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+select public.kamera_tek_kapi('ZZ138XA22', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'BENZER_ACIK'
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 138b: karışmayan harf (K/X) bileti kapattı (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ138DA33', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+v_bilet2 := public.bilet_ac('ZZ1380A33', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+select public.kamera_tek_kapi('ZZ138OA33', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'BENZER_ACIK'
+   or (select count(*) from public.biletler where id in (v_bilet, v_bilet2) and durum = 'ACIK') <> 2 then
+  raise exception 'FAIL 138c: iki benzerden biri kapatıldı (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_bilet := public.bilet_ac('ZZ138CO44', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+select public.kamera_tek_kapi('ZZ138CD44', gen_random_uuid(), now()) into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'BENZER_ACIK'
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 138d: ipuçsuz benzer okuma bileti kapattı (%)', v_json;
+end if;
+
+if not (public.plaka_harf_karisir('ZZ138CO11', 'ZZ138CD11') and public.plaka_harf_karisir('AB0', 'ABO')
+        and public.plaka_harf_karisir('34MA1', '34NA1') and public.plaka_harf_karisir('B1', '81')
+        and public.plaka_harf_karisir('AI2', 'A12') and public.plaka_harf_karisir('S9', '59')
+        and public.plaka_harf_karisir('Z9', '29') and public.plaka_harf_karisir('G7', '67'))
+   or public.plaka_harf_karisir('ABC', 'ABX') is not false
+   or public.plaka_harf_karisir('ABC', 'ABC') is not false
+   or public.plaka_harf_karisir('ABC', 'ABCD') is not false
+   or public.plaka_harf_karisir('OD1', 'DO1') is not false
+   or public.plaka_harf_karisir(null, 'ABC') is not false then
+  raise exception 'FAIL 138e: plaka_harf_karisir yanlış';
+end if;
+
+raise notice 'PASS 138: çıkışta sık karışan tek harf ve tek benzer bilet — bilet kapanır; başka her durum insana (090)';
+
+-- 139 (F4): köprü 1.4.7 aynı izin sonraki gönderimlerine plakasız giriş
+--     kartının kimliğini koyar (giris_islem_id). Giriş kartı + 2 saat sonra
+--     içeride emin okuma: bilet kartın saatinden ve kimliğiyle açılır, kart
+--     sistemce çözülür. Bileti olan araçta: bilet karttan en çok 15 dk önce
+--     açıldıysa aynı ziyarettir, kart yalnızca çözülür; daha eskiyse araç
+--     çıkışı görülmeden yeniden girmiştir — F2 kartın saatiyle uygulanır.
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '2 hours', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ139KI01', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'ICERIDE') into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and plaka = 'ZZ139KI01' and durum = 'ACIK'
+                     and islem_id = v_islem and giris_at = now() - interval '2 hours'
+                     and giris_kaynak::text = 'KAMERA' and notlar = 'Kamera: giriş kartından açıldı') then
+  raise exception 'FAIL 139a: giriş kartından bilet açılmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.istisnalar
+                where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                  and plaka = 'ZZ139KI01' and cozum_notu like 'Kamera: plaka içeride okundu%') then
+  raise exception 'FAIL 139a: giriş kartı sistemce çözülmedi';
+end if;
+
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '115 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ139KI01', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ICERIDE_ACIK'
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                     and cozum_notu like 'Kamera: aynı araç içeride okundu, bileti var%')
+   or (select count(*) from public.biletler where plaka = 'ZZ139KI01') <> 1
+   or not exists (select 1 from public.biletler where id = v_bilet and durum = 'ACIK') then
+  raise exception 'FAIL 139b: bileti olan aracın giriş kartı çözülmedi ya da bilet değişti (%)', v_json;
+end if;
+
+-- (c) Bilet 5 saat önce açılmış, araç en son 4 saat önce içeride görülmüş;
+--     1 saat önce aynı izin plakasız giriş kartı: araç çıkışı görülmeden
+--     yeniden girdi. Eski bilet 4 saat önce kapanır, yenisi kartın saatinden
+--     ve kimliğiyle açılır, kart çözülür, Yönetici bilgilenir.
+perform pg_temp.kamera();
+v_bilet2 := public.bilet_ac('ZZ139LM02', gen_random_uuid(), 'KAMERA', now() - interval '5 hours');
+perform public.kamera_tek_kapi('ZZ139LM02', gen_random_uuid(), now() - interval '4 hours',
+                               null, null, 'ICERIDE');
+v_islem := gen_random_uuid();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '1 hour', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ139LM02', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'ESKI_BILET_KAPANDI'
+   or not exists (select 1 from public.biletler b
+                   where b.id = v_bilet2 and b.durum = 'KAPALI' and b.cikis_kaynak::text = 'KAMERA'
+                     and b.cikis_at = now() - interval '4 hours' and b.tahsil_kurus = 0
+                     and b.notlar like 'Kamera: çıkışı görülmedi%')
+   or not exists (select 1 from public.biletler b
+                   where b.id = (v_json ->> 'bilet_id')::uuid and b.durum = 'ACIK'
+                     and b.islem_id = v_islem and b.giris_at = now() - interval '1 hour'
+                     and b.iceride_goruldu_at = now()
+                     and b.notlar = 'Kamera: önceki bilet çıkışı görülmeden kapandı')
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                     and plaka = 'ZZ139LM02' and cozum_notu like 'Kamera: plaka içeride okundu%')
+   or not exists (select 1 from public.notifications
+                   where tur::text = 'KAMERA_HAREKET' and baslik = 'Çıkışı görülmedi'
+                     and link = '/gise/bilet/' || v_bilet2) then
+  raise exception 'FAIL 139c: giriş kartıyla dönen aracın eski bileti kapanıp yenisi açılmadı (%)', v_json;
+end if;
+
+raise notice 'PASS 139: giriş kartının kimliğiyle içeride okunan plaka kartın saatinden bilet açar, kart çözülür; eski açık bilet varsa F2 kartın saatiyle (090)';
+
+-- 140 (F4): aynı izin çıkışı, giriş kartının kimliğiyle emin okundu ve
+--     aracın bileti yok: bilet kartın saatinden açılır ve hemen kamera
+--     çıkışı gibi kapanır (ödemesiz). İçerideki bir karakter uzak bilete
+--     dokunulmaz (bu karar benzer aramasından önce verilir).
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+perform pg_temp.kamera();
+v_bilet2 := public.bilet_ac('ZZ140LA01', gen_random_uuid(), 'KAMERA', now() - interval '1 hour');
+v_islem := gen_random_uuid();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '40 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ140LA07', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'CIKTI') into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'CIKIS' or v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler b
+                   where b.id = v_bilet and b.plaka = 'ZZ140LA07' and b.islem_id = v_islem
+                     and b.giris_at = now() - interval '40 minutes' and b.durum = 'KAPALI'
+                     and b.cikis_kaynak::text = 'KAMERA' and b.cikis_at = now()
+                     and b.tahsil_kurus = 0 and b.ucret_kurus = public.bilet_ucreti(b, b.cikis_at)) then
+  raise exception 'FAIL 140: giriş kartlı çıkış bileti açıp kapatmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.biletler where id = v_bilet2 and durum = 'ACIK')
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                     and plaka = 'ZZ140LA07' and cozum_notu like 'Kamera: plaka çıkışta okundu%')
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ140LA07' and id <> v_id) then
+  raise exception 'FAIL 140: benzer bilet değişti, kart çözülmedi ya da ikinci kart yazıldı';
+end if;
+
+-- (b) Eski açık bilet (8 saat, içeride görülmedi) + aynı izin 50 dk önceki
+--     plakasız giriş kartı + emin çıkış: eski bilet kendi giriş saatinde
+--     kapanır, yenisi kartın saatinden açılıp bu çıkışla kapanır.
+perform pg_temp.kamera();
+v_bilet2 := public.bilet_ac('ZZ140NP03', gen_random_uuid(), 'KAMERA', now() - interval '8 hours');
+v_islem := gen_random_uuid();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '50 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ140NP03', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'karar' is distinct from 'CIKIS' or v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler b
+                   where b.id = v_bilet2 and b.durum = 'KAPALI' and b.cikis_at = b.giris_at
+                     and b.notlar like 'Kamera: çıkışı görülmedi%')
+   or not exists (select 1 from public.biletler b
+                   where b.id = (v_json ->> 'bilet_id')::uuid and b.islem_id = v_islem
+                     and b.giris_at = now() - interval '50 minutes' and b.durum = 'KAPALI'
+                     and b.cikis_at = now() and b.ucret_kurus = public.bilet_ucreti(b, b.cikis_at))
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null
+                     and cozum_notu like 'Kamera: plaka çıkışta okundu%') then
+  raise exception 'FAIL 140b: eski bilet kapanıp karttan açılan bilet çıkışta kapanmadı (%)', v_json;
+end if;
+
+-- (c) Bilet karttan 5 dk önce açılmış (aynı ziyaret): bilet her zamanki
+--     gibi kapanır, kart yalnızca çözülür.
+perform pg_temp.kamera();
+v_bilet2 := public.bilet_ac('ZZ140QR04', gen_random_uuid(), 'KAMERA', now() - interval '40 minutes');
+v_islem := gen_random_uuid();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '35 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ140QR04', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', v_islem::text), 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ACIK_BILET'
+   or (v_json ->> 'bilet_id')::uuid is distinct from v_bilet2
+   or (select count(*) from public.biletler where plaka = 'ZZ140QR04') <> 1
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null
+                     and cozum_notu like 'Kamera: aynı araç çıktı, bileti var%') then
+  raise exception 'FAIL 140c: aynı ziyaretin kartı çözülmedi ya da ikinci bilet açıldı (%)', v_json;
+end if;
+
+raise notice 'PASS 140: giriş kartının kimliğiyle çıkışta okunan plaka bileti kartın saatinden açıp kapatır; eski açık bilet varsa önce o kapanır (090)';
+
+-- 141 (F4): kimlik yoksa tahmin: son 10 saatte tahmini (ya da plakası) bu
+--     plakayla birebir aynı TEK çözülmemiş giriş kartı bağlanır — çıkışta
+--     da içeride de. İki eşleşen kart, ÇIKTI ipuçlu kart ve 10 saatten eski
+--     kart bağlanmaz.
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '3 hours', 'ZZ141GA01', 0.62,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ141GA01', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and giris_at = now() - interval '3 hours'
+                     and durum = 'KAPALI')
+   or not exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 141a: tahmini aynı kart çıkışta bilete dönmedi (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1 hour', 'ZZ141GB02', 0.55, null);
+select public.kamera_tek_kapi('ZZ141GB02', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and giris_at = now() - interval '1 hour'
+                     and durum = 'ACIK')
+   or not exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 141b: tahmini aynı kart içeride bilete dönmedi (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '2 hours', 'ZZ141GC03', 0.5,
+                                jsonb_build_object('hareket', 'GIRDI'));
+v_id2 := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1 hour', 'ZZ141GC03', 0.5,
+                                 jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ141GC03', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'CIKIS_BILETSIZ'
+   or exists (select 1 from public.istisnalar where id in (v_id, v_id2) and cozuldu_at is not null)
+   or exists (select 1 from public.biletler where plaka = 'ZZ141GC03') then
+  raise exception 'FAIL 141c: iki eşleşen karttan biri bağlandı (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1 hour', 'ZZ141GD04', 0.5,
+                                jsonb_build_object('hareket', 'CIKTI'));
+v_id2 := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '11 hours', 'ZZ141GE05', 0.5,
+                                 jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ141GD04', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+select public.kamera_tek_kapi('ZZ141GE05', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json2;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'CIKIS_BILETSIZ' or v_json2 ->> 'sebep' is distinct from 'CIKIS_BILETSIZ'
+   or exists (select 1 from public.istisnalar where id in (v_id, v_id2) and cozuldu_at is not null) then
+  raise exception 'FAIL 141d: çıkış kartı ya da 10 saatten eski kart bağlandı (% / %)', v_json, v_json2;
+end if;
+
+-- (e) Başka bir plakayı almış kart (041 yeniden denemesi) tahminiyle bağlanmaz.
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1 hour', 'ZZ141GF06', 0.5,
+                                jsonb_build_object('hareket', 'GIRDI'));
+perform pg_temp.logout();
+update public.istisnalar set plaka = 'ZZ141XX99' where id = v_id;
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ141GF06', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'CIKIS_BILETSIZ'
+   or exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 141e: başka plakalı kart tahminiyle bağlandı (%)', v_json;
+end if;
+
+-- (f) Yalnızca tahmine dayanan bağ benzer aramasından (adım 3) SONRA:
+--     içeride bir karakter uzak açık bilet varken çıkıştaki okuma hayalet
+--     bilet açmaz, eskisi gibi insana gider (BENZER_ACIK); kart açık kalır.
+perform pg_temp.kamera();
+v_bilet2 := public.bilet_ac('ZZ141HK27', gen_random_uuid(), 'KAMERA', now() - interval '2 hours');
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '1 hour', 'ZZ141HK21', 0.5,
+                                jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ141HK21', gen_random_uuid(), now(), null, null, 'CIKTI') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'BENZER_ACIK'
+   or exists (select 1 from public.biletler where plaka = 'ZZ141HK21')
+   or not exists (select 1 from public.biletler where id = v_bilet2 and durum = 'ACIK')
+   or exists (select 1 from public.istisnalar where id = v_id and cozuldu_at is not null) then
+  raise exception 'FAIL 141f: tahmin bağı benzer aramasından önce çalıştı (%)', v_json;
+end if;
+
+raise notice 'PASS 141: tahmini birebir aynı tek giriş kartı (10 saat) çıkışta ve içeride bilete döner; iki eşleşen, ÇIKTI ipuçlu, eski kart ve benzer açık bilet varken bağlanmaz (090)';
+
+-- 142 (077 E2, 090 sırası): içeride okunan plaka için son 15 dk'nın
+--     kartları — tahmini birebir aynı, sonra bir karakter uzak, sonra boş;
+--     eşitse en yenisi. Bir karakter uzak tahminli 10 dk'lık kart, daha
+--     yeni (2 dk) boş karttan önce seçilir; boş kart dokunulmaz kalır.
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now() - interval '2 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+v_islem := gen_random_uuid();
+v_id2 := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '10 minutes', 'ZZ142EA0I', 0.4,
+                                 jsonb_build_object('hareket', 'GIRDI'));
+select public.kamera_tek_kapi('ZZ142EA01', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'GIRIS_KARTI'
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and islem_id = v_islem
+                     and giris_at = now() - interval '10 minutes')
+   or not exists (select 1 from public.istisnalar where id = v_id2 and cozuldu_at is not null)
+   or exists (select 1 from public.istisnalar
+               where id = v_id and (cozuldu_at is not null or plaka is not null)) then
+  raise exception 'FAIL 142: bir karakter uzak tahminli kart, daha yeni boş karttan önce seçilmedi (%)', v_json;
+end if;
+
+raise notice 'PASS 142: içeride okunan plaka önce tahmini benzeyen giriş kartını seçer, sonra boşu (090)';
+
+-- 143 (F6): içeride görülen, bileti ve giriş kartı olmayan araç: bilet o
+--     an açılır, işaretlenir, Yönetici bilgilenir — kart yok. 1.4.6'dan
+--     kalan açık "İçeride, bileti yok" kartı varsa bilet kartın saatinden
+--     açılır ve kart çözülür. Bileti olan araç yeniden görülürse bir şey
+--     olmaz. (Kameranın az önce kapattığı araç eskisi gibi
+--     CIKMAMIS_OLABILIR: PASS 90d; ödemiş araç ODENMIS_ICERIDE: PASS 132f.)
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ143IG11', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+v_bilet := (v_json ->> 'bilet_id')::uuid;
+if v_json ->> 'karar' is distinct from 'GIRIS' or v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
+   or not exists (select 1 from public.biletler
+                   where id = v_bilet and plaka = 'ZZ143IG11' and durum = 'ACIK' and giris_at = now()
+                     and notlar = 'Kamera: girişi görülmedi, içeride görüldü')
+   or exists (select 1 from public.istisnalar where plaka = 'ZZ143IG11') then
+  raise exception 'FAIL 143a: içeride görülen biletsiz araca bilet açılmadı (%)', v_json;
+end if;
+if not exists (select 1 from public.notifications
+                where tur::text = 'KAMERA_HAREKET' and baslik = 'Girişi görülmedi'
+                  and link = '/gise/bilet/' || v_bilet) then
+  raise exception 'FAIL 143a: Yönetici bilgilenmedi';
+end if;
+
+v_id := public.istisna_yaz('ICERIDE_BILETSIZ', 'ORTAK', 'ZZ143JH22', 'KAMERA', gen_random_uuid(),
+                           null, null, now() - interval '1 hour');
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ143JH22', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
+   or not exists (select 1 from public.biletler
+                   where id = (v_json ->> 'bilet_id')::uuid and plaka = 'ZZ143JH22'
+                     and giris_at = now() - interval '1 hour')
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                     and cozum_notu like 'Kamera: içeride yeniden görüldü%') then
+  raise exception 'FAIL 143b: eski kartın saatinden bilet açılmadı ya da kart çözülmedi (%)', v_json;
+end if;
+
+perform pg_temp.kamera();
+select public.kamera_tek_kapi('ZZ143IG11', gen_random_uuid(), now(), null, null, 'ICERIDE') into v_json;
+perform pg_temp.logout();
+if v_json ->> 'sebep' is distinct from 'ICERIDE_ACIK'
+   or (select count(*) from public.biletler where plaka = 'ZZ143IG11') <> 1 then
+  raise exception 'FAIL 143c: bileti olan araç yeniden görülünce ikinci bilet açıldı (%)', v_json;
+end if;
+
+raise notice 'PASS 143: içeride görülen biletsiz araca işaretli bilet açılır (eski kart varsa onun saatinden), Yönetici bilgilenir (090)';
+
+-- 144 (F4): kısa ziyaret — aynı iz plakasız girdi, plakasız çıktı: çıkış
+--     kartı giriş kartının kimliğini taşır; giriş kartı sistemce çözülür,
+--     tek kart kalır. Bozuk kimlik hata vermez, yok sayılır (22P02 webhook'ta
+--     REDDEDILDI kartı olurdu).
+update public.istisnalar set cozuldu_at = now()
+ where tur::text = 'OKUNAMADI' and yon = 'ORTAK' and cozuldu_at is null
+   and kaynak_zaman > now() - interval '11 hours';
+v_islem := gen_random_uuid();
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', v_islem, now() - interval '20 minutes', null, null,
+                                jsonb_build_object('hareket', 'GIRDI'));
+v_id2 := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now(), null, null,
+                                 jsonb_build_object('hareket', 'CIKTI', 'giris_islem_id', v_islem::text));
+perform pg_temp.logout();
+if v_id2 is null
+   or not exists (select 1 from public.istisnalar
+                   where id = v_id and cozuldu_at is not null and cozuldu_by is null
+                     and cozum_notu = 'Kamera: aynı araç çıktı, plaka okunamadı')
+   or not exists (select 1 from public.istisnalar where id = v_id2 and cozuldu_at is null) then
+  raise exception 'FAIL 144a: kısa ziyaretin giriş kartı çözülmedi ya da çıkış kartı yazılmadı';
+end if;
+
+perform pg_temp.kamera();
+v_id := public.kamera_okunamadi('ORTAK', gen_random_uuid(), now(), null, null,
+                                jsonb_build_object('hareket', 'CIKTI', 'giris_islem_id', 'bozuk'));
+select public.kamera_tek_kapi('ZZ144MF01', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', 'bozuk'), 'ICERIDE') into v_json;
+select public.kamera_tek_kapi('ZZ144NG02', gen_random_uuid(), now(), null,
+                              jsonb_build_object('giris_islem_id', 42), 'CIKTI') into v_json2;
+perform pg_temp.logout();
+if v_id is null or v_json ->> 'sebep' is distinct from 'ICERIDE_GORULDU'
+   or v_json2 ->> 'sebep' is distinct from 'CIKIS_BILETSIZ' then
+  raise exception 'FAIL 144b: bozuk giris_islem_id yanlış işlendi (% / % / %)', v_id, v_json, v_json2;
+end if;
+
+raise notice 'PASS 144: kısa ziyaretin çıkış kartı giriş kartını çözer; bozuk kimlik yok sayılır (090)';
+
+-- 145: yardımcılar kimseye açık değil; yeniden yazılan kamera
+--      fonksiyonlarının tek imzası var (eski imza kalmadı).
+foreach v_txt in array array['public.kamera_eski_bileti_kapat(uuid, timestamptz)',
+                             'public.plaka_harf_karisir(text, text)',
+                             'public.kamera_giris_karti(text, timestamptz, uuid, jsonb, text)',
+                             'public.kamera_yeniden_giris(uuid, text, uuid, timestamptz, text, jsonb)'] loop
+  if has_function_privilege('anon', v_txt, 'execute')
+     or has_function_privilege('authenticated', v_txt, 'execute')
+     or has_function_privilege('service_role', v_txt, 'execute') then
+    raise exception 'FAIL 145: % bir role açık', v_txt;
+  end if;
+end loop;
+foreach v_txt in array array['kamera_tek_kapi', 'kamera_okunamadi', 'kamera_tahmin_cikis'] loop
+  if (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname = v_txt) <> 1 then
+    raise exception 'FAIL 145: % tek imzayla durmuyor', v_txt;
+  end if;
+end loop;
+
+raise notice 'PASS 145: 090 yardımcıları kimseye açık değil; kamera fonksiyonlarının tek imzası var';
 
 perform pg_temp.logout();
 raise notice '';

@@ -1235,6 +1235,9 @@ def test_iz_karari():
     _oy(g, "06KZ4581", [3, 4])
     gonder, satir = _iz_karari(g)
     assert [x.tur for x in gonder] == ["OKUNAMADI"] and gonder[0].plaka is None, gonder
+    # 1.4.7 F1 (28.11 15:59, 35AOL140): iki plakalı izin kartı GÜVEN taşımaz —
+    # sunucunun tahmin kuralı (077 D) ilk plakanın 1.00'ıyla bilet kapattı.
+    assert gonder[0].guven is None, gonder[0].guven
     assert any("iki plaka" in s for s in satir), satir
     for s in satir:
         assert "34ABC123" not in s and "06KZ4581" not in s, s
@@ -1261,6 +1264,28 @@ def test_iz_karari():
     g.arac_max = 0.5
     gonder, satir = _iz_karari(g)
     assert gonder == [] and any(gunluk.ARAC_YOK_ISARETI in s for s in satir), satir
+
+
+def test_plakalari_yaz_tahmin_guveni_dusuk_kirpinti():
+    # 1.4.7 F1 (28.11 12:36, 35BBT810): eşik altı okumanın tahmin güveni İKİ
+    # kırpıntının düşüğü — teşhis satırı 0.88 dedi, kart > 0.90 gitti ve
+    # sunucu park etmiş aracın biletini kapattı.
+    g = _gecis()
+    for no in (1, 2):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35BBT810", 0.97), ("35BBT810", 0.40)], None))])
+    k = g.oylama.karar()
+    assert k.eminler == [] and k.belirsiz is not None, k
+    assert (k.belirsiz.tahmin, k.belirsiz.guven) == ("35BBT810", 0.40), k.belirsiz
+    # Kırpıntılar ayrı metin okuduysa da güven düşüğü.
+    g = _gecis()
+    for no in (1, 2):
+        okuma.plakalari_yaz(g, _kare(no), _z(no), no,
+                            [(ORTA, ([("35AOL140", 0.97), ("35A0L140", 0.88)], None))])
+    k = g.oylama.karar()
+    assert k.belirsiz is not None and k.belirsiz.guven == 0.88, k.belirsiz
+    gonder, _ = _iz_karari(g)
+    assert [(x.tur, x.guven) for x in gonder] == [("OKUNAMADI", 0.88)], gonder
 
 
 def _birlesik_gecis() -> okuma.Gecis:

@@ -97,6 +97,7 @@ EMME_HAFIZA_SN = 60.0     # ele alınmış karar bu kadar hatırlanır
 GECIT_ICERME = 0.5        # aynı karede: küçük kutunun en az bu payı büyüğün içinde …
 GECIT_COGUNLUK = 0.5      # … ikisinin birlikte görüldüğü karelerin en az bu payında
 GECIT_ARA_SN = 2.0        # baş / kuyruk: biri kaybolduktan en çok bu kadar sonra öteki doğdu
+GECIT_TERS_PARCA_GORUNUM = 4   # 1.4.7 F8: çıkanın kutusunda doğan bu kadar görünümlük GİRDİ ikizdir
 GECIT_IKIZ_SN = 25.0      # 1.4.6 C: kararın ardından bu kadar içinde doğan plakasız kapıda kaybolan
 GECIT_YER_PAY = 0.25      # baş / kuyruk: küçüğün merkezi büyüğün bu kadar genişletilmişinde
 GECIT_YURUME = 0.02       # bu kadardan (kutu köşegeni payı) az kayan kutu "yürümüyor"
@@ -263,6 +264,9 @@ class Iz:
         # (alanda) / orada mı doğdu (dogum_alanda). Alan yoksa her yer alandır.
         self.alanda = True
         self.dogum_alanda = True
+        # 1.4.7 F4: bu izin plakasız GİRDİ kartının islem_id'si (köprü yazar);
+        # sonraki gönderimleri taşır, sunucu (090) bileti kartın saatinden açar.
+        self.giris_karti: str | None = None
 
     def kutu_ekle(self, mono: float, kutu) -> None:
         """1.4.5 A: bu izin bir ölçülen karedeki kutusu (geçmişe)."""
@@ -311,6 +315,7 @@ class Iz:
         # (ihtiyatlı — en kötü bir görünüm eksik sayılır, fazla değil).
         self.gorunum_no = max(self.gorunum_no, p.gorunum_no)
         self.plaka_yazildi = self.plaka_yazildi or p.plaka_yazildi
+        self.giris_karti = self.giris_karti or p.giris_karti      # 1.4.7 F4
         self.devraldi = True
 
     def __repr__(self) -> str:
@@ -1447,16 +1452,32 @@ class Gecitci:
         self._tutulan: list[_Tutulan] = []
         self._yonlu: list[tuple[Olay, float]] = []      # ele alınmış kararlar
         self._dusen: list[float] = []
+        self._son_kapi: float | None = None              # 1.4.7 F5: son kapı olayının anı
 
     def al(self, izci, olaylar: list[Olay], mono: float) -> None:
-        """İzcinin olayları (boş liste de: bekleyenlere bakılır)."""
-        for o in olaylar:
+        """
+        İzcinin olayları (boş liste de: bekleyenlere bakılır). 1.4.7 F5: bir
+        karenin kapı olayları İÇERİDE olaylarından önce ele alınır (sıralama
+        kararlı) — içeride sorusu geldiğinde kapı olayı görülmüş olur.
+        """
+        for o in sorted(olaylar, key=lambda x: x.tur == "ICERIDE"):
+            if o.tur != "ICERIDE":
+                self._son_kapi = mono
             if (self.acik and o.iz.kaynak == "arac" and not self._motosiklet(o)
                     and self._kart_mi(o, mono)):
                 self._tutulan.append(_Tutulan(o, mono))
             elif self._gonder(o, mono):
                 self._yonlu.append((o, mono))
         self._coz(izci, mono)
+
+    def kapi_yakin(self, mono: float, sn: float) -> bool:
+        """
+        1.4.7 F5: bekletilen bir kart var ya da son `sn` saniyede bir kapı
+        olayı görüldü — köprü içeride sorusunu erteler (28.11: soru kendi
+        kapı kartından önce gitti, sunucu "içeride, bileti yok" kartı açtı).
+        """
+        return bool(self._tutulan) or (self._son_kapi is not None
+                                       and mono - self._son_kapi <= sn)
 
     def birak(self, mono: float) -> None:
         """
@@ -1577,8 +1598,15 @@ class Gecitci:
         (kutularından birinin GECIT_YER_PAY genişletilmişinde) ve aracın o
         uçtaki yürüyüşüne TERS yürümemeli (arkadan içeri giren başka araç).
         0 = kural kapalı.
+        1.4.7 F8 (sahibin kararı 28.11; 28.11 16:51 beyaz kamyonet çıkarken):
+        en çok GECIT_TERS_PARCA_GORUNUM görünümlük plakasız GİRDİ, ele alınmış
+        bir ÇIKTI kararının kutusunda aynı pencerede doğduysa o çıkışın
+        ikizidir — burada ters yürüyüş şartı yok (parça çıkan aracın üstünde
+        içeri "yürüdü"). Gerçek, yönü bilinen kararlar asla birleşmez (ayni_gecis).
         """
-        if self.ikiz_sn <= 0 or p.tur != "KAPIDA_KAYBOLDU" or self._plakalar(p.iz.gecis):
+        ters_parca = (p.tur == "GIRDI" and p.iz.gorunum_no <= GECIT_TERS_PARCA_GORUNUM)
+        if (self.ikiz_sn <= 0 or (p.tur != "KAPIDA_KAYBOLDU" and not ters_parca)
+                or self._plakalar(p.iz.gecis)):
             return None
         sp = p.iz.kutu_gecmisi()
         if not sp:
@@ -1586,6 +1614,7 @@ class Gecitci:
         d_p = _yurume(sp[0][1], sp[min(len(sp), 4) - 1][1])
         for r, m in reversed(self._yonlu):
             if (r.tur not in YONLU_OLAYLAR or r.iz is p.iz
+                    or (ters_parca and r.tur != "CIKTI")
                     or not r.iz.dogum_mono <= p.iz.dogum_mono <= m + self.ikiz_sn):
                 continue
             sr = r.iz.kutu_gecmisi()
@@ -1593,7 +1622,7 @@ class Gecitci:
                 continue
             uc = (_yurume(sr[-2][1], sr[-1][1]) if r.tur == "CIKTI" and len(sr) >= 2
                   else _yurume(sr[0][1], sr[min(len(sr), 4) - 1][1]))
-            if _ters(uc, d_p) or self._kart_mi(r, mono):
+            if (not ters_parca and _ters(uc, d_p)) or self._kart_mi(r, mono):
                 continue
             return r
         return None

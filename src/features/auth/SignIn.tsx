@@ -4,8 +4,37 @@ import { AuthLayout } from './AuthLayout'
 import { Button, Input } from '../../components/ui/primitives'
 import { supabase } from '../../lib/supabase'
 import { rpcErrorText } from '../../lib/errors'
+import { useTerminal } from '../terminal/useTerminal'
+import { DevralPaneli } from '../terminal/Devral'
 
 export default function SignIn() {
+  const terminal = useTerminal()
+  // On the shared handheld the worker picks a name and types a PIN (084);
+  // the email form stays one tap away for the Yönetici.
+  const [epostaIle, setEpostaIle] = useState(false)
+  if (terminal && !epostaIle) {
+    return (
+      <AuthLayout
+        title="Devral"
+        subtitle={`${terminal.ad} · adınızı seçip PIN'inizi girin.`}
+        footer={
+          <button
+            type="button"
+            onClick={() => setEpostaIle(true)}
+            className="min-h-[44px] text-body font-medium text-accent"
+          >
+            E-posta ile giriş
+          </button>
+        }
+      >
+        <DevralPaneli />
+      </AuthLayout>
+    )
+  }
+  return <EpostaGirisi />
+}
+
+function EpostaGirisi() {
   const [email, setEmail] = useState('')
   const [sifre, setSifre] = useState('')
   const [hata, setHata] = useState<string | null>(null)

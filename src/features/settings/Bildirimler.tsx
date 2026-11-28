@@ -47,6 +47,13 @@ const TON: Record<BildirimTur, string> = {
   // 065: money not taken, on purpose and with a reason — worth a look, not
   // an alarm (an unexplained fee change stays danger).
   UCRETSIZ_CIKIS: 'bg-warn-soft text-warn',
+  // 080: a deal made, or its time over — worth a look, not an alarm.
+  ANLASMA: 'bg-warn-soft text-warn',
+  SURE_ASIMI: 'bg-warn-soft text-warn',
+  // 084: someone is guessing a PIN — worth acting on.
+  PIN_KILIT: 'bg-danger-soft text-danger',
+  // 085: a nudge, not a problem.
+  VARDIYA_DEGISIM: 'bg-accent-soft text-accent',
 }
 
 export default function Bildirimler() {

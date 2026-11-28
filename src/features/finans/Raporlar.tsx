@@ -22,7 +22,7 @@ export default function Raporlar() {
   // Stays on 7 gün, unlike Finans and Kasa: these are comparison charts —
   // arrivals by hour, stay length — and they say more about a recent window
   // than about an all-time average. "Tümü" is available, just not the default.
-  const { donem, ozel, secim } = useDonem('HAFTA')
+  const { donem, ozel, secim } = useDonem('HAFTA', 'raporlar')
   const { bas, bit, hazir, ilkGunHatasi } = useDonemAralik(donem, ozel)
 
   const ozet = useRaporOzet(bas, bit, hazir)

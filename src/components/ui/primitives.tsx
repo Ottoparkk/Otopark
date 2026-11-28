@@ -199,7 +199,8 @@ export function OranCubugu({
   label = 'Doluluk oranı',
 }: {
   yuzde: number
-  tone?: 'brand' | 'accent'
+  /** 080: 'success' / 'warn' for the deal time bar (green, orange when over). */
+  tone?: 'brand' | 'accent' | 'success' | 'warn'
   label?: string
 }) {
   const kirpilmis = Number.isFinite(yuzde) ? Math.max(0, Math.min(100, Math.round(yuzde))) : 0
@@ -213,7 +214,15 @@ export function OranCubugu({
       aria-valuemax={100}
     >
       <div
-        className={`h-full rounded-chip transition-[width] duration-300 ${tone === 'brand' ? 'bg-white' : 'bg-accent'}`}
+        className={`h-full rounded-chip transition-[width] duration-300 ${
+          tone === 'brand'
+            ? 'bg-white'
+            : tone === 'success'
+              ? 'bg-success'
+              : tone === 'warn'
+                ? 'bg-warn'
+                : 'bg-accent'
+        }`}
         style={{ width: `${kirpilmis}%` }}
       />
     </div>

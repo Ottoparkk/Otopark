@@ -123,13 +123,17 @@ export function useVardiyaKapat() {
     mutationFn: async ({
       sayilan,
       notlar,
+      birakilan = null,
     }: {
       sayilan: number
       notlar: string | null
+      /** 085, Yönetici: the next shift's opening cash; null = the setting. */
+      birakilan?: number | null
     }): Promise<VardiyaKapatSonuc> => {
       const { data, error } = await supabase.rpc('vardiya_kapat', {
         p_sayilan_nakit_kurus: sayilan,
         p_notlar: notlar,
+        p_birakilan_kurus: birakilan,
       })
       if (error) throw error
       const row = (data ?? [])[0] as VardiyaKapatSonuc | undefined

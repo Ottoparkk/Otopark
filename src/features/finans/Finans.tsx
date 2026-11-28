@@ -73,7 +73,7 @@ export default function Finans() {
   // Opens on TÜMÜ: the first question anyone brings to this screen is "how
   // much has this car park made", not "how much this week". Narrowing is one
   // tap away; a default window silently hides the rest of the money.
-  const { donem, ozel, secim } = useDonem()
+  const { donem, ozel, secim } = useDonem('TUMU', 'finans')
   const { bas, bit, hazir, ilkGunHatasi } = useDonemAralik(donem, ozel)
 
   // The immediately preceding window of the SAME LENGTH, so the change chip
@@ -358,7 +358,7 @@ export default function Finans() {
               {farkli.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => navigate('/finans/vardiyalar')}
+                  onClick={() => navigate('/vardiya')}
                   className="flex w-full items-center gap-3 rounded-card bg-warn-soft px-4 py-3 text-left"
                 >
                   <IconUyari size={20} className="shrink-0 text-warn" />
@@ -394,11 +394,11 @@ export default function Finans() {
               aciklama="Ciro, yoğunluk, kalış süresi"
             />
             <MenuKart
-              to="/finans/vardiyalar"
+              to="/vardiya"
               tone={farkli.length > 0 ? 'warn' : 'accent'}
               icon={<IconVardiya size={22} />}
               baslik="Vardiyalar"
-              aciklama="Kasa sayımları ve farklar"
+              aciklama="Vardiya raporları, kasa sayımları"
             />
             {/* Prices belong with the money they generate, not with the
                 capacity and camera settings they used to sit beside. */}

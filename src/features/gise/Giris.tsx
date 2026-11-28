@@ -11,12 +11,15 @@ import {
   EkBilgiFormu,
   ekBilgiGonder,
   type EkBilgiler,
+  YikamaAnahtari,
 } from './components'
 import {
   fotoYukle,
   useAbonmanKontrol,
   useAyarlar,
   useBiletAc,
+  useBiletYikama,
+  useYikamaUcreti,
   useParkYeriDurumu,
   usePuanDurumu,
   useBiletOkumaBagla,
@@ -66,6 +69,8 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
 
   const [hata, setHata] = useState<string | null>(null)
   const [uyari, setUyari] = useState<string | null>(null)
+  // 078: oto yıkama on this entry (shown only when the tariff offers one).
+  const [yikamaAcik, setYikamaAcik] = useState(false)
   // The confirmation box before the ticket opens, and the save in flight
   // (photo upload + ticket call — see kaydet).
   //
@@ -104,6 +109,8 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
 
   const { data: ayarlar } = useAyarlar()
   const biletAc = useBiletAc()
+  const biletYikama = useBiletYikama()
+  const yikamaTarife = useYikamaUcreti()
   const okumaBagla = useBiletOkumaBagla()
 
   const normalize = normalizePlaka(plaka)
@@ -165,6 +172,7 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
     setSaatYerel(null)
     setSebep('')
     setSaatHata(null)
+    setYikamaAcik(false)
     islemIdRef.current = crypto.randomUUID()
   }
 
@@ -270,6 +278,20 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
       // ticket (029). Fire-and-forget: the accuracy log and the badge must
       // never stand between a car and its ticket.
       if (ocrLogId) okumaBagla.mutate({ bilet_id: id, log_id: ocrLogId, kabul: kayitPlaka })
+      // 078: the wash is a second call, after the ticket exists. The ticket
+      // matters more than the wash: a failure here never undoes the entry,
+      // and it is told on the list rather than swallowed.
+      let yikamaUyari: string | null = null
+      if (yikamaAcik && yikamaTarife !== null) {
+        try {
+          await biletYikama.mutateAsync({ bilet_id: id, acik: true })
+        } catch (e) {
+          yikamaUyari = `Giriş kaydedildi, oto yıkama eklenemedi: ${rpcErrorText(
+            e,
+            'bağlantı hatası',
+          )} Bilet detayından ekleyin.`
+        }
+      }
       onayKapat()
       sifirla()
       // Back to the list, which is where the next thing an operator does
@@ -282,6 +304,9 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
           girisBasari: {
             plaka: formatPlaka(kayitPlaka),
             yerKod: yerKodu,
+            // 088: the green bar offers this ticket's entry fiş.
+            biletId: id,
+            uyari: yikamaUyari,
           },
         },
       })
@@ -439,6 +464,16 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
 
         {fotoUrl && <FotoOnizleme url={fotoUrl} onKaldir={() => setFoto(null)} />}
 
+        {/* 078: oto yıkama, only when the tariff offers it (owner, "A"). */}
+        {yikamaTarife !== null && (
+          <YikamaAnahtari
+            acik={yikamaAcik}
+            kurus={yikamaTarife}
+            zemin="surface"
+            onDegis={setYikamaAcik}
+          />
+        )}
+
         {/* Optional, and placed after the plate and the camera on purpose: the
             fast path is plate → Girişi Kaydet, and "Girişi Kaydet" lives in the
             floating bar, so nothing here can push the primary action off
@@ -499,6 +534,11 @@ export function GirisBolumu({ autoFocus = false }: { autoFocus?: boolean }) {
               {yerKodu ? `Park yeri ${yerKodu}` : 'Yer atanmadı'}
               {abonman?.gecerli ? ' · Abonman — ücretsiz' : ''}
             </span>
+            {yikamaAcik && yikamaTarife !== null && (
+              <span className="mt-1 block font-semibold text-ink tnum">
+                + Oto yıkama {formatTL(yikamaTarife)}
+              </span>
+            )}
             {/* Read back like the plate: this time sets the fee. */}
             {onaySaat && (
               <span className="mt-1 block font-semibold text-warn tnum">

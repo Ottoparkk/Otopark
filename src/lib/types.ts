@@ -72,14 +72,28 @@ export type BildirimTur =
   // 064/065: a car was let out free (reason + note); the body names who did
   // it. Yönetici-only.
   | 'UCRETSIZ_CIKIS'
+  // 079/080: a deal was made or changed (Yönetici), or its time ran out
+  // (everyone, once).
+  | 'ANLASMA'
+  // 081/082: someone decided a stay past the first tier (full price or
+  // first tier kept). Yönetici-only.
+  | 'SURE_ASIMI'
+  // 084: 5 wrong PINs on the shared terminal locked a worker. Yönetici-only.
+  | 'PIN_KILIT'
+  // 085: the worker's shift ended 15 min ago and nobody took over. To that
+  // worker only.
+  | 'VARDIYA_DEGISIM'
 
 /** 065: why a car left free. Labels: src/lib/ucretsiz.ts. */
 export type UcretsizSebep = 'FIYAT_SORDU' | 'POLIS' | 'ACIL' | 'PERSONEL' | 'DIGER'
 
 export type PlakaSaglayici = 'KAPALI' | 'VLM' | 'ALPR'
 
-/** Who closed a shift: the operator, a Yönetici, or the recovery job. */
-export type VardiyaKapanisKaynak = 'ELLE' | 'YONETICI' | 'OTOMATIK'
+/**
+ * Who closed a shift: the operator, a Yönetici, the recovery job, or (084)
+ * a handover on the shared terminal — DEVIR, like OTOMATIK, has no count.
+ */
+export type VardiyaKapanisKaynak = 'ELLE' | 'YONETICI' | 'OTOMATIK' | 'DEVIR'
 
 /* --------------------------------------------------- display label tables */
 
@@ -207,6 +221,14 @@ export const BILDIRIM_ETIKET: Record<BildirimTur, string> = {
   YENI_ABONMAN: 'Yeni abonman',
   // 065: a free exit, with who gave it, the reason and the note. Yönetici-only.
   UCRETSIZ_CIKIS: 'Ücretsiz çıkış',
+  // 080: a deal was made (Yönetici) or its time ran out (everyone).
+  ANLASMA: 'Anlaşmalı fiyat',
+  // 082: a stay past the first tier was decided. Yönetici-only.
+  SURE_ASIMI: 'Süre aşımı',
+  // 084: a worker's terminal PIN was locked after 5 wrong tries.
+  PIN_KILIT: 'PIN kilidi',
+  // 085: your shift ended — hand over if the next worker is here.
+  VARDIYA_DEGISIM: 'Vardiya değişimi',
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -218,6 +240,14 @@ export interface Profile {
   durum: KullaniciDurum
   notif_prefs: Record<string, boolean>
   created_at: string
+}
+
+/** 085: a worker's shift hours ('HH:MM:SS'), set by the Yönetici. */
+export interface PersonelVardiyaSaati {
+  id: string
+  ad_soyad: string
+  vardiya_baslangic: string | null
+  vardiya_bitis: string | null
 }
 
 export interface OtoparkAyarlari {
@@ -299,6 +329,8 @@ export interface Tarife {
   /** 051: only on a KADEMELI tariff — ascending upper bounds in minutes,
    *  the last one 1440. Optional so a read before 051 has run types correctly. */
   kademeler?: { dakika: number; kurus: number }[] | null
+  /** 078: oto yıkama price; null = no wash offered (the switch is hidden). */
+  yikama_kurus?: number | null
   gecerli_baslangic: string
   gecerli_bitis: string | null
   olusturan: string | null
@@ -398,6 +430,19 @@ export interface PuanKurali {
 
 export interface Bilet {
   id: string
+  /** 078: wash price locked onto the ticket when it was switched on; null = none. */
+  yikama_kurus?: number | null
+  yikama_at?: string | null
+  /** 080: agreed price for the deal time (entry → anlasma_bitis); null = none. */
+  anlasma_kurus?: number | null
+  anlasma_bitis?: string | null
+  /** 080: when staff pressed "Fazla süreyi ekle"; null = extra time not charged. */
+  anlasma_fazla_at?: string | null
+  anlasma_bildirim_at?: string | null
+  /** 082: past the first tier — 'TAM' full tariff price approved, 'ILK' first tier kept; null = not decided. */
+  asim_karar?: 'TAM' | 'ILK' | null
+  asim_karar_by?: string | null
+  asim_karar_at?: string | null
   islem_id: string
   plaka: string
   giris_at: string
@@ -557,6 +602,13 @@ export interface Bildirim {
 /** acik_bilet_ara() — a narrow projection, not the whole ticket row. */
 export interface AcikBilet {
   id: string
+  /** 078: wash on this ticket (its `ucret_kurus` already includes it). */
+  yikama_kurus?: number | null
+  /** 080: for the "Anlaşma bitti" chip (its `ucret_kurus` already prices the deal). */
+  anlasma_bitis?: string | null
+  anlasma_fazla_at?: string | null
+  /** 082: past the first tier and nobody has decided yet (the "Süre aşımı" chip). */
+  asim_bekliyor?: boolean
   plaka: string
   giris_at: string
   abonman_id: string | null

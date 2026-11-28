@@ -40,6 +40,8 @@ esit('açık: puan ücreti aşsa da eksi olmaz', gosterilenUcret({ ...acik, indi
 esit('açık: abonman ücretsiz', gosterilenUcret({ ...acik, abonman_id: 'x' }, 15000), 0)
 esit('açık: canlı ücret henüz yok → bilinmiyor', gosterilenUcret(acik, undefined), null)
 esit('açık: abonmanda beklemeye gerek yok', gosterilenUcret({ ...acik, abonman_id: 'x' }, undefined), 0)
+// 078: abonmanın otoparkı ücretsiz, oto yıkaması değil — ücret tam olarak yıkama.
+esit('açık: abonman + yıkama = yıkama', gosterilenUcret({ ...acik, abonman_id: 'x', yikama_kurus: 15000 }, undefined), 15000)
 
 const kapali = { durum: 'KAPALI', ucret_kurus: 20000, indirim_kurus: 5000, abonman_id: null }
 esit('kapalı: saklı ücret − puan', gosterilenUcret(kapali, undefined), 15000)

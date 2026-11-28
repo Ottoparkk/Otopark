@@ -41,7 +41,15 @@ BURASI = os.path.dirname(os.path.abspath(__file__))
 YAPI = os.path.join(BURASI, "yapi")
 DAGITIM = os.path.join(BURASI, "dagitim")
 AD = "OtoparkKamera"
-SURUM = "1.4.6"   # 1.4.6 (sahibin kararları 24–26.11): 24.11 kamera tanısının
+SURUM = "1.4.7"   # 1.4.7 (sahibin kararı 28.11, 26–28.11 tanısı; sunucu 090 ile):
+                  #        F1 tahmin güveni iki kırpıntının düşüğü, iki plakalı kart
+                  #        güvensiz; F4 plakasız GİRDİ kartının kimliği aynı izin
+                  #        sonraki gönderimlerinde (giris_islem_id); F5 içeride
+                  #        sorusu kapı olayından 5 sn sonra / bekleyen kart gidince;
+                  #        F7 plakasız motosiklet, tek görünümde kapıda kaybolan ve
+                  #        kapıda görülmeyen çıkış kart olmaz; F8 çıkanın kutusunda
+                  #        doğan ≤4 görünümlük plakasız GİRDİ ikizdir
+                  # 1.4.6 (sahibin kararları 24–26.11): 24.11 kamera tanısının
                   #        düzeltmeleri A–L (kapı kararı ICERIDE kaydına takılmaz,
                   #        YOLO11s kart eşiği 0.75, ikiz 25 sn, kenarda dönen iz,
                   #        tahmin + hareket, aynı izin dönüşü, içeride sorgusu

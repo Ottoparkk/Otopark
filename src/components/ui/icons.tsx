@@ -59,10 +59,34 @@ export const IconAraba = (p: IconProps) => (
   </Icon>
 )
 
+/**
+ * A wall-mounted bullet (CCTV) camera: "the camera did this" on tickets. Not
+ * IconKamera — that one is a photo camera, which read as "a photo" (owner).
+ */
+export const IconGuvenlikKamerasi = (p: IconProps) => (
+  <Icon {...p}>
+    <g transform="rotate(14 11 8.5)">
+      <rect x="3" y="5.5" width="13.5" height="6" rx="1.5" />
+      <path d="M16.5 6.5h3v4h-3" />
+    </g>
+    <path d="M9 12.8 9.4 17H4.5" />
+    <path d="M4.5 14.5v5" />
+  </Icon>
+)
+
 export const IconKamera = (p: IconProps) => (
   <Icon {...p}>
     <path d="M3 8.5A2 2 0 0 1 5 6.5h1.6a1 1 0 0 0 .8-.4l1-1.3a1 1 0 0 1 .8-.4h4.6a1 1 0 0 1 .8.4l1 1.3a1 1 0 0 0 .8.4H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
     <circle cx="12" cy="12.5" r="3.2" />
+  </Icon>
+)
+
+/** A handheld terminal (084): the shared device at the gate. */
+export const IconTerminal = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="6" y="2.5" width="12" height="19" rx="2.2" />
+    <rect x="8.5" y="5.5" width="7" height="6" rx="1" />
+    <path d="M9 15h.01M12 15h.01M15 15h.01M9 18h.01M12 18h.01M15 18h.01" />
   </Icon>
 )
 
@@ -226,6 +250,14 @@ export const IconKalem = (p: IconProps) => (
   </Icon>
 )
 
+/** 078: oto yıkama — a water drop with a shine. */
+export const IconYikama = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 3.5s-6 6.6-6 10.5a6 6 0 0 0 12 0c0-3.9-6-10.5-6-10.5Z" />
+    <path d="M9.3 14.2a2.8 2.8 0 0 0 2.7 2.8" />
+  </Icon>
+)
+
 export const IconKisi = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="8" r="4" />
@@ -256,5 +288,14 @@ export const IconGunes = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="4" />
     <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+  </Icon>
+)
+
+/** 088: fiş printer — a receipt coming out of a slot. */
+export const IconFis = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4 9.5h16v5.5a1 1 0 0 1-1 1h-1.5M6.5 16H5a1 1 0 0 1-1-1" />
+    <path d="M7 9.5V3.5h10v6" />
+    <path d="M7 13.5h10v7l-1.7-1-1.6 1-1.7-1-1.6 1-1.7-1L7 20.5Z" />
   </Icon>
 )

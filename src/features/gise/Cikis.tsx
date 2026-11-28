@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useNavigate } from 'react-router'
 import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import {
@@ -15,9 +16,12 @@ import { YontemSecici } from '../../components/ui/YontemSecici'
 import { FormModal } from '../../components/ui/FormModal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Spinner } from '../../components/ui/Spinner'
+import { puanaAcikKurus } from './yikama'
 import {
   BiletDegistirModal,
   BiletDetayKarti,
+  HizmetlerKarti,
+  useAsim,
   BiletFoto,
   BiletKart,
   CikanKart,
@@ -39,6 +43,7 @@ import {
   usePuanGeriAl,
   usePuanKullan,
   useUcretOnizleme,
+  useYikamaUcreti,
   useYerKodlari,
 } from './api'
 import { formatPlaka } from '../../lib/plaka'
@@ -54,6 +59,7 @@ import {
   IconAraba,
   IconCikis,
   IconCop,
+  IconFis,
   IconKalem,
   IconAsagi,
   IconTik,
@@ -69,8 +75,12 @@ import { kapaliBiletIslemYapabilir, onayDurumu, uzunKalan, zatenKapandi } from '
 import { ICERIDE_SAYFA, icerideGorunen } from './iceride'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { ucretsizEtiket } from '../../lib/ucretsiz'
+import { FiltreChip } from '../../components/ui/FiltreChip'
 import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
 import { useGecikmeli } from '../../lib/useGecikmeli'
+import { FisSayfasi } from '../fis/FisSayfasi'
+import { useFisYazdirir, useGirisFisleri } from '../fis/api'
+import { fisAdaylari } from '../fis/fisIste'
 
 // Two views, no "Tümü" (owner, 2026-11-15): the list is either the cars still
 // here or the ones that left, and it opens on İçeride.
@@ -84,15 +94,8 @@ const FILTRELER: { deger: Filtre; etiket: string; ikon?: ReactNode }[] = [
   { deger: 'CIKAN', etiket: 'Çıkanlar', ikon: <IconCikis size={18} /> },
 ]
 
-/**
- * A filter chip. Visually identical to DonemSecici, deliberately — same idiom,
- * same tap target — but announced as a TOGGLE BUTTON, not a tab.
- *
- * `role="tab"` would be a promise the screen makes and then breaks: a tab owns
- * a tabpanel and answers arrow keys via roving tabindex, and neither is true
- * here.
- * `aria-pressed` describes exactly what this is (a pressed filter) and works
- * with plain Tab navigation, so nothing has to be simulated.
+/*
+ * The İçeride / Çıkanlar chips use the shared FiltreChip.
  *
  * NOT labelled "Giriş" / "Çıkış" even though that is what this filters, because
  * the floating button on this same screen already says "Giriş" and means an
@@ -101,33 +104,6 @@ const FILTRELER: { deger: Filtre; etiket: string; ikon?: ReactNode }[] = [
  * at a barrier. "İçeride" is also the more truthful label: the section holds
  * cars that are still here, not every car that entered today.
  */
-function FiltreChip({
-  aktif,
-  onClick,
-  etiket,
-  ikon,
-}: {
-  aktif: boolean
-  onClick: () => void
-  etiket: string
-  /** Decorative (the icons are aria-hidden); the label stays the name. */
-  ikon?: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={aktif}
-      onClick={onClick}
-      className={[
-        'inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-chip px-4 text-body font-medium transition-colors',
-        aktif ? 'bg-ink text-bg' : 'bg-field text-soft',
-      ].join(' ')}
-    >
-      {ikon}
-      {etiket}
-    </button>
-  )
-}
 
 const ONAY_FILTRELERI: { deger: OnayFiltre; etiket: string }[] = [
   { deger: 'TUMU', etiket: 'Tümü' },
@@ -271,13 +247,15 @@ export function AracListesi({
   const adlar = useAdlar()
   // F14 (1.4.2): the "Terk edilmiş" threshold also marks long stays here.
   const { data: ayarlar } = useAyarlar()
-  const [filtre, setFiltre] = useState<Filtre>('ICERIDE')
+  // Remembered (owner, 27.11): back from a ticket lands on the same tab,
+  // filters and list length (useEkranDurumu).
+  const [filtre, setFiltre] = useEkranDurumu<Filtre>('gise.filtre', 'ICERIDE', ['ICERIDE', 'CIKAN'])
   const aramaRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (aramaOdak) aramaRef.current?.scrollIntoView({ block: 'start' })
   }, [aramaOdak])
-  const [onay, setOnay] = useState<OnayFiltre>('TUMU')
-  const [odeme, setOdeme] = useState<OdemeFiltre>('TUMU')
+  const [onay, setOnay] = useEkranDurumu<OnayFiltre>('gise.onay', 'TUMU', ONAY_FILTRELERI.map((f) => f.deger))
+  const [odeme, setOdeme] = useEkranDurumu<OdemeFiltre>('gise.odeme', 'TUMU', ODEME_FILTRELERI.map((f) => f.deger))
 
   const iceridiGoster = filtre === 'ICERIDE'
   const cikanGoster = filtre === 'CIKAN'
@@ -288,8 +266,25 @@ export function AracListesi({
   // İçeride draws 25 at a time (iceride.ts) — but never cuts the answer to a
   // typed search. `aramaSonucu` is false while the previous, unsearched list
   // is still on screen waiting for the answer, so that one stays cut too.
-  const [icerdeAdet, setIcerdeAdet] = useState(ICERIDE_SAYFA)
-  useEffect(() => setIcerdeAdet(ICERIDE_SAYFA), [sorgu])
+  const [icerdeAdet, setIcerdeAdet] = useEkranDurumu('gise.icerdeAdet', ICERIDE_SAYFA)
+  // Back to 25 when the search CHANGES — not on arrival, which would undo
+  // the remembered length and leave the scroll position past the list's end.
+  const oncekiSorgu = useRef(sorgu)
+  useEffect(() => {
+    if (oncekiSorgu.current === sorgu) return
+    oncekiSorgu.current = sorgu
+    setIcerdeAdet(ICERIDE_SAYFA)
+  }, [sorgu, setIcerdeAdet])
+  // 088 (owner 28.11, "Gişe asks to print"): camera entries of the last hour
+  // with no entry fiş yet carry a "Fiş" mark — Personel only (the P2), and
+  // only once the server has answered, so the mark never flickers on.
+  const yazici = useFisYazdirir()
+  const fisAdayi = useMemo(() => (yazici ? fisAdaylari(biletler, Date.now()) : []), [yazici, biletler])
+  const { data: fisliler } = useGirisFisleri(fisAdayi, yazici)
+  const fisIste = useMemo(
+    () => new Set(fisliler ? fisAdayi.filter((id) => !fisliler.has(id)) : []),
+    [fisAdayi, fisliler],
+  )
   const icerde = icerideGorunen(biletler, icerdeAdet, aramaSonucu, (b) =>
     uzunKalan(b, ayarlar?.terk_esik_saat),
   )
@@ -446,6 +441,7 @@ export function AracListesi({
                     adlar={adlar}
                     yerKod={b.park_yeri_id ? (yerKodlari[b.park_yeri_id] ?? null) : null}
                     uzunKalanSaat={ayarlar?.terk_esik_saat}
+                    fisIste={fisIste.has(b.id)}
                     onClick={() => onSec(b)}
                   />
                 ))}
@@ -562,6 +558,9 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   // projection (AcikBilet), which carries none of them.
   const tamSorgu = useBilet(bilet.id)
   const tam = tamSorgu.data
+  // 082: past the first tier, a person decides before the car leaves (the
+  // block is in the Hizmetler card; bilet_kapat refuses it too).
+  const asim = useAsim(tam)
   const aksiyon = useBiletAksiyonlari(tam, { onSilindi: onKapat })
 
   const kapat = useBiletKapat()
@@ -584,6 +583,8 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const [puanGeriHata, setPuanGeriHata] = useState<string | null>(null)
   // 054: the camera closed this ticket while it was on screen.
   const [kapandi, setKapandi] = useState(false)
+  const yazici = useFisYazdirir()
+  const [girisFisAcik, setGirisFisAcik] = useState(false)
   const [sonuc, setSonuc] = useState<{ tahsil: number; ucret: number; indirim: number } | null>(
     null,
   )
@@ -595,6 +596,8 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   const [ucretsizBitti, setUcretsizBitti] = useState<string | null>(null)
 
   const abonman = Boolean(bilet.abonman_id)
+  // 078: the tariff's wash price (null = no wash offered).
+  const yikamaTarife = useYikamaUcreti()
   const brutKurus = override?.kurus ?? onizleme ?? 0
   const netKurus = Math.max(0, brutKurus - bilet.indirim_kurus)
   const odemeGerekli = netKurus > 0
@@ -609,8 +612,10 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
 
   const maxPuan = useMemo(() => {
     if (!puan || kurusPerPuan <= 0) return 0
-    return Math.min(puan.bakiye, Math.floor(netKurus / kurusPerPuan))
-  }, [puan, kurusPerPuan, netKurus])
+    // 078: points pay the parking part only (puan_kullan's cap).
+    const puanaAcik = puanaAcikKurus(netKurus, tam?.yikama_kurus ?? null)
+    return Math.min(puan.bakiye, Math.floor(puanaAcik / kurusPerPuan))
+  }, [puan, kurusPerPuan, netKurus, tam?.yikama_kurus])
 
   /**
    * "Tahsil Et" / "Çıkışı Kaydet" only ASKS; the money is taken from the box.
@@ -622,7 +627,9 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
   function tahsilSor() {
     if (kapat.isPending) return
     setHata(null)
-    if (!abonman && override === null && onizleme === undefined) {
+    // 078: not skipped for an abonman any more — with a wash it owes money,
+    // and the box must not say "ücretsiz" before the fee is known.
+    if (override === null && onizleme === undefined) {
       // A failed lookup is asked again NOW: left to the 30-second refetch,
       // the car could not leave for half a minute.
       if (ucretHatali) {
@@ -631,6 +638,11 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         return
       }
       setHata('Ücret henüz hesaplanmadı. Bir saniye bekleyip tekrar deneyin.')
+      return
+    }
+    // 082: a hand-set fee is a decision of its own (the server agrees).
+    if (override === null && asim.durum === 'BEKLIYOR') {
+      setHata('Önce süre aşımı için karar verin.')
       return
     }
     // The method is chosen in the box, every time from nothing.
@@ -703,13 +715,14 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
         plaka={bilet.plaka}
         sonuc={{ tahsil: 0, ucret: 0, indirim: 0 }}
         ucretsiz={ucretsizBitti}
+        biletId={bilet.id}
         onTamam={onKapat}
       />
     )
   }
 
   if (sonuc) {
-    return <Fis plaka={bilet.plaka} sonuc={sonuc} onTamam={onKapat} />
+    return <Fis plaka={bilet.plaka} sonuc={sonuc} biletId={bilet.id} onTamam={onKapat} />
   }
 
   return (
@@ -754,7 +767,7 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
 
           {abonman && (
             <p className="mt-3 rounded-field bg-success-soft px-3 py-2 text-body text-success">
-              Abonman — ücretsiz çıkış
+              {tam?.yikama_kurus ? 'Abonman — otopark ücretsiz, oto yıkama alınır' : 'Abonman — ücretsiz çıkış'}
             </p>
           )}
 
@@ -783,6 +796,23 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
             </p>
           )}
         </BrandPanel>
+
+        {/* 078: the same Hizmetler card as the ticket detail, right under the
+            amount — the last chance to add a wash before the money is taken. */}
+        {tam && !kapandi && (!tam.abonman_id || yikamaTarife !== null || tam.yikama_kurus) ? (
+          <HizmetlerKarti
+            bilet={tam}
+            toplamKurus={onizleme}
+            tarifeKurus={yikamaTarife}
+            // A hand-set fee was for the old total; switching the wash must
+            // not leave it in place (it would drop or double the wash).
+            onDegisti={() => {
+              setOverride(null)
+              // 082: the "decide first" message is answered once a decision lands.
+              setHata(null)
+            }}
+          />
+        ) : null}
 
         {/* ---- points ------------------------------------------------- */}
         {!abonman && puan?.hesap_var && bilet.indirim_kurus === 0 && maxPuan > 0 && (
@@ -822,6 +852,18 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
               {null}
             </ListeDurumu>
           </Card>
+        )}
+
+        {/* 088: the entry fiş for a car already inside — Gişe marks camera
+            entries that still have none ("Fiş"). Personel only (the P2). */}
+        {yazici && !kapandi && (
+          <Button variant="secondary" block onClick={() => setGirisFisAcik(true)}>
+            <IconFis size={18} />
+            Giriş fişi yazdır
+          </Button>
+        )}
+        {yazici && (
+          <FisSayfasi biletId={bilet.id} tur="GIRIS" open={girisFisAcik} onOpenChange={setGirisFisAcik} />
         )}
 
         {/* Every correction behind ONE button, after everything it corrects. */}
@@ -884,7 +926,8 @@ export function Tahsilat({ bilet, onKapat }: { bilet: AcikBilet; onKapat: () => 
           {/* Secondary, and only when there is money to waive: "Ücretsiz"
               waives the fee with a reason (065). The "Çıkış Ver" (leave
               unpaid) half beside it was removed (owner, 2026-11-23). */}
-          {odemeGerekli && !abonman && (
+          {/* 078: an abonman with a wash owes the wash, and may waive it too. */}
+          {odemeGerekli && (
             <Button
               variant="secondary"
               size="lg"
@@ -1042,14 +1085,19 @@ function Fis({
   plaka,
   sonuc,
   ucretsiz = null,
+  biletId,
   onTamam,
 }: {
   plaka: string
+  /** 088: the exit fiş is offered here, for Personel (the P2). */
+  biletId: string
   sonuc: { tahsil: number; ucret: number; indirim: number }
   /** 065: the free exit's reason label — the receipt says so, not "₺0 taken". */
   ucretsiz?: string | null
   onTamam: () => void
 }) {
+  const yazici = useFisYazdirir()
+  const [fisAcik, setFisAcik] = useState(false)
   // Since 2026-11-23 this screen has no unpaid exit ("Çıkış Ver" removed), so
   // the receipt is always what was taken — or a free exit.
   return (
@@ -1074,11 +1122,20 @@ function Fis({
         </p>
       )}
 
-      <div className="safe-bottom mt-10 w-full max-w-[360px]">
+      <div className="safe-bottom mt-10 w-full max-w-[360px] space-y-3">
+        {/* 088 (owner 28.11): staff usually hand the exit fiş over before the
+            customer walks to the car — so it is offered right here. */}
+        {yazici && (
+          <Button size="lg" variant="secondary" block onClick={() => setFisAcik(true)}>
+            <IconFis size={20} />
+            Çıkış fişi yazdır
+          </Button>
+        )}
         <Button size="lg" block onClick={onTamam}>
           Tamam
         </Button>
       </div>
+      {yazici && <FisSayfasi biletId={biletId} tur="CIKIS" open={fisAcik} onOpenChange={setFisAcik} />}
     </div>
   )
 }

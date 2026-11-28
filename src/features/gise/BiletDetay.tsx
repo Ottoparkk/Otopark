@@ -16,6 +16,7 @@ import {
   useFotoUrl,
   useUcretOnizleme,
   useYerKodlari,
+  useYikamaUcreti,
 } from './api'
 import { PlakaInput } from '../../components/ui/PlakaInput'
 import { PlakaKontrol } from '../../components/ui/PlakaKontrol'
@@ -23,6 +24,9 @@ import {
   BiletDegistirModal,
   BiletDetayKarti,
   BiletFoto,
+  AsimBlogu,
+  HizmetlerKarti,
+  useAsim,
   IptalButonu,
   IptalTalebiNotu,
   PlakaBasligi,
@@ -41,7 +45,7 @@ import {
 } from '../../lib/bilet'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { rpcErrorText } from '../../lib/errors'
-import { IconCop, IconKalem } from '../../components/ui/icons'
+import { IconCop, IconFis, IconKalem } from '../../components/ui/icons'
 import { ODEME_CHIP, ODEME_ETIKET, ONAY_ETIKET, type Bilet, type OdemeYontemi } from '../../lib/types'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
@@ -49,7 +53,9 @@ import { useAdlar } from '../yonetim/api'
 import { useSonKararlar } from '../finans/api'
 import { adCoz, tahsilatKisileri, type KimSatiri } from '../../lib/kimYapti'
 import { KimSatirlari } from '../../components/ui/KimSatirlari'
-import { formatTam } from '../../lib/dates'
+import { formatSaat, formatTam } from '../../lib/dates'
+import { FisSayfasi } from '../fis/FisSayfasi'
+import { useFisBasimlari, useFisYazdirir, type FisTur } from '../fis/api'
 import { sonradanUcretsizMi } from '../../lib/ucretsiz'
 import { UcretsizCikisPencereleri, type UcretsizGonderim } from './UcretsizCikis'
 
@@ -70,6 +76,8 @@ export default function BiletDetay() {
   // and simply get `undefined` while the ticket is loading.
   const aksiyon = useBiletAksiyonlari(bilet, { onSilindi: () => navigate('/gise') })
   const tahsil = useBiletTahsil()
+  // 082: the camera closed at the first tier's price; past it, decide first.
+  const asim = useAsim(bilet)
   // Chosen in the "Ödeme toplansın mı?" box, never preselected (owner, 2026-11-23).
   const [yontem, setYontem] = useState<OdemeYontemi | null>(null)
   const [tahsilHata, setTahsilHata] = useState<string | null>(null)
@@ -91,11 +99,17 @@ export default function BiletDetay() {
   const [geriAlSebep, setGeriAlSebep] = useState('')
   const [geriAlSebepHata, setGeriAlSebepHata] = useState<string | null>(null)
   const [geriAlHata, setGeriAlHata] = useState<string | null>(null)
+  // 088: fiş — Personel only (they use the P2); the prints say when and how often.
+  const yazici = useFisYazdirir()
+  const { data: fisler = [] } = useFisBasimlari(id, yazici)
+  const [fisSayfa, setFisSayfa] = useState<FisTur | null>(null)
   // An open ticket's stored fee is 0 until exit; the live price is the
   // server's, the same one Tahsilat shows. Not fetched for a closed ticket.
   const { data: canliUcret } = useUcretOnizleme(bilet?.durum === 'ACIK' ? bilet : null)
   // 067: whose shift is open — Personel act only on tickets it closed.
   const { data: vardiyaOzet } = useVardiyaOzetim()
+  // 078: the tariff's wash price; null hides the Hizmetler card's switch.
+  const yikamaTarife = useYikamaUcreti()
 
   if (isPending) {
     return (
@@ -125,6 +139,18 @@ export default function BiletDetay() {
   const kameraKapatti = bilet.durum === 'KAPALI' && bilet.cikis_kaynak === 'KAMERA'
   const geriAlma = islem ? cikisGeriAlma(bilet) : null
   const baskaVardiya = bilet.durum === 'KAPALI' && !islem
+  // 088: entry fiş while inside; exit fiş once nothing is owed. A closed
+  // ticket with a debt gets no button — "Ödeme topla" comes first, and there
+  // 082 asks the over-time decision (fis_basildi refuses it too).
+  const fisTuru: FisTur | null = !yazici
+    ? null
+    : acik
+      ? 'GIRIS'
+      : bilet.durum === 'KAPALI' && !borcluKapali
+        ? 'CIKIS'
+        : null
+  const buFisler = fisler.filter((f) => f.tur === fisTuru)
+  const sonFis = buFisler[buFisler.length - 1]
 
   return (
     <div>
@@ -183,6 +209,15 @@ export default function BiletDetay() {
           />
         </Card>
 
+        {/* 078: what the fee is made of, with the oto yıkama switch — only
+            while the car is inside, and only when a wash is offered or
+            already on this ticket (owner chose this card, "B2"). */}
+        {/* 080: the card also carries the deal, so it shows for every open
+            non-abonman ticket, with or without a wash price in the tariff. */}
+        {acik && (!bilet.abonman_id || yikamaTarife !== null || bilet.yikama_kurus) ? (
+          <HizmetlerKarti bilet={bilet} toplamKurus={canliUcret} tarifeKurus={yikamaTarife} />
+        ) : null}
+
         {baskaVardiya && (
           <p className="rounded-field bg-field px-3.5 py-3 text-body text-soft">
             {borcluKapali && (
@@ -212,6 +247,8 @@ export default function BiletDetay() {
               </p>
             </div>
 
+            <AsimBlogu bilet={bilet} onDegisti={() => setTahsilHata(null)} />
+
             {tahsilHata && !tahsilOnay && (
               <p role="alert" className="rounded-field bg-danger-soft px-3.5 py-3 text-body text-danger">
                 {tahsilHata}
@@ -226,6 +263,10 @@ export default function BiletDetay() {
               loading={tahsil.isPending}
               onClick={() => {
                 setTahsilHata(null)
+                if (asim.durum === 'BEKLIYOR') {
+                  setTahsilHata('Önce süre aşımı için karar verin.')
+                  return
+                }
                 setYontem(null)
                 setTahsilOnay(true)
               }}
@@ -280,21 +321,46 @@ export default function BiletDetay() {
           </Button>
         )}
 
+        {fisTuru && (
+          <div>
+            <Button variant="secondary" block onClick={() => setFisSayfa(fisTuru)}>
+              <IconFis size={18} />
+              {fisTuru === 'GIRIS' ? 'Giriş fişi yazdır' : 'Çıkış fişi yazdır'}
+            </Button>
+            {sonFis && (
+              <p className="mt-1.5 text-center text-label text-faint tnum">
+                {fisTuru === 'GIRIS' ? 'Giriş fişi' : 'Çıkış fişi'}: {formatSaat(sonFis.created_at)} ·{' '}
+                {buFisler.length} kez
+              </p>
+            )}
+          </div>
+        )}
+        {fisSayfa && (
+          <FisSayfasi
+            biletId={bilet.id}
+            tur={fisSayfa}
+            open
+            onOpenChange={(o) => !o && setFisSayfa(null)}
+          />
+        )}
+
         <BiletDetayKarti
           bilet={bilet}
           yerKod={bilet.park_yeri_id ? (yerKodlari[bilet.park_yeri_id] ?? null) : null}
+          // Only while the car is inside: after exit the money is in a shift,
+          // and the way to undo it is İptal below (owner, 2026-11-02). Beside
+          // the "Bilet" title, on the right (owner, 2026-11-27).
+          sag={
+            acik ? (
+              <Button variant="soft" className="-mr-1 shrink-0" onClick={() => setDegistirAcik(true)}>
+                <IconKalem size={18} />
+                Değiştir
+              </Button>
+            ) : undefined
+          }
         />
 
         <BiletKimKarti bilet={bilet} />
-
-        {/* Only while the car is inside: after exit the money is in a shift,
-            and the way to undo it is İptal below (owner, 2026-11-02). */}
-        {acik && (
-          <Button variant="soft" block onClick={() => setDegistirAcik(true)}>
-            <IconKalem size={18} />
-            Değiştir
-          </Button>
-        )}
 
         {/* Not on a ticket that is already cancelled — the server would only
             refuse it. Nor for Personel on a closed one: 050 refuses that

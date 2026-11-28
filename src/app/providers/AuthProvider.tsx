@@ -10,6 +10,7 @@ import {
 import type { Session } from '@supabase/supabase-js'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../lib/supabase'
+import { ekranHafizasiniTemizle } from '../../lib/useEkranDurumu'
 import type { Profile } from '../../lib/types'
 
 interface AuthContextValue {
@@ -134,6 +135,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       kullaniciRef.current = yeniId
       if (!kimlikDegisti && event !== 'USER_UPDATED') return
 
+      // A different person on the same device without a sign-out in between
+      // (the shared terminal's Devral, 084): the last worker's cached screens
+      // must not show for the next one, exactly as after a sign-out.
+      if (kimlikDegisti) queryClient.clear()
+
       // setTimeout is not cosmetic: awaiting a supabase call inside
       // onAuthStateChange deadlocks against the auth lock in supabase-js.
       setTimeout(() => void loadProfile(yeniId), 0)
@@ -150,7 +156,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [session, loadProfile])
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut()
+    // Owner, 27.11: signing out on one phone must not sign out the others.
+    // supabase-js defaults to scope 'global' (every session of the account);
+    // 'local' removes only this device's session, even offline.
+    ekranHafizasiniTemizle()
+    await supabase.auth.signOut({ scope: 'local' })
   }, [])
 
   return (

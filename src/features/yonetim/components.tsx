@@ -1,4 +1,5 @@
 import { useCallback, useState, type ReactNode } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { Link } from 'react-router'
 import { IconTile, Input } from '../../components/ui/primitives'
 import { FormModal } from '../../components/ui/FormModal'
@@ -66,6 +67,7 @@ export function MenuKart({
 // UC_GUN (067): Personel's Çıkanlar window — today and the two days before.
 // Not in the default chip row; Gişe passes it to Personel only.
 export type Donem = 'TUMU' | 'BUGUN' | 'UC_GUN' | 'HAFTA' | 'AY' | 'OZEL'
+const DONEMLER: Donem[] = ['TUMU', 'BUGUN', 'UC_GUN', 'HAFTA', 'AY', 'OZEL']
 
 /** An inclusive Istanbul date range, both ends 'YYYY-MM-DD'. */
 export interface DonemAralik {
@@ -113,14 +115,15 @@ export function donemAralik(d: Donem, ilkGun?: string, ozel?: DonemAralik | null
  * preset must NOT clear the custom range, so switching to Bugün and back to
  * the chip returns to the dates already chosen instead of an empty modal.
  */
-export function useDonem(baslangic: Donem = 'TUMU') {
-  const [donem, setDonem] = useState<Donem>(baslangic)
-  const [ozel, setOzel] = useState<DonemAralik | null>(null)
+export function useDonem(baslangic: Donem = 'TUMU', anahtar = 'donem') {
+  // Remembered per screen (owner, 27.11): `anahtar` names the screen.
+  const [donem, setDonem] = useEkranDurumu<Donem>(`${anahtar}.donem`, baslangic, DONEMLER)
+  const [ozel, setOzel] = useEkranDurumu<DonemAralik | null>(`${anahtar}.ozel`, null)
 
   const secim = useCallback((d: Donem, aralik?: DonemAralik) => {
     if (aralik) setOzel(aralik)
     setDonem(d)
-  }, [])
+  }, [setOzel, setDonem])
 
   return { donem, ozel, secim }
 }

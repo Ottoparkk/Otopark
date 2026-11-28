@@ -37,6 +37,9 @@ tools/cihaz-testi/p2-sonuc.txt
 tools/cihaz-testi/chromium/
 tools/cihaz-testi/derleme/
 tools/cihaz-testi/ekranlar/
+# Google platform-tools (ADB) ve indirilen zip: P2'yi USB'den okumak için.
+tools/cihaz-testi/platform-tools/
+tools/cihaz-testi/adb-indirme/
 
 # Supabase CLI'nin yerel durumu: hangi projeye bağlı olduğunu (proje kimliği,
 # organizasyon, havuz adresi) tutar. Repoda kalırsa, projenin başka birinin

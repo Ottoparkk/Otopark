@@ -1751,6 +1751,109 @@ def test_gecit_gec_gelen_parca_sayilmaz():
     assert s.giden() == ["CIKTI", "KAPIDA_KAYBOLDU"], s.giden()
 
 
+def _gec_iz(no):
+    o = takip.Olcum(1, 100.0, T0, np.zeros((4, 4, 3), np.uint8), np.zeros((120, 160), np.uint8),
+                    [], [])
+    return takip.Iz(no, "arac", _arac(300, 100), o, _Gecis(), "kapi", True)
+
+
+def test_gecit_kapi_olayi_iceride_sorusundan_once():
+    # 1.4.7 F5 (28.11: 35BNC539, 16PR385 — içeride sorusu AYNI karede gelen
+    # kendi kapı kartından 4–6 sn önce gitti, sunucu "içeride, bileti yok"
+    # kartı açtı). Bir karenin kapı olayları içeride olaylarından önce ele
+    # alınır; içeride olayı geldiğinde Gecitci kapı olayını görmüş olur.
+    gelen = []
+
+    def gonder(o, m):
+        gelen.append((o.tur, e.kapi_yakin(m, 5.0)))
+        return True
+    e = takip.Gecitci(gonder=gonder, kart_mi=lambda o, m: False, plakalar=lambda g: set(),
+                      yaz=lambda s: None, acik=False)
+    e.al(None, [takip.Olay("ICERIDE", _gec_iz(1), T0), takip.Olay("GIRDI", _gec_iz(2), T0)],
+         100.0)
+    assert gelen == [("GIRDI", True), ("ICERIDE", True)], gelen
+    assert e.kapi_yakin(104.9, 5.0) and not e.kapi_yakin(105.1, 5.0)
+    # Kart da (bekletilip gönderilen) kapı olayıdır; içeride olayı tek başına değil.
+    gelen.clear()
+    e = takip.Gecitci(gonder=gonder, kart_mi=lambda o, m: o.tur == "KAPIDA_KAYBOLDU",
+                      plakalar=lambda g: set(), yaz=lambda s: None, acik=True)
+    e.al(None, [takip.Olay("ICERIDE", _gec_iz(3), T0)], 100.0)
+    assert gelen == [("ICERIDE", False)], gelen
+    # Kart bekletilir (karenin sonunda çözülür); içeride olayı geldiğinde kapı
+    # yine "yakın"dır — köprü soruyu erteler, kart önce gider.
+    e.al(None, [takip.Olay("ICERIDE", _gec_iz(4), T0),
+                takip.Olay("KAPIDA_KAYBOLDU", _gec_iz(5), T0)], 101.0)
+    assert sorted(gelen[1:]) == [("ICERIDE", True), ("KAPIDA_KAYBOLDU", True)], gelen
+
+
+def test_gecit_kapi_yakin_bekleyen_kartta():
+    # 1.4.7 F5: Gecitci bir kartı bekletirken (aynı geçişteki izin kararı)
+    # kapı "yakın" sayılır — 5 sn geçse de; kart gidince 5 sn sonra değil.
+    s = _isin(GecSahne(_takipci()))
+    s.kare([])
+    s.kare([A(350, 760, 500, 800, 0.46)])                    # parça
+    s.kare([])
+    bekleyen = _arac(200, 600)                               # kapı alanında durur
+    while "TEK_KARE" not in s.turler() and s.mono < 200:
+        s.kare([bekleyen])
+    assert s.giden() == [], "parça bekletiliyor"
+    s.bekle(10.0, [bekleyen])
+    assert s.giden() == [] and s.e.kapi_yakin(s.mono, 5.0)
+    s.e.birak(s.mono)
+    assert s.giden() == ["TEK_KARE"], s.giden()
+    assert not s.e.kapi_yakin(s.mono + 5.1, 5.0)
+
+
+def _kutulu_iz(no, kutular, gorunum=1, plakalar=None):
+    """Elle kurulan araç izi: kutular [(mono, kutu)], doğumu ilk kutunun anı."""
+    o = takip.Olcum(1, kutular[0][0], T0, np.zeros((4, 4, 3), np.uint8),
+                    np.zeros((120, 160), np.uint8), [], [])
+    z = takip.Iz(no, "arac", kutular[0][1], o, _Gecis(), "kapi", True)
+    for m, k in kutular:
+        z.kutu_ekle(m, k)
+    z.gorunum_no = gorunum
+    if plakalar:
+        z.gecis.plakalar = set(plakalar)
+    return z
+
+
+def _ters_parca(gorunum=4, dogum_sonra=3.0, yer=(260, 650, 380, 760), plakalar=None,
+                cikti_kart=False):
+    """
+    Araç (iz 1) alt kenardan ÇIKTI (karar ele alındı, an 100); `dogum_sonra`
+    sn sonra kutusunun içinde doğan plakasız parça (iz 2) GİRDİ kartı.
+    """
+    gonderilen, satirlar = [], []
+    e = takip.Gecitci(
+        gonder=lambda o, m: gonderilen.append(o.tur) or True,
+        kart_mi=lambda o, m: o.tur != "CIKTI" or cikti_kart,
+        plakalar=lambda g: getattr(g, "plakalar", set()), yaz=satirlar.append, acik=True)
+    arac_kutu = [(97.0 + i * 0.3, (200 - i * 5, 600 + i * 10, 500 - i * 5, 800)) for i in range(10)]
+    r = _kutulu_iz(1, arac_kutu, gorunum=12)
+    e.al(None, [takip.Olay("CIKTI", r, T0)], 100.0)
+    d = 100.0 + dogum_sonra
+    p = _kutulu_iz(2, [(d + i * 0.3, (yer[0], yer[1] - i * 8, yer[2], yer[3] - i * 8))
+                       for i in range(4)], gorunum=gorunum, plakalar=plakalar)
+    e.al(None, [takip.Olay("GIRDI", p, T0)], d + 2.0)
+    return gonderilen, satirlar
+
+
+def test_gecit_ters_kisa_parca_ikiz():
+    # 1.4.7 F8 (28.11 16:51, beyaz kamyonet çıkarken): 4 görünümlük plakasız
+    # parça kamyonetin kutusunun içinde doğup içeri yürüdü — "GİRDİ" kartı
+    # oldu. Ele alınmış bir ÇIKTI kararının kutusunda 25 sn içinde doğan,
+    # en çok 4 görünümlük plakasız GİRDİ ikizdir: kart gitmez.
+    gonderilen, satirlar = _ters_parca()
+    assert gonderilen == ["CIKTI"], gonderilen
+    assert len(satirlar) == 1 and "ikiz" in satirlar[0], satirlar
+    # Şunlarda kart gider: 5 görünüm, plaka tahmini, kutunun dışında doğdu,
+    # 25 sn'den sonra doğdu, önceki olay karar değil kart.
+    for kw in (dict(gorunum=5), dict(plakalar={"35AB12"}), dict(yer=(1100, 100, 1250, 200)),
+               dict(dogum_sonra=26.0), dict(cikti_kart=True)):
+        gonderilen, satirlar = _ters_parca(**kw)
+        assert gonderilen == ["CIKTI", "GIRDI"], (kw, gonderilen, satirlar)
+
+
 def _karardan_sonra_parca(sn, **kw):
     """Araç çıktı (karar ele alındı); kararın `sn` saniye ardından kenarda plakasız parça."""
     s = _kuyruklu_cikis(GecSahne(_takipci(), **kw), tekerlek=False)
@@ -2233,6 +2336,19 @@ def test_devral_alanda_bilgisini_birlestirir():
     p.alanda, z.alanda = True, False
     z.devral(p)
     assert z.alanda
+
+
+def test_devral_giris_kartini_tasir():
+    # 1.4.7 F4: plakasız GİRDİ kartının kimliği izde durur (yeni izde yok);
+    # plaka izinin yerini alan araç izi onu taşır — çıkışı kartı bulsun.
+    o = takip.Olcum(1, 100.0, T0, np.zeros((4, 4, 3), np.uint8), np.zeros((120, 160), np.uint8),
+                    [], [])
+    p = takip.Iz(1, "plaka", _arac(300, 100), o, _Gecis(), "kapi", True)
+    z = takip.Iz(2, "arac", _arac(300, 100), o, _Gecis(), "yard", False)
+    assert p.giris_karti is None and z.giris_karti is None
+    p.giris_karti = "kart-1"
+    z.devral(p)
+    assert z.giris_karti == "kart-1", z.giris_karti
 
 
 def test_iz_en_iyi_kutunun_sinifini_tutar():

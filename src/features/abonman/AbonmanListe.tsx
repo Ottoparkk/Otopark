@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useNavigate } from 'react-router'
 import {
   Card,
@@ -12,19 +13,26 @@ import {
 import { FormModal } from '../../components/ui/FormModal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { YontemSecici } from '../../components/ui/YontemSecici'
+import { FiltreChip } from '../../components/ui/FiltreChip'
 import { useAbonmanEkle, useAbonmanlar, type AbonmanGirdi } from './api'
+import {
+  abonmanAra,
+  abonmanGruplari,
+  abonmanOzeti,
+  kalanRozeti,
+  kisaTarih,
+  type AbonmanSiralama,
+} from './liste'
 import { useParkYerleri } from '../gise/api'
-import { useAdlar } from '../yonetim/api'
-import { adCoz } from '../../lib/kimYapti'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { isYonetici } from '../../lib/rbac'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTL, parseTLToKurus } from '../../lib/money'
 import { normalizeTel } from '../../lib/telefon'
-import { formatTarih, gunFarki, istanbulGun } from '../../lib/dates'
+import { formatTarih, istanbulGun } from '../../lib/dates'
 import { ayinGunu, sonrakiYenileme } from '../../lib/abonman'
 import { rpcErrorText } from '../../lib/errors'
-import { IconAbonman, IconArti } from '../../components/ui/icons'
+import { IconAbonman, IconAra, IconArti } from '../../components/ui/icons'
 import { ODEME_ETIKET, type AbonmanDurum, type OdemeYontemi } from '../../lib/types'
 
 const GUNLER = Array.from({ length: 31 }, (_, i) => i + 1)
@@ -34,11 +42,14 @@ function bugununGunu(): number {
   return Number(istanbulGun().slice(8, 10))
 }
 
-const FILTRELER: { value: AbonmanDurum | 'TUMU'; label: string }[] = [
+// Owner, 27.11: no "Tümü"; İptal gets its own tab.
+const SEKMELER: { value: AbonmanDurum; label: string }[] = [
   { value: 'AKTIF', label: 'Aktif' },
   { value: 'DOLDU', label: 'Doldu' },
-  { value: 'TUMU', label: 'Tümü' },
+  { value: 'IPTAL', label: 'İptal' },
 ]
+
+const SIRALAMALAR: AbonmanSiralama[] = ['VARSAYILAN', 'ARTAN', 'AZALAN']
 
 /**
  * Abonmanlar (062, owner 2026-11-15): every staff role. Personel reach it from
@@ -50,12 +61,19 @@ export default function AbonmanListe() {
   const navigate = useNavigate()
   const { profile } = useAuth()
   const yonetici = isYonetici(profile)
-  const [filtre, setFiltre] = useState<AbonmanDurum | 'TUMU'>('AKTIF')
+  // Remembered (owner, 27.11). An old "TUMU" falls back to Aktif.
+  const [filtre, setFiltre] = useEkranDurumu<AbonmanDurum>('abonman.filtre', 'AKTIF', ['AKTIF', 'DOLDU', 'IPTAL'])
+  const [sorgu, setSorgu] = useEkranDurumu('abonman.q', '')
+  const [siralama, setSiralama] = useEkranDurumu<AbonmanSiralama>('abonman.siralama', 'VARSAYILAN', SIRALAMALAR)
   const { data: liste = [], isPending, error, refetch } = useAbonmanlar(filtre)
   const { data: yerler = [] } = useParkYerleri()
-  // Once for the whole list, then read per row (same rule as Gişe's cards).
-  const adlar = useAdlar()
   const ekle = useAbonmanEkle()
+  const bugun = istanbulGun()
+  const gruplar = useMemo(
+    () => abonmanGruplari(abonmanAra(liste, sorgu), filtre, siralama),
+    [liste, sorgu, filtre, siralama],
+  )
+  const ozet = abonmanOzeti(liste)
 
   const [acik, setAcik] = useState(false)
   const [plaka, setPlaka] = useState('')
@@ -107,90 +125,131 @@ export default function AbonmanListe() {
       />
 
       <div className="space-y-3 px-5">
-        <div className="flex gap-2">
-          {FILTRELER.map((f) => (
-            <button
+        <div className="flex flex-wrap gap-2">
+          {SEKMELER.map((f) => (
+            <FiltreChip
               key={f.value}
-              type="button"
+              aktif={filtre === f.value}
               onClick={() => setFiltre(f.value)}
-              className={[
-                'min-h-[40px] flex-1 rounded-chip px-3 text-body font-medium transition-colors',
-                filtre === f.value ? 'bg-ink text-bg' : 'bg-field text-soft',
-              ].join(' ')}
-            >
-              {f.label}
-            </button>
+              etiket={f.label}
+            />
           ))}
         </div>
 
-        <div className="space-y-2">
-          <ListeDurumu
-            pending={isPending}
-            error={error}
-            onRetry={() => void refetch()}
-            empty={liste.length === 0}
-            bos={
-              <EmptyState
-                icon={<IconAbonman size={44} />}
-                title="Abonman yok"
-                hint="Aylık müşterileri buradan ekleyin; girişte tanınırlar."
-              />
-            }
-          >
-            {liste.map((a) => {
-              const kalan = gunFarki(a.bitis)
-              // Owner 2026-11-15: who added it (062 records it; older rows
-              // have none and show no line).
-              const ekleyen = adCoz(a.olusturan, adlar)
-              return (
-                <Card key={a.id} as="div">
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/abonman/${a.id}`)}
-                    className="w-full text-left"
-                  >
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-lead font-semibold tracking-wide text-ink tnum">
-                        {formatPlaka(a.plaka)}
-                      </span>
-                      <span className="shrink-0 text-body font-medium text-soft tnum">
-                        {formatTL(a.ucret_kurus)}
-                      </span>
-                    </div>
-                    <p className="mt-1 truncate text-label text-faint">
-                      {a.musteri_ad || 'İsimsiz'}
-                    </p>
-                    {/* Owner 2026-11-15: the payment day in the same green as
-                        the "Abonman" chip on Gişe, so it stands out. */}
-                    <p className="mt-1 flex min-w-0 items-center gap-2 text-label text-faint tnum">
-                      <Chip size="sm" tone="success" className="shrink-0">
-                        {ayinGunu(a.yenileme_gunu ?? Number(a.bitis.slice(8, 10)))}
-                      </Chip>
-                      <span className="truncate">{formatTarih(a.bitis)} tarihine kadar</span>
-                    </p>
-                    {ekleyen && (
-                      <p className="truncate text-label text-faint">Ekleyen: {ekleyen}</p>
-                    )}
-                    {a.durum === 'AKTIF' && kalan <= 7 && (
-                      <p className="mt-2 inline-block rounded-chip bg-warn-soft px-2.5 py-1 text-label font-medium text-warn">
-                        {kalan < 0
-                          ? 'Süresi doldu'
-                          : kalan === 0
-                            ? 'Bugün bitiyor'
-                            : `${kalan} gün kaldı`}
-                      </p>
-                    )}
-                    {a.durum === 'DOLDU' && (
-                      <p className="mt-2 inline-block rounded-chip bg-field px-2.5 py-1 text-label font-medium text-soft">
-                        Doldu
-                      </p>
-                    )}
-                  </button>
-                </Card>
-              )
-            })}
-          </ListeDurumu>
+        {/* Owner chose a summary at the top (27.11): the Yönetici's view of the
+            month, so only on Aktif and only for them. */}
+        {yonetici && filtre === 'AKTIF' && liste.length > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-card bg-field px-4 py-3">
+            <div>
+              <p className="text-label text-faint">Aktif abonman</p>
+              <p className="text-title font-semibold text-ink tnum">{ozet.adet}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-label text-faint">Aylık toplam</p>
+              <p className="text-title font-semibold text-ink tnum">{formatTL(ozet.toplamKurus)}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Search and order on one row: the search takes what is left. */}
+        <div className="flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <IconAra
+              size={20}
+              className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-faint"
+            />
+            <Input
+              label="Plaka veya isim ara"
+              hideLabel
+              value={sorgu}
+              onChange={(e) => setSorgu(e.target.value)}
+              placeholder="Plaka, isim"
+              autoCorrect="off"
+              spellCheck={false}
+              className="pl-11"
+            />
+          </div>
+          <div className="w-[10.75rem] shrink-0">
+            <Select
+              aria-label="Sıralama"
+              value={siralama}
+              onChange={(e) => setSiralama(e.target.value as AbonmanSiralama)}
+            >
+              <option value="VARSAYILAN">{filtre === 'AKTIF' ? 'Ödeme günü' : 'Bitiş tarihi'}</option>
+              <option value="ARTAN">Düşük → yüksek</option>
+              <option value="AZALAN">Yüksek → düşük</option>
+            </Select>
+          </div>
         </div>
+
+        <ListeDurumu
+          pending={isPending}
+          error={error}
+          onRetry={() => void refetch()}
+          empty={liste.length === 0}
+          bos={
+            <EmptyState
+              icon={<IconAbonman size={44} />}
+              title={filtre === 'AKTIF' ? 'Abonman yok' : filtre === 'DOLDU' ? 'Dolan abonman yok' : 'İptal edilen abonman yok'}
+              hint={filtre === 'AKTIF' ? 'Aylık müşterileri buradan ekleyin; girişte tanınırlar.' : undefined}
+            />
+          }
+        >
+          {gruplar.length === 0 ? (
+            <EmptyState icon={<IconAra size={44} />} title="Sonuç yok" hint="Başka bir plaka ya da isim deneyin." />
+          ) : (
+            <div className="space-y-5">
+              {gruplar.map((g) => (
+                <section key={g.gun ?? 'hepsi'}>
+                  {/* Owner, 27.11: "Ayın 1'i" as a heading, its abonmans under
+                      it, with how many and what they bring in a month. */}
+                  {g.gun !== null && (
+                    <h3 className="mb-2 flex items-baseline justify-between gap-3 text-label font-semibold tracking-wide text-ink uppercase">
+                      <span>{ayinGunu(g.gun)}</span>
+                      <span className="font-medium tracking-normal text-soft normal-case tnum">
+                        {g.adet} abonman · {formatTL(g.toplamKurus)}
+                      </span>
+                    </h3>
+                  )}
+                  <div className="space-y-2">
+                    {g.ogeler.map((a) => {
+                      const rozet = kalanRozeti(a, bugun)
+                      return (
+                        <Card key={a.id} as="div">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/abonman/${a.id}`)}
+                            className="w-full text-left"
+                          >
+                            {/* Owner, 27.11: fewer lines, the price easy to
+                                read, the period as "1.12.26 → 1.1.27" instead
+                                of the payment-day chip (the heading says it). */}
+                            <div className="flex items-baseline justify-between gap-3">
+                              <span className="min-w-0 truncate text-lead font-semibold tracking-wide text-ink tnum">
+                                {formatPlaka(a.plaka)}
+                              </span>
+                              <span className="shrink-0 text-lead font-bold text-ink tnum">
+                                {formatTL(a.ucret_kurus)}
+                              </span>
+                            </div>
+                            <p className="mt-1 truncate text-label text-faint tnum">
+                              {a.musteri_ad || 'İsimsiz'} · {kisaTarih(a.baslangic)} → {kisaTarih(a.bitis)}
+                            </p>
+                            {rozet && (
+                              <Chip size="sm" tone="warn" className="mt-2">
+                                {rozet}
+                              </Chip>
+                            )}
+                          </button>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </ListeDurumu>
       </div>
 
       <FormModal

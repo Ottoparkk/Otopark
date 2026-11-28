@@ -278,6 +278,8 @@ export interface TarifeGirdi {
   sonraki_saat_kurus: number
   gunluk_tavan_kurus: number
   kayip_bilet_kurus: number
+  /** 078: oto yıkama price; null = no wash. */
+  yikama_kurus: number | null
   /** 051: the bands, only for KADEMELI ({dakika: upper bound, kurus}). */
   kademeler: { dakika: number; kurus: number }[] | null
 }
@@ -304,6 +306,8 @@ export function useTarifeGuncelle() {
         // applies. A Süreli / Sabit save therefore names exactly the
         // parameters it did before 051.
         ...(g.tur === 'KADEMELI' ? { p_kademeler: g.kademeler } : {}),
+        // 078: always sent, so clearing the field turns the wash off.
+        p_yikama_kurus: g.yikama_kurus,
       })
       if (error) throw error
     },

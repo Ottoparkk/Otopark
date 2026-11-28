@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import { useNavigate } from 'react-router'
 import {
   Card,
@@ -29,7 +30,8 @@ export default function Hesaplar() {
   const ayarGuncelle = useAyarGuncelle()
   const kuralGuncelle = usePuanKuralGuncelle()
 
-  const [q, setQ] = useState('')
+  // Remembered (owner, 27.11).
+  const [q, setQ] = useEkranDurumu('hesaplar.q', '')
   const [acik, setAcik] = useState(false)
   const [ad, setAd] = useState('')
   const [tel, setTel] = useState('')

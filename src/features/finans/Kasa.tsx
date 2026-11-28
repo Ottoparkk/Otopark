@@ -108,7 +108,7 @@ function kasaSatiri(k: KasaHareketi, adlar: Map<string, string>): KasaSatiri {
 export default function Kasa() {
   // Tümü, like Finans: this IS the list of işlemler, and opening it on a
   // 30-day window hides older rows behind a filter nobody was told about.
-  const { donem, ozel, secim } = useDonem()
+  const { donem, ozel, secim } = useDonem('TUMU', 'kasa')
   const adlar = useAdlar()
   /** '' = one-off. Otherwise the day of the month, 1-28. */
   const [tekrarGun, setTekrarGun] = useState('')

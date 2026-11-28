@@ -222,7 +222,7 @@ BIRLESIK_ISARETI = "plaka birden çok karede aynı okundu (birleşik)"
 YON_BILINMIYOR_ISARETI = "yönü bilinmiyor — emin plaka gönderildi"
 
 # 1.4.3: kalp atışında sunucuya giden sürüm. paketle.SURUM ile aynı (test_kurulum).
-KOPRU_SURUMU = "1.4.6"
+KOPRU_SURUMU = "1.4.7"
 YON_DISI_ISARETI = "şeridin yönüne ters — gönderilmedi"
 KAPI_ALANI_YOK_ISARETI = "kapı alanı kullanılamıyor"
 # Emin olunamayan araç sunucuda "Çözülmemiş kayıt" oldu (422 + istisna).

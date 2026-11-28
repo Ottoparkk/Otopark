@@ -1,6 +1,16 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { Card, EmptyState, LoadError, ScreenHeader } from '../../components/ui/primitives'
+import { Button, Card, EmptyState, Input, LoadError, ScreenHeader, Select } from '../../components/ui/primitives'
+import { FormModal } from '../../components/ui/FormModal'
+import {
+  usePersonelOlustur,
+  usePersonelVardiyaSaati,
+  usePinAyarla,
+  useVardiyaSaatleri,
+} from '../terminal/api'
+import { SAAT_SECENEKLERI } from '../vardiya/vardiyaAyar'
+import { pinGecerli } from '../terminal/terminal'
+import { digitsOnly } from '../../lib/money'
 import { Spinner } from '../../components/ui/Spinner'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { RolBilgisi } from './RolBilgisi'
@@ -34,6 +44,35 @@ export default function Personel() {
   const [durumHedef, setDurumHedef] = useState<PersonelSatiri | null>(null)
   const [hata, setHata] = useState<string | null>(null)
   const [rolBilgisi, setRolBilgisi] = useState(false)
+
+  // ---- 084: name + PIN workers for the shared terminal ------------------
+  const olustur = usePersonelOlustur()
+  const pinAyarla = usePinAyarla()
+  const [ekleAcik, setEkleAcik] = useState(false)
+  const [ekleAd, setEkleAd] = useState('')
+  const [eklePin, setEklePin] = useState('')
+  const [pinHedef, setPinHedef] = useState<PersonelSatiri | null>(null)
+  const [yeniPin, setYeniPin] = useState('')
+  const [formHata, setFormHata] = useState<string | null>(null)
+
+  // ---- 085: each worker's shift hours (drive the hand-over reminder) ----
+  const { data: saatListesi = [] } = useVardiyaSaatleri()
+  const saatKaydet = usePersonelVardiyaSaati()
+  const [saatHedef, setSaatHedef] = useState<PersonelSatiri | null>(null)
+  const [saatBas, setSaatBas] = useState('')
+  const [saatBit, setSaatBit] = useState('')
+  const saatler = useMemo(() => {
+    const m = new Map<string, { bas: string; bit: string }>()
+    for (const s of saatListesi) {
+      if (s.vardiya_baslangic && s.vardiya_bitis) {
+        m.set(s.id, { bas: s.vardiya_baslangic.slice(0, 5), bit: s.vardiya_bitis.slice(0, 5) })
+      }
+    }
+    return m
+  }, [saatListesi])
+  // Both or neither (profiles_vardiya_saati_ck); equal ends would be no shift.
+  const saatGecerli =
+    (saatBas === '' && saatBit === '') || (saatBas !== '' && saatBit !== '' && saatBas !== saatBit)
 
   const { bekleyen, aktif, kapali } = useMemo(
     () => ({
@@ -107,6 +146,21 @@ export default function Personel() {
               </section>
             )}
 
+            {/* 084: workers on the shared terminal never type an email —
+                a name and a 4-digit PIN is the whole account for them. */}
+            <Button
+              variant="soft"
+              block
+              onClick={() => {
+                setEkleAd('')
+                setEklePin('')
+                setFormHata(null)
+                setEkleAcik(true)
+              }}
+            >
+              Personel ekle (isim + PIN)
+            </Button>
+
             <section>
               <Baslik>Aktif ({aktif.length})</Baslik>
               {aktif.length === 0 ? (
@@ -128,6 +182,27 @@ export default function Personel() {
                         setHata(null)
                         setDurumHedef(p)
                       }}
+                      onPin={
+                        p.rol === 'PERSONEL'
+                          ? () => {
+                              setYeniPin('')
+                              setFormHata(null)
+                              setPinHedef(p)
+                            }
+                          : undefined
+                      }
+                      saat={p.rol === 'PERSONEL' ? (saatler.get(p.id) ?? null) : undefined}
+                      onSaat={
+                        p.rol === 'PERSONEL'
+                          ? () => {
+                              const mevcut = saatler.get(p.id)
+                              setSaatBas(mevcut?.bas ?? '')
+                              setSaatBit(mevcut?.bit ?? '')
+                              setFormHata(null)
+                              setSaatHedef(p)
+                            }
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -227,6 +302,118 @@ export default function Personel() {
         }}
       />
 
+      {/* ---- 084: add a name + PIN worker ---------------------------- */}
+      <FormModal
+        open={ekleAcik}
+        onOpenChange={setEkleAcik}
+        title="Personel ekle"
+        submitLabel="Ekle"
+        loading={olustur.isPending}
+        error={formHata}
+        disabled={ekleAd.trim().length < 2 || !pinGecerli(eklePin)}
+        onSubmit={() => {
+          setFormHata(null)
+          void olustur
+            .mutateAsync({ adSoyad: ekleAd.trim(), pin: eklePin })
+            .then(() => setEkleAcik(false))
+            .catch((e) => setFormHata(rpcErrorText(e, 'Personel eklenemedi.')))
+        }}
+      >
+        <div className="space-y-4">
+          <p className="text-body text-soft">
+            E-posta gerekmez. Personel ortak terminalde adını seçip bu PIN ile devralır.
+          </p>
+          <Input
+            label="Ad soyad"
+            name="ad_soyad"
+            autoComplete="off"
+            value={ekleAd}
+            onChange={(e) => setEkleAd(e.target.value)}
+          />
+          <Input
+            label="PIN (4 rakam)"
+            name="pin"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={4}
+            value={eklePin}
+            onChange={(e) => setEklePin(digitsOnly(e.target.value).slice(0, 4))}
+          />
+        </div>
+      </FormModal>
+
+      {/* ---- 084: set / change a PIN ---------------------------------- */}
+      <FormModal
+        open={pinHedef !== null}
+        onOpenChange={() => setPinHedef(null)}
+        title="PIN belirle"
+        loading={pinAyarla.isPending}
+        error={formHata}
+        disabled={!pinGecerli(yeniPin)}
+        onSubmit={() => {
+          if (!pinHedef) return
+          setFormHata(null)
+          void pinAyarla
+            .mutateAsync({ profileId: pinHedef.id, pin: yeniPin })
+            .then(() => setPinHedef(null))
+            .catch((e) => setFormHata(rpcErrorText(e, 'PIN kaydedilemedi.')))
+        }}
+      >
+        <div className="space-y-4">
+          <p className="text-body text-soft">
+            {(pinHedef?.ad_soyad || 'Bu kişi') +
+              ' ortak terminalde bu PIN ile devralır. Eski PIN (varsa) geçersiz olur.'}
+          </p>
+          <Input
+            label="Yeni PIN (4 rakam)"
+            name="pin"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={4}
+            value={yeniPin}
+            onChange={(e) => setYeniPin(digitsOnly(e.target.value).slice(0, 4))}
+          />
+        </div>
+      </FormModal>
+
+      {/* ---- 085: shift hours ------------------------------------------- */}
+      <FormModal
+        open={saatHedef !== null}
+        onOpenChange={() => setSaatHedef(null)}
+        title="Vardiya saatleri"
+        loading={saatKaydet.isPending}
+        error={formHata}
+        disabled={!saatGecerli}
+        onSubmit={() => {
+          if (!saatHedef) return
+          setFormHata(null)
+          void saatKaydet
+            .mutateAsync({
+              profileId: saatHedef.id,
+              baslangic: saatBas || null,
+              bitis: saatBit || null,
+            })
+            .then(() => setSaatHedef(null))
+            .catch((e) => setFormHata(rpcErrorText(e, 'Saatler kaydedilemedi.')))
+        }}
+      >
+        <div className="space-y-4">
+          <p className="text-body text-soft">
+            {(saatHedef?.ad_soyad || 'Bu kişi') +
+              ' için bitiş saati geçince terminal devir hatırlatır. Vardiyayı saat değil, PIN ile devralma değiştirir.'}
+          </p>
+          <SaatSecimi label="Başlangıç" value={saatBas} onChange={setSaatBas} />
+          <SaatSecimi label="Bitiş" value={saatBit} onChange={setSaatBit} />
+          {!saatGecerli && (
+            <p className="text-label text-danger">
+              {saatBas !== '' && saatBas === saatBit
+                ? 'Başlangıç ve bitiş aynı olamaz.'
+                : 'İkisini birlikte seçin ya da ikisini de "Yok" yapın.'}
+            </p>
+          )}
+        </div>
+      </FormModal>
+
       <RolBilgisi open={rolBilgisi} onOpenChange={setRolBilgisi} />
     </div>
   )
@@ -251,17 +438,49 @@ function RolSecici({ value, onChange }: { value: Rol; onChange: (r: Rol) => void
   )
 }
 
+function SaatSecimi({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  // A value set some other way (not on the half hour) still shows.
+  const secenekler =
+    value && !SAAT_SECENEKLERI.includes(value) ? [value, ...SAAT_SECENEKLERI] : SAAT_SECENEKLERI
+  return (
+    <Select label={label} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Yok</option>
+      {secenekler.map((s) => (
+        <option key={s} value={s}>
+          {s}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
 function KisiKart({
   p,
   ben,
   onRol,
   onDurum,
   onAc,
+  onPin,
+  saat,
+  onSaat,
 }: {
   p: PersonelSatiri
   ben: boolean
   onRol?: () => void
   onDurum?: () => void
+  /** 084: set the worker's terminal PIN. Personel only. */
+  onPin?: () => void
+  /** 085: the worker's shift hours; null = none set, undefined = not shown. */
+  saat?: { bas: string; bit: string } | null
+  onSaat?: () => void
   /** Opens the pay screen. Absent for people who have no pay to show. */
   onAc?: () => void
 }) {
@@ -285,6 +504,11 @@ function KisiKart({
                 paid another way would read as an error. */}
             {p.maas_kurus > 0 && (
               <span className="text-label text-soft tnum">Maaş {formatTL(p.maas_kurus)}</span>
+            )}
+            {saat !== undefined && (
+              <span className="text-label text-soft tnum">
+                {saat ? `Vardiya ${saat.bas} – ${saat.bit}` : 'Vardiya saati yok'}
+              </span>
             )}
           </div>
         </div>
@@ -330,14 +554,36 @@ function KisiKart({
 
       {/* Offered for YOURSELF too: a Yönetici who pays themselves a salary
           still needs the screen. */}
-      {onAc && (
-        <button
-          type="button"
-          onClick={onAc}
-          className="mt-3 min-h-[44px] w-full rounded-field bg-accent-soft text-body font-medium text-accent"
-        >
-          Ödemeler
-        </button>
+      {(onAc || onPin || onSaat) && (
+        <div className="mt-3 flex gap-2">
+          {onAc && (
+            <button
+              type="button"
+              onClick={onAc}
+              className="min-h-[44px] flex-1 rounded-field bg-accent-soft text-body font-medium text-accent"
+            >
+              Ödemeler
+            </button>
+          )}
+          {onPin && (
+            <button
+              type="button"
+              onClick={onPin}
+              className="min-h-[44px] shrink-0 rounded-field bg-field px-4 text-body font-medium text-ink active:brightness-95"
+            >
+              PIN
+            </button>
+          )}
+          {onSaat && (
+            <button
+              type="button"
+              onClick={onSaat}
+              className="min-h-[44px] shrink-0 rounded-field bg-field px-4 text-body font-medium text-ink active:brightness-95"
+            >
+              Saat
+            </button>
+          )}
+        </div>
       )}
     </Card>
   )

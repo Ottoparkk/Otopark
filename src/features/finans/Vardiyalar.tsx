@@ -1,239 +1,110 @@
-import { useState } from 'react'
-import {
-  Card,
-  EmptyState,
-  Input,
-  ListeDurumu,
-  ScreenHeader,
-} from '../../components/ui/primitives'
-import { FormModal } from '../../components/ui/FormModal'
-import { useSonKararlar, useTumVardiyalar, useVardiyaZorlaKapat } from './api'
-import { vardiyaKapatanSatiri } from '../../lib/kimYapti'
-import { KimSatirlari } from '../../components/ui/KimSatirlari'
+import { useNavigate } from 'react-router'
+import { Button, EmptyState, ListeDurumu, ScreenHeader } from '../../components/ui/primitives'
+import { useGunToplamlari } from './api'
+import { useAcikVardiya } from '../vardiya/api'
 import { useProfiller } from '../yonetim/api'
-import { formatTL, parseTLToKurus } from '../../lib/money'
-import { formatTam } from '../../lib/dates'
-import { sureMetni } from '../../lib/sure'
-import { rpcErrorText } from '../../lib/errors'
-import { IconVardiya } from '../../components/ui/icons'
-import type { Vardiya } from '../../lib/types'
+import { IconIleri, IconTakvim, IconVardiya } from '../../components/ui/icons'
+import { gecenGunMetni, gunEtiketi, yuzdeFark } from './vardiyaEtiket'
+import { KarsilastirmaChip, kisaTL } from './raporParcalari'
+import { gunEkle, istanbulGun } from '../../lib/dates'
 
 /**
- * Every shift, with its cash count.
- *
- * The difference column is the point of this screen — a shift that comes up
- * short is the single clearest signal in a cash business, and it should be
- * readable in one scan.
- *
- * A shift with NO count reads as "Sayım yok", never as ₺0 and never as
- * "Tutuyor". Those are three different facts and only one of them is true
- * when nobody opened the drawer.
+ * The Yönetici's Vardiya tab as a list of days (087; owner 28.11: "how the
+ * whole day went", calendar day 00:00–24:00). Today is the hero — its live
+ * total, who is working, how it compares with the same weekday last week —
+ * and each earlier day is one quiet row. A day opens its summary; its
+ * shifts, and their cash counts, sit inside it.
  */
-const VARDIYA_KARARLARI = ['vardiya_kapatma_onay', 'vardiya_zorla_kapat']
-
 export default function Vardiyalar() {
-  const { data: liste = [], isPending, error, refetch } = useTumVardiyalar()
+  const navigate = useNavigate()
+  const bugun = istanbulGun()
+  const { data: gunler, isPending, error, refetch } = useGunToplamlari(gunEkle(-29, bugun), bugun)
+  const { data: acik } = useAcikVardiya()
   const { data: profiller = [] } = useProfiller()
-  const zorlaKapat = useVardiyaZorlaKapat()
-  // 063: the Yönetici who approved the close (or force-closed it) is only in
-  // audit_log (035, 025) — this screen is Yönetici-only, as audit is.
-  const { data: kararlar } = useSonKararlar(
-    VARDIYA_KARARLARI,
-    liste.filter((v) => v.kapanis_at !== null).map((v) => v.id),
-  )
 
-  const [hedef, setHedef] = useState<Vardiya | null>(null)
-  const [sayilan, setSayilan] = useState('')
-  const [notlar, setNotlar] = useState('')
-  const [hata, setHata] = useState<string | null>(null)
-
-  // `id` is null on a shift the cron opened (030): there is no opener to name,
-  // and 'Bilinmiyor' would read as a missing record rather than an automatic
-  // one — two very different things when the number underneath is cash.
-  const ad = (id: string | null) =>
-    id === null
-      ? 'Otomatik açıldı'
-      : profiller.find((p) => p.id === id)?.ad_soyad || 'Bilinmiyor'
-
-  function kapatmayiAc(v: Vardiya) {
-    setHedef(v)
-    setSayilan('')
-    setNotlar('')
-    setHata(null)
-  }
-
-  function kapat() {
-    if (!hedef) return
-    const ham = sayilan.trim()
-    let kurus: number | null = null
-    // Empty is a real answer here, not a missing one: nobody counted.
-    if (ham) {
-      const parsed = parseTLToKurus(ham)
-      if (parsed === null || parsed < 0) {
-        setHata('Sayılan nakdi geçerli girin.')
-        return
-      }
-      kurus = parsed
-    }
-    void zorlaKapat
-      .mutateAsync({ id: hedef.id, sayilan: kurus, notlar: notlar.trim() || null })
-      .then(() => setHedef(null))
-      .catch((e) => setHata(rpcErrorText(e, 'Vardiya kapatılamadı.')))
-  }
+  const bugunku = gunler?.get(bugun)
+  const kars = bugunku ? yuzdeFark(bugunku.toplam, bugunku.onceki) : null
+  const calisan = acik
+    ? acik.personel_id === null
+      ? 'Otomatik'
+      : profiller.find((p) => p.id === acik.personel_id)?.ad_soyad || 'Bilinmiyor'
+    : null
+  // Newest first; a day with no money and no cars is not worth a row.
+  const gecmis = [...(gunler?.entries() ?? [])]
+    .filter(([g, t]) => g !== bugun && (t.toplam !== 0 || t.arac > 0))
+    .sort(([a], [b]) => (a < b ? 1 : -1))
 
   return (
-    <div>
-      <ScreenHeader title="Vardiyalar" back="/finans" subtitle="Son 100 vardiya" />
+    <div className="pb-6">
+      <ScreenHeader title="Vardiyalar" />
 
-      <div className="space-y-2 px-5">
+      <div className="space-y-4 px-5">
         <ListeDurumu
           pending={isPending}
           error={error}
           onRetry={() => void refetch()}
-          empty={liste.length === 0}
-          bos={<EmptyState icon={<IconVardiya size={44} />} title="Vardiya kaydı yok" />}
+          empty={false}
+          bos={<EmptyState icon={<IconVardiya size={44} />} title="Kayıt yok" />}
         >
-          {liste.map((v) => {
-            const acik = v.kapanis_at === null
-            const fark = v.fark_kurus
-            return (
-              <Card key={v.id}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    {/* The drawer is shared, so the accountable person is the
-                        one who COUNTED it. Falls back to the opener, which is
-                        also what every pre-030 row resolves to. */}
-                    <p className="truncate text-body font-medium text-ink">
-                      {ad(v.kapatan_id ?? v.personel_id)}
-                    </p>
-                    {v.kapatan_id && v.personel_id && v.kapatan_id !== v.personel_id && (
-                      <p className="mt-0.5 text-label text-faint">
-                        Açan: {ad(v.personel_id)}
-                      </p>
-                    )}
-                    <p className="mt-0.5 text-label text-faint">
-                      {formatTam(v.acilis_at)} ·{' '}
-                      {acik ? 'devam ediyor' : sureMetni(v.acilis_at, v.kapanis_at)}
-                    </p>
-                    {!acik &&
-                      (() => {
-                        const k = kararlar?.get(v.id)
-                        return (
-                          <KimSatirlari
-                            className="mt-1"
-                            satirlar={[vardiyaKapatanSatiri(k, k?.actor ? ad(k.actor) : null)]}
-                          />
-                        )
-                      })()}
-                    {/* Only when it was not the operator: a normal close needs
-                        no label, an unusual one does. */}
-                    {!acik && v.kapanis_kaynak && v.kapanis_kaynak !== 'ELLE' && (
-                      <p className="mt-1 text-label text-warn">
-                        {v.kapanis_kaynak === 'OTOMATIK'
-                          ? 'Otomatik kapatıldı'
-                          : 'Yönetici kapattı'}
-                      </p>
-                    )}
+          <div className="rounded-card border border-border bg-surface p-5 shadow-card">
+            <button
+              type="button"
+              onClick={() => navigate(`/vardiya/gun/${bugun}`)}
+              className="block w-full text-left"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-label font-medium text-accent">Bugün</p>
+                <IconIleri size={17} className="shrink-0 text-faint" />
+              </div>
+              <p className="mt-2 text-hero font-semibold text-ink tnum">
+                {kisaTL(bugunku?.toplam ?? 0)}
+              </p>
+              <p className="mt-1.5 text-body text-soft">
+                {calisan ? `${calisan} çalışıyor` : 'Açık vardiya yok'} · {bugunku?.arac ?? 0} araç
+              </p>
+              {kars && (
+                <KarsilastirmaChip
+                  className="mt-2.5"
+                  kars={kars}
+                  metin={`${gecenGunMetni(bugun)}, bu saate kadar`}
+                />
+              )}
+            </button>
+            {acik && (
+              <Button
+                className="mt-4"
+                variant="secondary"
+                block
+                onClick={() => navigate('/vardiya/kasa')}
+              >
+                Kasayı say
+              </Button>
+            )}
+          </div>
+
+          {gecmis.length > 0 && (
+            <div className="divide-y divide-divider overflow-hidden rounded-card border border-border bg-surface shadow-card">
+              {gecmis.map(([g, t]) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => navigate(`/vardiya/gun/${g}`)}
+                  className="flex min-h-[64px] w-full items-center gap-3 px-4 py-3 text-left active:bg-field"
+                >
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-field bg-field text-soft">
+                    <IconTakvim size={19} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-body font-semibold text-ink">{gunEtiketi(g, bugun)}</p>
+                    <p className="truncate text-label text-faint tnum">{t.arac} araç</p>
                   </div>
-
-                  {acik ? (
-                    <span className="shrink-0 rounded-chip bg-accent-soft px-2.5 py-1 text-label font-medium text-accent">
-                      Açık
-                    </span>
-                  ) : fark === null ? (
-                    <span className="shrink-0 rounded-chip bg-warn-soft px-2.5 py-1 text-label font-medium text-warn">
-                      Sayım yok
-                    </span>
-                  ) : fark === 0 ? (
-                    <span className="shrink-0 rounded-chip bg-success-soft px-2.5 py-1 text-label font-medium text-success">
-                      Tutuyor
-                    </span>
-                  ) : (
-                    <span
-                      className={`shrink-0 rounded-chip px-2.5 py-1 text-label font-medium tnum ${
-                        fark < 0 ? 'bg-danger-soft text-danger' : 'bg-warn-soft text-warn'
-                      }`}
-                    >
-                      {fark > 0 ? '+' : ''}
-                      {formatTL(fark)}
-                    </span>
-                  )}
-                </div>
-
-                {/* Its own row, not beside the status chip. At 375px a name, a
-                    chip and a button in one line squeezed the date column
-                    until it wrapped mid-phrase — and this is the wider tap
-                    target anyway.
-
-                    The operator's own close is the good path; this is for the
-                    shift whose owner cannot close it — they left, or their
-                    account was disabled. Without it they can never open
-                    another shift. */}
-                {acik && (
-                  <div className="mt-3 flex justify-end border-t border-divider pt-3">
-                    <button
-                      type="button"
-                      onClick={() => kapatmayiAc(v)}
-                      className="min-h-[40px] rounded-chip bg-field px-4 text-label font-medium text-soft active:bg-border"
-                    >
-                      Vardiyayı kapat
-                    </button>
-                  </div>
-                )}
-
-                {!acik && v.beklenen_nakit_kurus !== null && (
-                  <div className="mt-3 flex gap-4 border-t border-divider pt-3 text-label">
-                    <span className="text-faint">
-                      Beklenen{' '}
-                      <span className="text-soft tnum">{formatTL(v.beklenen_nakit_kurus)}</span>
-                    </span>
-                    <span className="text-faint">
-                      Sayılan{' '}
-                      {v.sayilan_nakit_kurus === null ? (
-                        <span className="text-warn">sayılmadı</span>
-                      ) : (
-                        <span className="text-soft tnum">{formatTL(v.sayilan_nakit_kurus)}</span>
-                      )}
-                    </span>
-                  </div>
-                )}
-
-                {v.notlar && <p className="mt-2 text-label text-faint">{v.notlar}</p>}
-              </Card>
-            )
-          })}
+                  <p className="shrink-0 text-body font-semibold text-ink tnum">{kisaTL(t.toplam)}</p>
+                </button>
+              ))}
+            </div>
+          )}
         </ListeDurumu>
       </div>
-
-      <FormModal
-        open={hedef !== null}
-        onOpenChange={(o) => {
-          if (!o) setHedef(null)
-        }}
-        title="Vardiyayı kapat"
-        submitLabel="Kapat"
-        loading={zorlaKapat.isPending}
-        error={hata}
-        onSubmit={kapat}
-      >
-        <p className="text-body text-soft">
-          {hedef ? `${ad(hedef.personel_id)} — ${formatTam(hedef.acilis_at)}` : ''}
-        </p>
-        <Input
-          label="Sayılan nakit (₺) — isteğe bağlı"
-          value={sayilan}
-          onChange={(e) => setSayilan(e.target.value)}
-          inputMode="decimal"
-          placeholder="Sayılmadıysa boş bırakın"
-          hint="Boş bırakırsanız fark hesaplanmaz. Sayılmayan bir kasaya rakam yazmak, eksiği kalıcı olarak gizler."
-        />
-        <Input
-          label="Not (isteğe bağlı)"
-          value={notlar}
-          onChange={(e) => setNotlar(e.target.value)}
-          maxLength={200}
-        />
-      </FormModal>
     </div>
   )
 }

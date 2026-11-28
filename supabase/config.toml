@@ -31,3 +31,15 @@ verify_jwt = false
 # Deploy with:  supabase functions deploy foto-temizle --no-verify-jwt
 [functions.foto-temizle]
 verify_jwt = false
+
+# Shared-terminal sign-in (084): name + 4-digit PIN. The terminal's own
+# secret (64 hex, only its SHA-256 stored) is the credential, so there is no
+# JWT to verify — the incoming worker is not signed in yet.
+# Deploy with:  supabase functions deploy terminal-giris --no-verify-jwt
+[functions.terminal-giris]
+verify_jwt = false
+
+# The Yönetici adds a worker with only a name + PIN (084). JWT stays ON and
+# the function re-checks that the caller is an ACTIVE Yönetici.
+[functions.personel-olustur]
+verify_jwt = true

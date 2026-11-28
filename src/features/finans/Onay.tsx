@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { useEkranDurumu } from '../../lib/useEkranDurumu'
 import {
   Button,
   Card,
@@ -81,9 +82,10 @@ export default function Onay() {
     bilet: ozet.data?.adet ?? 0,
     iptal: iptaller.data?.length ?? 0,
   }
-  const [kategori, setKategori] = useState<OnayKategori>('BILET')
+  // Remembered (owner, 27.11): back from a ticket keeps the category and tab.
+  const [kategori, setKategori] = useEkranDurumu<OnayKategori>('onay.kategori', 'BILET', ['VARDIYA', 'BILET', 'BILET_IPTAL'])
 
-  const [sekme, setSekme] = useState<OnayDurum>('BEKLIYOR')
+  const [sekme, setSekme] = useEkranDurumu<OnayDurum>('onay.sekme', 'BEKLIYOR', ['BEKLIYOR', 'ONAYLANDI', 'REDDEDILDI'])
   const bekleyen = sekme === 'BEKLIYOR'
 
   // ---- Bilet ve abonman ---------------------------------------------------

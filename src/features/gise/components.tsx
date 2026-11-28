@@ -1,6 +1,15 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import { Button, Card, Chip, IconTile, Input, Label } from '../../components/ui/primitives'
+import {
+  Button,
+  Card,
+  Chip,
+  IconTile,
+  Input,
+  Label,
+  OranCubugu,
+  SegmentedControl,
+} from '../../components/ui/primitives'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { FormModal } from '../../components/ui/FormModal'
 import { FotoGoruntuleyici } from '../../components/ui/FotoGoruntuleyici'
@@ -10,6 +19,12 @@ import {
   useBiletIptal,
   useBiletMusteriGuncelle,
   useBiletPlakaDuzelt,
+  useAnlasmaFazla,
+  useAsimKarar,
+  useAsimOnizleme,
+  useBiletAnlasma,
+  useBiletYikama,
+  useFazlaOnizleme,
   useFotoUrl,
 } from './api'
 import { useBiletSil } from '../cop/api'
@@ -19,8 +34,8 @@ import { formatTam } from '../../lib/dates'
 import { rpcErrorText } from '../../lib/errors'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../lib/plaka'
 import { formatTel, normalizeTel, telGonderilebilir } from '../../lib/telefon'
-import { formatGoreceli, formatSaat } from '../../lib/dates'
-import { formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
+import { formatGoreceli } from '../../lib/dates'
+import { digitsOnly, formatTL, kurusToInput, parseTLToKurus } from '../../lib/money'
 import {
   degisiklikler,
   degistirBaslangic,
@@ -28,9 +43,19 @@ import {
   type DegistirAraclari,
   type DegistirTaslak,
 } from './degistir'
-import { sureMetni } from '../../lib/sure'
-import { icerideGorulduMetni } from './iceride'
+import { formatSure, sureMetni } from '../../lib/sure'
+import {
+  anlasmaBitis,
+  anlasmaBittiUyarisi,
+  anlasmaDurumu,
+  anlasmaSaat,
+  anlasmaSaatGecerli,
+  bitisMetni,
+  kalanMetni,
+  type AnlasmaBirim,
+} from './anlasma'
 import { biletBorcu, odemeAlindi, uzunKalan } from '../../lib/bilet'
+import { asimDurumu, asimKararMetni, type AsimDurumu, type AsimOnizleme } from './asim'
 import {
   ODEME_CHIP,
   ODEME_DURUM_ETIKET,
@@ -39,6 +64,7 @@ import {
   ONAY_ETIKET,
   type AcikBilet,
   type Bilet,
+  type Kaynak,
   type OnayDurum,
 } from '../../lib/types'
 import {
@@ -46,11 +72,15 @@ import {
   IconCikis,
   IconIleri,
   IconKalem,
+  IconGuvenlikKamerasi,
   IconKamera,
   IconKasa,
   IconNot,
+  IconTakvim,
   IconUyari,
+  IconYikama,
 } from '../../components/ui/icons'
+import { listeUcretMetni, otoparkKurus } from './yikama'
 import { useVardiyaOzetim } from '../vardiya/api'
 import { olusturanAdi } from '../../lib/olusturan'
 import { ucretsizEtiket } from '../../lib/ucretsiz'
@@ -73,6 +103,7 @@ export function BiletKart({
   yerKod,
   adlar,
   uzunKalanSaat,
+  fisIste = false,
   onClick,
 }: {
   bilet: AcikBilet
@@ -84,27 +115,40 @@ export function BiletKart({
   /** F14 (1.4.2): `terk_esik_saat` — past it the row says "Uzun süredir
    *  içeride" (its exit may have been missed). From the list, like yerKod. */
   uzunKalanSaat?: number | null
+  /** 088: a recent camera entry with no entry fiş yet (from the list). */
+  fisIste?: boolean
   onClick: () => void
 }) {
   // The tile colour carries the row's state, so a scanning eye sorts the list
   // before reading a single word. (052: the camera's "Kapıda" stamp is no
   // longer shown — the owner keeps only its push notification.)
   const tone = bilet.abonman_id ? 'success' : 'neutral'
-  // Points already redeemed come off here as well, the same subtraction the
-  // collect screen makes, so the row never quotes more than will be asked for.
-  const netKurus = Math.max(0, bilet.ucret_kurus - bilet.indirim_kurus)
-  // 077 H: the bridge last saw this car inside the yard (null if never).
-  const gorulduMetni = icerideGorulduMetni(bilet, formatSaat)
+  // Points already redeemed come off the fee in listeUcretMetni, the same
+  // subtraction the collect screen makes, so the row never quotes more than
+  // will be asked for. 078: an abonman with a wash reads "Ücretsiz + 150 ₺".
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_76px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
+      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_100px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
     >
-      <IconTile tone={tone}>
-        <IconAraba size={21} />
-      </IconTile>
+      {/* 078: the badge sits on the car box, so a washed car is spotted from
+          arm's length without taking room from line two (owner chose it). */}
+      <span className="relative shrink-0">
+        <IconTile tone={tone}>
+          <IconAraba size={21} />
+        </IconTile>
+        {bilet.yikama_kurus ? (
+          <span
+            role="img"
+            aria-label="Oto yıkama"
+            className="absolute -top-1.5 -left-1.5 flex size-[22px] items-center justify-center rounded-full bg-accent text-accent-ink ring-2 ring-surface"
+          >
+            <IconYikama size={13} strokeWidth={2.2} />
+          </span>
+        ) : null}
+      </span>
 
       <div className="min-w-0 flex-1">
         {/* Line one is the plate and the two numbers worth reading at arm's
@@ -114,43 +158,64 @@ export function BiletKart({
             what the operator is about to ask for. It is priced server-side by
             acik_bilet_ara, so it is the same figure the collect screen will
             show rather than a second opinion. */}
-        <div className="flex items-baseline gap-3">
-          <span className="min-w-0 flex-1 truncate text-lead font-semibold tracking-wide text-ink tnum">
-            {formatPlaka(bilet.plaka)}
-          </span>
-          {/* The plate was read from a photo and the model was not confident
-              (029). Deliberately beside the PLATE rather than in the chip row
-              below: it is a warning about this exact text, and among the chips
-              it would read as one more attribute of the visit. */}
-          {bilet.plaka_supheli && (
-            <span
-              aria-label="Plaka doğrulanmalı"
-              className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-warn-soft text-label font-bold text-warn"
-            >
-              !
-            </span>
-          )}
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 truncate text-lead font-semibold tracking-wide text-ink tnum">
+                {formatPlaka(bilet.plaka)}
+              </span>
+              {/* The plate was read from a photo and the model was not
+                  confident (029). Beside the PLATE rather than among the chips:
+                  it is a warning about this exact text. */}
+              {bilet.plaka_supheli && (
+                <span
+                  aria-label="Plaka doğrulanmalı"
+                  className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-warn-soft text-label font-bold text-warn"
+                >
+                  !
+                </span>
+              )}
+            </div>
+            {/* Owner, 27.11: the time sits under the plate on its own row, so
+                the chips can no longer squeeze it out. Spot first (what someone
+                scans the list for), then when, then who let the car in.
+                'gecikmeli': the event arrived from a buffer after the fact. */}
+            <p className="mt-0.5 truncate text-label text-faint tnum">
+              {yerKod && <span className="font-medium text-soft">{yerKod} · </span>}
+              {formatGoreceli(bilet.giris_at)}
+              {bilet.gecikmeli_kayit && ' · gecikmeli'}
+              {' · '}
+              <OlusturanEtiketi id={bilet.giris_by} kaynak={bilet.giris_kaynak} adlar={adlar} />
+            </p>
+          </div>
+          {/* Duration over fee: "how long, therefore how much". The fee is
+              bold (owner, 27.11: it stayed behind) and priced server-side by
+              acik_bilet_ara — the same figure the collect screen shows. */}
           <span className="shrink-0 text-right">
             <span className="block text-body font-semibold text-ink tnum">
               {sureMetni(bilet.giris_at)}
             </span>
             <span
-              className={`block text-label font-medium tnum ${
-                bilet.abonman_id ? 'text-success' : 'text-soft'
+              className={`block text-body font-bold tnum ${
+                bilet.abonman_id ? 'text-success' : 'text-ink'
               }`}
             >
-              {bilet.abonman_id ? 'Ücretsiz' : formatTL(netKurus)}
+              {listeUcretMetni({ ...bilet, yikama_kurus: bilet.yikama_kurus ?? null }, formatTL)}
             </span>
           </span>
         </div>
 
-        {/* Line two is every label, then the timestamp. The chips are all
-            shrink-0, so what gives way on a full row is the relative time —
-            the one part a glance can do without. */}
-        <div className="mt-1 flex items-center gap-1.5">
+        {/* Line three: the labels. They wrap instead of hiding anything. */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <Chip size="sm" tone="neutral" className="shrink-0">
             İçeride
           </Chip>
+          {/* 088: "Gişe asks to print" — tap the row, then "Giriş fişi yazdır". */}
+          {fisIste && (
+            <Chip size="sm" tone="accent" className="shrink-0">
+              Fiş ver
+            </Chip>
+          )}
           {/* F14 (1.4.2): inside longer than the "Terk edilmiş" threshold —
               the exit may have been missed. Never for abonman (uzunKalan).
               Two words: with "İptal bekliyor" and the note icon a longer
@@ -158,6 +223,20 @@ export function BiletKart({
           {uzunKalan(bilet, uzunKalanSaat) && (
             <Chip size="sm" tone="warn" className="shrink-0">
               Uzun kalış
+            </Chip>
+          )}
+          {/* 080: the agreed time is over and nobody added the extra time yet
+              (owner: a warning on the card, nothing charged by itself). */}
+          {anlasmaBittiUyarisi(bilet, Date.now()) && (
+            <Chip size="sm" tone="warn" className="shrink-0">
+              Anlaşma bitti
+            </Chip>
+          )}
+          {/* 082: past the first tier and nobody has decided yet — the fee
+              shown is the first tier's until someone does. */}
+          {bilet.asim_bekliyor && (
+            <Chip size="sm" tone="warn" className="shrink-0">
+              Süre aşımı
             </Chip>
           )}
           {/* 050: a Personel asked to cancel; the ticket stays open until a
@@ -183,28 +262,9 @@ export function BiletKart({
               role="img"
             />
           )}
-          <p className="truncate text-label text-faint">
-            {/* One step up in weight from the timestamp beside it and still
-                well below the plate: where the car is parked is what someone
-                scans this list for, but it must not compete with what the
-                row is about. */}
-            {yerKod && <span className="font-medium text-soft">{yerKod} · </span>}
-            {formatGoreceli(bilet.giris_at)}
-            {/* Who let this car in. 'gecikmeli' rather than the old
-                'kameradan': the creator label already says Kamera, and the
-                thing this flag actually means is that the event arrived from
-                a buffer AFTER the fact — saying "camera" twice would hide
-                the only part a reader could not already see. */}
-            {bilet.gecikmeli_kayit && ' · gecikmeli'}
-            {' · '}
-            {olusturanAdi(bilet.giris_by, bilet.giris_kaynak, adlar)}
-          </p>
         </div>
-        {/* 077 H: its own quiet line, only when the camera saw the car
-            inside — line two has no room left at 360 px and truncates first. */}
-        {gorulduMetni && (
-          <p className="mt-0.5 truncate text-label text-faint tnum">{gorulduMetni}</p>
-        )}
+        {/* 077 H's "İçeride görüldü" line was dropped (owner, 27.11). The
+            server still records the time. */}
       </div>
 
     </button>
@@ -240,7 +300,7 @@ export function VardiyaUyarisi() {
   return (
     <button
       type="button"
-      onClick={() => navigate('/vardiya')}
+      onClick={() => navigate('/vardiya/kasa')}
       className="flex w-full items-center gap-3 rounded-card bg-warn-soft px-4 py-3 text-left"
     >
       <IconUyari size={20} className="shrink-0 text-warn" />
@@ -320,20 +380,32 @@ export function CikanKart({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_76px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
+      className="flex w-full items-center gap-3.5 rounded-card border border-border bg-surface p-3.5 text-left shadow-card transition-[filter,transform] duration-100 [contain-intrinsic-size:auto_100px] [content-visibility:auto] active:scale-[0.99] active:brightness-[0.97]"
     >
       <IconTile tone={toplanacak ? 'warn' : 'neutral'}>
         {toplanacak ? <IconKasa size={21} /> : <IconCikis size={21} />}
       </IconTile>
 
       <div className="min-w-0 flex-1">
-        {/* Plate and amount alone on line one — same rule as the open rows. */}
-        <div className="flex items-baseline gap-3">
-          <span className="min-w-0 flex-1 truncate text-lead font-semibold tracking-wide text-ink tnum">
-            {formatPlaka(bilet.plaka)}
-          </span>
+        {/* Plate with the time under it, amount on the right — same layout
+            as the open rows (owner, 27.11). */}
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-lead font-semibold tracking-wide text-ink tnum">
+              {formatPlaka(bilet.plaka)}
+            </span>
+            <p className="mt-0.5 truncate text-label text-faint tnum">
+              {bilet.cikis_at ? formatGoreceli(bilet.cikis_at) : '—'}
+              {' · '}
+              {sureMetni(bilet.giris_at, bilet.cikis_at)}
+              {/* The EXIT side here, not the entry: on a closed ticket the
+                  question a reader has is who took the money. */}
+              {' · '}
+              <OlusturanEtiketi id={bilet.cikis_by} kaynak={bilet.cikis_kaynak} adlar={adlar} />
+            </p>
+          </div>
           <span
-            className={`shrink-0 text-body font-semibold tnum ${
+            className={`shrink-0 text-body font-bold tnum ${
               bedava ? 'text-success' : alindi ? 'text-ink' : 'text-warn'
             }`}
           >
@@ -341,10 +413,9 @@ export function CikanKart({
           </span>
         </div>
 
-        {/* Wraps: this row can carry four chips (ödeme, abonman, onay, yöntem)
-            plus the time, which at 375px squeezed the timestamp to "2 …".
-            Same treatment as the Finans list, which shows the same chips. */}
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        {/* The chips (up to four: ödeme, abonman, onay, yöntem) wrap on
+            their own row; the time no longer shares it. */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <Chip
             size="sm"
             tone={alindi ? 'success' : bedava ? 'neutral' : 'warn'}
@@ -378,15 +449,6 @@ export function CikanKart({
               {ODEME_ETIKET[bilet.odeme_yontemi]}
             </span>
           )}
-          <p className="truncate text-label text-faint">
-            {bilet.cikis_at ? formatGoreceli(bilet.cikis_at) : '—'}
-            {' · '}
-            {sureMetni(bilet.giris_at, bilet.cikis_at)}
-            {/* The EXIT side here, not the entry: on a closed ticket the
-                question a reader has is who took the money. */}
-            {' · '}
-            {olusturanAdi(bilet.cikis_by, bilet.cikis_kaynak, adlar)}
-          </p>
         </div>
       </div>
 
@@ -446,7 +508,34 @@ export function FotoOnizleme({ url, onKaldir }: { url: string; onKaldir: () => v
  *   photo → plate → fee + stay → ticket facts │ müşteri → Değiştir → undo.
  */
 
-function Satir({ k, v }: { k: string; v: string }) {
+/**
+ * Who opened or closed a ticket. The camera is shown as its icon only (owner,
+ * 27.11: "no need to write it"); screen readers still hear "Kamera". A person
+ * stays a name (olusturanAdi decides camera / name / Otomatik / Bilinmiyor).
+ */
+export function OlusturanEtiketi({
+  id,
+  kaynak,
+  adlar,
+}: {
+  id: string | null
+  kaynak: Kaynak | null
+  adlar: Map<string, string>
+}) {
+  if (kaynak === 'KAMERA') {
+    return (
+      <IconGuvenlikKamerasi
+        size={18}
+        role="img"
+        aria-label="Kamera"
+        className="inline-block shrink-0 align-[-4px]"
+      />
+    )
+  }
+  return <>{olusturanAdi(id, kaynak, adlar)}</>
+}
+
+function Satir({ k, v }: { k: string; v: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="shrink-0 text-body text-faint">{k}</dt>
@@ -472,6 +561,11 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
           ticket, and "Park yeri —" says less than nothing. */}
       {yerKod && <Satir k="Park yeri" v={yerKod} />}
       {bilet.ucret_kurus > 0 && <Satir k="Ücret" v={formatTL(bilet.ucret_kurus)} />}
+      {/* 078: while the car is inside the Hizmetler card shows the wash; once
+          closed it is a fact of the ticket (its fee above includes it). */}
+      {bilet.durum !== 'ACIK' && bilet.yikama_kurus ? (
+        <Satir k="Oto yıkama" v={formatTL(bilet.yikama_kurus)} />
+      ) : null}
       {bilet.indirim_kurus > 0 && (
         <Satir
           k="Puan indirimi"
@@ -495,9 +589,15 @@ export function BiletBilgileri({ bilet, yerKod }: { bilet: Bilet; yerKod?: strin
           WHICH person, which is the part that matters when a ticket is being
           questioned. The camera still names itself, because it has no
           profile row to name. */}
-      <Satir k="Girişi yapan" v={olusturanAdi(bilet.giris_by, bilet.giris_kaynak, adlar)} />
+      <Satir
+        k="Girişi yapan"
+        v={<OlusturanEtiketi id={bilet.giris_by} kaynak={bilet.giris_kaynak} adlar={adlar} />}
+      />
       {bilet.cikis_at && (
-        <Satir k="Çıkışı yapan" v={olusturanAdi(bilet.cikis_by, bilet.cikis_kaynak, adlar)} />
+        <Satir
+          k="Çıkışı yapan"
+          v={<OlusturanEtiketi id={bilet.cikis_by} kaynak={bilet.cikis_kaynak} adlar={adlar} />}
+        />
       )}
       {/* 065: a free exit's reason and note — a fact about the ticket, so
           every role sees it. Wraps: the note is the operator's own words. */}
@@ -651,12 +751,27 @@ export function PlakaBasligi({
   )
 }
 
-function BolumBasligi({ children, sag }: { children: ReactNode; sag?: ReactNode }) {
+function BolumBasligi({
+  children,
+  sag,
+  guclu = false,
+}: {
+  children: ReactNode
+  sag?: ReactNode
+  /** The card's own title (Bilet) — darker and bolder than its sub-sections. */
+  guclu?: boolean
+}) {
   return (
     // min-h-11: the row is as tall as the 44px icon button that may sit in it,
     // so the two halves of the card start their lists at the same rhythm.
     <div className="flex min-h-11 items-center justify-between gap-3">
-      <h2 className="text-label font-medium tracking-wide text-faint uppercase">{children}</h2>
+      <h2
+        className={`text-label tracking-wide uppercase ${
+          guclu ? 'font-bold text-ink' : 'font-medium text-faint'
+        }`}
+      >
+        {children}
+      </h2>
       {sag}
     </div>
   )
@@ -665,11 +780,475 @@ function BolumBasligi({ children, sag }: { children: ReactNode; sag?: ReactNode 
 /**
  * Ticket facts, one hairline, then the customer — ONE card, so the separator
  * says "same ticket, other half" rather than starting a new thing.
+ *
+ * `sag`: an action beside the "Bilet" title (owner, 2026-11-27: the detail
+ * screen's "Değiştir" sits there, on the right, instead of a full-width row).
  */
-export function BiletDetayKarti({ bilet, yerKod }: { bilet: Bilet; yerKod?: string | null }) {
+/**
+ * 078: the oto yıkama switch — one row, the same on Giriş, the ticket detail
+ * and Tahsilat. Switch first (the mockup the owner approved), then the drop,
+ * the label and the price. The whole row is the target (≥ 44 px).
+ */
+export function YikamaAnahtari({
+  acik,
+  kurus,
+  bekliyor = false,
+  onDegis,
+  zemin = 'field',
+}: {
+  acik: boolean
+  /** The price shown: the ticket's locked one when on, the tariff's when off. */
+  kurus: number | null
+  bekliyor?: boolean
+  onDegis: (acik: boolean) => void
+  zemin?: 'field' | 'surface'
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={acik}
+      aria-label={kurus ? `Oto yıkama ${formatTL(kurus)}` : 'Oto yıkama'}
+      disabled={bekliyor}
+      onClick={() => onDegis(!acik)}
+      className={`flex min-h-14 w-full items-center gap-3 rounded-card px-4 py-2.5 text-left disabled:opacity-60 ${
+        zemin === 'field' ? 'bg-field' : 'border border-border bg-surface shadow-card'
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`relative h-[32px] w-[54px] shrink-0 rounded-full transition-colors ${
+          // Off: the faint ink, not bg-field / bg-border — the row itself is
+          // field-coloured, and in dark mode the knob vanished on those.
+          acik ? 'bg-accent' : 'bg-faint'
+        }`}
+      >
+        <span
+          className={`absolute top-[3px] size-[26px] rounded-full bg-surface shadow-card transition-[left] ${
+            acik ? 'left-[25px]' : 'left-[3px]'
+          }`}
+        />
+      </span>
+      <IconYikama size={22} className="shrink-0 text-accent" />
+      <span className="min-w-0 flex-1 text-body font-medium text-ink">Oto yıkama</span>
+      {kurus ? (
+        <span className="shrink-0 text-body font-semibold text-ink tnum">+{formatTL(kurus)}</span>
+      ) : null}
+    </button>
+  )
+}
+
+/**
+ * 078: "Hizmetler" — what the fee is made of while the car is inside: the
+ * parking part, then the wash switch. Same heading as "Bilet" (owner). The
+ * switch talks to the server (bilet_yikama); the price is locked there.
+ */
+export function HizmetlerKarti({
+  bilet,
+  toplamKurus,
+  tarifeKurus,
+  onDegisti,
+}: {
+  bilet: Bilet
+  /** The live fee (bilet_ucret_onizle): parking + wash. Undefined while loading. */
+  toplamKurus: number | undefined
+  /** The tariff's wash price, for the switch while it is off. */
+  tarifeKurus: number | null
+  /** Called after the server accepted a switch (Tahsilat clears its override). */
+  onDegisti?: () => void
+}) {
+  const yikama = useBiletYikama()
+  const [hata, setHata] = useState<string | null>(null)
+  const acik = Boolean(bilet.yikama_kurus)
+  // 080: with a deal, the deal block says what the parking costs; the
+  // "Otopark" row would only repeat it.
+  const anlasmaVar = Boolean(bilet.anlasma_kurus)
   return (
     <Card>
-      <BolumBasligi>Bilet</BolumBasligi>
+      <BolumBasligi guclu>Hizmetler</BolumBasligi>
+      {!anlasmaVar && (
+        <dl className="mt-1 space-y-2.5">
+          <Satir
+            k="Otopark"
+            v={
+              toplamKurus === undefined
+                ? '—'
+                : bilet.abonman_id
+                  ? 'Ücretsiz (abonman)'
+                  : formatTL(otoparkKurus(toplamKurus, bilet.yikama_kurus ?? null))
+            }
+          />
+        </dl>
+      )}
+      {/* 082: past the first tier — the report and the decision. */}
+      {!anlasmaVar && !bilet.abonman_id && (
+        <AsimBlogu bilet={bilet} onDegisti={onDegisti} className="mt-3" />
+      )}
+      {/* 080: no deal for an abonman car (the server refuses it too). */}
+      {!bilet.abonman_id && (
+        <div className={anlasmaVar ? 'mt-1' : 'mt-3'}>
+          <AnlasmaBlogu bilet={bilet} onDegisti={onDegisti} />
+        </div>
+      )}
+      <div className="mt-3">
+        <YikamaAnahtari
+          acik={acik}
+          kurus={acik ? (bilet.yikama_kurus ?? null) : tarifeKurus}
+          bekliyor={yikama.isPending}
+          onDegis={(v) => {
+            setHata(null)
+            yikama.mutate(
+              { bilet_id: bilet.id, acik: v },
+              {
+                onSuccess: () => onDegisti?.(),
+                onError: (e) => setHata(rpcErrorText(e, 'Oto yıkama değiştirilemedi.')),
+              },
+            )
+          }}
+        />
+      </div>
+      {hata && (
+        <p role="alert" className="mt-2 text-label text-danger">
+          {hata}
+        </p>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * 082: where a ticket stands on the first-tier cap. One query per ticket (the
+ * key is shared, so the card and the exit button ask once).
+ */
+export function useAsim(bilet: Bilet | null | undefined): { durum: AsimDurumu; onizle: AsimOnizleme | null } {
+  const aktif =
+    Boolean(bilet) && !bilet?.abonman_id && bilet?.anlasma_kurus == null && bilet?.durum !== 'IPTAL'
+  const q = useAsimOnizleme(bilet, aktif)
+  return { durum: bilet ? asimDurumu(bilet, q.data) : 'YOK', onizle: q.data ?? null }
+}
+
+/**
+ * 082 (owner, 27.11): a normal ticket stops at the first tier's price. Past
+ * it, the ticket shows how long the car stayed and what the tariff says, and
+ * a person decides: "Onayla" (the full price) or keep the first tier. Exit
+ * and collection wait for it (the server refuses them too). After the
+ * decision, one quiet line says who decided what.
+ */
+export function AsimBlogu({
+  bilet,
+  onDegisti,
+  className = '',
+}: {
+  bilet: Bilet
+  onDegisti?: () => void
+  className?: string
+}) {
+  const { durum, onizle } = useAsim(bilet)
+  const karar = useAsimKarar()
+  const adlar = useAdlar()
+  const [hata, setHata] = useState<string | null>(null)
+
+  if (durum === 'TAM' || durum === 'ILK') {
+    const ad = bilet.asim_karar_by ? (adlar.get(bilet.asim_karar_by) ?? null) : null
+    return <p className={`text-label text-soft ${className}`}>{asimKararMetni(durum, ad)}</p>
+  }
+  if (durum !== 'BEKLIYOR' || !onizle) return null
+
+  const ver = (tam: boolean) => {
+    setHata(null)
+    karar.mutate(
+      { bilet_id: bilet.id, tam },
+      {
+        onSuccess: () => onDegisti?.(),
+        onError: (e) => setHata(rpcErrorText(e, 'Karar kaydedilemedi.')),
+      },
+    )
+  }
+
+  return (
+    <div className={`rounded-field bg-warn-soft p-3.5 ${className}`}>
+      <p className="text-body font-semibold text-warn">İlk kademe aşıldı</p>
+      <dl className="mt-2 space-y-1.5 text-body">
+        <div className="flex justify-between gap-3">
+          <dt className="text-soft">Kaldığı süre</dt>
+          <dd className="font-medium text-ink tnum">{sureMetni(bilet.giris_at, bilet.cikis_at)}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-soft">İlk kademe</dt>
+          <dd className="font-medium text-ink tnum">{formatTL(onizle.ilk_kurus)}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-soft">Tarifeye göre</dt>
+          <dd className="font-bold text-ink tnum">{formatTL(onizle.tam_kurus)}</dd>
+        </div>
+      </dl>
+      <div className="mt-3 space-y-2">
+        <button
+          type="button"
+          disabled={karar.isPending}
+          onClick={() => ver(true)}
+          className="flex min-h-12 w-full items-center justify-center rounded-field bg-warn px-4 text-body font-semibold text-surface active:brightness-95 disabled:opacity-60"
+        >
+          Onayla · {formatTL(onizle.tam_kurus)}
+        </button>
+        <button
+          type="button"
+          disabled={karar.isPending}
+          onClick={() => ver(false)}
+          className="flex min-h-12 w-full items-center justify-center rounded-field bg-surface px-4 text-body font-semibold text-ink active:brightness-95 disabled:opacity-60"
+        >
+          {formatTL(onizle.ilk_kurus)} kalsın
+        </button>
+      </div>
+      {hata && (
+        <p role="alert" className="mt-2 text-label text-danger">
+          {hata}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** A clock for the deal bar: re-renders every 30 s (the server re-prices on its own 30 s tick). */
+function useSimdi(aralikMs = 30_000): number {
+  const [simdi, setSimdi] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setSimdi(Date.now()), aralikMs)
+    return () => clearInterval(t)
+  }, [aralikMs])
+  return simdi
+}
+
+/** "3 gün" / "5 saat" — how the deal was agreed. */
+function anlasmaSureEtiketi(saat: number): string {
+  return saat % 24 === 0 ? `${saat / 24} gün` : `${saat} saat`
+}
+
+function anlasmaSaatiOf(bilet: Bilet): number | null {
+  if (!bilet.anlasma_bitis) return null
+  return Math.round((Date.parse(bilet.anlasma_bitis) - Date.parse(bilet.giris_at)) / 3_600_000)
+}
+
+/**
+ * 080: the agreed price as a time budget (layout E, owner): a bar that fills
+ * from entry to the deal's end, green while running, orange once over. The
+ * extra time is never added by itself — one button, with its amount.
+ * Tapping the deal opens the form to change or remove it.
+ */
+function AnlasmaBlogu({ bilet, onDegisti }: { bilet: Bilet; onDegisti?: () => void }) {
+  const simdi = useSimdi()
+  const [form, setForm] = useState(false)
+  const [hata, setHata] = useState<string | null>(null)
+  const fazla = useAnlasmaFazla()
+  const kurus = bilet.anlasma_kurus ?? null
+  const bitis = bilet.anlasma_bitis ?? null
+  const d = kurus && bitis ? anlasmaDurumu(bilet.giris_at, bitis, simdi) : null
+  const eklendi = Boolean(bilet.anlasma_fazla_at)
+  const onizleme = useFazlaOnizleme(bilet, Boolean(d?.doldu))
+  const fazlaKurus = onizleme.data
+  const saat = anlasmaSaatiOf(bilet)
+
+  const formu = form ? (
+    <AnlasmaFormu
+      bilet={bilet}
+      onKapat={() => setForm(false)}
+      onDegisti={() => {
+        setForm(false)
+        onDegisti?.()
+      }}
+    />
+  ) : null
+
+  if (!d || !kurus || !bitis) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setForm(true)}
+          className="flex min-h-14 w-full items-center gap-3 rounded-card text-left"
+        >
+          <IconTile tone="accent" size="sm">
+            <IconTakvim size={20} />
+          </IconTile>
+          <span className="text-body font-semibold text-accent">Anlaşmalı fiyat ekle</span>
+        </button>
+        {formu}
+      </>
+    )
+  }
+
+  return (
+    <>
+      <button type="button" onClick={() => setForm(true)} className="flex w-full gap-3 py-1 text-left">
+        <IconTile tone={d.doldu ? 'warn' : 'accent'} size="sm">
+          <IconTakvim size={20} />
+        </IconTile>
+        <span className="min-w-0 flex-1">
+          <span className="block text-body text-ink">
+            <span className="font-semibold tnum">Anlaşma {formatTL(kurus)}</span>
+            {saat ? ` · ${anlasmaSureEtiketi(saat)}` : ''}
+          </span>
+          <span className="mt-2 block">
+            <OranCubugu yuzde={d.yuzde} tone={d.doldu ? 'warn' : 'success'} label="Anlaşma süresi" />
+          </span>
+          <span className={`mt-1.5 block text-label tnum ${d.doldu ? 'font-semibold text-warn' : 'text-soft'}`}>
+            {d.doldu
+              ? `Süre doldu · ${kalanMetni(d, formatSure)}`
+              : `${kalanMetni(d, formatSure)} · ${bitisMetni(bitis)}’e kadar`}
+          </span>
+        </span>
+      </button>
+
+      {d.doldu && !eklendi && (
+        <button
+          type="button"
+          disabled={fazla.isPending || fazlaKurus === undefined}
+          onClick={() => {
+            setHata(null)
+            fazla.mutate(bilet.id, {
+              onSuccess: () => onDegisti?.(),
+              onError: (e) => setHata(rpcErrorText(e, 'Fazla süre eklenemedi.')),
+            })
+          }}
+          className="mt-3 flex min-h-12 w-full items-center justify-center rounded-field bg-warn px-4 text-body font-semibold text-surface active:brightness-95 disabled:opacity-60"
+        >
+          Fazla süreyi ekle{fazlaKurus !== undefined ? `: +${formatTL(fazlaKurus)}` : ''}
+        </button>
+      )}
+      {d.doldu && eklendi && (
+        <p className="mt-2 text-label font-semibold text-warn tnum">
+          Fazla süre ekleniyor{fazlaKurus !== undefined ? ` · +${formatTL(fazlaKurus)}` : ''}
+        </p>
+      )}
+      {hata && (
+        <p role="alert" className="mt-2 text-label text-danger">
+          {hata}
+        </p>
+      )}
+      {formu}
+    </>
+  )
+}
+
+/** 080: price + duration (hours or days, from entry). Change or remove an existing deal. */
+function AnlasmaFormu({
+  bilet,
+  onKapat,
+  onDegisti,
+}: {
+  bilet: Bilet
+  onKapat: () => void
+  onDegisti: () => void
+}) {
+  const anlasma = useBiletAnlasma()
+  const mevcut = anlasmaSaatiOf(bilet)
+  const gunle = mevcut === null || mevcut % 24 === 0
+  const [fiyat, setFiyat] = useState(bilet.anlasma_kurus ? kurusToInput(bilet.anlasma_kurus) : '')
+  const [birim, setBirim] = useState<AnlasmaBirim>(gunle ? 'gun' : 'saat')
+  const [sayi, setSayi] = useState(mevcut === null ? '' : String(gunle ? mevcut / 24 : mevcut))
+  const [hata, setHata] = useState<string | null>(null)
+  const kurus = parseTLToKurus(fiyat)
+  const saat = anlasmaSaat(Number(sayi), birim)
+  const saatGecerli = sayi !== '' && anlasmaSaatGecerli(saat)
+  const bitis = saatGecerli ? anlasmaBitis(bilet.giris_at, saat) : null
+  const sureId = useId()
+
+  function kaydet(p_kurus: number | null, p_saat: number | null) {
+    setHata(null)
+    anlasma.mutate(
+      { bilet_id: bilet.id, kurus: p_kurus, saat: p_saat },
+      {
+        onSuccess: onDegisti,
+        onError: (e) => setHata(rpcErrorText(e, 'Anlaşma kaydedilemedi.')),
+      },
+    )
+  }
+
+  return (
+    <FormModal
+      open
+      onOpenChange={(o) => !o && onKapat()}
+      title="Anlaşmalı fiyat"
+      onSubmit={() => kaydet(kurus, saat)}
+      loading={anlasma.isPending}
+      error={hata}
+      disabled={kurus === null || kurus <= 0 || !saatGecerli}
+    >
+      <div className="space-y-4">
+        <Input
+          label="Fiyat (₺)"
+          inputMode="decimal"
+          autoComplete="off"
+          value={fiyat}
+          onChange={(e) => setFiyat(e.target.value)}
+        />
+        <div>
+          <Label htmlFor={sureId}>Süre</Label>
+          <div className="flex gap-2.5">
+            <div className="flex-1">
+              <Input
+                id={sureId}
+                label="Süre"
+                hideLabel
+                inputMode="numeric"
+                autoComplete="off"
+                value={sayi}
+                onChange={(e) => setSayi(digitsOnly(e.target.value, 4))}
+              />
+            </div>
+            <div className="flex-[1.2]">
+              <SegmentedControl
+                value={birim}
+                options={[
+                  { value: 'saat', label: 'Saat' },
+                  { value: 'gun', label: 'Gün' },
+                ]}
+                onChange={setBirim}
+              />
+            </div>
+          </div>
+          {sayi !== '' && !saatGecerli && (
+            <p className="mt-1.5 text-label text-danger">Süre 1 saat ile 90 gün arasında olmalı.</p>
+          )}
+        </div>
+        {bitis && (
+          <p className="text-body text-soft">
+            Girişten sayılır · Bitiş: <span className="font-semibold text-ink tnum">{bitisMetni(bitis)}</span>
+          </p>
+        )}
+        {bitis && bitis.getTime() <= Date.now() && (
+          <p className="text-label font-semibold text-warn">Bu süre zaten doldu.</p>
+        )}
+        {bilet.anlasma_kurus ? (
+          <Button
+            type="button"
+            variant="ghost"
+            block
+            disabled={anlasma.isPending}
+            onClick={() => kaydet(null, null)}
+          >
+            Anlaşmayı kaldır
+          </Button>
+        ) : null}
+      </div>
+    </FormModal>
+  )
+}
+
+export function BiletDetayKarti({
+  bilet,
+  yerKod,
+  sag,
+}: {
+  bilet: Bilet
+  yerKod?: string | null
+  sag?: ReactNode
+}) {
+  return (
+    <Card>
+      <BolumBasligi guclu sag={sag}>
+        Bilet
+      </BolumBasligi>
       <div className="mt-1 space-y-4">
         <BiletUyarilari bilet={bilet} />
         <BiletBilgileri bilet={bilet} yerKod={yerKod} />

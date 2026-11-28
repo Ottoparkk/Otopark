@@ -23,6 +23,8 @@
     "supabase/functions/plaka-oku/index.ts",
     "supabase/functions/kamera-webhook/index.ts",
     "supabase/functions/kamera-eslestir/index.ts",
-    "supabase/functions/foto-temizle/index.ts"
+    "supabase/functions/foto-temizle/index.ts",
+    "supabase/functions/terminal-giris/index.ts",
+    "supabase/functions/personel-olustur/index.ts"
   ]
 }
