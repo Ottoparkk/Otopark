@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { girisFisi, sureMetni, type FisSatiri } from '../../../src/features/fis/fisIcerik'
+import { cikisFisi, girisFisi, sureMetni, type FisSatiri } from '../../../src/features/fis/fisIcerik'
 import { fisTahminSecenekleri, parcala } from '../../../src/features/fis/fisSecenek'
 import { kademeAraliklari } from '../../../src/features/finans/kademe'
 import { formatTL } from '../../../src/lib/money'
@@ -7,13 +7,14 @@ import { formatSaat, formatTam } from '../../../src/lib/dates'
 import { ucretsizEtiket } from '../../../src/lib/ucretsiz'
 import { formatPlaka } from '../../../src/lib/plaka'
 import { Bilgi, Dugme, Ekran, Hata } from '../parcalar'
-import { fisVerisi, girisFisiBas, type FisVerisi, type FisYardimcilari } from '../fisIslem'
+import { cikisFisiBas, fisVerisi, girisFisiBas, type FisVerisi, type FisYardimcilari } from '../fisIslem'
 import { uyariAl } from './Giris'
 import type { EkranOzellik } from '../main'
 
 const Y: FisYardimcilari = {
   fis: { tl: formatTL, saat: formatSaat, tam: formatTam, ucretsizEtiket, plaka: formatPlaka },
   girisFisi,
+  cikisFisi,
   sureMetni,
   fisTahminSecenekleri,
   parcala,
@@ -54,8 +55,9 @@ function FisKagidi({ satirlar }: { satirlar: FisSatiri[] }) {
  * the number is taken from the server first, the paper is drawn with it,
  * then Chrome's print screen opens (one tap on Yazdır there, as tested 25.11).
  */
-export function Fis({ s, git, biletId }: EkranOzellik & { biletId: string }) {
-  const [uyari] = useState(uyariAl)
+export function Fis({ s, git, biletId, tur = 'GIRIS' }: EkranOzellik & { biletId: string; tur?: 'GIRIS' | 'CIKIS' }) {
+  const cikis = tur === 'CIKIS'
+  const [uyari] = useState(() => (cikis ? null : uyariAl()))
   const [veri, setVeri] = useState<FisVerisi | null>(null)
   const [yukHata, setYukHata] = useState<string | null>(null)
   const [tahminDk, setTahminDk] = useState<number | null>(null)
@@ -86,7 +88,11 @@ export function Fis({ s, git, biletId }: EkranOzellik & { biletId: string }) {
     if (!veri) return
     setMesgul(true)
     setHata(null)
-    girisFisiBas(s, { bilet: veri.bilet, otopark: veri.otopark, tahmin }, () => new Date().toISOString(), Y).then(
+    const simdi = () => new Date().toISOString()
+    const p = cikis
+      ? cikisFisiBas(s, { bilet: veri.bilet, otopark: veri.otopark }, simdi, Y)
+      : girisFisiBas(s, { bilet: veri.bilet, otopark: veri.otopark, tahmin }, simdi, Y)
+    p.then(
       (satirlar) => {
         setMesgul(false)
         setKagit(satirlar)
@@ -99,9 +105,19 @@ export function Fis({ s, git, biletId }: EkranOzellik & { biletId: string }) {
     )
   }
 
-  const onizleme = veri
-    ? Y.girisFisi({ otopark: veri.otopark, bilet: veri.bilet, basim: 1, basimAt: new Date().toISOString(), tahmin }, Y.fis)
-    : null
+  // The exit fiş refuses itself while money is owed; say so instead of a preview.
+  let onizleme: FisSatiri[] | null = null
+  let onizlemeHata: string | null = null
+  if (veri) {
+    const basimAt = new Date().toISOString()
+    try {
+      onizleme = cikis
+        ? Y.cikisFisi({ otopark: veri.otopark, bilet: veri.bilet, basim: 1, basimAt }, Y.fis)
+        : Y.girisFisi({ otopark: veri.otopark, bilet: veri.bilet, basim: 1, basimAt, tahmin }, Y.fis)
+    } catch (e) {
+      onizlemeHata = (e as Error).message
+    }
+  }
   const ust = (
     <button type="button" class="ust-dugme" onClick={() => git({ ekran: 'gise' })}>
       Gişe
@@ -110,7 +126,8 @@ export function Fis({ s, git, biletId }: EkranOzellik & { biletId: string }) {
 
   return (
     <>
-      <Ekran baslik="Giriş fişi" ust={ust}>
+      <Ekran baslik={cikis ? 'Çıkış fişi' : 'Giriş fişi'} ust={ust}>
+        {cikis && veri && veri.bilet.cikis_at && <Bilgi metin={`${formatPlaka(veri.bilet.plaka)} çıkışı kaydedildi.`} />}
         <Bilgi metin={uyari} />
         <Hata metin={yukHata} />
         {yukHata && <Dugme metin="Tekrar dene" onBas={yukle} ikincil />}
@@ -147,10 +164,11 @@ export function Fis({ s, git, biletId }: EkranOzellik & { biletId: string }) {
             <FisKagidi satirlar={kagit ?? onizleme} />
           </div>
         )}
+        <Hata metin={onizlemeHata} />
         <Hata metin={hata} />
         {basildi && <Bilgi metin="Fiş yazdırıldı. Kâğıt çıkmadıysa tekrar yazdırın." />}
-        {veri && <Dugme metin={basildi ? 'Tekrar yazdır' : 'Yazdır'} onBas={bas} mesgul={mesgul} buyuk />}
-        {basildi && <Dugme metin="Gişe'ye dön" onBas={() => git({ ekran: 'gise' })} ikincil />}
+        {veri && !onizlemeHata && <Dugme metin={basildi ? 'Tekrar yazdır' : 'Yazdır'} onBas={bas} mesgul={mesgul} buyuk />}
+        {veri && <Dugme metin="Gişe'ye dön" onBas={() => git({ ekran: 'gise' })} ikincil />}
       </Ekran>
       {kagit && (
         <div class="fis-baski" aria-hidden="true">

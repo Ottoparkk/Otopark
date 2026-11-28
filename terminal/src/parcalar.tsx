@@ -1,4 +1,8 @@
 import type { ComponentChildren, JSX } from 'preact'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import type { OdemeYontemi } from '../../src/lib/types'
+import type { Sunucu } from './sunucu'
+import type { Yol } from './yol'
 
 /**
  * The terminal's few building blocks. Flat, ≥ 44 px targets, no animation
@@ -62,6 +66,191 @@ export function Ekran({ baslik, children, ust }: { baslik: string; children: Com
         {ust}
       </header>
       <main class="icerik">{children}</main>
+    </div>
+  )
+}
+
+/* ---- Whole terminal (owner 28.11): parts for the Personel screens ---------- */
+
+
+/** Bottom tab bar, like the main app's for a Personel: Gişe, Abonman, Profil. */
+export function Sekmeler({ etkin, git }: { etkin: 'gise' | 'abonman' | 'profil' | null; git: (y: Yol) => void }) {
+  const s = (ad: 'gise' | 'abonman' | 'profil', metin: string) => (
+    <button type="button" class={etkin === ad ? 'sekme etkin' : 'sekme'} onClick={() => git({ ekran: ad })}>
+      {metin}
+    </button>
+  )
+  return (
+    <nav class="sekmeler">
+      {s('gise', 'Gişe')}
+      {s('abonman', 'Abonman')}
+      {s('profil', 'Profil')}
+    </nav>
+  )
+}
+
+const YONTEMLER: { y: OdemeYontemi; metin: string }[] = [
+  { y: 'NAKIT', metin: 'Nakit' },
+  { y: 'KREDI_KARTI', metin: 'Kart' },
+  { y: 'HAVALE', metin: 'Havale' },
+]
+
+/** Payment method, chosen every time from nothing (owner, 23.11). */
+export function YontemSecici({ deger, sec }: { deger: OdemeYontemi | null; sec: (y: OdemeYontemi) => void }) {
+  return (
+    <div class="yontemler">
+      {YONTEMLER.map((x) => (
+        <button
+          key={x.y}
+          type="button"
+          class={deger === x.y ? 'yontem secili' : 'yontem'}
+          onClick={() => sec(x.y)}
+        >
+          {x.metin}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A white card. */
+export function Kart({ children, ton }: { children: ComponentChildren; ton?: 'uyari' | 'basari' | 'marka' }) {
+  return <section class={ton ? `kart kart-${ton}` : 'kart'}>{children}</section>
+}
+
+/** One label / value line. */
+export function Satir({ k, v }: { k: string; v: ComponentChildren }) {
+  return (
+    <p class="satir">
+      <span class="satir-k">{k}</span>
+      <span class="satir-v">{v}</span>
+    </p>
+  )
+}
+
+export function Rozet({ metin, ton }: { metin: string; ton?: 'uyari' | 'basari' | 'tehlike' | 'marka' }) {
+  return <span class={ton ? `rozet rozet-${ton}` : 'rozet'}>{metin}</span>
+}
+
+/** A back button for the top bar. */
+export function Geri({ onBas, metin = 'Geri' }: { onBas: () => void; metin?: string }) {
+  return (
+    <button type="button" class="ust-dugme" onClick={onBas}>
+      {metin}
+    </button>
+  )
+}
+
+/**
+ * Runs one money or state call at a time: a second tap while the first is in
+ * flight does nothing (the bench showed taps land before a redraw).
+ */
+export function useTekSefer(): [boolean, (is: () => Promise<unknown>, bitti?: () => void, hata?: (m: string) => void) => void] {
+  const [mesgul, setMesgul] = useState(false)
+  const suren = useRef(false)
+  function calistir(is: () => Promise<unknown>, bitti?: () => void, hata?: (m: string) => void) {
+    if (suren.current) return
+    suren.current = true
+    setMesgul(true)
+    let p: Promise<unknown>
+    try {
+      p = is()
+    } catch (e) {
+      p = Promise.reject(e)
+    }
+    p.then(
+      () => {
+        suren.current = false
+        setMesgul(false)
+        if (bitti) bitti()
+      },
+      (e: Error) => {
+        suren.current = false
+        setMesgul(false)
+        if (hata) hata(e && e.message ? e.message : 'Bir hata oldu. Tekrar deneyin.')
+      },
+    )
+  }
+  return [mesgul, calistir]
+}
+
+/** Loads now and again every `ms` (spec: polling, no realtime). */
+export function useYukle<T>(yukle: () => Promise<T>, bagimli: unknown[], ms = 15000) {
+  const [veri, setVeri] = useState<T | null>(null)
+  const [hata, setHata] = useState<string | null>(null)
+  const sira = useRef(0)
+  function yenile() {
+    const benim = ++sira.current
+    yukle().then(
+      (v) => {
+        if (benim !== sira.current) return
+        setVeri(v)
+        setHata(null)
+      },
+      (e: Error) => {
+        if (benim !== sira.current) return
+        setHata(e.message)
+      },
+    )
+  }
+  useEffect(() => {
+    yenile()
+    if (!ms) return undefined
+    const t = window.setInterval(yenile, ms)
+    return () => window.clearInterval(t)
+  }, bagimli)
+  return { veri, hata, yenile }
+}
+
+/**
+ * A plate photo, loaded only when it scrolls into view (spec), small; a tap
+ * shows it full width.
+ */
+export function Foto({ s, yol, etiket }: { s: Sunucu; yol: string | null; etiket?: string }) {
+  const kutu = useRef<HTMLDivElement>(null)
+  const [url, setUrl] = useState<string | null>(null)
+  const [buyuk, setBuyuk] = useState(false)
+  const [yok, setYok] = useState(false)
+  useEffect(() => {
+    if (!yol || !kutu.current) return undefined
+    let bitti = false
+    const al = () => {
+      s.imzaliUrl('plaka-foto', yol, 600).then(
+        (u) => {
+          if (!bitti) setUrl(u)
+        },
+        () => {
+          if (!bitti) setYok(true)
+        },
+      )
+    }
+    const IO = (window as unknown as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver
+    if (!IO) {
+      al()
+      return () => {
+        bitti = true
+      }
+    }
+    const g = new IO((kayitlar) => {
+      for (const k of kayitlar) {
+        if (k.isIntersecting || k.intersectionRatio > 0) {
+          g.disconnect()
+          al()
+          return
+        }
+      }
+    })
+    g.observe(kutu.current)
+    return () => {
+      bitti = true
+      g.disconnect()
+    }
+  }, [yol])
+  if (!yol) return null
+  return (
+    <div ref={kutu} class={buyuk ? 'foto foto-buyuk' : 'foto'} onClick={() => setBuyuk(!buyuk)}>
+      {url ? <img src={url} alt={etiket || 'Plaka fotoğrafı'} /> : <span class="foto-yer">{yok ? 'Fotoğraf açılamadı' : 'Fotoğraf'}</span>}
+      {etiket && <span class="foto-etiket">{etiket}</span>}
     </div>
   )
 }

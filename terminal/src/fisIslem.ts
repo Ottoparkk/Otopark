@@ -5,7 +5,7 @@
  * BEFORE the paper is drawn. Type-only imports; helpers come in as `y`
  * (tests/terminalFis.check.mjs).
  */
-import type { FisAraclari, FisBileti, FisOtopark, FisSatiri, girisFisi, sureMetni } from '../../src/features/fis/fisIcerik'
+import type { FisAraclari, FisBileti, FisOtopark, FisSatiri, cikisFisi, girisFisi, sureMetni } from '../../src/features/fis/fisIcerik'
 import type { FisTahminSecenegi, fisTahminSecenekleri, parcala } from '../../src/features/fis/fisSecenek'
 import type { kademeAraliklari } from '../../src/features/finans/kademe'
 import type { Tarife } from '../../src/lib/types'
@@ -14,6 +14,7 @@ import type { Sunucu } from './sunucu'
 export interface FisYardimcilari {
   fis: FisAraclari
   girisFisi: typeof girisFisi
+  cikisFisi: typeof cikisFisi
   sureMetni: typeof sureMetni
   fisTahminSecenekleri: typeof fisTahminSecenekleri
   parcala: typeof parcala
@@ -81,4 +82,15 @@ export async function girisFisiBas(
     p_tahmin_dk: v.tahmin ? v.tahmin.dakika : null,
   })
   return y.girisFisi({ otopark: v.otopark, bilet: v.bilet, basim, basimAt: simdi(), tahmin: v.tahmin }, y.fis)
+}
+
+/** The exit fiş: the server refuses a number while money is owed (088). */
+export async function cikisFisiBas(
+  s: Sunucu,
+  v: { bilet: FisBileti; otopark: FisOtopark },
+  simdi: () => string,
+  y: FisYardimcilari,
+): Promise<FisSatiri[]> {
+  const basim = await s.rpc<number>('fis_basildi', { p_bilet_id: v.bilet.id, p_tur: 'CIKIS', p_tahmin_dk: null })
+  return y.cikisFisi({ otopark: v.otopark, bilet: v.bilet, basim, basimAt: simdi() }, y.fis)
 }

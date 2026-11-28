@@ -29,7 +29,18 @@ esit('fiş uuid değil', yolOku('#/fis/abc'), null)
 esit('fiş id yok', yolOku('#/fis'), null)
 esit('fazla parça', yolOku(`#/fis/${ID}/x`), null)
 
-for (const h of ['#/kurulum', '#/pin', '#/gise', '#/giris', `#/fis/${ID}`]) {
+// Whole terminal (owner 28.11): every Personel screen of the app.
+for (const t of ['kayip', 'istisnalar', 'abonman', 'profil']) esit(t, yolOku('#/' + t), { ekran: t })
+esit('çıkış fişi', yolOku(`#/cfis/${ID}`), { ekran: 'cfis', biletId: ID })
+esit('bilet', yolOku(`#/bilet/${ID}`), { ekran: 'bilet', biletId: ID })
+esit('bilet uuid değil', yolOku('#/bilet/abc'), null)
+esit('bilet id yok', yolOku('#/bilet'), null)
+esit('abonman detay', yolOku(`#/abonman/${ID}`), { ekran: 'abonmanDetay', id: ID })
+esit('abonman uuid değil', yolOku('#/abonman/abc'), null)
+esit('kayip id ile', yolOku(`#/kayip/${ID}`), null)
+
+for (const h of ['#/kurulum', '#/pin', '#/gise', '#/giris', `#/fis/${ID}`, '#/kayip', '#/istisnalar', '#/abonman', '#/profil',
+  `#/cfis/${ID}`, `#/bilet/${ID}`, `#/abonman/${ID}`]) {
   esit(`gidiş-dönüş ${h}`, yolYaz(yolOku(h)), h)
 }
 

@@ -3,7 +3,7 @@
 //
 //   node tests/terminalFis.check.mjs
 import { fisVerisi, girisFisiBas } from '../terminal/src/fisIslem.ts'
-import { girisFisi, sureMetni } from '../src/features/fis/fisIcerik.ts'
+import { girisFisi, cikisFisi, sureMetni } from '../src/features/fis/fisIcerik.ts'
 import { fisTahminSecenekleri, parcala } from '../src/features/fis/fisSecenek.ts'
 import { kademeAraliklari } from '../src/features/finans/kademe.ts'
 import { formatTL } from '../src/lib/money.ts'
@@ -34,6 +34,7 @@ async function hata(p) {
 const Y = {
   fis: { tl: formatTL, saat: formatSaat, tam: formatTam, ucretsizEtiket, plaka: formatPlaka },
   girisFisi,
+  cikisFisi,
   sureMetni,
   fisTahminSecenekleri,
   parcala,
