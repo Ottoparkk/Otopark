@@ -16,6 +16,10 @@ export function aramaKoy(q: string) {
   bekleyenArama = q
 }
 
+// İçeride / Çıkanlar, as the main app's chips; kept while the terminal runs,
+// so coming back from a ticket shows the same list.
+let sonFiltre: 'ICERIDE' | 'CIKAN' = 'ICERIDE'
+
 /** Today's Istanbul midnight as an instant (fixed UTC+3). */
 function bugunBasi(): string {
   return new Date(`${istanbulGun()}T00:00:00+03:00`).toISOString()
@@ -35,6 +39,11 @@ export function Gise({ s, git }: EkranOzellik) {
     return q
   })
   const [aranan, setAranan] = useState(sorgu)
+  const [filtre, setFiltreDurum] = useState(sorgu ? 'ICERIDE' : sonFiltre)
+  function setFiltre(f: 'ICERIDE' | 'CIKAN') {
+    sonFiltre = f
+    setFiltreDurum(f)
+  }
   const zaman = useRef(0)
 
   useEffect(() => {
@@ -115,18 +124,33 @@ export function Gise({ s, git }: EkranOzellik) {
         />
       </label>
 
-      <p class="bolum">İçeride{iceride.veri ? ` (${iceride.veri.length})` : ''}</p>
-      <Hata metin={iceride.hata} />
-      {!iceride.veri && !iceride.hata && <Bilgi metin="Yükleniyor…" />}
-      {iceride.veri && iceride.veri.length === 0 && <Bilgi metin={aranan ? 'Bu plakada içeride araç yok.' : 'İçeride araç yok.'} />}
-      {iceride.veri && iceride.veri.map((b) => <IcerideSatir key={b.id} b={b} git={git} />)}
+      <div class="cipler">
+        <button type="button" class={filtre === 'ICERIDE' ? 'cip secili' : 'cip'} onClick={() => setFiltre('ICERIDE')}>
+          İçeride{iceride.veri ? ` (${iceride.veri.length})` : ''}
+        </button>
+        <button type="button" class={filtre === 'CIKAN' ? 'cip secili' : 'cip'} onClick={() => setFiltre('CIKAN')}>
+          Çıkanlar{cikan.veri ? ` (${cikanlarGorunen.length})` : ''}
+        </button>
+      </div>
 
-      <p class="bolum">Bugün çıkanlar{cikan.veri ? ` (${cikanlarGorunen.length})` : ''}</p>
-      <Hata metin={cikan.hata} />
-      {cikan.veri && cikanlarGorunen.length === 0 && <Bilgi metin="Bugün çıkan araç yok." />}
-      {cikanlarGorunen.map((b) => (
-        <CikanSatir key={b.id} b={b} git={git} />
-      ))}
+      {filtre === 'ICERIDE' ? (
+        <>
+          <Hata metin={iceride.hata} />
+          {!iceride.veri && !iceride.hata && <Bilgi metin="Yükleniyor…" />}
+          {iceride.veri && iceride.veri.length === 0 && <Bilgi metin={aranan ? 'Bu plakada içeride araç yok.' : 'İçeride araç yok.'} />}
+          {iceride.veri && iceride.veri.map((b) => <IcerideSatir key={b.id} b={b} git={git} />)}
+        </>
+      ) : (
+        <>
+          <p class="bilgi">Bugün çıkan araçlar</p>
+          <Hata metin={cikan.hata} />
+          {!cikan.veri && !cikan.hata && <Bilgi metin="Yükleniyor…" />}
+          {cikan.veri && cikanlarGorunen.length === 0 && <Bilgi metin={aranan ? 'Bu plakada bugün çıkan araç yok.' : 'Bugün çıkan araç yok.'} />}
+          {cikanlarGorunen.map((b) => (
+            <CikanSatir key={b.id} b={b} git={git} />
+          ))}
+        </>
+      )}
 
       <button type="button" class="bag" onClick={() => git({ ekran: 'kayip' })}>
         Kaydı olmayan araç — kayıp bilet ücreti al

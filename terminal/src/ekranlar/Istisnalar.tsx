@@ -1,8 +1,8 @@
 import { useState } from 'preact/hooks'
 import { formatPlaka, normalizePlaka, plakaGecerli } from '../../../src/lib/plaka'
-import { formatTam, istanbulGun } from '../../../src/lib/dates'
+import { formatGoreceli, istanbulGun } from '../../../src/lib/dates'
 import { aciklama, baslangicPlakasi, eylemler, kisaDurum, tahminNotu } from '../../../src/features/istisna/kart'
-import type { Istisna } from '../../../src/lib/types'
+import { KAMERA_YON_ETIKET, type Istisna } from '../../../src/lib/types'
 import { Alan, Bilgi, Dugme, Ekran, Foto, Geri, Hata, Kart, useTekSefer, useYukle } from '../parcalar'
 import { bekleyenIstisnalar, istisnaBiletAc, istisnaBiletAcSaatli, istisnaKapat } from '../istisnaIslem'
 import { aramaKoy } from './Gise'
@@ -18,7 +18,10 @@ const PLAKA = { normalizePlaka, plakaGecerli }
  */
 export function Istisnalar({ s, git }: EkranOzellik) {
   const y = useYukle(() => bekleyenIstisnalar(s), [])
-  const [basari, setBasari] = useState<{ plaka: string; biletId: string } | null>(null)
+  const [basari, setBasari] = useState<{
+    plaka: string
+    biletId: string
+  } | null>(null)
   return (
     <Ekran baslik="Çözülmemiş kayıtlar" ust={<Geri metin="Gişe" onBas={() => git({ ekran: 'gise' })} />}>
       <p class="bilgi">Kameranın bilet açamadığı araçlar</p>
@@ -48,7 +51,7 @@ export function Istisnalar({ s, git }: EkranOzellik) {
   )
 }
 
-type Mod = null | 'giris' | 'saatli' | 'kapat'
+type Mod = null | 'kapat'
 
 function IstisnaKarti({
   i,
@@ -75,97 +78,125 @@ function IstisnaKarti({
     setHata(null)
     setMetin('')
   }
+  function girisAc() {
+    setHata(null)
+    let girisIso = ''
+    if (e.girisAcSaatli) {
+      if (!/^d{2}:d{2}$/.test(saat)) return setHata('Giriş saatini yazın (ör. 08:30).')
+      girisIso = new Date(`${istanbulGun()}T${saat}:00+03:00`).toISOString()
+    }
+    let sonuc: { bilet_id: string; plaka: string } | null = null
+    calistir(
+      () =>
+        (e.girisAcSaatli ? istisnaBiletAcSaatli(s, i.id, plaka, girisIso, metin, PLAKA) : istisnaBiletAc(s, i.id, plaka, PLAKA)).then(
+          (r) => {
+            sonuc = r
+          },
+        ),
+      () => bitti(sonuc ? { plaka: sonuc.plaka, biletId: sonuc.bilet_id } : null),
+      setHata,
+    )
+  }
+
+  // The main app's card (PlakaKontrol): lane · time, photo, one status line,
+  // the short "what to do", the plate, then the actions.
   return (
     <Kart>
-      <Foto s={s} yol={i.foto_path} etiket={i.yon === 'CIKIS' ? 'Çıkış' : i.yon === 'GIRIS' ? 'Giriş' : 'Kapı'} />
-      <p class="kart-baslik">{kisaDurum(i)}</p>
-      <p class="arac-plaka">{i.plaka ? formatPlaka(i.plaka) : 'Plaka yok'}</p>
-      <p class="arac-alt">{formatTam(i.kaynak_zaman || i.created_at)}</p>
-      <p>{aciklama(i)}</p>
-      {not && <p class="bilgi">{not}</p>}
+      <p class="meta">
+        {KAMERA_YON_ETIKET[i.yon]} · {formatGoreceli(i.kaynak_zaman || i.created_at)}
+      </p>
+      <Foto s={s} yol={i.foto_path} etiket={KAMERA_YON_ETIKET[i.yon]} />
+      <p class="durum-satiri">
+        <span class="durum-nokta" />
+        <span class="esnek">{kisaDurum(i)}</span>
+      </p>
+      <p class="kucuk">
+        {not ? `${not} ` : ''}
+        {aciklama(i)}
+      </p>
 
-      {(mod === 'giris' || mod === 'saatli') && (
-        <div class="panel">
-          <p class="panel-baslik">{mod === 'saatli' ? 'Giriş aç (saatli)' : 'Giriş aç'}</p>
-          <Alan
-            etiket="Plaka"
-            class="alan-girdi plaka-girdi"
-            value={plaka}
-            maxLength={15}
-            onInput={(ev) => setPlaka(normalizePlaka(ev.currentTarget.value))}
-          />
-          {mod === 'saatli' && (
-            <>
-              <Alan etiket="Giriş saati (bugün, ör. 08:30)" inputMode="numeric" value={saat} maxLength={5} onInput={(ev) => setSaat(ev.currentTarget.value)} />
-              <Alan etiket="Sebep" value={metin} maxLength={200} onInput={(ev) => setMetin(ev.currentTarget.value)} />
-            </>
-          )}
-          <Hata metin={hata} />
-          <Dugme
-            metin="Giriş aç"
-            mesgul={mesgul}
-            buyuk
-            onBas={() => {
-              setHata(null)
-              let girisIso = ''
-              if (mod === 'saatli') {
-                if (!/^\d{2}:\d{2}$/.test(saat)) return setHata('Giriş saatini yazın (ör. 08:30).')
-                girisIso = new Date(`${istanbulGun()}T${saat}:00+03:00`).toISOString()
-              }
-              let sonuc: { bilet_id: string; plaka: string } | null = null
-              calistir(
-                () =>
-                  (mod === 'saatli'
-                    ? istisnaBiletAcSaatli(s, i.id, plaka, girisIso, metin, PLAKA)
-                    : istisnaBiletAc(s, i.id, plaka, PLAKA)
-                  ).then((r) => {
-                    sonuc = r
-                  }),
-                () => {
-                  setMod(null)
-                  bitti(sonuc ? { plaka: sonuc.plaka, biletId: sonuc.bilet_id } : null)
-                },
-                setHata,
-              )
-            }}
-          />
-          <Dugme metin="Vazgeç" ikincil onBas={() => ac(null)} />
-        </div>
-      )}
-      {mod === 'kapat' && (
+      {mod === 'kapat' ? (
         <div class="panel">
           <p class="panel-baslik">Kaydı kapat</p>
           <Alan etiket="Not (isteğe bağlı)" value={metin} maxLength={200} onInput={(ev) => setMetin(ev.currentTarget.value)} />
-          <p class="bilgi">Kayıt silinmez. Yönetici onu Kapatılan sekmesinde görür.</p>
           <Hata metin={hata} />
           <Dugme
             metin="Kapat"
             mesgul={mesgul}
             buyuk
-            onBas={() => calistir(() => istisnaKapat(s, i.id, metin), () => bitti(null), setHata)}
+            onBas={() =>
+              calistir(
+                () => istisnaKapat(s, i.id, metin),
+                () => bitti(null),
+                setHata,
+              )
+            }
           />
           <Dugme metin="Vazgeç" ikincil onBas={() => ac(null)} />
         </div>
-      )}
-      {mod === null && (
+      ) : (
         <>
-          {e.girisAc && <Dugme metin="Giriş aç" onBas={() => ac('giris')} />}
-          {e.girisAcSaatli && <Dugme metin="Giriş aç" onBas={() => ac('saatli')} />}
-          {e.bileteGit && <Dugme metin="Bileti aç" onBas={() => git({ ekran: 'bilet', biletId: e.bileteGit as string })} />}
-          {e.cikis && (
-            <Dugme
-              metin="Çıkış"
-              ikincil
-              onBas={() => {
-                aramaKoy(i.plaka || baslangicPlakasi(i))
-                git({ ekran: 'gise' })
+          {e.girisAc || e.girisAcSaatli ? (
+            <input
+              class="alan-girdi plaka-girdi"
+              placeholder="Plakayı yazın"
+              value={plaka}
+              maxLength={15}
+              autoComplete="off"
+              spellcheck={false}
+              onInput={(ev) => {
+                setPlaka(normalizePlaka(ev.currentTarget.value))
+                setHata(null)
               }}
+              style={{ marginBottom: '12px' }}
             />
+          ) : (
+            <p class="buyuk-plaka" style={{ textAlign: 'center' }}>
+              {i.plaka ? formatPlaka(i.plaka) : '—'}
+            </p>
           )}
-          {e.kapat && <Dugme metin="Kapat" ikincil onBas={() => ac('kapat')} />}
+          {e.girisAcSaatli && (
+            <>
+              <Alan
+                etiket="Giriş saati (bugün, ör. 08:30)"
+                inputMode="numeric"
+                value={saat}
+                maxLength={5}
+                onInput={(ev) => setSaat(ev.currentTarget.value)}
+              />
+              <Alan etiket="Sebep" value={metin} maxLength={200} onInput={(ev) => setMetin(ev.currentTarget.value)} />
+            </>
+          )}
+          <Hata metin={hata} />
+          {(e.girisAc || e.girisAcSaatli || e.bileteGit || e.cikis) && (
+            <div class="dugme-cifti">
+              {(e.girisAc || e.girisAcSaatli) && (
+                <Dugme metin="Giriş aç" mesgul={mesgul} devreDisi={!plakaGecerli(plaka)} onBas={girisAc} />
+              )}
+              {e.bileteGit && <Dugme metin="Bilete git" onBas={() => git({ ekran: 'bilet', biletId: e.bileteGit as string })} />}
+              {e.cikis && (
+                <Dugme
+                  metin="Çıkış"
+                  ikincil
+                  onBas={() => {
+                    aramaKoy(i.plaka || plaka)
+                    git({ ekran: 'gise' })
+                  }}
+                />
+              )}
+            </div>
+          )}
+          {e.kapat && (
+            <div class="yan-yana">
+              <span style={{ display: 'inline-block' }}>
+                <button type="button" class="dugme dugme-ikincil" style={{ width: 'auto', padding: '0 20px' }} onClick={() => ac('kapat')}>
+                  Kapat
+                </button>
+              </span>
+            </div>
+          )}
         </>
       )}
-      {mod === null && <Hata metin={hata} />}
     </Kart>
   )
 }

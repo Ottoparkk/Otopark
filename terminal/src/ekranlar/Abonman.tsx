@@ -4,7 +4,7 @@ import { formatTL, kurusToInput, parseTLToKurus } from '../../../src/lib/money'
 import { formatTam, istanbulGun } from '../../../src/lib/dates'
 import { abonmanAra, abonmanGruplari, kalanRozeti, kisaTarih } from '../../../src/features/abonman/liste'
 import { ODEME_ETIKET, type AbonmanDurum, type OdemeYontemi } from '../../../src/lib/types'
-import { Alan, Bilgi, Dugme, Ekran, Geri, Hata, Kart, Rozet, Satir, YontemSecici, useTekSefer, useYukle } from '../parcalar'
+import { Alan, Bilgi, Cip, Dugme, Ekran, Geri, Hata, Kart, OdemeCip, Rozet, Satir, YontemSecici, useTekSefer, useYukle } from '../parcalar'
 import { abonmanAl, abonmanTahsil, abonmanTahsilatlari, abonmanlar } from '../abonmanIslem'
 import type { EkranOzellik } from '../main'
 
@@ -14,7 +14,10 @@ export function Abonman({ s, git }: EkranOzellik) {
   const [filtre, setFiltre] = useState<AbonmanDurum>('AKTIF')
   const [q, setQ] = useState('')
   const bugun = istanbulGun()
-  const liste = abonmanAra((y.veri || []).filter((a) => a.durum === filtre), q)
+  const liste = abonmanAra(
+    (y.veri || []).filter((a) => a.durum === filtre),
+    q,
+  )
   const gruplar = abonmanGruplari(liste, filtre, 'VARSAYILAN')
   return (
     <Ekran baslik="Abonman">
@@ -80,17 +83,26 @@ export function AbonmanDetay({ s, git, id }: EkranOzellik & { id: string }) {
   const rozet = kalanRozeti(a, istanbulGun())
   const kurus = parseTLToKurus(tutar)
   return (
-    <Ekran baslik="Abonman" ust={geri}>
-      <p class="buyuk-plaka">
-        {formatPlaka(a.plaka)} {rozet && <Rozet metin={rozet} ton="uyari" />}
-      </p>
+    <Ekran baslik={formatPlaka(a.plaka)} ust={geri}>
       <Kart>
-        <Satir k="Müşteri" v={a.musteri_ad} />
+        <div class="plaka-satiri">
+          <div>
+            <p class="ikili-v">{formatTL(a.ucret_kurus, { decimals: 0 })}</p>
+            <p class="ikili-k">aylık ücret</p>
+          </div>
+          {a.durum === 'IPTAL' ? (
+            <Cip metin="İptal" ton="notr" />
+          ) : a.durum === 'DOLDU' ? (
+            <Cip metin="Süresi doldu" ton="notr" />
+          ) : rozet ? (
+            <Cip metin={rozet} ton="uyari" />
+          ) : (
+            <Cip metin="Aktif" ton="basari" />
+          )}
+        </div>
+        <Satir k="Müşteri" v={a.musteri_ad || 'İsimsiz müşteri'} />
+        <Satir k="Geçerli" v={`${kisaTarih(a.bitis)} tarihine kadar`} />
         {a.musteri_tel && <Satir k="Telefon" v={a.musteri_tel} />}
-        <Satir k="Aylık ücret" v={formatTL(a.ucret_kurus)} />
-        <Satir k="Başlangıç" v={kisaTarih(a.baslangic)} />
-        <Satir k="Bitiş" v={kisaTarih(a.bitis)} />
-        <Satir k="Durum" v={a.durum === 'AKTIF' ? 'Aktif' : a.durum === 'DOLDU' ? 'Doldu' : 'İptal'} />
         {a.notlar && <Satir k="Not" v={a.notlar} />}
       </Kart>
       {basari && (
@@ -118,7 +130,13 @@ export function AbonmanDetay({ s, git, id }: EkranOzellik & { id: string }) {
               buyuk
               onBas={() =>
                 calistir(
-                  () => abonmanTahsil(s, { id: a.id, yontem: yontem as OdemeYontemi, tutar: kurus || 0, yenile }),
+                  () =>
+                    abonmanTahsil(s, {
+                      id: a.id,
+                      yontem: yontem as OdemeYontemi,
+                      tutar: kurus || 0,
+                      yenile,
+                    }),
                   () => {
                     setAcik(false)
                     setBasari(`${formatTL(kurus || 0)} tahsil edildi.`)
@@ -148,10 +166,24 @@ export function AbonmanDetay({ s, git, id }: EkranOzellik & { id: string }) {
       {tahsilatlar.length === 0 && <Bilgi metin="Tahsilat yok." />}
       {tahsilatlar.map((t) => (
         <Kart key={t.id}>
-          <Satir k={formatTam(t.created_at)} v={`${formatTL(t.tutar_kurus)} · ${ODEME_ETIKET[t.yontem]}`} />
-          <p class="arac-alt">
-            {t.iptal_of ? 'Ters kayıt' : t.durum === 'ONAYLANDI' ? 'Onaylandı' : t.durum === 'REDDEDILDI' ? 'Reddedildi' : 'Onay bekliyor'}
-          </p>
+          <div class="plaka-satiri" style={{ margin: 0 }}>
+            <div>
+              <p style={{ margin: 0, fontWeight: 700 }}>{formatTL(t.tutar_kurus)}</p>
+              <p class="ikili-k">{formatTam(t.created_at)}</p>
+            </div>
+            <div>
+              <OdemeCip yontem={t.yontem} etiket={ODEME_ETIKET[t.yontem]} />{' '}
+              {t.iptal_of ? (
+                <Cip metin="Ters kayıt" ton="tehlike" />
+              ) : t.durum === 'ONAYLANDI' ? (
+                <Cip metin="Onaylandı" ton="basari" />
+              ) : t.durum === 'REDDEDILDI' ? (
+                <Cip metin="Reddedildi" ton="tehlike" />
+              ) : (
+                <Cip metin="Onay bekliyor" ton="uyari" />
+              )}
+            </div>
+          </div>
         </Kart>
       ))}
     </Ekran>

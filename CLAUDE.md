@@ -101,6 +101,14 @@ bridge is Python, in `tools/kamera-koprusu/`.
 - Mobile first; tap targets ≥ 44 px; no horizontal scroll at 360 px.
 - Times are shown and entered in Istanbul time (fixed UTC+3), whatever the
   device's zone.
+- **One app, two builds (owner 28.11).** The P2 terminal (`terminal/`) is the
+  main app made to run on Chrome 56, not a second design. Its screens copy the
+  main app's design and placement: same order, cards, chips, buttons and
+  words, with only what Chrome 56 cannot do left out. So a main-app change
+  that touches a screen the terminal also has (Gişe, Tahsilat, Bilet,
+  Çözülmemiş kayıtlar, Abonman, Kayıp bilet, fiş, Profil) is made in
+  `terminal/src/` in the same change, then checked in the Chromium 56 bench
+  (`tools/cihaz-testi/`). Never invent a terminal-only layout.
 
 **Working style.**
 - Keep it simple (SOLID / DRY / KISS / YAGNI). Small, reviewable changes.

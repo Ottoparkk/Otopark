@@ -14,6 +14,7 @@ export function Dugme({
   onBas,
   mesgul = false,
   ikincil = false,
+  yumusak = false,
   devreDisi = false,
   buyuk = false,
 }: {
@@ -21,10 +22,11 @@ export function Dugme({
   onBas: () => void
   mesgul?: boolean
   ikincil?: boolean
+  yumusak?: boolean
   devreDisi?: boolean
   buyuk?: boolean
 }) {
-  const sinif = ['dugme', ikincil ? 'dugme-ikincil' : 'dugme-ana', buyuk ? 'dugme-buyuk' : ''].join(' ')
+  const sinif = ['dugme', yumusak ? 'dugme-yumusak' : ikincil ? 'dugme-ikincil' : 'dugme-ana', buyuk ? 'dugme-buyuk' : ''].join(' ')
   return (
     <button type="button" class={sinif} disabled={mesgul || devreDisi} onClick={onBas}>
       {mesgul ? 'Bekleyin…' : metin}
@@ -32,10 +34,7 @@ export function Dugme({
   )
 }
 
-export function Alan({
-  etiket,
-  ...input
-}: { etiket: string } & JSX.IntrinsicElements['input']) {
+export function Alan({ etiket, ...input }: { etiket: string } & JSX.IntrinsicElements['input']) {
   return (
     <label class="alan">
       <span class="alan-etiket">{etiket}</span>
@@ -72,7 +71,6 @@ export function Ekran({ baslik, children, ust }: { baslik: string; children: Com
 
 /* ---- Whole terminal (owner 28.11): parts for the Personel screens ---------- */
 
-
 /** Bottom tab bar, like the main app's for a Personel: Gişe, Abonman, Profil. */
 export function Sekmeler({ etkin, git }: { etkin: 'gise' | 'abonman' | 'profil' | null; git: (y: Yol) => void }) {
   const s = (ad: 'gise' | 'abonman' | 'profil', metin: string) => (
@@ -100,12 +98,7 @@ export function YontemSecici({ deger, sec }: { deger: OdemeYontemi | null; sec: 
   return (
     <div class="yontemler">
       {YONTEMLER.map((x) => (
-        <button
-          key={x.y}
-          type="button"
-          class={deger === x.y ? 'yontem secili' : 'yontem'}
-          onClick={() => sec(x.y)}
-        >
+        <button key={x.y} type="button" class={deger === x.y ? 'yontem secili' : 'yontem'} onClick={() => sec(x.y)}>
           {x.metin}
         </button>
       ))}
@@ -224,7 +217,11 @@ export function Foto({ s, yol, etiket }: { s: Sunucu; yol: string | null; etiket
         },
       )
     }
-    const IO = (window as unknown as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver
+    const IO = (
+      window as unknown as {
+        IntersectionObserver?: typeof IntersectionObserver
+      }
+    ).IntersectionObserver
     if (!IO) {
       al()
       return () => {
@@ -252,5 +249,53 @@ export function Foto({ s, yol, etiket }: { s: Sunucu; yol: string | null; etiket
       {url ? <img src={url} alt={etiket || 'Plaka fotoğrafı'} /> : <span class="foto-yer">{yok ? 'Fotoğraf açılamadı' : 'Fotoğraf'}</span>}
       {etiket && <span class="foto-etiket">{etiket}</span>}
     </div>
+  )
+}
+
+export type Ton = 'marka' | 'basari' | 'tehlike' | 'uyari' | 'notr'
+
+/** A state chip, as the main app's Chip. */
+export function Cip({ metin, ton }: { metin: string; ton: Ton }) {
+  return <span class={`cip-durum ton-${ton}`}>{metin}</span>
+}
+
+/** The plate, with the record's state chip on the right (main app's PlakaBasligi). */
+export function PlakaBasligi({ plaka, cip }: { plaka: string; cip: ComponentChildren }) {
+  return (
+    <div class="plaka-satiri">
+      <p class="buyuk-plaka">{plaka}</p>
+      {cip}
+    </div>
+  )
+}
+
+/** The payment method in its own colour (main app's ODEME_CHIP). */
+export function OdemeCip({ yontem, etiket }: { yontem: OdemeYontemi; etiket: string }) {
+  return <span class={`cip-durum odeme-${yontem}`}>{etiket}</span>
+}
+
+/** Two figures side by side (Ücret / Süre), like the main app's ticket page. */
+export function Ikili({ a, b }: { a: { k: string; v: string }; b: { k: string; v: string } }) {
+  return (
+    <div class="ikili">
+      <div class="ikili-hucre">
+        <p class="ikili-v">{a.v}</p>
+        <p class="ikili-k">{a.k}</p>
+      </div>
+      <div class="ikili-hucre">
+        <p class="ikili-v">{b.v}</p>
+        <p class="ikili-k">{b.k}</p>
+      </div>
+    </div>
+  )
+}
+
+/** The main app's floating bar: fixed above the tabs, with a spacer so nothing hides behind it. */
+export function AltBar({ children }: { children: ComponentChildren }) {
+  return (
+    <>
+      <div class="alt-bar-bosluk" />
+      <div class="alt-bar">{children}</div>
+    </>
   )
 }
