@@ -35,6 +35,7 @@ tools/hiz-testi/hiz-sonuc.txt
 # P2 test tezgahı raporu ve indirilen eski Chromium (yüzlerce MB).
 tools/cihaz-testi/p2-sonuc.txt
 tools/cihaz-testi/chromium/
+tools/cihaz-testi/chromium56/
 tools/cihaz-testi/derleme/
 tools/cihaz-testi/ekranlar/
 # Google platform-tools (ADB) ve indirilen zip: P2'yi USB'den okumak için.

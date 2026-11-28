@@ -8,11 +8,12 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.terminal.json && vite build && vite build -c vite.terminal.config.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.terminal.json",
     "typecheck:functions": "tsc -p tsconfig.functions.json",
     "preview": "vite preview",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "build:terminal": "vite build -c vite.terminal.config.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "1.1.23",
@@ -20,6 +21,7 @@
     "@supabase/supabase-js": "2.112.3",
     "@tanstack/react-query": "5.101.4",
     "browser-image-compression": "2.0.2",
+    "preact": "10.29.8",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-router": "8.3.0",
@@ -29,8 +31,11 @@
     "@tailwindcss/vite": "4.3.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-legacy": "8.2.4",
     "@vitejs/plugin-react": "6.0.5",
+    "acorn": "8.19.0",
     "tailwindcss": "4.3.3",
+    "terser": "5.51.4",
     "typescript": "6.0.3",
     "vite": "8.2.4",
     "vite-plugin-pwa": "1.3.0"

@@ -1,0 +1,343 @@
+/*
+ * P2 terminal styles (spec 2026-11-28). Chrome 56: flexbox and margins only —
+ * no grid, no flex gap, no inset / aspect-ratio / :is / @layer (checked by
+ * tests/terminalDerleme.check.mjs). Light theme only, flat colours, no
+ * shadows, blur or animations. Values copied from src/styles/index.css (light).
+ */
+:root {
+  --bg: #eef1f6;
+  --surface: #ffffff;
+  --field: #e4e9f1;
+  --border: #dbe1ea;
+  --ink: #14161a;
+  --soft: #474d56;
+  --faint: #5f666f;
+  --accent: #0b5a6e;
+  --accent-soft: #cfe9fa;
+  --success: #0f7050;
+  --success-soft: #e2f4ec;
+  --danger: #c0322b;
+  --danger-soft: #fce9e7;
+  --warn: #a24a08;
+  --warn-soft: #fdf0dc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Roboto, 'Noto Sans', Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  -webkit-text-size-adjust: 100%;
+}
+
+.kutu {
+  margin: 12px 16px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* ---- screen frame ---------------------------------------------------- */
+.ekran {
+  min-height: 100vh;
+}
+.ust-cubuk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 0 16px;
+  background: var(--accent);
+  color: #ffffff;
+}
+.baslik {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ust-dugme {
+  min-height: 44px;
+  margin-left: 12px;
+  padding: 0 14px;
+  border: 1px solid #ffffff;
+  border-radius: 8px;
+  background: transparent;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+}
+.icerik {
+  padding: 16px;
+}
+
+/* ---- buttons ----------------------------------------------------------- */
+.dugme {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin: 0 0 12px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+}
+.dugme-ana {
+  border: 0;
+  background: var(--accent);
+  color: #ffffff;
+}
+.dugme-ikincil {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+}
+.dugme-buyuk {
+  min-height: 64px;
+  font-size: 20px;
+}
+.dugme:disabled {
+  opacity: 0.5;
+}
+.liste-dugme {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  margin: 0 0 8px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 18px;
+  text-align: left;
+}
+
+/* ---- fields and messages ----------------------------------------------- */
+.alan {
+  display: block;
+  margin: 0 0 12px;
+}
+.alan-etiket {
+  display: block;
+  margin: 0 0 4px;
+  color: var(--soft);
+  font-size: 14px;
+  font-weight: 600;
+}
+.alan-girdi {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 18px;
+}
+.hata {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+}
+.bilgi {
+  margin: 0 0 12px;
+  color: var(--soft);
+}
+
+/* ---- PIN keypad (rows of flex, margins — no grid, no gap) --------------- */
+.pin-noktalar {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0 16px;
+}
+.pin-nokta {
+  width: 18px;
+  height: 18px;
+  margin: 0 8px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+}
+.pin-nokta.dolu {
+  background: var(--accent);
+}
+.tus-takimi {
+  margin: 0 0 12px;
+}
+.tus-satir {
+  display: flex;
+  margin: 0 0 8px;
+}
+.tus {
+  flex: 1 1 0;
+  min-height: 64px;
+  margin: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 26px;
+  font-weight: 600;
+}
+.tus-ikincil {
+  background: var(--field);
+  font-size: 18px;
+}
+.tus:disabled {
+  opacity: 0.5;
+}
+
+/* ---- Giriş --------------------------------------------------------------- */
+.dugme-dosya {
+  position: relative;
+  overflow: hidden;
+  line-height: 48px;
+  text-align: center;
+}
+.dugme-dosya.mesgul {
+  opacity: 0.6;
+}
+.gizli-dosya {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+.plaka-onizleme {
+  margin: -4px 0 12px;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* ---- Fiş: options, preview, paper ---------------------------------------- */
+.secenekler {
+  margin: 0 0 12px;
+}
+.secenek {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  margin: 0 0 6px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+.secenek.secili {
+  border: 2px solid var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.secenek:disabled {
+  opacity: 0.5;
+}
+.secenek-fiyat {
+  margin-left: 12px;
+  font-weight: 600;
+}
+.onizleme {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.fis-kagit {
+  font: 13px/1.35 monospace;
+  color: var(--ink);
+}
+.fis-kagit p {
+  margin: 0;
+}
+.fis-baslik,
+.fis-alt,
+.fis-not,
+.fis-buyuk {
+  text-align: center;
+}
+.fis-baslik,
+.fis-buyuk,
+.fis-kalin {
+  font-weight: 700;
+}
+.fis-buyuk {
+  margin: 4px 0 !important;
+  font-size: 20px;
+  letter-spacing: 1px;
+}
+.fis-satir {
+  display: flex;
+  justify-content: space-between;
+}
+.fis-sag {
+  margin-left: 8px;
+  text-align: right;
+  /* "150 ₺" never splits on 48 mm paper; the label wraps instead (bench 28.11). */
+  white-space: nowrap;
+  -webkit-flex-shrink: 0;
+  flex-shrink: 0;
+}
+.fis-cizgi {
+  margin: 6px 0;
+  border: 0;
+  border-top: 1px dashed currentColor;
+}
+.fis-baski {
+  display: none;
+}
+
+/* The paper: the layout the P2 printed correctly from Chrome on 25.11. */
+@media print {
+  @page {
+    size: 58mm auto;
+    margin: 0;
+  }
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .ekran {
+    display: none !important;
+  }
+  .fis-baski {
+    display: block;
+    width: 48mm;
+    margin: 0 auto;
+    padding: 2mm 0 6mm;
+  }
+  .fis-baski .fis-kagit {
+    font: 12px/1.3 monospace;
+    color: #000;
+  }
+  .fis-baski .fis-buyuk {
+    font-size: 20px;
+    line-height: 1.2;
+  }
+}

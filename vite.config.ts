@@ -49,6 +49,10 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,woff2,png,svg}'],
         clientsClaim: true,
         navigateFallback: '/Otopark/index.html',
+        // The P2 terminal is a separate app under /Otopark/terminal/; on a
+        // phone that has this app installed, the fallback must not answer it
+        // with the main app's index.html (tests/terminalDerleme.check.mjs).
+        navigateFallbackDenylist: [/^\/Otopark\/terminal\//],
         // Web Push handlers live in public/push-sw.js and ride inside the
         // generated Workbox service worker.
         importScripts: ['push-sw.js'],

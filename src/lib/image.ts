@@ -89,13 +89,6 @@ export async function fileToBase64(file: File): Promise<string> {
   return btoa(binary)
 }
 
-/**
- * Storage path for a plate photo. Date-prefixed so the nightly KVKK purge and
- * a human browsing the bucket both see the same ordering.
- */
-export function fotoYolu(yon: 'giris' | 'cikis', plaka: string): string {
-  const now = new Date()
-  const stamp = now.toISOString().slice(0, 10)
-  const rand = crypto.randomUUID().slice(0, 8)
-  return `${stamp}/${yon}-${plaka || 'bilinmiyor'}-${rand}.jpg`
-}
+// Moved to ./fotoYolu so the P2 terminal can use it without this file's
+// image library (plan 2026-11-28, Task 5); same path format.
+export { fotoYolu } from './fotoYolu'
